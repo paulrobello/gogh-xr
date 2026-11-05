@@ -1,4 +1,5 @@
 import { expect, test, vi } from 'vitest';
+import { clearNotices, showNotice } from '../src/ui/notice.ts';
 import {
   applySessionSettings,
   createSessionController,
@@ -128,6 +129,24 @@ test('request failure notifies and clears the pending guard', async () => {
   expect(notify).toHaveBeenCalledWith('Could not start VR: denied');
   expect(controller.state.presenting).toBe(false);
   expect(await controller.enter()).toBe(true);
+});
+
+test('a successful entry clears a stale failure notice', async () => {
+  document.body.replaceChildren();
+  const requestSession = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('denied'))
+    .mockResolvedValueOnce(fakeSession());
+  const controller = createSessionController({
+    renderer: fakeRenderer().renderer,
+    xr: { requestSession } as unknown as XRSystem,
+    notify: (message) => showNotice(message),
+    clearNotices: () => clearNotices(),
+  });
+  expect(await controller.enter()).toBe(false);
+  expect(document.querySelectorAll('[role="alert"]').length).toBe(1);
+  expect(await controller.enter()).toBe(true);
+  expect(document.querySelectorAll('[role="alert"]').length).toBe(0);
 });
 
 test('setSession failure ends the session and notifies', async () => {

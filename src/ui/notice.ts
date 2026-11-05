@@ -44,3 +44,7 @@ export function showNotice(message: string, doc: Document = document): HTMLEleme
   container(doc).appendChild(notice);
   return notice;
 }
+
+export function clearNotices(doc: Document = document): void {
+  doc.getElementById(CONTAINER_ID)?.replaceChildren();
+}

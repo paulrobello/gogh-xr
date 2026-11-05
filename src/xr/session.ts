@@ -21,6 +21,7 @@ export interface SessionDeps {
   renderer: SessionRenderer;
   xr: XRSystem | undefined;
   notify: (message: string) => void;
+  clearNotices?: () => void;
 }
 
 export interface SessionController {
@@ -93,6 +94,7 @@ export function createSessionController(deps: SessionDeps): SessionController {
         state.sessionMode = null;
       });
       await applySessionSettings(session, deps.renderer, state);
+      deps.clearNotices?.();
       return true;
     } catch (error) {
       state.presenting = false;

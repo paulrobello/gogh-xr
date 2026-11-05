@@ -10,6 +10,16 @@ const KEY_MAP: Readonly<Record<string, keyof WalkInput>> = {
   ShiftRight: 'sprint',
 };
 
+/** Pointer lock is optional: keyboard walking works without it, so refusals are ignored. */
+export function requestLock(canvas: HTMLCanvasElement): void {
+  try {
+    const result: unknown = canvas.requestPointerLock();
+    if (result instanceof Promise) result.catch(() => undefined);
+  } catch {
+    // lock refused synchronously
+  }
+}
+
 export interface DesktopControls {
   update(dt: number): void;
 }
@@ -31,7 +41,7 @@ export function installDesktopControls(
   window.addEventListener('keyup', (event) => setKey(event, false));
   window.addEventListener('blur', () => Object.assign(input, emptyInput()));
   canvas.addEventListener('click', () => {
-    if (document.pointerLockElement !== canvas) void canvas.requestPointerLock();
+    if (document.pointerLockElement !== canvas) requestLock(canvas);
   });
   document.addEventListener('mousemove', (event) => {
     if (document.pointerLockElement === canvas) {

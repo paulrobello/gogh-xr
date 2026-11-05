@@ -3,7 +3,7 @@ import { installDesktopControls } from './desktop/controls';
 import { installDiag, installShot } from './diag/diag';
 import { flags } from './diag/flags';
 import { createEnterVrButton } from './ui/enter-vr';
-import { showNotice } from './ui/notice';
+import { clearNotices, showNotice } from './ui/notice';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
 import { createSessionController, isVrSupported } from './xr/session';
@@ -24,6 +24,7 @@ const session = createSessionController({
   renderer,
   xr: navigator.xr,
   notify: (message) => showNotice(message),
+  clearNotices: () => clearNotices(),
 });
 
 window.addEventListener('resize', () => {
