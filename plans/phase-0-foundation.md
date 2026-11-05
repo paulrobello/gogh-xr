@@ -155,7 +155,7 @@ Pre-commit hooks: gitleaks and `detect-private-key` from `pre-commit/pre-commit-
   - An e2e test boots `?iwer&bench=100000` and asserts the instance count in diag with no WebGL errors.
 
 ### P0.8: Headset benchmark session (owner)
-- **Depends on:** P0.6 or `adb reverse tcp:4252 tcp:4252`, and P0.7.
+- **Depends on:** P0.7. Run over `adb reverse tcp:4252 tcp:4252`, then open `http://localhost:4252` on the headset. It does not wait for the Pages deploy in P0.6.
 - **Steps:**
   - Paul runs the benchmark on the Quest 3, with OVR Metrics Tool active.
   - For each mode (a2c, blend) and each target rate (72, 90, and 120 if it is supported), step N up until frames drop. Use stroke sizes that match the near, mid and far bands.

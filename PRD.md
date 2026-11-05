@@ -172,7 +172,7 @@ docs/                     verification.md, perf.md, audio/, decisions/
 
 | Gate | Contents | Where it runs |
 | --- | --- | --- |
-| `make checkall` | Biome lint, then `tsc --noEmit`, Vitest unit tests and `vite build`, ordered fail-fast | Local and CI |
+| `make checkall` | Biome lint, then `tsc --noEmit`, Vitest unit tests, `vite build`, and `bundle-check` (no IWER code in the production bundle), ordered fail-fast | Local and CI |
 | `make checkall-ci` | `checkall` plus `gitleaks dir`, `bun audit --audit-level high`, and the asset/provenance check | Local, before any push. CI-parity gate |
 | `make e2e` | Playwright 1.63.0 on Chromium with Metal ANGLE and IWER 2.8.0 Quest 3 emulation. It fails on shader-compile errors, WebGL errors and console errors | Local only, never in CI. Part of each phase's done gate |
 | Headset check | The owner's checklist per phase, evidenced by the HUD and OVR Metrics Tool, logged in `docs/verification.md` | Owner, on the Quest 3. Cards stay open until sign-off |

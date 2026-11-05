@@ -1,11 +1,11 @@
 # Phase 7: Release
 
-PRD: [P7](../PRD.md#p7--release). P7.1 can start as soon as P0.6 is done. Everything else in this phase waits for P3 through P6 to pass their headset checks.
+PRD: [P7](../PRD.md#p7--release). P7.1 can start as soon as P0.2 is done, because its A→B check runs against locally served builds. Everything else in this phase waits for P3 through P6 to pass their headset checks.
 
 ## Tasks
 
 ### P7.1: Build-version polling and XR-safe reload
-- **Depends on:** P0.6.
+- **Depends on:** P0.2. The HUD action uses P5.6 once that task lands. Until then, use a plain notice.
 - **Steps:**
   - Port mux-xr's `src/update-check.ts` and `src/reload.ts` behaviour, following the "Frontend version notifications" section of `~/.claude/guides/webxr.md`:
     - Embed the build id at build time and emit a same-origin `version.json`. The id fingerprints the bundles, the package version and the public assets.
