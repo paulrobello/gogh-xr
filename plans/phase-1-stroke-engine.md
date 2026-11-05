@@ -17,7 +17,7 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
 ### P1.1: Scan analysis bake
 - **Depends on:** P0.4b.
 - **Steps:**
-  - `scripts/bake/analyze-scan.ts` reads `scan-4096.png` and writes the following to `public/paintings/starry-night/`:
+  - `scripts/bake/analyze-scan.ts` reads `assets/scans/starry-night.jpg` and writes the following to `public/paintings/starry-night/`:
     - **Palette.** k-means with 24 swatches, written to `palette.json`.
     - **Orientation field.** A structure tensor over Gaussian-smoothed luminance at 1024², encoded as RG8 angle plus coherence in `flow.png`.
     - **Region masks.** Sky, stars, moon, cypress, village, hills and church. Use a hand-authored polygon JSON (`regions.json`, committed) and rasterize it to `regions.png`.

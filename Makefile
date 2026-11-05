@@ -20,7 +20,7 @@ checkall-ci: checkall
 bundle-check:
 	@echo "bundle-check: no-op until P0.3"
 asset-check:
-	@echo "asset-check: no assets yet"
+	bun scripts/asset-check.ts
 e2e:
 	@echo "e2e suite arrives in P0.3"
 dev dev-start:

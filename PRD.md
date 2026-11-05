@@ -83,7 +83,7 @@ troika 0.53.1 is the latest release. 0.52.5 is pinned because it is proven on th
 - **D3. No multiview in v1.** three r186's `WebXRManager` and `WebGLRenderer` contain no multiview path. Meta's [multiview doc](https://developers.meta.com/horizon/documentation/web/web-multiview/) says multiview only helps CPU-bound apps, and our risk is GPU fill rate. Instancing already cuts draw calls. A contingency card (P1) opens only if headset profiling shows the app is CPU-bound.
 - **D4. No full-screen post-processing.** Offscreen passes, such as baking the flow field or a reveal mask, run before the eye pass. This keeps fixed foveation and MSAA active, per Meta's [FFR doc](https://developers.meta.com/horizon/documentation/web/webxr-ffr/).
 - **D5. Flow field from the canvas.**
-  - A build-time script derives, from the 4096 px scan: a palette, a stroke-orientation field (structure tensor of the luminance), and region masks for sky, stars, moon, cypress, village, hills and church.
+  - A build-time script derives, from the 3840 px source scan in `assets/scans/`: a palette, a stroke-orientation field (structure tensor of the luminance), and region masks for sky, stars, moon, cypress, village, hills and church.
   - The 3D world projects these onto procedural geometry from the painter's spot, which is the camera pose that reproduces the canvas framing.
   - Surfaces outside the canvas frustum extrapolate color and flow from the nearest region of the same type.
 - **D6. Procedural world.** All forms are TypeScript generators with fixed seeds:
@@ -196,7 +196,7 @@ Acceptance:
 - **P0-A1.** `make checkall`, `make checkall-ci` and `make e2e` are green on a fresh clone. `make dev`, `make dev-stop` and `make dev-restart` work on port 4252.
 - **P0-A2.** The e2e suite boots IWER `metaQuest3`, enters an immersive session, presses a controller trigger, and reads `__goghDiag()`. The production bundle contains no IWER code, checked by a bundle grep in `checkall`.
 - **P0-A3.** The desktop preview walks a ground plane with WASD and mouse.
-- **P0-A4.** `assets/PROVENANCE.md` lists all 7 scans with file name, URL, license, painting version and SHA-256. Committed derivatives are 4096 px for Starry Night and 1024 px for each frame. A frame that fails vetting is recorded as a placeholder.
+- **P0-A4.** `assets/PROVENANCE.md` lists all 7 scans with file name, URL, license, painting version and SHA-256. Committed runtime derivatives are a 1024 px `frame.webp` per painting. The Starry Night bake input is the 3840 px source scan in `assets/scans/`, which is never served. A frame that fails vetting is recorded as a placeholder.
 - **P0-A5.** The live site at `https://gogh-xr.pardev.net` renders the bare scene in a browser, verified by a live render, not an HTTP 200.
 - **P0-A6.** Headset check. The owner runs the benchmark on the Quest 3. `docs/perf.md` records the measured stroke counts at which 72, 90 and 120 Hz hold, `supportedFrameRates`, timer-query availability, and alpha-to-coverage vs blended cost. The P1 budgets are updated from these numbers.
 

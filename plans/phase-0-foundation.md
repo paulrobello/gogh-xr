@@ -105,10 +105,10 @@ Pre-commit hooks: gitleaks and `detect-private-key` from `pre-commit/pre-commit-
 ### P0.4b: Scan fetch and derivatives
 - **Depends on:** P0.1, P0.4a.
 - **Steps:**
-  - Create `scripts/scans/fetch.ts`. It downloads only the thumbnail URLs from `PROVENANCE.md`: 4096 px for Starry Night and 1024 px for each frame. Never fetch the 696 MB original.
+  - Create `scripts/scans/fetch.ts`. It downloads only the thumbnail URLs from `PROVENANCE.md`. Commons serves only snapped thumbnail widths, so it fetches Starry Night at 3840 px (never upscaled) and each frame painting at 1280 px, then downscales each frame locally to 1024 px on the long edge. Never fetch the 696 MB original.
     - **Ask Paul for approval before running it. List the file names, the source and the sizes.**
   - Store the fetched files under `assets/scans/` (source tier, not served).
-  - Write the runtime derivatives to `public/paintings/<id>/frame.webp` and `public/paintings/starry-night/scan-4096.png`.
+  - Write the runtime derivatives to `public/paintings/<id>/frame.webp` only. The Starry Night 3840 px source (`assets/scans/starry-night.jpg`) is a bake input for Phase 1 and is not copied to `public/`.
   - Record the SHA-256 of every source file and every derivative.
   - `asset-check` (in `checkall-ci`) recomputes the hashes and fails on drift or on a derivative that has no provenance row.
 - **Verify:**
