@@ -67,7 +67,17 @@ export interface CheckResult {
   checked: number;
 }
 
-/** Recompute every manifest hash under `root`, and require a row for every file in `public/paintings`. */
+const JUNK_FILES: ReadonlySet<string> = new Set(['.DS_Store', 'Thumbs.db']);
+const PROVENANCE_FILE = 'assets/PROVENANCE.md';
+
+function isJunk(file: string): boolean {
+  return JUNK_FILES.has(file.split(/[\\/]/).pop() ?? '');
+}
+
+/**
+ * Recompute every manifest hash under `root`, and require a row for every file in
+ * `public/paintings` and `assets/` (except PROVENANCE.md itself). OS junk files are ignored.
+ */
 export function checkAssets(root: string, markdown: string): CheckResult {
   const rows = parseHashRows(markdown);
   const failures: string[] = [];
@@ -92,8 +102,17 @@ export function checkAssets(root: string, markdown: string): CheckResult {
   }
   if (rows.length === 0) failures.push('no hash rows verified');
   for (const file of listFiles(join(root, 'public/paintings'))) {
+    if (isJunk(file)) continue;
     const rel = relative(root, file).split('\\').join('/');
     if (!seen.has(rel)) failures.push(`${rel}: derivative has no provenance row`);
+  }
+  const required = new Set(requiredFiles(markdown));
+  for (const file of listFiles(join(root, 'assets'))) {
+    if (isJunk(file)) continue;
+    const rel = relative(root, file).split('\\').join('/');
+    if (rel !== PROVENANCE_FILE && !seen.has(rel) && !required.has(rel)) {
+      failures.push(`${rel}: asset has no provenance row`);
+    }
   }
   return { failures, checked: rows.length };
 }

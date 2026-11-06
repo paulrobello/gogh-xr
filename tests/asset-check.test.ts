@@ -86,6 +86,21 @@ describe('asset hash checks', () => {
     ]);
   });
 
+  it('fails on an unlisted file under assets/ and names its path', () => {
+    write('assets/audio/stray.wav', 'x');
+    expect(checkAssets(root, fullManifest()).failures).toEqual([
+      'assets/audio/stray.wav: asset has no provenance row',
+    ]);
+  });
+
+  it('does not require a row for PROVENANCE.md itself, and ignores OS junk files', () => {
+    write('assets/PROVENANCE.md', fullManifest());
+    write('assets/.DS_Store', 'x');
+    write('assets/scans/.DS_Store', 'x');
+    write('public/paintings/a/.DS_Store', 'x');
+    expect(checkAssets(root, fullManifest()).failures).toEqual([]);
+  });
+
   it('fails on a listed file that is missing', () => {
     const md = `${fullManifest()}\n${row('assets/gone.bin', HELLO)}`;
     expect(checkAssets(root, md).failures).toEqual([
