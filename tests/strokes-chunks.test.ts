@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   computeBounds,
   cullAndSort,
+  cullAndSortInto,
   partitionIndices,
   partitionStrokes,
 } from '../src/render/strokes/chunks.ts';
@@ -227,5 +228,36 @@ describe('cullAndSort', () => {
     ];
     camera.updateMatrixWorld();
     expect(cullAndSort(spheres, frustumFor(camera), new Vector3())).toEqual([2, 0, 1]);
+  });
+});
+
+describe('cullAndSortInto', () => {
+  test('writes the cullAndSort order into the given arrays and returns the kept count', () => {
+    const rand = mulberry32(7);
+    const camera = new PerspectiveCamera(80, 1.2, 0.05, 1000);
+    const spheres: Sphere[] = [];
+    for (let i = 0; i < 300; i++) {
+      const center = new Vector3((rand() - 0.5) * 80, (rand() - 0.5) * 20, (rand() - 0.5) * 80);
+      // Every fifth sphere repeats an earlier centre, so distance ties occur.
+      if (i % 5 === 4) center.copy(spheres[i - 3].center);
+      spheres.push(new Sphere(center, 0.5 + rand() * 3));
+    }
+    const order = new Uint32Array(spheres.length);
+    const distances = new Float64Array(spheres.length);
+    for (let heading = 0; heading < 8; heading++) {
+      camera.position.set((rand() - 0.5) * 10, 1.6, (rand() - 0.5) * 10);
+      camera.rotation.set(0, (heading * Math.PI) / 4, 0);
+      camera.updateMatrixWorld();
+      const m = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      const frustum = new Frustum().setFromProjectionMatrix(m);
+      const eye = new Vector3().setFromMatrixPosition(camera.matrixWorld);
+      const expected = cullAndSort(spheres, frustum, eye);
+      const n = cullAndSortInto(spheres, frustum, eye, order, distances);
+      expect(n).toBe(expected.length);
+      expect(Array.from(order.subarray(0, n))).toEqual(expected);
+      for (let k = 0; k < n; k++) {
+        expect(distances[k]).toBe(spheres[order[k]].center.distanceToSquared(eye));
+      }
+    }
   });
 });

@@ -15,6 +15,7 @@ import {
   STROKE_BANDS,
 } from '../src/render/strokes/bands.ts';
 import { createStrokeBatch, type StrokeBatch } from '../src/render/strokes/batch.ts';
+import { cullAndSortInto } from '../src/render/strokes/chunks.ts';
 import {
   createStrokeBuffers,
   packInstance,
@@ -22,6 +23,11 @@ import {
   type StrokeBuffers,
 } from '../src/render/strokes/instance.ts';
 import { mulberry32 } from '../src/util/prng.ts';
+
+vi.mock('../src/render/strokes/chunks.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/render/strokes/chunks.ts')>();
+  return { ...actual, cullAndSortInto: vi.fn(actual.cullAndSortInto) };
+});
 
 function tinyAtlas(): DataTexture {
   return new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat);
@@ -436,6 +442,30 @@ describe('update', () => {
     batch.dispose();
     expect(scene.onBeforeRender).toBe(previous);
     expect(batch.group.parent).toBeNull();
+  });
+});
+
+describe('per-frame cost (M3)', () => {
+  test('cull and sort reuse the same preallocated arrays every frame', () => {
+    const batch = bandedBatch();
+    const camera = originCamera();
+    const cull = vi.mocked(cullAndSortInto);
+    cull.mockClear();
+    render(batch, camera);
+    camera.position.set(1, 0, 2);
+    render(batch, camera);
+    camera.rotation.set(0, Math.PI, 0);
+    render(batch, camera);
+    expect(cull).toHaveBeenCalledTimes(3);
+    const [first, ...rest] = cull.mock.calls;
+    expect(first[3]).toBeInstanceOf(Uint32Array);
+    expect(first[4]).toBeInstanceOf(Float64Array);
+    expect(first[3].length).toBe(batch.chunks.length);
+    for (const call of rest) {
+      expect(call[3]).toBe(first[3]);
+      expect(call[4]).toBe(first[4]);
+    }
+    batch.dispose();
   });
 });
 

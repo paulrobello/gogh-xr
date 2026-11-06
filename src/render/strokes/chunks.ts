@@ -159,15 +159,42 @@ export function partitionStrokes(
 
 /**
  * Indices of the spheres that intersect `frustum`, nearest centre first, ties by index. Opaque
- * front-to-back order lets the depth test reject hidden strokes before shading.
+ * front-to-back order lets the depth test reject hidden strokes before shading. Allocates; the
+ * per-frame path uses `cullAndSortInto`.
  */
 export function cullAndSort(spheres: readonly Sphere[], frustum: Frustum, eye: Vector3): number[] {
-  const kept: { index: number; distance: number }[] = [];
-  spheres.forEach((sphere, index) => {
-    if (frustum.intersectsSphere(sphere)) {
-      kept.push({ index, distance: sphere.center.distanceToSquared(eye) });
+  const order = new Uint32Array(spheres.length);
+  const distances = new Float64Array(spheres.length);
+  return Array.from(order.subarray(0, cullAndSortInto(spheres, frustum, eye, order, distances)));
+}
+
+/**
+ * `cullAndSort` without allocating: writes the kept indices to `order` and their squared distances
+ * to `distances`, both at least `spheres.length` long, and returns how many were kept. Sorts in
+ * place by insertion on (distance, index), a total order, so the result matches `cullAndSort`.
+ */
+export function cullAndSortInto(
+  spheres: readonly Sphere[],
+  frustum: Frustum,
+  eye: Vector3,
+  order: Uint32Array,
+  distances: Float64Array,
+): number {
+  let n = 0;
+  for (let index = 0; index < spheres.length; index++) {
+    const sphere = spheres[index];
+    if (!frustum.intersectsSphere(sphere)) continue;
+    const distance = sphere.center.distanceToSquared(eye);
+    // Indices arrive ascending, so a distance tie keeps the earlier index first.
+    let k = n;
+    while (k > 0 && distances[k - 1] > distance) {
+      order[k] = order[k - 1];
+      distances[k] = distances[k - 1];
+      k--;
     }
-  });
-  kept.sort((a, b) => a.distance - b.distance || a.index - b.index);
-  return kept.map((entry) => entry.index);
+    order[k] = index;
+    distances[k] = distance;
+    n++;
+  }
+  return n;
 }

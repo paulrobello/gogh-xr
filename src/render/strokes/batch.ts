@@ -24,7 +24,7 @@ import {
   type StrokeBand,
 } from './bands';
 import { createBrushAtlas } from './brush-atlas';
-import { computeBounds, cullAndSort, DEFAULT_CELL_SIZE, partitionIndices } from './chunks';
+import { computeBounds, cullAndSortInto, DEFAULT_CELL_SIZE, partitionIndices } from './chunks';
 import { importanceOrder } from './importance';
 import { STROKE_ATTRIBUTES, type StrokeBuffers, selectStrokes } from './instance';
 import { createStrokeMaterial, type StrokeMaterial } from './material';
@@ -272,6 +272,9 @@ export function createStrokeBatch(
   const frustum = new Frustum();
   const viewProjection = new Matrix4();
   const eye = new Vector3();
+  /** Cull output, reused every frame: kept chunk indices front to back, and their distances. */
+  const cullOrder = new Uint32Array(chunks.length);
+  const cullDistances = new Float64Array(chunks.length);
 
   let detach: (() => void) | null = null;
 
@@ -287,32 +290,37 @@ export function createStrokeBatch(
     },
     update(camera: Camera) {
       eye.setFromMatrixPosition(camera.matrixWorld);
-      chunks.forEach((chunk, i) => {
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
         const band = nextBand(
           bandOf[i],
           chunkDistance(chunk.bounds.center, chunk.bounds.radius, eye),
         );
-        if (band === bandOf[i]) return;
+        if (band === bandOf[i]) continue;
         bandOf[i] = band;
         chunk.mesh.material = materials[band];
         applyDensity(i, band);
         applySize(i, band);
-      });
+      }
       viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       frustum.setFromProjectionMatrix(
         viewProjection,
         camera.coordinateSystem,
         camera.reversedDepth,
       );
-      for (const chunk of chunks) chunk.mesh.visible = false;
-      for (const band of STROKE_BANDS) bandVisible[band] = 0;
-      cullAndSort(cullSpheres, frustum, eye).forEach((index, rank) => {
+      for (let i = 0; i < chunks.length; i++) chunks[i].mesh.visible = false;
+      bandVisible.near = 0;
+      bandVisible.mid = 0;
+      bandVisible.far = 0;
+      const kept = cullAndSortInto(cullSpheres, frustum, eye, cullOrder, cullDistances);
+      for (let rank = 0; rank < kept; rank++) {
+        const index = cullOrder[rank];
         const { mesh } = chunks[index];
         mesh.visible = true;
         mesh.renderOrder = rank;
         const band = bandOf[index];
         if (band) bandVisible[band] += chunks[index].drawCount;
-      });
+      }
       bandVisibleStale = false;
     },
     setDensity(band: StrokeBand, d: number) {
