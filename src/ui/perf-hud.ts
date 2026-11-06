@@ -1,17 +1,19 @@
 /**
- * `?hud`: the perf HUD (P1.7). A troika SDF text panel parented to the camera, so it follows the
- * head in XR and the viewer on desktop. Every frame records the frame stats; the text recomputes
- * at 4 Hz and troika re-typesets only when the string changes (`perf-hud-text.ts`).
+ * The perf HUD (P1.7). A troika SDF text panel parented to the camera, so it follows the head in
+ * XR and the viewer on desktop. While shown, every frame records the frame stats; the text
+ * recomputes at 4 Hz and troika re-typesets only when the string changes (`perf-hud-text.ts`).
+ * `hud-toggle.ts` builds it on its first show and drives `frame` and `setVisible`.
  *
- * Diag keys: `hud` is the text on the troika mesh, the frame time it was recomputed at and whether
- * troika has typeset it. `frame` is the live frame stats the HUD reads, with the time of the last
- * recorded frame.
+ * `diag()` is the panel's visibility, the text on the troika mesh, the frame time it was recomputed at and whether troika
+ * has typeset it; `main.ts` serves it under the `hud` diag key. This module registers `frame`: the
+ * live frame stats the HUD reads, with the time of the last recorded frame.
  */
 import { Group, Mesh, MeshBasicMaterial, type Object3D, PlaneGeometry } from 'three';
 import { configureTextBuilder, Text } from 'troika-three-text';
 import { FrameStats } from '../bench/stats';
 import { registerDiag, unregisterDiag } from '../diag/diag';
 import type { GovernorDiag } from '../render/governor-runtime';
+import type { ToggleableHud } from './hud-toggle';
 import { createHudUpdater, type PerfHudValues } from './perf-hud-text';
 
 export const HUD_FONT_URL = `${import.meta.env.BASE_URL}fonts/NotoSans-Regular.ttf`;
@@ -43,9 +45,13 @@ export interface PerfHudDeps {
   getVisible(): number | null;
 }
 
-export interface PerfHud {
-  /** Call once per animation frame, after rendering, with the frame timestamp. */
+export interface PerfHud extends ToggleableHud {
+  /** Call once per animation frame while shown, after rendering, with the frame timestamp. */
   frame(time: number): void;
+  /** Starts hidden. Showing restarts the frame stats, which record nothing while hidden. */
+  setVisible(visible: boolean): void;
+  /** `visible` is the panel's own visibility. */
+  diag(): { visible: boolean; text: string; updatedAt: number | null; typeset: boolean };
   dispose(): void;
 }
 
@@ -57,6 +63,7 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
 
   const panel = new Group();
   panel.name = 'perf-hud';
+  panel.visible = false;
   panel.position.set(0, PANEL_Y, PANEL_Z);
   panel.rotation.x = Math.atan2(-PANEL_Y, -PANEL_Z);
 
@@ -134,19 +141,13 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
   }
 
   // XR and window frames run on separate clocks, so a session change restarts the window.
-  const onSession = (): void => {
+  const restartStats = (): void => {
     stats.reset();
     lastFrame = null;
   };
-  xr.addEventListener('sessionstart', onSession);
-  xr.addEventListener('sessionend', onSession);
+  xr.addEventListener('sessionstart', restartStats);
+  xr.addEventListener('sessionend', restartStats);
 
-  registerDiag('hud', () => ({
-    text: text.text,
-    updatedAt: updater.updatedAt,
-    /** True once troika has typeset the text with the font. */
-    typeset: text.textRenderInfo !== null,
-  }));
   registerDiag('frame', () => ({
     t: lastFrame,
     fps: stats.fps(),
@@ -160,12 +161,21 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
       lastFrame = time;
       updater.tick(time, sample);
     },
+    setVisible(visible: boolean) {
+      if (visible && !panel.visible) restartStats();
+      panel.visible = visible;
+    },
+    diag: () => ({
+      visible: panel.visible,
+      text: text.text,
+      updatedAt: updater.updatedAt,
+      typeset: text.textRenderInfo !== null,
+    }),
     dispose() {
       if (disposed) return;
       disposed = true;
-      xr.removeEventListener('sessionstart', onSession);
-      xr.removeEventListener('sessionend', onSession);
-      unregisterDiag('hud');
+      xr.removeEventListener('sessionstart', restartStats);
+      xr.removeEventListener('sessionend', restartStats);
       unregisterDiag('frame');
       panel.removeFromParent();
       if (addedCamera && camera.parent === scene) scene.remove(camera);

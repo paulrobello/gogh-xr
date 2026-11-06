@@ -1,12 +1,13 @@
 import { PerspectiveCamera, WebGLRenderer } from 'three';
+import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { installDesktopControls } from './desktop/controls';
 import { installDiag, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
 import type { GovernorRuntime } from './render/governor-runtime';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createEnterVrButton } from './ui/enter-vr';
+import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
-import type { PerfHud } from './ui/perf-hud';
 import { busyWait } from './util/busy-wait';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
@@ -64,7 +65,7 @@ window.addEventListener('resize', () => {
 });
 
 let governor: GovernorRuntime | null = null;
-let hud: PerfHud | null = null;
+let hud: HudToggle | null = null;
 /** The batch the HUD counts visible strokes from: the first to load, as with the governor. */
 let hudBatch: StrokeBatch | null = null;
 let lastTime = 0;
@@ -75,7 +76,10 @@ function renderFrame(time: number): void {
   governor?.frame(time);
   if (!renderer.xr.isPresenting) desktop.update(dt);
   renderer.render(scene, camera);
-  hud?.frame(time);
+  if (hud) {
+    const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
+    hud.frame(time, leftButtonPressed(sources, BUTTON_X));
+  }
 }
 renderer.setAnimationLoop(renderFrame);
 
@@ -101,11 +105,14 @@ if (flags.bench !== null) {
     .catch((error: unknown) => console.warn('bench failed to start', error));
 }
 
-// The bench keeps its own HUD, so `?hud` does nothing there.
-if (flags.hud && flags.bench === null) {
-  import('./ui/perf-hud')
-    .then(({ startPerfHud }) => {
-      hud = startPerfHud({
+// `?hud` starts the HUD shown; left X and H toggle it. The bench keeps its own HUD and uses X,
+// so no HUD is ever built there.
+if (flags.bench === null) {
+  const toggle = createHudToggle({
+    visible: flags.hud,
+    build: async () => {
+      const { startPerfHud } = await import('./ui/perf-hud');
+      return startPerfHud({
         camera,
         scene,
         xr: renderer.xr,
@@ -113,8 +120,14 @@ if (flags.hud && flags.bench === null) {
         getGovernor: () => governor?.diag() ?? null,
         getVisible: () => hudBatch?.visibleCount() ?? null,
       });
-    })
-    .catch((error: unknown) => console.warn('perf HUD failed to start', error));
+    },
+    onError: (error) => console.warn('perf HUD failed to start', error),
+  });
+  hud = toggle;
+  registerDiag('hud', () => toggle.diag());
+  window.addEventListener('keydown', (event) => {
+    if (isHudToggleKey(event)) toggle.toggle();
+  });
 }
 
 let governed = false;

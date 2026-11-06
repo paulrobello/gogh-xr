@@ -2,6 +2,8 @@ import type { Page } from '@playwright/test';
 import { expect, glErrors, test, type Xr } from './fixtures';
 
 interface HudDiag {
+  visible: boolean;
+  built: boolean;
   text: string;
   updatedAt: number | null;
   typeset: boolean;
@@ -194,5 +196,67 @@ test('without a governor the HUD shows the frame lines and "governor off", deskt
   const inXr = await alignedSample(page, entry.hud.updatedAt);
   expect(inXr.governor).toBeUndefined();
   expectHudMatches(inXr);
+  expect(await glErrors(page)).toEqual([]);
+});
+
+const FONT_PATH = '/fonts/NotoSans-Regular.ttf';
+
+function hudDiag(xr: Xr): Promise<HudDiag> {
+  return xr.diag().then((diag) => diag.hud as HudDiag);
+}
+
+test('without ?hud the HUD stays unbuilt until H, then H hides and shows it', async ({
+  page,
+  xr,
+}) => {
+  const fonts: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === FONT_PATH) fonts.push(request.url());
+  });
+  await xr.boot('demo=canvas');
+  await expect
+    .poll(async () => (await xr.diag()).canvas !== undefined, { timeout: 30_000 })
+    .toBe(true);
+  await xr.waitFrames(30);
+  expect(await hudDiag(xr)).toEqual({ visible: false, built: false });
+  expect((await xr.diag()).frame).toBeUndefined();
+  expect(fonts).toEqual([]);
+
+  // A held key auto-repeats; only the first keydown toggles.
+  await page.keyboard.down('h');
+  await page.keyboard.down('h');
+  await page.keyboard.up('h');
+  await expect
+    .poll(async () => {
+      const hud = await hudDiag(xr);
+      return hud.visible && hud.built && hud.typeset;
+    })
+    .toBe(true);
+  expect(fonts).toHaveLength(1);
+  expectHudMatches(await alignedSample(page));
+
+  await page.keyboard.press('h');
+  await expect.poll(async () => (await hudDiag(xr)).visible).toBe(false);
+  // Hidden, the HUD stops recomputing: no update across two 250 ms intervals.
+  const hiddenAt = (await hudDiag(xr)).updatedAt;
+  await xr.waitFrames(40);
+  expect((await hudDiag(xr)).updatedAt).toBe(hiddenAt);
+
+  await page.keyboard.press('h');
+  await expect.poll(async () => (await hudDiag(xr)).visible).toBe(true);
+  expectHudMatches(await alignedSample(page, hiddenAt));
+  expect(fonts).toHaveLength(1);
+  expect(await glErrors(page)).toEqual([]);
+});
+
+test('in XR the left X button toggles the HUD once per press', async ({ page, xr }) => {
+  await bootHud(page, xr, '&nogov');
+  await xr.enterXR();
+  expect((await hudDiag(xr)).visible).toBe(true);
+  await xr.press('left', 'x-button');
+  await expect.poll(async () => (await hudDiag(xr)).visible).toBe(false);
+  await xr.press('left', 'x-button');
+  await expect.poll(async () => (await hudDiag(xr)).visible).toBe(true);
+  expectHudMatches(await alignedSample(page));
   expect(await glErrors(page)).toEqual([]);
 });
