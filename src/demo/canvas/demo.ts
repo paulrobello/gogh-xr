@@ -86,7 +86,10 @@ export async function startCanvasDemo(deps: CanvasDemoDeps): Promise<CanvasDemoH
     buildMs: batched - start - atlasMs,
   };
   batch.attach(deps.scene);
-  registerDiag('canvas', () => ({ seed, count: buffers.count, ...times, strokes: batch.stats() }));
+  // The provider lives as long as the demo; reading the count off `buffers` would keep every
+  // source buffer alive with it, though the batch holds its own per-chunk copies.
+  const count = buffers.count;
+  registerDiag('canvas', () => ({ seed, count, ...times, strokes: batch.stats() }));
   return {
     batch,
     times,
