@@ -20,6 +20,7 @@ const GOVERNED: PerfHudValues = {
     densities: { near: 0.49, mid: 1, far: 0.7 },
     foveation: 0.5,
     fbScale: 0.85,
+    fbScaleApplied: null,
     notice: null,
   },
 };
@@ -78,7 +79,25 @@ describe('formatPerfHud', () => {
     expect(text.split('\n').at(-1)).toBe(RATE_NOTICE);
     expect(text).toMatch(/^[\x20-\x7e\n]*$/);
   });
+
+  it('appends the applied fb scale when the runtime did not honour the request', () => {
+    expect(fbLine(1)).toBe('foveation 0.50   fb scale 0.85 (applied 1.00)');
+    expect(fbLine(0.7)).toBe('foveation 0.50   fb scale 0.85 (applied 0.70)');
+  });
+
+  it('shows the requested fb scale alone when applied matches within 0.01 or is unknown', () => {
+    expect(fbLine(0.85)).toBe('foveation 0.50   fb scale 0.85');
+    expect(fbLine(0.8571)).toBe('foveation 0.50   fb scale 0.85');
+    expect(fbLine(null)).toBe('foveation 0.50   fb scale 0.85');
+    expect(fbLine(null, 'unavailable')).toBe('foveation 0.50   fb scale n/a');
+  });
 });
+
+function fbLine(fbScaleApplied: number | null, fbScale: number | 'unavailable' = 0.85) {
+  const gov = GOVERNED.governor as NonNullable<PerfHudValues['governor']>;
+  const values = { ...GOVERNED, governor: { ...gov, fbScale, fbScaleApplied } };
+  return formatPerfHud(values).split('\n')[4];
+}
 
 describe('createHudUpdater', () => {
   function setup() {

@@ -207,6 +207,27 @@ test('in XR an overrun drives batch density, viewport scale, foveation and the 7
   expect(diag.budgetMs).toBeCloseTo(1000 / 72, 10);
 });
 
+test('fbScaleApplied reports the measured width ratio, not the requested scale', () => {
+  const xr = new FakeXr();
+  // The fake layer ignores the request: its width stays 1 at any scale.
+  const query = () =>
+    (xr.layer.getViewport as (v: unknown) => unknown)({ requestViewportScale() {} });
+  const { runtime: rt } = start(xr, fakeBatch(200_000));
+  expect(diagOf().fbScaleApplied).toBeNull();
+  xr.isPresenting = true;
+  xr.emit('sessionstart');
+  expect(diagOf().fbScaleApplied).toBeNull();
+  query();
+  expect(diagOf()).toMatchObject({ fbScale: 1, fbScaleApplied: 1 });
+  let t = 0;
+  while (!diagOf().history.some((e) => e.step === 'fb-scale') && t < 20_000) {
+    t = frames(rt, t, 16, 16);
+  }
+  query();
+  // The governor still counts the step as taken.
+  expect(diagOf()).toMatchObject({ fbScale: 0.85, fbScaleApplied: 1, step: 'fb-scale' });
+});
+
 test.each(['reject', 'missing'] as const)(
   'a %s updateTargetFrameRate leaves 90 Hz: rate unavailable, exhausted, no notice',
   async (behaviour) => {
@@ -280,7 +301,12 @@ test('a new session starts from full quality again', () => {
   xr.isPresenting = false;
   xr.emit('sessionend');
   expect(batch.densities.near).toBe(1);
-  expect(diagOf()).toMatchObject({ level: 0, history: [], fbScalePath: null });
+  expect(diagOf()).toMatchObject({
+    level: 0,
+    history: [],
+    fbScalePath: null,
+    fbScaleApplied: null,
+  });
 });
 
 test('dispose unregisters the diag key and unwraps the layer', () => {

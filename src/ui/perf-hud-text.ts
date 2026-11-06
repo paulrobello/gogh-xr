@@ -17,7 +17,20 @@ export interface PerfHudGovernor {
   densities: Record<StrokeBand, number>;
   foveation: number;
   fbScale: number | 'unavailable';
+  /** The scale the runtime applied; null until measured. */
+  fbScaleApplied: number | null;
   notice: string | null;
+}
+
+/** An applied fb scale this close to the requested one is not shown. */
+export const FB_APPLIED_TOLERANCE = 0.01;
+
+function fbScaleText(gov: PerfHudGovernor): string {
+  if (gov.fbScale === 'unavailable') return 'n/a';
+  const requested = gov.fbScale.toFixed(2);
+  const applied = gov.fbScaleApplied;
+  if (applied === null || Math.abs(applied - gov.fbScale) <= FB_APPLIED_TOLERANCE) return requested;
+  return `${requested} (applied ${applied.toFixed(2)})`;
 }
 
 export interface PerfHudValues {
@@ -51,10 +64,9 @@ export function formatPerfHud(values: PerfHudValues): string {
     lines.push('governor off');
   } else {
     const { near, mid, far } = gov.densities;
-    const fb = gov.fbScale === 'unavailable' ? 'n/a' : gov.fbScale.toFixed(2);
     lines.push(
       `gov level ${gov.level}   near ${near.toFixed(2)}   mid ${mid.toFixed(2)}   far ${far.toFixed(2)}`,
-      `foveation ${gov.foveation.toFixed(2)}   fb scale ${fb}`,
+      `foveation ${gov.foveation.toFixed(2)}   fb scale ${fbScaleText(gov)}`,
     );
     if (gov.notice) lines.push(gov.notice);
   }

@@ -25,6 +25,7 @@ interface GovernorDiag {
   densityMin: boolean;
   densities: Record<'near' | 'mid' | 'far', number>;
   fbScale: number | 'unavailable';
+  fbScaleApplied: number | null;
   fbScalePath: string | null;
   foveation: number;
   meanMs: number | null;
@@ -87,6 +88,8 @@ test('slow=14 sheds density to its minimum, then fb scale and foveation, then re
 
   expect(gov.fbScale).toBe(0.85);
   expect(gov.fbScalePath).toBe('base-layer');
+  // IWER's getViewport ignores requestViewportScale, so the measured scale stays 1.
+  expect(gov.fbScaleApplied).toBe(1);
   expect(gov.foveation).toBe(0.5);
   // The 72 Hz budget and notice commit only once updateTargetFrameRate resolves.
   await expect.poll(async () => (await governor(xr)).rateRequest).toBe('applied');

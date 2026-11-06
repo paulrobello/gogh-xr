@@ -135,6 +135,7 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
         densities: gov.densities,
         foveation: gov.foveation,
         fbScale: gov.fbScale,
+        fbScaleApplied: gov.fbScaleApplied,
         notice: gov.notice,
       },
     };

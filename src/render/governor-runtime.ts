@@ -70,6 +70,11 @@ export interface GovernorRuntimeDeps {
 /** The `governor` diag key. `fbScale` reads 'unavailable' when the adapter cannot apply it. */
 export interface GovernorDiag extends Omit<GovernorSnapshot, 'fbScale'> {
   fbScale: number | 'unavailable';
+  /**
+   * The scale the runtime applied, measured from the returned viewport widths. For reporting only:
+   * the governor counts the fb-scale step as taken either way. null until measured.
+   */
+  fbScaleApplied: number | null;
   /** Which viewport query the framebuffer-scale adapter wraps; null outside a session. */
   fbScalePath: ViewportScalePath | null;
   gpuTimer: 'available' | 'unavailable';
@@ -192,6 +197,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     return {
       ...snap,
       fbScale: scaler?.path === 'unavailable' ? 'unavailable' : snap.fbScale,
+      fbScaleApplied: scaler?.applied ?? null,
       fbScalePath: scaler?.path ?? null,
       gpuTimer: timer.available ? 'available' : 'unavailable',
     };

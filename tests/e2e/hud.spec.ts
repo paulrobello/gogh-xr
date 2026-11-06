@@ -22,6 +22,7 @@ interface GovernorDiag {
   densities: Record<'near' | 'mid' | 'far', number>;
   foveation: number;
   fbScale: number | 'unavailable';
+  fbScaleApplied: number | null;
   gpuMs: number | null;
   notice: string | null;
 }
@@ -105,11 +106,18 @@ function expectHudMatches(sample: Sample): void {
   expect(near, 'near density').toBe(governor.densities.near.toFixed(2));
   expect(mid, 'mid density').toBe(governor.densities.mid.toFixed(2));
   expect(far, 'far density').toBe(governor.densities.far.toFixed(2));
-  const [, foveation, fb] = line(/^foveation (\d\.\d\d) {3}fb scale (\S+)$/);
-  expect(foveation, 'foveation').toBe(governor.foveation.toFixed(2));
-  expect(fb, 'fb scale').toBe(
-    governor.fbScale === 'unavailable' ? 'n/a' : governor.fbScale.toFixed(2),
+  const [, foveation, fb, applied] = line(
+    /^foveation (\d\.\d\d) {3}fb scale (\S+)(?: \(applied (\d\.\d\d)\))?$/,
   );
+  expect(foveation, 'foveation').toBe(governor.foveation.toFixed(2));
+  const { fbScale, fbScaleApplied } = governor;
+  expect(fb, 'fb scale').toBe(fbScale === 'unavailable' ? 'n/a' : fbScale.toFixed(2));
+  // The applied scale shows only when it is known and differs from the request by over 0.01.
+  const differs =
+    typeof fbScale === 'number' &&
+    fbScaleApplied !== null &&
+    Math.abs(fbScaleApplied - fbScale) > 0.01;
+  expect(applied, 'applied fb scale').toBe(differs ? fbScaleApplied?.toFixed(2) : undefined);
   if (governor.notice) expect(lines.at(-1), 'notice').toBe(governor.notice);
   else expect(lines).toHaveLength(5);
 }

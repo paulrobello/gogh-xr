@@ -20,6 +20,12 @@ export interface ViewportScaler {
   readonly path: ViewportScalePath;
   /** Requested scale in (0, 1], applied from the next frame. */
   scale: number;
+  /**
+   * The scale the runtime applied: the last viewport width over the width seen at scale 1. null
+   * until both are measured. A runtime may ignore `requestViewportScale`, so this can read 1 while
+   * `scale` is lower.
+   */
+  readonly applied: number | null;
   /** Restores the wrapped method. */
   uninstall(): void;
 }
@@ -30,17 +36,35 @@ interface ScalableView {
 
 type Method = (...args: unknown[]) => unknown;
 
+/** `XRViewport.width`, or null when the result carries none. */
+type ReadWidth = (result: unknown) => number | null;
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && value > 0 ? value : null;
+}
+
+const viewportWidth: ReadWidth = (viewport) =>
+  numberOrNull((viewport as { width?: unknown } | null | undefined)?.width);
+
+const subImageWidth: ReadWidth = (subImage) =>
+  viewportWidth((subImage as { viewport?: unknown } | null | undefined)?.viewport);
+
 function wrap(
   target: Record<string, unknown>,
   name: string,
   viewArg: number,
   scale: () => number,
+  readWidth: ReadWidth,
+  measured: (requested: number, width: number | null) => void,
 ): () => void {
   const own = Object.getOwnPropertyDescriptor(target, name);
   const original = target[name] as Method;
   target[name] = function (this: unknown, ...args: unknown[]) {
-    (args[viewArg] as ScalableView | undefined)?.requestViewportScale?.(scale());
-    return original.apply(this, args);
+    const requested = scale();
+    (args[viewArg] as ScalableView | undefined)?.requestViewportScale?.(requested);
+    const result = original.apply(this, args);
+    measured(requested, readWidth(result));
+    return result;
   };
   return () => {
     if (own) Object.defineProperty(target, name, own);
@@ -68,17 +92,25 @@ export function installViewportScale(
 ): ViewportScaler {
   let scale = 1;
   const current = (): number => scale;
+  /** Viewport width at scale 1, and the width of the latest query. */
+  let fullWidth: number | null = null;
+  let lastWidth: number | null = null;
+  const measured = (requested: number, width: number | null): void => {
+    if (width === null) return;
+    if (requested === 1) fullWidth = width;
+    lastWidth = width;
+  };
   let path: ViewportScalePath = 'unavailable';
   let uninstall = (): void => undefined;
   if (hasMethod(viewPrototype, 'requestViewportScale')) {
     const layer = xr.getBaseLayer();
     if (hasMethod(layer, 'getViewport')) {
-      uninstall = wrap(layer, 'getViewport', 0, current);
+      uninstall = wrap(layer, 'getViewport', 0, current, viewportWidth, measured);
       path = 'base-layer';
     } else {
       const binding = xr.getBinding();
       if (layer && hasMethod(binding, 'getViewSubImage')) {
-        uninstall = wrap(binding, 'getViewSubImage', 1, current);
+        uninstall = wrap(binding, 'getViewSubImage', 1, current, subImageWidth, measured);
         path = 'projection-layer';
       }
     }
@@ -87,6 +119,9 @@ export function installViewportScale(
     path,
     get scale() {
       return scale;
+    },
+    get applied() {
+      return fullWidth === null || lastWidth === null ? null : lastWidth / fullWidth;
     },
     set scale(value: number) {
       if (!(value > 0 && value <= 1))

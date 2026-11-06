@@ -71,3 +71,103 @@ test('the scale must be in (0, 1]', () => {
     scaler.scale = 1.2;
   }).toThrow(RangeError);
 });
+
+/** A view whose requested scale the fake runtime reads back, as a real XRView does. */
+function scalableView() {
+  return {
+    requested: 1,
+    requestViewportScale(scale: number) {
+      this.requested = scale;
+    },
+  };
+}
+
+type FakeView = ReturnType<typeof scalableView>;
+
+test('base-layer path: applied is null until measured, then tracks the honoured width', () => {
+  const layer = {
+    getViewport: (v: FakeView) => ({
+      x: 0,
+      y: 0,
+      width: Math.round(1680 * v.requested),
+      height: 1760,
+    }),
+  };
+  const scaler = installViewportScale(
+    { getBaseLayer: () => layer, getBinding: () => null },
+    VIEW_PROTO,
+  );
+  expect(scaler.applied).toBeNull();
+  const v = scalableView();
+  expect(layer.getViewport(v).width).toBe(1680);
+  expect(scaler.applied).toBe(1);
+  scaler.scale = 0.85;
+  expect(layer.getViewport(v).width).toBe(1428);
+  expect(scaler.scale).toBe(0.85);
+  expect(scaler.applied).toBeCloseTo(0.85, 10);
+  scaler.scale = 1;
+  layer.getViewport(v);
+  expect(scaler.applied).toBe(1);
+});
+
+test('base-layer path: a runtime that ignores the request reports applied 1', () => {
+  const layer = { getViewport: (_v: FakeView) => ({ x: 0, y: 0, width: 1680, height: 1760 }) };
+  const scaler = installViewportScale(
+    { getBaseLayer: () => layer, getBinding: () => null },
+    VIEW_PROTO,
+  );
+  const v = scalableView();
+  layer.getViewport(v);
+  scaler.scale = 0.85;
+  layer.getViewport(v);
+  expect(scaler.scale).toBe(0.85);
+  expect(scaler.applied).toBe(1);
+});
+
+test('projection-layer path: applied reads subImage.viewport.width, honoured or ignored', () => {
+  for (const honours of [true, false]) {
+    const projection = {};
+    const binding = {
+      getViewSubImage: (_layer: unknown, v: FakeView) => ({
+        viewport: {
+          x: 0,
+          y: 0,
+          width: Math.round(2064 * (honours ? v.requested : 1)),
+          height: 2208,
+        },
+      }),
+    };
+    const scaler = installViewportScale(
+      { getBaseLayer: () => projection, getBinding: () => binding },
+      VIEW_PROTO,
+    );
+    expect(scaler.path).toBe('projection-layer');
+    const v = scalableView();
+    binding.getViewSubImage(projection, v);
+    scaler.scale = 0.85;
+    const sub = binding.getViewSubImage(projection, v);
+    expect(sub.viewport.width).toBe(honours ? 1754 : 2064);
+    expect(scaler.applied).toBeCloseTo(honours ? 1754 / 2064 : 1, 10);
+    scaler.uninstall();
+  }
+});
+
+test('applied stays null without a scale-1 baseline, or when the result has no width', () => {
+  const layer = { getViewport: (_v: FakeView) => ({ x: 0, y: 0, width: 1428, height: 1760 }) };
+  const scaler = installViewportScale(
+    { getBaseLayer: () => layer, getBinding: () => null },
+    VIEW_PROTO,
+  );
+  scaler.scale = 0.85;
+  layer.getViewport(scalableView());
+  expect(scaler.applied).toBeNull();
+
+  const projection = {};
+  const binding = { getViewSubImage: (_layer: unknown, _v: unknown) => ({ viewport: {} }) };
+  const noWidth = installViewportScale(
+    { getBaseLayer: () => projection, getBinding: () => binding },
+    VIEW_PROTO,
+  );
+  binding.getViewSubImage(projection, scalableView());
+  expect(noWidth.applied).toBeNull();
+});
