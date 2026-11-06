@@ -1,6 +1,8 @@
 export const TIMER_EXTENSION = 'EXT_disjoint_timer_query_webgl2';
 const POOL_SIZE = 4;
 const SAMPLE_WINDOW = 30;
+/** Completed results ignored after construction or reset: shader compile and first-draw stalls. */
+export const GPU_WARMUP_SAMPLES = 5;
 
 interface TimerExtension {
   readonly TIME_ELAPSED_EXT: number;
@@ -35,8 +37,13 @@ export class GpuTimer {
   private active: WebGLQuery | null = null;
   private skipNext = false;
   private created = 0;
+  private skip: number;
 
-  constructor(private readonly gl: TimerGl) {
+  constructor(
+    private readonly gl: TimerGl,
+    private readonly warmup: number = GPU_WARMUP_SAMPLES,
+  ) {
+    this.skip = warmup;
     this.ext = (gl.getExtension(TIMER_EXTENSION) as TimerExtension | null) ?? null;
     this.available = this.ext !== null;
   }
@@ -62,6 +69,7 @@ export class GpuTimer {
   /** Clears samples and discards every result still in flight. */
   reset(): void {
     this.samples.length = 0;
+    this.skip = this.warmup;
     for (const query of this.pending) this.discard.add(query);
     if (this.active) this.discard.add(this.active);
   }
@@ -111,7 +119,9 @@ export class GpuTimer {
       if (!query || !this.gl.getQueryParameter(query, this.gl.QUERY_RESULT_AVAILABLE)) return;
       this.pending.shift();
       const dropped = this.discard.delete(query);
-      if (!disjoint && !dropped) {
+      if (!disjoint && !dropped && this.skip > 0) {
+        this.skip--;
+      } else if (!disjoint && !dropped) {
         const ns = Number(this.gl.getQueryParameter(query, this.gl.QUERY_RESULT));
         this.samples.push(ns / 1e6);
         if (this.samples.length > SAMPLE_WINDOW) this.samples.shift();

@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import {
+  BENCH_MAX,
   CHUNK_SIZE,
   chunkCounts,
   DEFAULT_BENCH_N,
@@ -88,4 +89,14 @@ test('stick steps move N by 25k and clamp at zero', () => {
   expect(stepCount(100000, -1)).toBe(75000);
   expect(stepCount(10000, -1)).toBe(0);
   expect(stepCount(0, -1)).toBe(0);
+});
+
+test('bench count and stick stepping clamp to BENCH_MAX', () => {
+  expect(BENCH_MAX).toBe(2_000_000);
+  expect(parseBenchCount('2000000')).toBe(BENCH_MAX);
+  expect(parseBenchCount('999999999999')).toBe(BENCH_MAX);
+  expect(parseBenchCount('1999999')).toBe(1_999_999);
+  expect(stepCount(BENCH_MAX - 1, 1)).toBe(BENCH_MAX);
+  expect(stepCount(BENCH_MAX, 4)).toBe(BENCH_MAX);
+  expect(resolveBenchConfig(parseFlags('?bench=9999999999'))?.n).toBe(BENCH_MAX);
 });

@@ -5,6 +5,8 @@ export const DEFAULT_BENCH_N = 100_000;
 export const DEFAULT_SIZE_PX = 24;
 export const DEFAULT_SEED = 1;
 export const N_STEP = 25_000;
+/** Upper bound for N from `?bench=` and stick stepping, so a typo cannot allocate unbounded buffers. */
+export const BENCH_MAX = 2_000_000;
 
 export interface BenchConfig {
   readonly n: number;
@@ -16,7 +18,7 @@ export interface BenchConfig {
 
 /** A non-numeric `?bench` value (e.g. `?bench=strokes`) runs the default count. */
 export function parseBenchCount(raw: string): number {
-  return /^\d+$/.test(raw) ? Number(raw) : DEFAULT_BENCH_N;
+  return /^\d+$/.test(raw) ? Math.min(Number(raw), BENCH_MAX) : DEFAULT_BENCH_N;
 }
 
 /** a2c defaults to a seeded shuffle (no early-z luck); blend must draw sorted far-to-near. */
@@ -51,5 +53,5 @@ export function chunkCounts(n: number, chunkSize: number = CHUNK_SIZE): number[]
 }
 
 export function stepCount(n: number, step: number): number {
-  return Math.max(0, n + step * N_STEP);
+  return Math.min(BENCH_MAX, Math.max(0, n + step * N_STEP));
 }

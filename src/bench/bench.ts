@@ -39,7 +39,8 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   const stats = new FrameStats();
   const timer = new GpuTimer(renderer.getContext() as unknown as TimerGl);
   // Camera children only render when the camera is in the scene graph.
-  if (camera.parent === null) scene.add(camera);
+  const addedCamera = camera.parent === null;
+  if (addedCamera) scene.add(camera);
   const hud = createHud(camera);
   let armed = true;
   let lastHud = Number.NEGATIVE_INFINITY;
@@ -118,6 +119,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
       field.dispose();
       hud.dispose();
       timer.dispose();
+      if (addedCamera && camera.parent === scene) scene.remove(camera);
     },
   };
 }

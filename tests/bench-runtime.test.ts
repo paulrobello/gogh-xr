@@ -1,7 +1,12 @@
 import { PerspectiveCamera, Scene } from 'three';
 import { afterEach, expect, test, vi } from 'vitest';
 import { type BenchDeps, startBench } from '../src/bench/bench.ts';
-import { GpuTimer, TIMER_EXTENSION, type TimerGl } from '../src/bench/gpu-timer.ts';
+import {
+  GPU_WARMUP_SAMPLES,
+  GpuTimer,
+  TIMER_EXTENSION,
+  type TimerGl,
+} from '../src/bench/gpu-timer.ts';
 import { type BenchSnapshot, formatHudLines } from '../src/bench/hud.ts';
 import { FrameStats, WARMUP_INTERVALS } from '../src/bench/stats.ts';
 import { leftStickX, stickStep } from '../src/bench/stick.ts';
@@ -132,7 +137,7 @@ function fakeTimerGl(withExt: boolean) {
 
 test('gpu timer reports null when the extension is missing', () => {
   const { gl } = fakeTimerGl(false);
-  const timer = new GpuTimer(gl);
+  const timer = new GpuTimer(gl, 0);
   timer.begin();
   timer.end();
   expect(timer.available).toBe(false);
@@ -142,7 +147,7 @@ test('gpu timer reports null when the extension is missing', () => {
 
 test('gpu timer polls results on later frames and drops disjoint ones', () => {
   const { gl, state } = fakeTimerGl(true);
-  const timer = new GpuTimer(gl);
+  const timer = new GpuTimer(gl, 0);
   timer.begin();
   timer.end();
   expect(timer.meanMs()).toBeNull();
@@ -160,7 +165,7 @@ test('gpu timer polls results on later frames and drops disjoint ones', () => {
 test('gpu timer reads GPU_DISJOINT once per poll and drops every result in a disjoint poll', () => {
   const { gl, state } = fakeTimerGl(true);
   state.available = false;
-  const timer = new GpuTimer(gl);
+  const timer = new GpuTimer(gl, 0);
   for (let i = 0; i < 3; i++) {
     timer.begin();
     timer.end();
@@ -182,7 +187,7 @@ test('gpu timer does not consume GPU_DISJOINT before any result is available', (
   const { gl, state } = fakeTimerGl(true);
   state.available = false;
   state.disjoint = true;
-  const timer = new GpuTimer(gl);
+  const timer = new GpuTimer(gl, 0);
   for (let i = 0; i < 3; i++) {
     timer.begin();
     timer.end();
@@ -197,7 +202,7 @@ test('gpu timer does not consume GPU_DISJOINT before any result is available', (
 
 test('gpu timer drops the sample of a frame marked by excludeNext', () => {
   const { gl } = fakeTimerGl(true);
-  const timer = new GpuTimer(gl);
+  const timer = new GpuTimer(gl, 0);
   timer.excludeNext();
   timer.begin();
   timer.end();
@@ -211,7 +216,7 @@ test('gpu timer drops the sample of a frame marked by excludeNext', () => {
 
 test('gpu timer reset clears samples and discards results still pending', () => {
   const { gl, state } = fakeTimerGl(true);
-  const timer = new GpuTimer(gl);
+  const timer = new GpuTimer(gl, 0);
   timer.begin();
   timer.end();
   timer.begin();
@@ -229,10 +234,37 @@ test('gpu timer reset clears samples and discards results still pending', () => 
   expect(state.active).toBe(0);
 });
 
+test('gpu timer discards the first completed results after construction and after reset', () => {
+  const { gl } = fakeTimerGl(true);
+  const timer = new GpuTimer(gl);
+  const frame = () => {
+    timer.begin();
+    timer.end();
+  };
+  // Frame 1 only submits a query. Each later frame polls and consumes one result.
+  frame();
+  for (let i = 0; i < GPU_WARMUP_SAMPLES; i++) {
+    frame();
+    expect(timer.meanMs()).toBeNull();
+  }
+  frame();
+  expect(timer.meanMs()).toBeCloseTo(4);
+  timer.reset();
+  expect(timer.meanMs()).toBeNull();
+  // One result still in flight is dropped by reset, then the warm-up applies again.
+  frame();
+  for (let i = 0; i < GPU_WARMUP_SAMPLES; i++) {
+    frame();
+    expect(timer.meanMs()).toBeNull();
+  }
+  frame();
+  expect(timer.meanMs()).toBeCloseTo(4);
+});
+
 test('gpu timer never exceeds its query pool while results are pending', () => {
   const { gl, state } = fakeTimerGl(true);
   state.available = false;
-  const timer = new GpuTimer(gl);
+  const timer = new GpuTimer(gl, 0);
   for (let i = 0; i < 10; i++) {
     timer.begin();
     timer.end();
@@ -345,6 +377,22 @@ test('startBench registers diag, and setCount disposes the old field before rebu
   expect(bench.snapshot()).toMatchObject({ n: 125000, chunks: 2, instances: 125000 });
   bench.setCount(-10);
   expect(bench.snapshot()).toMatchObject({ n: 0, chunks: 0, instances: 0 });
+});
+
+test('dispose removes a camera the bench added, and leaves a camera it did not add', () => {
+  const added = fakeDeps();
+  const config = { n: 1000, mode: 'a2c', order: 'random', sizePx: 24, seed: 1 } as const;
+  const bench = startBench(added, config);
+  expect(added.camera.parent).toBe(added.scene);
+  bench?.dispose();
+  expect(added.camera.parent).toBeNull();
+  expect(added.scene.getObjectByName('bench-strokes')).toBeUndefined();
+
+  const own = fakeDeps();
+  own.scene.add(own.camera);
+  const second = startBench(own, config);
+  second?.dispose();
+  expect(own.camera.parent).toBe(own.scene);
 });
 
 test('startBench returns null without a bench config', () => {
