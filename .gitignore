@@ -67,7 +67,6 @@ firmware/**/sdkconfig*
 
 # gogh-xr
 .claude/
-.superpowers/
 test-results/
 playwright-report/
 *.tsbuildinfo
