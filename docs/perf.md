@@ -48,7 +48,23 @@ One more stored record is discarded: blend at 100,000 and 90 Hz, recorded before
 | `supportedFrameRates` (OQ1) | 72, 80, 90, 120, read from `__goghDiag()` over adb. An earlier hand reading of "70" was a misread, so the 72 Hz max-beauty mode stands. |
 | GPU timer query available (OQ2) | Unavailable on Quest Browser. The governor must work from frame intervals alone. |
 | a2c vs blend visual verdict (OQ4) | Blend looks slightly brighter but not better. Small strokes show flickering transparent stripes, a screen-door effect that is worse with head movement. The likely cause is the bench shader's bristle term modulating alpha, which alpha-to-coverage turns into a coverage dither. P1.3 should keep bristle variation in colour and give a2c a sharpened alpha edge. |
-| Foveation artifacts at 0.5 and 1.0 (OQ5) | Not yet tested. |
+| Foveation artifacts at 0.5 and 1.0 (OQ5) | At 1.0 there is too much blocky shimmer at the edges. At 0.5 the shimmer is still visible but less blocky. Foveation also buys no headroom here: blend at 325,000 and 90 Hz reads 90 to 91 fps with a p95 of 11.8 ms at 0, 0.5 and 1 alike. The bench is therefore not fill-bound at these settings, and the per-stroke vertex cost sets the budget, so stroke count and LOD (P1.4) matter more than foveation. Lowering the default to 0 would remove the artifacts at no measured cost. That should be rechecked with the real scene, whose larger strokes will add fill. |
+
+### Foveation results
+
+Blend, 90 Hz, full sphere, recorded 2026-11-06 05:24–05:28Z (9:24–9:28 PM PST).
+
+| N | Foveation | fps | Mean ms | p95 ms | p99 ms |
+| --- | --- | --- | --- | --- | --- |
+| 325,000 | 0 | 90 | 11.17 | 11.8 | 12.3 |
+| 325,000 | 0.5 | 91 | 11.15 | 11.8 | 12.0 |
+| 325,000 | 1 | 90 | 11.15 | 11.8 | 12.4 |
+| 300,000 | 1 | 90 | 11.33 | 12.3 | 18.8 |
+| 350,000 | 1 | 86 | 11.65 | 13.7 | 16.5 |
+| 375,000 | 0 | 83 | 11.89 | 14.5 | 15.7 |
+| 375,000 | 0.5 | 77 | 12.21 | 14.2 | 16.0 |
+| 375,000 | 1 | 83 | 12.16 | 14.4 | 15.2 |
+| 400,000 | 0.5 | 78 | 12.83 | 14.9 | 17.0 |
 
 ## History: upper-hemisphere readings
 
