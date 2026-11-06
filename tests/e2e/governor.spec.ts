@@ -30,6 +30,8 @@ interface GovernorDiag {
   meanMs: number | null;
   overrun: boolean;
   notice: string | null;
+  rateRequest: string;
+  frameRate: number;
   exhausted: boolean;
   history: HistoryEntry[];
 }
@@ -86,7 +88,10 @@ test('slow=14 sheds density to its minimum, then fb scale and foveation, then re
   expect(gov.fbScale).toBe(0.85);
   expect(gov.fbScalePath).toBe('base-layer');
   expect(gov.foveation).toBe(0.5);
+  // The 72 Hz budget and notice commit only once updateTargetFrameRate resolves.
+  await expect.poll(async () => (await governor(xr)).rateRequest).toBe('applied');
   expect(gov.targetHz).toBe(72);
+  expect(gov.frameRate).toBe(72);
   expect(gov.budgetMs).toBeCloseTo(1000 / 72, 3);
   expect(gov.notice).toMatch(/72 Hz/);
   // The busy-wait shows in the XR frame intervals.

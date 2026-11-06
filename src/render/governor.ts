@@ -13,8 +13,14 @@
  *
  * Shed order: far, mid, then near density, down to per-band minimums and never below the drawn
  * floor of the budget (ruling R10); framebuffer scale 1 to 0.85; foveation 0 to 0.5. After 3 s
- * of continuous overrun with nothing left to shed, it requests 72 Hz once, with a notice. Restore
- * pops the shed stack, so it runs in exactly the reverse order back to the exact start levels.
+ * of continuous overrun with nothing left to shed, it requests 72 Hz once. The 72 Hz budget and
+ * the notice take effect only when the runtime reports the request applied (`rateApplied`); a
+ * failed request (`rateFailed`) leaves the rate step unavailable. Restore pops the shed stack, so
+ * it runs in exactly the reverse order back to the exact start levels.
+ *
+ * The budget follows the frame rate the session reports (`setFrameRate`), not the one requested.
+ * A stall over 100 ms or a hidden session (`interrupt`) restarts the window and both timers, so a
+ * pause never counts as overrun or as clean time.
  */
 import {
   BEAUTY_BAND_DENSITY,
@@ -74,7 +80,9 @@ const DENSITY_ORDER = ['far', 'mid', 'near'] as const;
 export type GovernorMode = 'default' | 'beauty';
 export type DensityStep = `${StrokeBand}-density`;
 export type GovernorStep = DensityStep | 'fb-scale' | 'foveation';
-export type GovernorAction = 'shed' | 'restore' | 'shed-back' | 'rate';
+export type GovernorAction = 'shed' | 'restore' | 'shed-back' | 'rate' | 'rate-failed';
+/** The 72 Hz fallback: not asked yet, awaiting the runtime, applied, or refused. */
+export type RateRequest = 'none' | 'pending' | 'applied' | 'unavailable';
 
 /** One change, returned by `sample()` and kept in the history. */
 export interface GovernorEvent {
@@ -112,8 +120,12 @@ export interface FrameSample {
 
 export interface GovernorSnapshot {
   mode: GovernorMode;
+  /** The configured target, or 72 once the fallback is applied. */
   targetHz: number;
+  /** The frame rate the session reports, which sets the budget. */
+  frameRate: number;
   budgetMs: number;
+  rateRequest: RateRequest;
   /** Steps currently shed. */
   level: number;
   /** The most recent step still shed, or 'none'. */
@@ -139,6 +151,14 @@ export interface GovernorSnapshot {
 export interface Governor {
   readonly levels: GovernorLevels;
   sample(sample: FrameSample): GovernorEvent | null;
+  /** The session's reported frame rate; a change restarts the window. */
+  setFrameRate(hz: number): void;
+  /** The session went hidden or paused: restarts the window and both timers. */
+  interrupt(): void;
+  /** The runtime applied the 72 Hz request: commits the budget and the notice. */
+  rateApplied(hz: number): void;
+  /** The request was refused or cannot be made: returns the 'rate-failed' history event. */
+  rateFailed(t: number): GovernorEvent | null;
   snapshot(): GovernorSnapshot;
 }
 
@@ -155,7 +175,8 @@ function budgetFor(mode: GovernorMode): StrokeBudget {
   return mode === 'beauty' ? STROKE_BUDGET.maxBeauty : STROKE_BUDGET.default;
 }
 
-function bandOf(step: GovernorStep): StrokeBand | null {
+/** The band a density step sheds, or null for any other step. */
+export function densityBand(step: GovernorEvent['step']): StrokeBand | null {
   return step.endsWith('-density') ? (step.slice(0, -'-density'.length) as StrokeBand) : null;
 }
 
@@ -169,6 +190,8 @@ export function createGovernor(config: GovernorConfig): Governor {
   };
   const levels = { density, size, fbScale: FULL_FB_SCALE, foveation: FULL_FOVEATION };
   let targetHz = config.targetHz;
+  let frameRate = config.targetHz;
+  let rateRequest: RateRequest = 'none';
 
   const stack: ShedEntry[] = [];
   const history: GovernorEvent[] = [];
@@ -186,7 +209,6 @@ export function createGovernor(config: GovernorConfig): Governor {
   let overrun = false;
   let densityMin = false;
   let exhausted = false;
-  let rateDropped = false;
 
   let cleanSince: number | null = null;
   let overrunSince: number | null = null;
@@ -194,7 +216,7 @@ export function createGovernor(config: GovernorConfig): Governor {
   let probeWaitMs = RESTORE_HOLD_MS;
   let lastFailureAt = Number.NEGATIVE_INFINITY;
 
-  const budgetMs = (): number => 1000 / targetHz;
+  const budgetMs = (): number => 1000 / frameRate;
 
   function record(event: GovernorEvent): GovernorEvent {
     history.push(event);
@@ -211,7 +233,7 @@ export function createGovernor(config: GovernorConfig): Governor {
 
   function apply(entry: ShedEntry, toFrom: boolean): void {
     const value = toFrom ? entry.from : entry.to;
-    const band = bandOf(entry.step);
+    const band = densityBand(entry.step);
     if (band) {
       density[band] = value;
       size[band] = toFrom ? entry.fromSize : entry.toSize;
@@ -222,28 +244,48 @@ export function createGovernor(config: GovernorConfig): Governor {
     }
   }
 
+  /**
+   * A density shed of `band` toward `target`, clamped to the band minimum and to the drawn floor
+   * for the current view, or null when that leaves less than `MIN_DENSITY_STEP` to shed.
+   */
+  function densityShed(
+    band: StrokeBand,
+    target: number,
+    drawn: Readonly<Record<StrokeBand, number>>,
+  ): ShedEntry | null {
+    const total = drawn.near + drawn.mid + drawn.far;
+    const visible = drawn[band];
+    const d = density[band];
+    if (total <= budget.min || visible <= 0 || d <= 0) return null;
+    // Drawn scales with density, so this is the lowest density that keeps the total at the floor.
+    const floor = d * (1 - (total - budget.min) / visible);
+    const to = Math.max(MIN_BAND_DENSITY[band], target, floor);
+    if (d - to < MIN_DENSITY_STEP) return null;
+    return {
+      step: `${band}-density`,
+      from: d,
+      to,
+      fromSize: size[band],
+      toSize: size[band] * Math.sqrt(d / to),
+    };
+  }
+
   /** The next density step, or null when every band is at its minimum or the floor binds. */
   function nextDensityShed(drawn: Readonly<Record<StrokeBand, number>>): ShedEntry | null {
-    const total = drawn.near + drawn.mid + drawn.far;
-    if (total <= budget.min) return null;
     for (const band of DENSITY_ORDER) {
-      const visible = drawn[band];
-      const d = density[band];
-      if (visible <= 0 || d <= 0) continue;
-      let to = Math.max(MIN_BAND_DENSITY[band], d * DENSITY_STEP);
-      // Drawn scales with density, so this is the lowest density that keeps the total at the floor.
-      const floor = d * (1 - (total - budget.min) / visible);
-      to = Math.max(to, floor);
-      if (d - to < MIN_DENSITY_STEP) continue;
-      return {
-        step: `${band}-density`,
-        from: d,
-        to,
-        fromSize: size[band],
-        toSize: size[band] * Math.sqrt(d / to),
-      };
+      const entry = densityShed(band, density[band] * DENSITY_STEP, drawn);
+      if (entry) return entry;
     }
     return null;
+  }
+
+  /** A failed probe's step again, density re-clamped to the current view's floor. */
+  function shedBack(
+    entry: ShedEntry,
+    drawn: Readonly<Record<StrokeBand, number>>,
+  ): ShedEntry | null {
+    const band = densityBand(entry.step);
+    return band ? densityShed(band, entry.to, drawn) : entry;
   }
 
   function nextShed(drawn: Readonly<Record<StrokeBand, number>>): ShedEntry | null {
@@ -271,14 +313,17 @@ export function createGovernor(config: GovernorConfig): Governor {
     if (overrun) {
       cleanSince = null;
       if (probe) {
-        const entry = probe;
+        const back = shedBack(probe, drawn);
         probe = null;
         probeWaitMs = Math.min(probeWaitMs * 2, MAX_PROBE_WAIT_MS);
         lastFailureAt = t;
-        stack.push(entry);
-        apply(entry, false);
-        changed();
-        return record({ t, action: 'shed-back', step: entry.step, from: entry.from, to: entry.to });
+        // A view now under the floor leaves nothing to shed back; the next shed step applies.
+        if (back) {
+          stack.push(back);
+          apply(back, false);
+          changed();
+          return record({ t, action: 'shed-back', step: back.step, from: back.from, to: back.to });
+        }
       }
       const entry = nextShed(drawn);
       if (entry) {
@@ -288,15 +333,13 @@ export function createGovernor(config: GovernorConfig): Governor {
         return record({ t, action: 'shed', step: entry.step, from: entry.from, to: entry.to });
       }
       overrunSince ??= start;
-      if (!rateDropped && targetHz > FALLBACK_HZ) {
+      if (rateRequest === 'pending') return null;
+      if (rateRequest === 'none' && frameRate > FALLBACK_HZ) {
         if (t - overrunSince < RATE_DROP_AFTER_MS) return null;
-        const from = targetHz;
-        targetHz = FALLBACK_HZ;
-        rateDropped = true;
-        notice = RATE_NOTICE;
+        rateRequest = 'pending';
         changed();
         ignoreUntil = t + RATE_SETTLE_MS;
-        return record({ t, action: 'rate', step: 'frame-rate', from, to: FALLBACK_HZ });
+        return record({ t, action: 'rate', step: 'frame-rate', from: frameRate, to: FALLBACK_HZ });
       }
       exhausted = true;
       return null;
@@ -322,7 +365,10 @@ export function createGovernor(config: GovernorConfig): Governor {
     sample(s: FrameSample): GovernorEvent | null {
       if (ignoreUntil === null) ignoreUntil = s.t + WARMUP_MS;
       if (s.t < ignoreUntil) return null;
-      if (!(s.intervalMs > 0) || s.intervalMs > MAX_INTERVAL_MS) return null;
+      if (!(s.intervalMs > 0) || s.intervalMs > MAX_INTERVAL_MS) {
+        changed();
+        return null;
+      }
       if (windowStart === null) {
         windowStart = s.t - s.intervalMs;
         sum = 0;
@@ -343,12 +389,44 @@ export function createGovernor(config: GovernorConfig): Governor {
       gpuMs = gpuCount > 0 ? gpuSum / gpuCount : null;
       return judge(s.t, start, s.drawn);
     },
+    setFrameRate(hz: number) {
+      if (!(hz > 0) || hz === frameRate) return;
+      frameRate = hz;
+      changed();
+    },
+    interrupt() {
+      changed();
+    },
+    rateApplied(hz: number) {
+      if (rateRequest !== 'pending') return;
+      rateRequest = 'applied';
+      targetHz = hz;
+      notice = RATE_NOTICE;
+      if (hz !== frameRate) {
+        frameRate = hz;
+        changed();
+      }
+    },
+    rateFailed(t: number) {
+      if (rateRequest !== 'pending') return null;
+      rateRequest = 'unavailable';
+      changed();
+      return record({
+        t,
+        action: 'rate-failed',
+        step: 'frame-rate',
+        from: frameRate,
+        to: frameRate,
+      });
+    },
     snapshot(): GovernorSnapshot {
       const top = stack.at(-1);
       return {
         mode: config.mode,
         targetHz,
+        frameRate,
         budgetMs: budgetMs(),
+        rateRequest,
         level: stack.length,
         step: top ? top.step : 'none',
         densityMin,

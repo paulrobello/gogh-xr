@@ -35,6 +35,8 @@ interface Trace {
   gpuMs?: number | null;
   /** Stops early once this returns true for an event. */
   until?: (event: GovernorEvent) => boolean;
+  /** What the runtime reports back for a rate request; default 'apply'. */
+  rate?: 'apply' | 'fail' | 'pending';
 }
 
 /** Feeds frames for `durationMs` from `start` and returns the events and the end time. */
@@ -58,6 +60,12 @@ function drive(
     const event = gov.sample(sample);
     if (event) {
       events.push(event);
+      if (event.action === 'rate' && (trace.rate ?? 'apply') === 'apply') {
+        gov.rateApplied(event.to);
+      } else if (event.action === 'rate' && trace.rate === 'fail') {
+        const failed = gov.rateFailed(t);
+        if (failed) events.push(failed);
+      }
       if (trace.until?.(event)) break;
     }
   }
@@ -389,5 +397,124 @@ describe('governor inputs', () => {
       from: expect.any(Number),
       to: expect.any(Number),
     });
+  });
+});
+
+describe('governor pauses and real frame rates (fix round 1)', () => {
+  /** Sheds to minimum quality at 90 Hz and returns the time of the foveation shed. */
+  function toMinimum(gov: Governor): number {
+    return drive(gov, 0, 60_000, { interval: () => OVER, until: (e) => e.step === 'foveation' }).t;
+  }
+
+  test('a 2.5 s stall does not count toward the 3 s overrun before the 72 Hz request', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const before = drive(gov, toMinimum(gov), 1200, { interval: () => OVER });
+    expect(before.events).toEqual([]);
+    // One paused interval, then overrun frames again.
+    const resume = before.t + 2500;
+    expect(gov.sample({ t: resume, intervalMs: 2500, drawn: PLENTY })).toBeNull();
+    const { events } = drive(gov, resume, 10_000, {
+      interval: () => OVER,
+      until: (e) => e.action === 'rate',
+    });
+    expect(events.map((e) => e.action)).toEqual(['rate']);
+    expect(events[0].t - resume).toBeGreaterThanOrEqual(3000);
+  });
+
+  test('a stall does not count toward the 3 s restore hold either', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const shed = drive(gov, 0, 5000, { interval: () => OVER, until: () => true });
+    const clean = drive(gov, shed.t, 2000, { interval: () => CLEAN });
+    expect(clean.events).toEqual([]);
+    const resume = clean.t + 2500;
+    gov.sample({ t: resume, intervalMs: 2500, drawn: PLENTY });
+    const { events } = drive(gov, resume, 10_000, { interval: () => CLEAN, until: () => true });
+    expect(events[0].action).toBe('restore');
+    expect(events[0].t - resume).toBeGreaterThanOrEqual(RESTORE_HOLD_MS);
+  });
+
+  test('interrupt() (a hidden session) restarts the windows and both timers', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const before = drive(gov, toMinimum(gov), 2000, { interval: () => OVER });
+    gov.interrupt();
+    const { events } = drive(gov, before.t, 10_000, {
+      interval: () => OVER,
+      until: (e) => e.action === 'rate',
+    });
+    expect(events[0].t - before.t).toBeGreaterThanOrEqual(3000);
+  });
+
+  test('the budget follows the reported frame rate, not the configured one', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    gov.setFrameRate(72);
+    expect(gov.snapshot()).toMatchObject({ targetHz: 90, frameRate: 72 });
+    expect(gov.snapshot().budgetMs).toBeCloseTo(1000 / 72, 10);
+    // 13 ms overruns 90 Hz but fits 72.
+    expect(drive(gov, 0, 10_000, { interval: () => 13 }).events).toEqual([]);
+  });
+
+  test('already running at 72 Hz there is no rate step to request', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    gov.setFrameRate(72);
+    const { events } = drive(gov, 0, 60_000, { interval: () => 40 });
+    expect(events.some((e) => e.action === 'rate')).toBe(false);
+    expect(gov.snapshot().exhausted).toBe(true);
+  });
+
+  test('the 72 Hz budget and notice wait for the request to resolve', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const { events, t } = drive(gov, toMinimum(gov), 10_000, {
+      interval: () => OVER,
+      rate: 'pending',
+    });
+    expect(events.map((e) => e.action)).toEqual(['rate']);
+    expect(gov.snapshot()).toMatchObject({
+      targetHz: 90,
+      frameRate: 90,
+      notice: null,
+      rateRequest: 'pending',
+      exhausted: false,
+    });
+    gov.rateApplied(72);
+    expect(gov.snapshot()).toMatchObject({ targetHz: 72, frameRate: 72, rateRequest: 'applied' });
+    expect(gov.snapshot().notice).toMatch(/72 Hz/);
+    expect(drive(gov, t, 5000, { interval: () => OVER }).events).toEqual([]);
+    expect(gov.snapshot().exhausted).toBe(true);
+  });
+
+  test('a failed rate request marks the step unavailable: exhausted, no notice, no retry', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const { events } = drive(gov, toMinimum(gov), 30_000, { interval: () => OVER, rate: 'fail' });
+    expect(summary(events)).toEqual(['rate frame-rate x1', 'rate-failed frame-rate x1']);
+    expect(events[1]).toMatchObject({ from: 90, to: 90 });
+    expect(gov.snapshot()).toMatchObject({
+      targetHz: 90,
+      frameRate: 90,
+      notice: null,
+      rateRequest: 'unavailable',
+      exhausted: true,
+    });
+    expect(gov.snapshot().budgetMs).toBeCloseTo(1000 / 90, 10);
+  });
+
+  test('a shed-back re-clamps density to the floor of the current view', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const shed = drive(gov, 0, 5000, { interval: () => OVER, until: () => true });
+    expect(gov.levels.density.far).toBeCloseTo(0.28, 10);
+    // After the restore the view has changed: 60k near and 100k far at far density 0.4.
+    let restored = false;
+    const { events } = drive(gov, shed.t, 10_000, {
+      interval: () => (gov.snapshot().level === 0 ? OVER : CLEAN),
+      drawn: () => (restored ? { near: 60_000, mid: 0, far: 100_000 } : PLENTY),
+      until: (e) => {
+        if (e.action === 'restore') restored = true;
+        return e.action === 'shed-back';
+      },
+    });
+    expect(summary(events)).toEqual(['restore far-density x1', 'shed-back far-density x1']);
+    // 0.28 would draw 60k + 70k = 130k; the floor needs 0.4 * (1 - 10k / 100k) = 0.36.
+    expect(events[1].to).toBeCloseTo(0.36, 10);
+    expect(gov.levels.density.far).toBeCloseTo(0.36, 10);
+    expect(gov.levels.size.far).toBeCloseTo(DEFAULT_BAND_SIZE.far * Math.sqrt(0.4 / 0.36), 10);
   });
 });

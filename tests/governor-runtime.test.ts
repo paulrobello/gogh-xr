@@ -10,13 +10,49 @@ import {
   startGovernor,
 } from '../src/render/governor-runtime.ts';
 import { DEFAULT_BAND_DENSITY, type StrokeBand } from '../src/render/strokes/bands.ts';
-import type { StrokeBatchStats } from '../src/render/strokes/batch.ts';
 import { createXrState } from '../src/xr/session.ts';
+
+class Listeners {
+  readonly map = new Map<string, Set<() => void>>();
+  addEventListener(type: string, listener: () => void): void {
+    if (!this.map.has(type)) this.map.set(type, new Set());
+    this.map.get(type)?.add(listener);
+  }
+  removeEventListener(type: string, listener: () => void): void {
+    this.map.get(type)?.delete(listener);
+  }
+  emit(type: string): void {
+    for (const listener of this.map.get(type) ?? []) listener();
+  }
+}
+
+type RateBehaviour = 'resolve' | 'reject' | 'missing';
+
+class FakeSession extends Listeners {
+  frameRate: number | undefined = 90;
+  visibilityState: XRVisibilityState = 'visible';
+  updateTargetFrameRate?: (rate: number) => Promise<void>;
+  constructor(behaviour: RateBehaviour) {
+    super();
+    if (behaviour === 'resolve') {
+      this.updateTargetFrameRate = vi.fn(async (rate: number) => {
+        this.frameRate = rate;
+      });
+    } else if (behaviour === 'reject') {
+      this.updateTargetFrameRate = vi.fn(async () => {
+        throw new DOMException('Requested frame rate not supported.', 'InvalidStateError');
+      });
+    }
+  }
+}
 
 class FakeXr implements GovernorXr {
   isPresenting = false;
   readonly listeners = new Map<string, Set<() => void>>();
-  readonly session = { updateTargetFrameRate: vi.fn(async (_rate: number) => undefined) };
+  readonly session: FakeSession;
+  constructor(behaviour: RateBehaviour = 'resolve') {
+    this.session = new FakeSession(behaviour);
+  }
   readonly layer = { getViewport: vi.fn(() => ({ x: 0, y: 0, width: 1, height: 1 })) };
   readonly setFoveation = vi.fn();
   addEventListener(type: string, listener: () => void): void {
@@ -55,21 +91,7 @@ function fakeBatch(visibleNear: number): GovernedBatch & {
     setSizeMultiplier: (band, m) => {
       sizes[band] = m;
     },
-    stats: (): StrokeBatchStats => {
-      const near = Math.floor(visibleNear * densities.near);
-      return {
-        chunks: 1,
-        visibleChunks: 1,
-        total: visibleNear,
-        visible: near,
-        atlasMs: 0,
-        bands: {
-          near: { d: densities.near, size: sizes.near, chunks: 1, visible: near },
-          mid: { d: densities.mid, size: sizes.mid, chunks: 0, visible: 0 },
-          far: { d: densities.far, size: sizes.far, chunks: 0, visible: 0 },
-        },
-      };
-    },
+    visibleByBand: () => ({ near: Math.floor(visibleNear * densities.near), mid: 0, far: 0 }),
   };
 }
 
@@ -139,15 +161,26 @@ test('desktop frames are not judged: a slow page sheds nothing', () => {
   expect(batch.densities.near).toBe(1);
 });
 
-test('in XR an overrun drives batch density, viewport scale, foveation and the 72 Hz request', () => {
-  const xr = new FakeXr();
-  const batch = fakeBatch(200_000);
-  const { runtime: rt, notify } = start(xr, batch);
+/** Enters XR and runs overrun frames to the 72 Hz request, then lets its promise settle. */
+async function toRateRequest(xr: FakeXr, batch = fakeBatch(200_000)) {
+  const started = start(xr, batch);
   xr.isPresenting = true;
   xr.emit('sessionstart');
-  expect(diagOf().fbScalePath).toBe('base-layer');
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
-  frames(rt, 0, 20_000, 16);
+  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  let t = 0;
+  while (!diagOf().history.some((e) => e.action === 'rate') && t < 20_000) {
+    t = frames(started.runtime, t, 16, 16);
+  }
+  await Promise.resolve();
+  await Promise.resolve();
+  return { ...started, batch, t };
+}
+
+test('in XR an overrun drives batch density, viewport scale, foveation and the 72 Hz request', async () => {
+  const xr = new FakeXr();
+  const { batch, notify } = await toRateRequest(xr);
+  expect(diagOf().fbScalePath).toBe('base-layer');
   const diag = diagOf();
   expect(diag.history.map((e) => `${e.action} ${e.step}`)).toEqual([
     'shed near-density',
@@ -164,7 +197,76 @@ test('in XR an overrun drives batch density, viewport scale, foveation and the 7
   expect(xr.setFoveation).toHaveBeenLastCalledWith(0.5);
   expect(xr.session.updateTargetFrameRate).toHaveBeenCalledWith(72);
   expect(notify).toHaveBeenCalledWith(RATE_NOTICE);
-  expect(diag).toMatchObject({ targetHz: 72, notice: RATE_NOTICE, gpuTimer: 'unavailable' });
+  expect(diag).toMatchObject({
+    targetHz: 72,
+    frameRate: 72,
+    rateRequest: 'applied',
+    notice: RATE_NOTICE,
+    gpuTimer: 'unavailable',
+  });
+  expect(diag.budgetMs).toBeCloseTo(1000 / 72, 10);
+});
+
+test.each(['reject', 'missing'] as const)(
+  'a %s updateTargetFrameRate leaves 90 Hz: rate unavailable, exhausted, no notice',
+  async (behaviour) => {
+    const xr = new FakeXr(behaviour);
+    const { runtime: rt, notify, t } = await toRateRequest(xr);
+    frames(rt, t, 3000, 16);
+    const diag = diagOf();
+    expect(diag.history.map((e) => e.action).slice(-2)).toEqual(['rate', 'rate-failed']);
+    expect(diag).toMatchObject({
+      targetHz: 90,
+      frameRate: 90,
+      rateRequest: 'unavailable',
+      notice: null,
+      exhausted: true,
+    });
+    expect(diag.budgetMs).toBeCloseTo(1000 / 90, 10);
+    expect(notify).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/72 Hz fallback unavailable/));
+  },
+);
+
+test('the budget follows the session frame rate, falling back to the request when unreported', () => {
+  const xr = new FakeXr();
+  const { runtime: rt } = start(xr, fakeBatch(200_000));
+  xr.isPresenting = true;
+  xr.emit('sessionstart');
+  // The initial 90 Hz request failed and the headset runs at 72.
+  xr.session.frameRate = 72;
+  xr.session.emit('frameratechange');
+  expect(diagOf()).toMatchObject({ targetHz: 90, frameRate: 72 });
+  // 13 ms frames overrun 90 Hz but fit 72.
+  frames(rt, 0, 10_000, 13);
+  expect(diagOf().history).toEqual([]);
+  xr.session.frameRate = undefined;
+  frames(rt, 10_000, 16, 16);
+  expect(diagOf().frameRate).toBe(90);
+});
+
+test('frames are not judged while the session is hidden, and a pause restarts the timers', () => {
+  const xr = new FakeXr();
+  const { runtime: rt } = start(xr, fakeBatch(100_000));
+  xr.isPresenting = true;
+  xr.emit('sessionstart');
+  vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  // 100k near is under the floor: fb-scale and foveation shed, then the 3 s rate count runs.
+  let t = 0;
+  while (!diagOf().history.some((e) => e.step === 'foveation')) t = frames(rt, t, 16, 16);
+  t = frames(rt, t, 2000, 16);
+  xr.session.visibilityState = 'visible-blurred';
+  xr.session.emit('visibilitychange');
+  t = frames(rt, t, 5000, 16);
+  expect(diagOf().history.some((e) => e.action === 'rate')).toBe(false);
+  xr.session.visibilityState = 'visible';
+  xr.session.emit('visibilitychange');
+  const resume = t;
+  while (!diagOf().history.some((e) => e.action === 'rate') && t < resume + 10_000) {
+    t = frames(rt, t, 16, 16);
+  }
+  const rate = diagOf().history.find((e) => e.action === 'rate');
+  expect((rate?.t ?? 0) - resume).toBeGreaterThanOrEqual(3000);
 });
 
 test('a new session starts from full quality again', () => {

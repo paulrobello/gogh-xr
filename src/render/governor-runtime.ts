@@ -4,6 +4,11 @@
  * through `XRView.requestViewportScale` (ruling R4), foveation on three's XR manager, and the
  * 72 Hz fallback through `XRSession.updateTargetFrameRate`. Desktop frames are not judged: the
  * page's own refresh rate says nothing about the headset budget.
+ *
+ * The machine's budget follows the session's reported `frameRate`, read every judged frame (so it
+ * picks up the rate once session settings apply) and on `frameratechange`. The requested rate is
+ * the fallback while the session reports none. Frames are not judged while the session is not
+ * 'visible'.
  */
 import type { Scene } from 'three';
 import { GpuTimer, type TimerGl } from '../bench/gpu-timer';
@@ -15,21 +20,29 @@ import {
 } from '../xr/viewport-scale';
 import {
   createGovernor,
+  densityBand,
   type Governor,
   type GovernorEvent,
   type GovernorMode,
   type GovernorSnapshot,
   RATE_NOTICE,
 } from './governor';
-import { STROKE_BANDS, type StrokeBand } from './strokes/bands';
+import { STROKE_BANDS } from './strokes/bands';
 import type { StrokeBatch } from './strokes/batch';
+
+/** The parts of an `XRSession` the runtime uses. `updateTargetFrameRate` may be missing. */
+export type GovernorSession = Partial<Pick<XRSession, 'updateTargetFrameRate'>> &
+  Pick<XRSession, 'frameRate' | 'visibilityState'> & {
+    addEventListener(type: 'visibilitychange' | 'frameratechange', listener: () => void): void;
+    removeEventListener(type: 'visibilitychange' | 'frameratechange', listener: () => void): void;
+  };
 
 /** The parts of three's `WebXRManager` the runtime uses. */
 export interface GovernorXr {
   readonly isPresenting: boolean;
   addEventListener(type: 'sessionstart' | 'sessionend', listener: () => void): void;
   removeEventListener(type: 'sessionstart' | 'sessionend', listener: () => void): void;
-  getSession(): Pick<XRSession, 'updateTargetFrameRate'> | null;
+  getSession(): GovernorSession | null;
   setFoveation(value: number): void;
   getBaseLayer(): unknown;
   getBinding(): unknown;
@@ -40,7 +53,7 @@ export interface GovernorRenderer {
   getContext(): unknown;
 }
 
-export type GovernedBatch = Pick<StrokeBatch, 'setDensity' | 'setSizeMultiplier' | 'stats'>;
+export type GovernedBatch = Pick<StrokeBatch, 'setDensity' | 'setSizeMultiplier' | 'visibleByBand'>;
 
 export interface GovernorRuntimeDeps {
   renderer: GovernorRenderer;
@@ -48,6 +61,7 @@ export interface GovernorRuntimeDeps {
   scene: Scene;
   batch: GovernedBatch;
   mode: GovernorMode;
+  /** The requested target; the budget uses the session's reported rate when it has one. */
   targetHz: number;
   /** Shows the 72 Hz notice to the user. */
   notify?: (message: string) => void;
@@ -68,18 +82,16 @@ export interface GovernorRuntime {
   dispose(): void;
 }
 
-function bandOfStep(step: GovernorEvent['step']): StrokeBand | null {
-  for (const band of STROKE_BANDS) if (step === `${band}-density`) return band;
-  return null;
-}
-
 export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   const { renderer, scene, batch } = deps;
   const xr = renderer.xr;
   const config = { mode: deps.mode, targetHz: deps.targetHz };
   let governor: Governor = createGovernor(config);
   let scaler: ViewportScaler | null = null;
+  let session: GovernorSession | null = null;
   let lastTime: number | null = null;
+  /** The rate asked of the session, used while it reports no `frameRate`. */
+  let requestedHz = deps.targetHz;
   const timer = new GpuTimer(renderer.getContext() as TimerGl);
 
   function applyLevels(): void {
@@ -92,9 +104,38 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     if (xr.isPresenting) xr.setFoveation(foveation);
   }
 
+  function readFrameRate(): void {
+    governor.setFrameRate(session?.frameRate ?? requestedHz);
+  }
+
+  /** Commits the 72 Hz budget and notice only once the session accepts the rate. */
+  function requestRate(event: GovernorEvent): void {
+    const owner = governor;
+    const target = session;
+    const fail = (reason: string): void => {
+      console.warn(`[governor] ${event.to} Hz fallback unavailable: ${reason}`);
+      if (owner === governor) owner.rateFailed(event.t);
+    };
+    if (!target || typeof target.updateTargetFrameRate !== 'function') {
+      fail('the session has no updateTargetFrameRate');
+      return;
+    }
+    target.updateTargetFrameRate(event.to).then(
+      () => {
+        if (owner !== governor) return;
+        requestedHz = event.to;
+        owner.rateApplied(event.to);
+        owner.setFrameRate(target.frameRate ?? event.to);
+        console.info(`[governor] ${RATE_NOTICE} (${event.from} Hz overran at minimum quality)`);
+        deps.notify?.(RATE_NOTICE);
+      },
+      (error: unknown) => fail(`updateTargetFrameRate(${event.to}) failed: ${String(error)}`),
+    );
+  }
+
   function apply(event: GovernorEvent): void {
     const levels = governor.levels;
-    const band = bandOfStep(event.step);
+    const band = densityBand(event.step);
     if (band) {
       batch.setDensity(band, levels.density[band]);
       batch.setSizeMultiplier(band, levels.size[band]);
@@ -102,23 +143,28 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       if (scaler) scaler.scale = levels.fbScale;
     } else if (event.step === 'foveation') {
       xr.setFoveation(levels.foveation);
-    } else {
-      const session = xr.getSession();
-      console.info(`[governor] ${RATE_NOTICE} (${event.from} Hz overran at minimum quality)`);
-      deps.notify?.(RATE_NOTICE);
-      if (session && typeof session.updateTargetFrameRate === 'function') {
-        session.updateTargetFrameRate(event.to).catch((error: unknown) => {
-          console.warn(`updateTargetFrameRate(${event.to}) failed: ${String(error)}`);
-        });
-      }
+    } else if (event.action === 'rate') {
+      requestRate(event);
     }
   }
 
+  const onVisibility = (): void => {
+    lastTime = null;
+    governor.interrupt();
+  };
+  const onFrameRate = (): void => readFrameRate();
+
   /** Every session starts from full quality at the configured rate. */
   function reset(): void {
+    session?.removeEventListener('visibilitychange', onVisibility);
+    session?.removeEventListener('frameratechange', onFrameRate);
     scaler?.uninstall();
+    session = xr.isPresenting ? xr.getSession() : null;
+    session?.addEventListener('visibilitychange', onVisibility);
+    session?.addEventListener('frameratechange', onFrameRate);
     scaler = xr.isPresenting ? installViewportScale(xr) : null;
     governor = createGovernor(config);
+    requestedHz = deps.targetHz;
     lastTime = null;
     timer.reset();
     applyLevels();
@@ -154,7 +200,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
 
   return {
     frame(time: number) {
-      if (!xr.isPresenting) {
+      if (!xr.isPresenting || (session && session.visibilityState !== 'visible')) {
         lastTime = null;
         return;
       }
@@ -164,12 +210,12 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       }
       const intervalMs = time - lastTime;
       lastTime = time;
-      const { bands } = batch.stats();
+      readFrameRate();
       const event = governor.sample({
         t: time,
         intervalMs,
         gpuMs: timer.available ? timer.meanMs() : null,
-        drawn: { near: bands.near.visible, mid: bands.mid.visible, far: bands.far.visible },
+        drawn: batch.visibleByBand(),
       });
       if (event) apply(event);
     },
@@ -177,6 +223,9 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     dispose() {
       xr.removeEventListener('sessionstart', onStart);
       xr.removeEventListener('sessionend', onEnd);
+      session?.removeEventListener('visibilitychange', onVisibility);
+      session?.removeEventListener('frameratechange', onFrameRate);
+      session = null;
       scene.onBeforeRender = prevBefore;
       scene.onAfterRender = prevAfter;
       scaler?.uninstall();
