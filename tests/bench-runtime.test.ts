@@ -528,7 +528,7 @@ test('dispose removes a camera the bench added, and leaves a camera it did not a
   expect(own.camera.parent).toBe(own.scene);
 });
 
-test('cycleFoveation steps 0.5 -> 1 -> 0 -> 0.5, applies it, and keys results by it', () => {
+test('cycleFoveation steps 0 -> 0.5 -> 1 -> 0, applies it, and keys results by it', () => {
   const store = memoryStore();
   const deps = presentingDeps(store);
   const setFoveation = vi.fn();
@@ -545,10 +545,10 @@ test('cycleFoveation steps 0.5 -> 1 -> 0 -> 0.5, applies it, and keys results by
     seen.push(bench.snapshot().foveation);
     runFrames(deps.scene, 600, clockState);
   }
-  expect(seen).toEqual([1, 0, 0.5]);
-  expect(setFoveation.mock.calls.map((call) => call[0])).toEqual([1, 0, 0.5]);
-  // 0.5 is re-recorded, so three keys remain, with 0.5 newest.
-  expect(bench.results().map((r) => r.foveation)).toEqual([1, 0, 0.5]);
+  expect(seen).toEqual([0.5, 1, 0]);
+  expect(setFoveation.mock.calls.map((call) => call[0])).toEqual([0.5, 1, 0]);
+  // 0 is re-recorded, so three keys remain, with 0 newest.
+  expect(bench.results().map((r) => r.foveation)).toEqual([0.5, 1, 0]);
 });
 
 test('the right A button reads the right gamepad only', () => {

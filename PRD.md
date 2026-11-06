@@ -103,7 +103,7 @@ troika 0.53.1 is the latest release. 0.52.5 is pinned because it is proven on th
 - **D8. Quality governor.**
   - At session start the app requests 90 Hz via `XRSession.updateTargetFrameRate` and records `supportedFrameRates`. three r186 does not wrap these calls.
   - The governor reads the frame time and the GPU time where `EXT_disjoint_timer_query_webgl2` exists.
-  - Under load it sheds in this order: visible stroke density, then framebuffer scale, then fixed foveation from the default 0.5 up to 1.0.
+  - Under load it sheds in this order: visible stroke density, then framebuffer scale, then fixed foveation from the default 0 up to 0.5. P0.8 found 1.0 too blocky and measured no frame-time gain from foveation on the bench.
   - After about 3 s of sustained overrun it drops to 72 Hz and shows a HUD notice.
   - A "Max beauty" setting runs at 72 Hz with a higher stroke budget.
 - **D9. Locomotion.** Room-scale walking is native.

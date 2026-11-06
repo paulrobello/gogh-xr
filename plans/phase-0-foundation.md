@@ -48,7 +48,7 @@ Pre-commit hooks: gitleaks and `detect-private-key` from `pre-commit/pre-commit-
   - On session start:
     - Call `session.updateTargetFrameRate(90)` when it is supported.
     - Record `session.supportedFrameRates` and `session.frameRate`.
-    - Call `renderer.xr.setFoveation(0.5)`.
+    - Call `renderer.xr.setFoveation(0)`. It was 0.5 until P0.8 showed edge shimmer at 0.5 and 1.0 with no frame-time gain.
   - The desktop preview is WASD plus mouse-look on pointer lock, with a ground plane and a placeholder sky.
   - `src/diag/` parses these flags: `?seed`, `?noanim`, `?shot=<ms>` (exposes `window.__goghShot()`, which returns a PNG data URL from `preserveDrawingBuffer` in diag mode only), `?diag` (exposes `window.__goghDiag()`, which returns renderer info, the XR state, frame-rate data, the camera pose and the counts) and `?hud`.
 - **Verify:**

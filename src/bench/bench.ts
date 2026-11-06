@@ -147,7 +147,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     });
   }
 
-  /** Steps fixed foveation 0 -> 0.5 -> 1; a lower level costs more fragment work at the edges. */
+  /** Steps fixed foveation 0 -> 0.5 -> 1 and wraps; a lower level costs more fragment work at the edges. */
   function cycleFoveation(): void {
     foveation = nextFoveation(foveation);
     renderer.xr.setFoveation(foveation);

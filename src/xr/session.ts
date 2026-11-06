@@ -4,7 +4,8 @@ export const TARGET_FRAME_RATE = 90;
 export function resolveTargetFrameRate(hz: number | null): number {
   return hz ?? TARGET_FRAME_RATE;
 }
-export const FOVEATION = 0.5;
+/** Off: P0.8 showed shimmer at 0.5 and 1.0 and no frame-time gain from either. */
+export const FOVEATION = 0;
 
 export const SESSION_INIT: XRSessionInit = {
   optionalFeatures: ['local-floor', 'bounded-floor', 'medium-fixed-foveation-level'],

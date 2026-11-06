@@ -25,7 +25,7 @@ Parsed in `src/diag/flags.ts`.
 
 - `?diag`: installs `window.__goghDiag()` (renderer info, XR state, frame rates, camera pose, counts).
 - `?iwer`: installs the IWER Meta Quest 3 emulator. Only honoured in `--mode e2e` builds, never in production.
-- `?bench=N`: runs the stroke benchmark with N strokes (default 100000, capped at 2,000,000). A non-numeric value uses the default. Strokes fill a full sphere, so every view direction reads the same. In XR, the right controller's A button steps fixed foveation through 0, 0.5 (the app default) and 1. Each settings combination, foveation included, records fps, mean, p95 and p99 once its window settles. Results persist in localStorage under `gogh-xr.bench.results.v1`, show on the HUD, and appear as `benchResults` in `__goghDiag()`.
+- `?bench=N`: runs the stroke benchmark with N strokes (default 100000, capped at 2,000,000). A non-numeric value uses the default. Strokes fill a full sphere, so every view direction reads the same. In XR, the right controller's A button steps fixed foveation through 0 (the app default), 0.5 and 1. Each settings combination, foveation included, records fps, mean, p95 and p99 once its window settles. Results persist in localStorage under `gogh-xr.bench.results.v1`, show on the HUD, and appear as `benchResults` in `__goghDiag()`.
 - `&mode=a2c|blend`: benchmark transparency mode, alpha-to-coverage (default) or blended. In the headset, the left controller's X button toggles the mode and resets the order to that mode's default.
 - `&size=px`: benchmark stroke size in pixels (default 24).
 - `&order=sorted|random`: benchmark draw order. Default is random for a2c and sorted for blend.

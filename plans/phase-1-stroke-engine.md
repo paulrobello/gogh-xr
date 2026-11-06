@@ -90,7 +90,7 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
   - Shed in this order:
     1. Far density, then mid, then near, down to the minimums in the budget table.
     2. Framebuffer scale, from 1.0 down to 0.85.
-    3. Foveation, from 0.5 up to 1.0.
+    3. Foveation, from 0 up to 0.5. P0.8 found 1.0 too blocky and saw no frame-time gain from foveation on the bench, so this step is a last resort.
     4. After 3 s of continuous overrun at minimum quality, call `updateTargetFrameRate(72)` and show a HUD notice.
   - Restore in reverse order, with hysteresis.
   - The "Max beauty" mode targets 72 Hz with the higher budget.

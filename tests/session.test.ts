@@ -47,7 +47,7 @@ test('applySessionSettings with updateTargetFrameRate present', async () => {
   expect(update).toHaveBeenCalledWith(90);
   expect(state.frameRate).toBe(90);
   expect(state.supportedFrameRates).toEqual([72, 90]);
-  expect(setFoveation).toHaveBeenCalledWith(0.5);
+  expect(setFoveation).toHaveBeenCalledWith(0);
 });
 
 test('applySessionSettings with updateTargetFrameRate absent', async () => {
@@ -56,7 +56,7 @@ test('applySessionSettings with updateTargetFrameRate absent', async () => {
   const state = createXrState();
   await applySessionSettings(session, renderer, state);
   expect(state.frameRate).toBe(72);
-  expect(setFoveation).toHaveBeenCalledWith(0.5);
+  expect(setFoveation).toHaveBeenCalledWith(0);
 });
 
 test('applySessionSettings tolerates a rejecting updateTargetFrameRate', async () => {
@@ -70,7 +70,7 @@ test('applySessionSettings tolerates a rejecting updateTargetFrameRate', async (
   const state = createXrState();
   await applySessionSettings(session, renderer, state);
   expect(state.frameRate).toBe(72);
-  expect(setFoveation).toHaveBeenCalledWith(0.5);
+  expect(setFoveation).toHaveBeenCalledWith(0);
   expect(warn).toHaveBeenCalled();
   warn.mockRestore();
 });
