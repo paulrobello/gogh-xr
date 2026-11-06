@@ -1,6 +1,6 @@
 # Headset performance (P0.8)
 
-Device: Meta Quest 3, Quest Browser. Build: `https://gogh-xr.pardev.net` at fd7a1ab. Run by Paul on 2026-11-05 (results stamped 2026-11-06 04:45–04:50Z, 8:45–8:50 PM PST). The 72 Hz fill-in run (blend 325,000 to 475,000 and a2c 425,000 to 525,000, foveation 0) was recorded 2026-11-06 05:35–05:38Z (9:35–9:38 PM PST). Results were read from the headset's localStorage over adb and the DevTools protocol, not transcribed by hand.
+Device: Meta Quest 3, Quest Browser. Build: `https://gogh-xr.pardev.net` at fd7a1ab. Run by Paul on 2026-11-05 (results stamped 2026-11-06 04:45–04:50Z, 8:45–8:50 PM PST). The 72 Hz fill-in run (blend 325,000 to 475,000 and a2c 425,000 to 525,000, foveation 0) was recorded 2026-11-06 05:35–05:38Z (9:35–9:38 PM PST), the 80 Hz fill-in run (blend 375,000 to 400,000 and a2c 375,000 to 475,000) at 05:46–05:48Z (9:46–9:48 PM PST), and the 120 Hz a2c run (200,000 to 250,000) at 05:49Z (9:49 PM PST). The a2c 400,000 and 475,000 rows at 80 Hz are from that later run, which replaced the earlier records of the same settings, and the a2c 225,000 row at 120 Hz is from the 120 Hz run for the same reason. Results were read from the headset's localStorage over adb and the DevTools protocol, not transcribed by hand.
 
 ## Full-sphere stroke budget
 
@@ -10,14 +10,16 @@ Strokes fill a full sphere around the viewer, uniform per solid angle, so any vi
 
 | Mode | 72 Hz | 80 Hz | 90 Hz | 120 Hz |
 | --- | --- | --- | --- | --- |
-| blend | 325,000 holds. 425,000 is marginal. 450,000 fails. | Not found: 450,000 already fails. | 325,000 holds. 350,000 fails. | 225,000 holds. 250,000 fails. |
-| a2c | 500,000 holds. 525,000 fails. | 400,000 holds. 475,000 fails. | 350,000 holds. 375,000 fails. | 225,000 holds. No failing N recorded. |
+| blend | 325,000 holds. 425,000 is marginal. 450,000 fails. | 375,000 holds. 400,000 fails. | 325,000 holds. 350,000 fails. | 225,000 holds. 250,000 fails. |
+| a2c | 500,000 holds. 525,000 fails. | 450,000 holds. 475,000 fails. | 350,000 holds. 375,000 fails. | 225,000 holds. 250,000 fails. |
 
 At the default 90 Hz the budget is about 325,000 strokes blended or 350,000 with alpha-to-coverage, with roughly half of them on screen. At 72 Hz it is 325,000 blended or 500,000 with alpha-to-coverage.
 
 Blend at 425,000 and 72 Hz reads 73 fps, but its mean of 14.52 ms is over the 13.9 ms budget and its p99 is 24.5 ms, so it is counted as marginal rather than holding.
 
-Gaps a later run can fill: a holding N for blend at 80 Hz, and a failing N for a2c at 120 Hz.
+Blend holds 375,000 at 80 Hz but only 325,000 was confirmed at 72 Hz, because 72 Hz was not run between 325,000 and 425,000. The real 72 Hz blend limit is probably at least 375,000.
+
+One gap remains: blend at 72 Hz between 325,000 and 425,000.
 
 ### Raw results
 
@@ -28,6 +30,8 @@ Gaps a later run can fill: a holding N for blend at 80 Hz, and a failing N for a
 | blend | 425,000 | 72 | 72 | 73 | 14.52 | 16.3 | 24.5 |
 | blend | 450,000 | 72 | 72 | 70 | 14.58 | 16.9 | 24.8 |
 | blend | 475,000 | 72 | 72 | 69 | 14.73 | 20.7 | 24.4 |
+| blend | 375,000 | 80 | 80 | 81 | 12.56 | 13.3 | 13.7 |
+| blend | 400,000 | 80 | 80 | 77 | 13.12 | 15.1 | 22.2 |
 | blend | 450,000 | 80 | 80 | 74 | 13.57 | 15.8 | 17.2 |
 | blend | 475,000 | 80 | 80 | 71 | 14.25 | 16.2 | 17.2 |
 | blend | 200,000 | 90 | 90 | 91 | 11.13 | 11.5 | 12.0 |
@@ -41,13 +45,18 @@ Gaps a later run can fill: a holding N for blend at 80 Hz, and a failing N for a
 | a2c | 425,000 | 72 | 72 | 73 | 13.92 | 14.3 | 14.7 |
 | a2c | 500,000 | 72 | 72 | 73 | 13.95 | 14.6 | 15.0 |
 | a2c | 525,000 | 72 | 72 | 71 | 14.52 | 16.8 | 24.8 |
-| a2c | 400,000 | 80 | 80 | 81 | 12.53 | 13.1 | 13.5 |
-| a2c | 475,000 | 80 | 80 | 74 | 13.79 | 15.9 | 16.8 |
+| a2c | 375,000 | 80 | 80 | 81 | 12.55 | 13.0 | 13.8 |
+| a2c | 400,000 | 80 | 80 | 81 | 12.56 | 13.4 | 13.9 |
+| a2c | 425,000 | 80 | 80 | 81 | 12.56 | 13.3 | 13.8 |
+| a2c | 450,000 | 80 | 80 | 81 | 12.59 | 13.2 | 14.6 |
+| a2c | 475,000 | 80 | 80 | 76 | 13.22 | 17.5 | 22.0 |
 | a2c | 350,000 | 90 | 90 | 90 | 11.27 | 12.0 | 19.2 |
 | a2c | 375,000 | 90 | 90 | 87 | 11.62 | 14.8 | 17.9 |
-| a2c | 225,000 | 120 | 120 | 119 | 8.43 | 9.0 | 11.6 |
+| a2c | 200,000 | 120 | 120 | 121 | 8.38 | 8.9 | 9.5 |
+| a2c | 225,000 | 120 | 120 | 121 | 8.37 | 8.9 | 9.4 |
+| a2c | 250,000 | 120 | 120 | 118 | 8.58 | 10.0 | 15.1 |
 
-One more stored record is discarded: blend at 100,000 and 90 Hz, recorded before the session reported a frame rate. It read 74 fps, which contradicts the 91 fps at 200,000 and 300,000.
+One more stored record is discarded: blend at 100,000 and 90 Hz, recorded before the session reported a frame rate. It read 74 fps, which contradicts the 91 fps at 200,000 and 300,000. The 80 Hz run left a second record of the same kind, blend at 325,000 and 90 Hz with no session frame rate and 74 fps, also discarded. Both read close to 72 Hz, the browser default, so they were likely recorded before the 90 Hz request took effect.
 
 ## Other findings
 
