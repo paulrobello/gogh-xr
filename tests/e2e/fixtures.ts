@@ -1,0 +1,154 @@
+import { test as base, expect, type Page } from '@playwright/test';
+
+export type Hand = 'left' | 'right';
+export type Vec3 = [number, number, number];
+export type Quat = [number, number, number, number];
+
+export interface PoseTarget {
+  position?: Vec3;
+  quaternion?: Quat;
+}
+
+export interface Pose {
+  head?: PoseTarget;
+  left?: PoseTarget;
+  right?: PoseTarget;
+}
+
+export interface Diag {
+  build: string;
+  renderer: { frame: number; programs: number; unmaskedRenderer: string | null };
+  xr: { supported: boolean | null; presenting: boolean; sessionMode: string | null };
+  camera: { position: number[]; quaternion: number[] };
+  input?: { selectstart: Record<'none' | 'left' | 'right', number> };
+  [key: string]: unknown;
+}
+
+export interface Xr {
+  /** Loads the app with IWER and diag enabled, plus any extra query flags. */
+  boot(extraQuery?: string): Promise<void>;
+  enterXR(): Promise<void>;
+  /** Presses and releases a controller button, holding it across rendered frames. */
+  press(hand: Hand, button: string): Promise<void>;
+  stick(hand: Hand, x: number, y: number): Promise<void>;
+  setPose(pose: Pose): Promise<void>;
+  diag(): Promise<Diag>;
+  waitFrames(count: number): Promise<void>;
+}
+
+// Chromium reports WebGL errors as console warnings, and three logs shader
+// compile/link failures through console.error or console.warn.
+const GL_ERROR =
+  /GL_INVALID_|WebGL: INVALID_|CONTEXT_LOST|THREE\.WebGL(Program|Shader)|Shader Error/;
+
+function readDiag(page: Page): Promise<Diag> {
+  return page.evaluate(() => {
+    const diag = window.__goghDiag;
+    if (!diag) throw new Error('__goghDiag is not installed; boot with ?diag');
+    return diag() as unknown as Diag;
+  });
+}
+
+function createXr(page: Page): Xr {
+  const waitFrames = async (count: number): Promise<void> => {
+    const start = (await readDiag(page)).renderer.frame;
+    await expect
+      .poll(async () => (await readDiag(page)).renderer.frame, { timeout: 10_000 })
+      .toBeGreaterThanOrEqual(start + count);
+  };
+
+  const setButton = (hand: Hand, button: string, value: number): Promise<void> =>
+    page.evaluate(
+      ([h, b, v]) => {
+        const controller = window.__goghIwer?.controllers[h];
+        if (!controller) throw new Error(`IWER ${h} controller is not available`);
+        controller.updateButtonValue(b, v);
+      },
+      [hand, button, value] as const,
+    );
+
+  return {
+    async boot(extraQuery = '') {
+      await page.goto(`/?iwer&diag${extraQuery ? `&${extraQuery}` : ''}`);
+      await expect
+        .poll(() => page.evaluate(() => Boolean(window.__goghIwer && window.__goghDiag)))
+        .toBe(true);
+    },
+    async enterXR() {
+      const button = page.locator('#enter-vr');
+      await expect(button).toBeEnabled();
+      await button.click();
+      await expect.poll(async () => (await readDiag(page)).xr.presenting).toBe(true);
+      // The camera still holds the desktop pose until an XR frame renders.
+      await waitFrames(2);
+    },
+    async press(hand, button) {
+      await setButton(hand, button, 1);
+      await waitFrames(2);
+      await setButton(hand, button, 0);
+      await waitFrames(2);
+    },
+    async stick(hand, x, y) {
+      await page.evaluate(
+        ([h, ax, ay]) => {
+          const controller = window.__goghIwer?.controllers[h];
+          if (!controller) throw new Error(`IWER ${h} controller is not available`);
+          controller.updateAxes('thumbstick', ax, ay);
+        },
+        [hand, x, y] as const,
+      );
+      await waitFrames(2);
+    },
+    async setPose(pose) {
+      await page.evaluate((p) => {
+        const device = window.__goghIwer;
+        if (!device) throw new Error('IWER is not installed; boot with ?iwer');
+        const targets = [
+          [p.head, device],
+          [p.left, device.controllers.left],
+          [p.right, device.controllers.right],
+        ] as const;
+        for (const [target, node] of targets) {
+          if (!target) continue;
+          if (!node) throw new Error('IWER pose target is not available');
+          if (target.position) node.position.set(...target.position);
+          if (target.quaternion) node.quaternion.set(...target.quaternion);
+        }
+      }, pose);
+      await waitFrames(2);
+    },
+    diag: () => readDiag(page),
+    waitFrames,
+  };
+}
+
+/**
+ * The `xr` fixture drives the IWER device through page.evaluate. The automatic
+ * `pageErrors` fixture fails every test on any console.error, page error,
+ * WebGL error or three shader log.
+ */
+export const test = base.extend<{ xr: Xr; pageErrors: string[] }>({
+  pageErrors: [
+    async ({ page }, use) => {
+      const errors: string[] = [];
+      page.on('console', (message) => {
+        const text = message.text();
+        const url = message.location().url;
+        // Chromium requests a favicon the app does not ship; nothing else is allowed.
+        if (new URL(url || 'about:blank').pathname === '/favicon.ico') return;
+        if (message.type() === 'error' || GL_ERROR.test(text)) {
+          errors.push(`console.${message.type()}: ${text}${url ? ` (${url})` : ''}`);
+        }
+      });
+      page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+      await use(errors);
+      expect(errors, 'console, page, WebGL or shader errors').toEqual([]);
+    },
+    { auto: true },
+  ],
+  xr: async ({ page }, use) => {
+    await use(createXr(page));
+  },
+});
+
+export { expect };

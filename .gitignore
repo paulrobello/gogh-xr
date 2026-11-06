@@ -71,3 +71,4 @@ firmware/**/sdkconfig*
 test-results/
 playwright-report/
 *.tsbuildinfo
+dist-e2e/

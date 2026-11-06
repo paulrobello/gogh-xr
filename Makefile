@@ -17,16 +17,28 @@ checkall-ci: checkall
 	gitleaks dir . --redact --no-banner
 	bun audit --audit-level high
 	$(MAKE) asset-check
+# XRDevice and metaQuest3 survive only in sourcemaps; the other markers survive minification.
+BUNDLE_DIR ?= dist
+BUNDLE_GREP_FLAGS ?=
+IWER_MARKERS := XRDevice|metaQuest3|Meta Quest 3|forceInstall|__goghIwer
 bundle-check:
-	@echo "bundle-check: no-op until P0.3"
+	@test -f "$(BUNDLE_DIR)/index.html" || { echo "bundle-check: $(BUNDLE_DIR)/ missing, run make build first"; exit 1; }
+	@fail=0; \
+	if grep -rlE $(BUNDLE_GREP_FLAGS) '$(IWER_MARKERS)' "$(BUNDLE_DIR)"; then echo "bundle-check: IWER markers found in $(BUNDLE_DIR)/"; fail=1; fi; \
+	chunks=$$(find "$(BUNDLE_DIR)" -name 'iwer-install*'); \
+	if [ -n "$$chunks" ]; then echo "$$chunks"; echo "bundle-check: iwer-install chunk found in $(BUNDLE_DIR)/"; fail=1; fi; \
+	if [ $$fail -ne 0 ]; then exit 1; fi; \
+	echo "bundle-check: $(BUNDLE_DIR)/ contains no IWER code"
 asset-check:
 	bun scripts/asset-check.ts
 e2e:
-	@echo "e2e suite arrives in P0.3"
+	bunx playwright test
 dev dev-start:
 	bun run dev
+# Serves the IWER-enabled e2e build (not production) on E2E_PORT, default 4253.
 preview:
-	bun run preview
+	bunx vite build --mode e2e
+	bunx vite preview --mode e2e --port $${E2E_PORT:-4253} --strictPort
 dev-stop:
 	bun run scripts/dev-stop.ts
 dev-restart: dev-stop dev

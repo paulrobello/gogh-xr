@@ -1,12 +1,18 @@
 import { PerspectiveCamera, WebGLRenderer } from 'three';
 import { installDesktopControls } from './desktop/controls';
-import { installDiag, installShot } from './diag/diag';
+import { installDiag, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
 import { createEnterVrButton } from './ui/enter-vr';
 import { clearNotices, showNotice } from './ui/notice';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
+import { createInputCounter } from './xr/input-counter';
 import { createSessionController, isVrSupported } from './xr/session';
+
+// Must run before any WebXR code reads navigator.xr. The MODE guard keeps IWER out of production.
+if (import.meta.env.MODE === 'e2e' && flags.iwer) {
+  (await import('./xr/iwer-install')).installIwer();
+}
 
 const renderer = new WebGLRenderer({
   antialias: true,
@@ -44,6 +50,8 @@ renderer.setAnimationLoop(renderFrame);
 
 if (flags.diag) {
   installDiag({ build: version, renderer, camera, getXrState: () => session.state });
+  const input = createInputCounter(renderer.xr);
+  registerDiag('input', () => ({ selectstart: { ...input.selectstart } }));
 }
 if (flags.shot !== null) {
   installShot(renderer.domElement, () => renderer.render(scene, camera));
