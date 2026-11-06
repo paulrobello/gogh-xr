@@ -14,6 +14,13 @@ export const AUDIO_FILES = [
   'assets/audio/source/suno/score-night.wav',
   'assets/audio/source/suno/score-gallery.wav',
 ];
+/** `make bake` input and outputs, recorded in the PROVENANCE.md bake block. */
+export const BAKE_FILES = [
+  'assets/bake/starry-night/regions.json',
+  'public/paintings/starry-night/palette.json',
+  'public/paintings/starry-night/flow.png',
+  'public/paintings/starry-night/regions.png',
+];
 
 export function sha256Of(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -48,6 +55,7 @@ export function requiredFiles(markdown: string): string[] {
     ...ids.map((id) => `assets/scans/${id}.jpg`),
     ...ids.map((id) => `public/paintings/${id}/frame.webp`),
     ...AUDIO_FILES,
+    ...BAKE_FILES,
   ];
 }
 

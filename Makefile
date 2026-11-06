@@ -1,4 +1,4 @@
-.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check e2e dev dev-start dev-stop dev-restart preview pre-commit
+.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check bake e2e dev dev-start dev-stop dev-restart preview pre-commit
 
 install:
 	bun install --frozen-lockfile
@@ -32,6 +32,9 @@ bundle-check:
 	echo "bundle-check: $(BUNDLE_DIR)/ contains no IWER code"
 asset-check:
 	bun scripts/asset-check.ts
+# Rewrites public/paintings/starry-night/{palette.json,flow.png,regions.png} and their PROVENANCE.md rows.
+bake:
+	bun scripts/bake/analyze-scan.ts
 e2e:
 	bunx playwright test
 dev dev-start:

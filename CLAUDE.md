@@ -4,7 +4,7 @@ A Meta Quest 3 WebXR experience built with three.js, Vite and bun. Requirements 
 
 ## Make targets
 
-`install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check e2e dev dev-start dev-stop dev-restart preview pre-commit`
+`install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check bake e2e dev dev-start dev-stop dev-restart preview pre-commit`
 
 ## Ports
 
@@ -16,6 +16,7 @@ A Meta Quest 3 WebXR experience built with three.js, Vite and bun. Requirements 
 - `make checkall` is the fast gate while iterating (lint, typecheck, test, build, bundle-check).
 - `make checkall-ci` must pass before any push. It adds gitleaks, `bun audit` and `asset-check`.
 - `make e2e` is local-only and never runs in CI.
+- `make bake` regenerates the Starry Night bake outputs (palette, flow field, region ids) from the 3840 px scan and rewrites their PROVENANCE.md rows. It is not part of `checkall`, and `asset-check` verifies the committed outputs.
 - Never pipe a gate. Redirect to a file, capture the exit code, then tail the log.
 - No push without Paul's approval.
 

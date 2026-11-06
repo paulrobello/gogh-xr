@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AUDIO_FILES,
+  BAKE_FILES,
   checkAssets,
   malformedRows,
   parseHashRows,
@@ -25,6 +26,7 @@ function fullManifest(): string {
     row(SOURCE, HELLO),
     row(FRAME, HELLO),
     ...AUDIO_FILES.map((f) => row(f, HELLO)),
+    ...BAKE_FILES.map((f) => row(f, HELLO)),
   ].join('\n');
 }
 
@@ -38,7 +40,7 @@ describe('asset hash checks', () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'asset-check-'));
-    for (const file of [SOURCE, FRAME, ...AUDIO_FILES]) write(file, 'hello');
+    for (const file of [SOURCE, FRAME, ...AUDIO_FILES, ...BAKE_FILES]) write(file, 'hello');
   });
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -53,11 +55,11 @@ describe('asset hash checks', () => {
   });
 
   it('derives required files from the painting table', () => {
-    expect(requiredFiles(PAINTING_ROW)).toEqual([SOURCE, FRAME, ...AUDIO_FILES]);
+    expect(requiredFiles(PAINTING_ROW)).toEqual([SOURCE, FRAME, ...AUDIO_FILES, ...BAKE_FILES]);
   });
 
   it('passes when every hash matches and every required file has a row', () => {
-    expect(checkAssets(root, fullManifest())).toEqual({ failures: [], checked: 4 });
+    expect(checkAssets(root, fullManifest())).toEqual({ failures: [], checked: 8 });
   });
 
   it('accepts uppercase hex', () => {
@@ -120,6 +122,18 @@ describe('asset hash checks', () => {
       .join('\n');
     expect(checkAssets(root, md).failures).toEqual([
       `${AUDIO_FILES[1]}: required file has no provenance row`,
+    ]);
+  });
+
+  it('fails when a bake output row is deleted', () => {
+    const flow = 'public/paintings/starry-night/flow.png';
+    const md = fullManifest()
+      .split('\n')
+      .filter((line) => !line.includes(flow))
+      .join('\n');
+    expect(checkAssets(root, md).failures).toEqual([
+      `${flow}: required file has no provenance row`,
+      `${flow}: derivative has no provenance row`,
     ]);
   });
 
