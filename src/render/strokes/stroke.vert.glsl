@@ -46,6 +46,15 @@ void surfaceBasis(vec3 n, out vec3 b1, out vec3 b2) {
   b2 = vec3(b, s + n.y * n.y * a, -n.y);
 }
 
+uint lowbias32(uint x) {
+  x ^= x >> 16u;
+  x *= 0x7feb352du;
+  x ^= x >> 15u;
+  x *= 0x846ca68bu;
+  x ^= x >> 16u;
+  return x;
+}
+
 void main() {
   vec3 n = octDecode(iNormal);
   vec3 b1;
@@ -58,6 +67,21 @@ void main() {
   vec2 size = iSize * uSizeScale;
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));
+  // Depth tie-break (src/render/strokes/depth-tie-break.ts): each stroke moves towards the eye by
+  // a stable random share of the range, in clip z. Only gl_Position changes, so early-z holds.
+  // The range is DEPTH_TIE_BREAK_STEPS window-depth steps (2^-23 in NDC z each), capped at
+  // DEPTH_TIE_BREAK_MAX_M metres of view depth; -projectionMatrix[3][2] is 2fn / (f - n). Behind
+  // the eye (w <= 0) the cap's 1 / w is unbounded, so the step term alone applies there.
+  float w = gl_Position.w;
+  float steps = DEPTH_TIE_BREAK_NDC * w;
+  float range = w > 0.0 ? min(steps, -projectionMatrix[3][2] * DEPTH_TIE_BREAK_MAX_M / w) : steps;
+  uint h = lowbias32(
+    floatBitsToUint(iPosition.x) ^
+      lowbias32(floatBitsToUint(iPosition.y) ^ lowbias32(floatBitsToUint(iPosition.z)))
+  );
+  float u = float(h >> 8u) * (1.0 / 16777216.0);
+  // Lit windows sit just proud of their wall: the whole range keeps almost every wall stroke behind.
+  gl_Position.z -= range * ((iMeta.w & DEPTH_TIE_BREAK_FRONT_FLAG) != 0u ? 1.0 : u);
 
   mat3 toWorld = mat3(modelMatrix);
   vNormal = normalize(toWorld * n);

@@ -10,7 +10,7 @@
  * | `iTangent` | unorm16 × 1     | 2     | long-axis angle about the normal, 0..2π (R6)    |
  * | `iColor`   | unorm8 × 4      | 4     | display-referred RGB; A reserved, unused        |
  * | `iSize`    | float32 × 2     | 8     | quad length (long axis) and width in metres     |
- * | `iMeta`    | uint8 × 4 (int) | 4     | brush, layer, phase, spare; read as `uvec4`     |
+ * | `iMeta`    | uint8 × 4 (int) | 4     | brush, layer, phase, flags; read as `uvec4`     |
  *
  * 34 bytes per instance. Size stays float32: a half-float `Uint16Array` uploads as UNSIGNED_SHORT
  * in three r186 unless it is a `Float16BufferAttribute`, which has no instanced variant.
@@ -53,6 +53,8 @@ export interface StrokeInstance {
   readonly layer: StrokeLayer;
   /** Animation phase byte 0..255. */
   readonly phase: number;
+  /** Flag bits 0..255; 0 when omitted. `DEPTH_TIE_BREAK_FRONT_FLAG` marks lit windows. */
+  readonly flags?: number;
 }
 
 export interface StrokeBuffers {
@@ -171,6 +173,7 @@ export function packInstance(buffers: StrokeBuffers, index: number, s: StrokeIns
   checkByte('brush', s.brush, BRUSH_COUNT - 1);
   checkByte('phase', s.phase, 255);
   checkByte('layer', s.layer, 255);
+  checkByte('flags', s.flags ?? 0, 255);
   const i3 = index * 3;
   const i2 = index * 2;
   const i4 = index * 4;
@@ -188,7 +191,7 @@ export function packInstance(buffers: StrokeBuffers, index: number, s: StrokeIns
   buffers.meta[i4] = s.brush;
   buffers.meta[i4 + 1] = s.layer;
   buffers.meta[i4 + 2] = s.phase;
-  buffers.meta[i4 + 3] = 0;
+  buffers.meta[i4 + 3] = s.flags ?? 0;
 }
 
 /** Decodes an instance the way the GPU reads it, quantisation included. */
@@ -209,6 +212,7 @@ export function unpackInstance(buffers: StrokeBuffers, index: number): StrokeIns
     brush: buffers.meta[i4],
     layer: buffers.meta[i4 + 1] as StrokeLayer,
     phase: buffers.meta[i4 + 2],
+    flags: buffers.meta[i4 + 3],
   };
 }
 

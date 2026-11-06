@@ -28,11 +28,12 @@ import {
 import { type CanvasSource, sampleCanvas } from '../../paintings/starry-night/canvas-histogram';
 import { mulberry32 } from '../../util/prng';
 import { BRUSHES } from './brush-atlas-data';
+import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
 import type { Vec3 } from './frame';
 import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
 
 /** Bump when the scatter's output changes for the same inputs; part of the cache key. */
-export const SCATTER_VERSION: number = 2;
+export const SCATTER_VERSION: number = 3;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -449,6 +450,7 @@ export function scatterSurfaces(
           brush,
           layer: style.layer,
           phase,
+          flags: emissive ? DEPTH_TIE_BREAK_FRONT_FLAG : 0,
         });
       }
     }

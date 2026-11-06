@@ -21,6 +21,7 @@ import {
   type CanvasSource,
 } from '../src/paintings/starry-night/canvas-histogram.ts';
 import { BRUSHES } from '../src/render/strokes/brush-atlas-data.ts';
+import { DEPTH_TIE_BREAK_FRONT_FLAG } from '../src/render/strokes/depth-tie-break.ts';
 import { strokeAxes, type Vec3 } from '../src/render/strokes/frame.ts';
 import {
   STROKE_LAYER,
@@ -386,6 +387,28 @@ test('window strokes keep the emissive warm colour, sRGB encoded', () => {
     }
     expect(s.layer).toBe(STROKE_LAYER.building);
   }
+});
+
+test('only emissive (window) strokes carry the depth tie-break front flag', () => {
+  const glass = wall(3, 2, [0, 2, -15], 'window');
+  glass.userData.emissive = true;
+  glass.userData.color = WINDOW_COLOR;
+  // The plaster wall stands 10 m to the right, so x tells the two meshes' strokes apart.
+  const plaster = wall(3, 2, [10, 2, -15], 'building');
+  const buffers = scatterSurfaces([glass, plaster], MIXED, {
+    seed: 6,
+    density: { window: 100, building: 100 },
+    size: flat(0.2, 'window', 'building'),
+  });
+  let front = 0;
+  for (let i = 0; i < buffers.count; i++) {
+    const s = unpackInstance(buffers, i);
+    const onGlass = s.position[0] < 5;
+    expect(s.flags).toBe(onGlass ? DEPTH_TIE_BREAK_FRONT_FLAG : 0);
+    if (onGlass) front++;
+  }
+  expect(front).toBeGreaterThan(400);
+  expect(buffers.count - front).toBeGreaterThan(400);
 });
 
 test('sky dome strokes face the eye', () => {

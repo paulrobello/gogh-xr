@@ -99,9 +99,10 @@ const U_EDGE = 0.015;
 const V_BELOW = 0.025;
 const V_BELOW_FAR_RIGHT = 0.045;
 const V_ABOVE = 0.01;
-const ROOF_OVERHANG = 0.25;
+/** Roof overhang past the walls, metres. */
+export const ROOF_OVERHANG: number = 0.25;
 /** Clear ground between neighbouring roof outlines, metres. */
-const OUTLINE_GAP = 0.3;
+export const OUTLINE_GAP: number = 0.3;
 /** Lowest wall top above the base, metres. */
 const MIN_EAVE = 2.6;
 /** Wall height that must stay clear above the highest wall-bottom ground sample, for the windows. */

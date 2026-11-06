@@ -49,7 +49,9 @@ document.body.appendChild(renderer.domElement);
 // An unknown or coming-soon `?painting` warns here and boots the bare scene.
 const painting = flags.bench === null ? livePainting(flags.painting) : null;
 const scene = createBareScene(painting === null);
-const camera = new PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 1000);
+// Near 0.1 m, not less: depth precision scales with the near plane, and coarser steps make
+// overlapping strokes flicker (docs/verification.md, stroke flicker). XR inherits it as depthNear.
+const camera = new PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
 const desktop = installDesktopControls(renderer.domElement, camera);
 /**
  * The rig, the camera's parent, which locomotion moves (P3.2). It starts at the XR origin; a world

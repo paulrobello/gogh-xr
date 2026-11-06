@@ -1,5 +1,11 @@
 import { GLSL3, RawShaderMaterial, type Texture, Vector3, Vector4 } from 'three';
 import { ATLAS_SIZE, BRUSH_COUNT, brushTexelRect, brushUvRect } from './brush-atlas-data';
+import {
+  DEPTH_TIE_BREAK_FRONT_FLAG,
+  DEPTH_TIE_BREAK_MAX_M,
+  DEPTH_TIE_BREAK_STEPS,
+  NDC_DEPTH_STEP,
+} from './depth-tie-break';
 import fragmentShader from './stroke.frag.glsl?raw';
 import vertexShader from './stroke.vert.glsl?raw';
 
@@ -21,6 +27,9 @@ export interface StrokeMaterialUniforms {
 }
 
 export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUniforms };
+
+/** A GLSL float literal: always carries a decimal point or an exponent. */
+const glslFloat = (value: number): string => value.toExponential(8);
 
 /**
  * Opaque alpha-to-coverage stroke material: no blending, depth write on, back faces culled (each
@@ -50,6 +59,9 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       // Every brush rect spans the same texel width: one stroke length.
       RECT_TEXELS: brushTexelRect(0).width,
       RELIEF_MIN_TEXELS,
+      DEPTH_TIE_BREAK_NDC: glslFloat(DEPTH_TIE_BREAK_STEPS * NDC_DEPTH_STEP),
+      DEPTH_TIE_BREAK_MAX_M: glslFloat(DEPTH_TIE_BREAK_MAX_M),
+      DEPTH_TIE_BREAK_FRONT_FLAG: `${DEPTH_TIE_BREAK_FRONT_FLAG}u`,
     },
     transparent: false,
     depthWrite: true,

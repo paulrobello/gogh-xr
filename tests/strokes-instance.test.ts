@@ -108,6 +108,17 @@ describe('pack and unpack', () => {
     });
   });
 
+  test('flags pack into the spare meta byte and default to 0', () => {
+    const buffers = createStrokeBuffers(2);
+    const base = randomInstance(mulberry32(7));
+    packInstance(buffers, 0, base);
+    packInstance(buffers, 1, { ...base, flags: 1 });
+    expect(unpackInstance(buffers, 0).flags).toBe(0);
+    expect(unpackInstance(buffers, 1).flags).toBe(1);
+    expect(buffers.meta[7]).toBe(1);
+    expect(() => packInstance(buffers, 0, { ...base, flags: 256 })).toThrow(RangeError);
+  });
+
   test('tangent wraps into [0, 2π)', () => {
     const buffers = createStrokeBuffers(3);
     const base = randomInstance(mulberry32(5));
