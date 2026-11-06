@@ -251,9 +251,17 @@ describe('bands', () => {
       chunks: 3,
       visible: 108,
     });
+    const perBand = (): Record<string, number> =>
+      Object.fromEntries(STROKE_BANDS.map((b) => [b, batch.stats().bands[b].visible]));
+    expect({ ...batch.visibleByBand() }).toEqual(perBand());
+    const record = batch.visibleByBand();
     batch.setDensity('near', 0.5);
     expect(batch.visibleCount()).toBe(drawn - 108 + 53);
     expect(batch.stats().bands.near.d).toBe(0.5);
+    // The same record, recounted after a density change outside update.
+    expect(batch.visibleByBand()).toBe(record);
+    expect({ ...batch.visibleByBand() }).toEqual(perBand());
+    expect(batch.visibleByBand().near).toBe(53);
 
     // Facing away culls everything: nothing is drawn, whatever the densities.
     camera.rotation.set(0, Math.PI, 0);
@@ -261,6 +269,7 @@ describe('bands', () => {
     batch.update(camera);
     expect(batch.visibleCount()).toBe(0);
     expect(batch.stats().bands.near).toMatchObject({ chunks: 0, visible: 0 });
+    expect(batch.visibleByBand()).toEqual({ near: 0, mid: 0, far: 0 });
     batch.dispose();
   });
 

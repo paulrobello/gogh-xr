@@ -109,6 +109,12 @@ export interface StrokeBatch {
   sizeMultiplier(band: StrokeBand): number;
   /** Instances drawn after the last cull and the current densities: `stats().visible`. */
   visibleCount(): number;
+  /**
+   * Instances drawn per band, as `stats().bands[band].visible`, without allocating: the record is
+   * the batch's own and changes with the next `update`, `setDensity` or `setDrawCount`. `update`
+   * counts it during the cull, so a per-frame read walks no chunks.
+   */
+  visibleByBand(): Readonly<Record<StrokeBand, number>>;
   stats(): StrokeBatchStats;
   /**
    * Releases every chunk geometry, the band materials and the atlas texture, and restores the
@@ -206,6 +212,9 @@ export function createStrokeBatch(
   );
   const chunks: StrokeChunk[] = [];
   const bandOf: (StrokeBand | null)[] = [];
+  const bandVisible: Record<StrokeBand, number> = { near: 0, mid: 0, far: 0 };
+  /** Set when a draw count changes outside `update`, which recounts `bandVisible` itself. */
+  let bandVisibleStale = false;
   /** Cull spheres: the bounds with the half-diagonal scaled by the band's size multiplier. */
   const cullSpheres: Sphere[] = [];
   const reaches: number[] = [];
@@ -246,6 +255,7 @@ export function createStrokeBatch(
       },
       setDrawCount(n: number) {
         geometry.instanceCount = Math.min(count, Math.max(0, Math.floor(n)));
+        bandVisibleStale = true;
       },
     });
   }
@@ -301,11 +311,15 @@ export function createStrokeBatch(
         camera.reversedDepth,
       );
       for (const chunk of chunks) chunk.mesh.visible = false;
+      for (const band of STROKE_BANDS) bandVisible[band] = 0;
       cullAndSort(cullSpheres, frustum, eye).forEach((index, rank) => {
         const { mesh } = chunks[index];
         mesh.visible = true;
         mesh.renderOrder = rank;
+        const band = bandOf[index];
+        if (band) bandVisible[band] += chunks[index].drawCount;
       });
+      bandVisibleStale = false;
     },
     setDensity(band: StrokeBand, d: number) {
       checkBand(band);
@@ -333,6 +347,17 @@ export function createStrokeBatch(
     sizeMultiplier(band: StrokeBand) {
       checkBand(band);
       return sizes[band];
+    },
+    visibleByBand() {
+      if (bandVisibleStale) {
+        for (const band of STROKE_BANDS) bandVisible[band] = 0;
+        chunks.forEach((chunk, i) => {
+          const band = bandOf[i];
+          if (band && chunk.mesh.visible) bandVisible[band] += chunk.drawCount;
+        });
+        bandVisibleStale = false;
+      }
+      return bandVisible;
     },
     visibleCount() {
       let visible = 0;
