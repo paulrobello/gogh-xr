@@ -7,6 +7,8 @@ uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 // Per brush: atlas uv min corner (xy) and size (zw), from brushUvRect().
 uniform vec4 uBrushRects[BRUSH_COUNT];
+// Distance-band stroke-size multiplier (P1.4).
+uniform float uSizeScale;
 
 // Unit quad corner in [-0.5, 0.5]²: x along the stroke, y across it.
 in vec3 position;
@@ -53,7 +55,8 @@ void main() {
   vec3 longAxis = cos(theta) * b1 + sin(theta) * b2;
   vec3 shortAxis = cross(n, longAxis);
 
-  vec3 local = iPosition + longAxis * (position.x * iSize.x) + shortAxis * (position.y * iSize.y);
+  vec2 size = iSize * uSizeScale;
+  vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));
 
   mat3 toWorld = mat3(modelMatrix);

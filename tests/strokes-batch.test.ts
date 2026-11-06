@@ -8,13 +8,19 @@ import {
   Scene,
 } from 'three';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { createStrokeBatch } from '../src/render/strokes/batch.ts';
+import {
+  DEFAULT_BAND_DENSITY,
+  DEFAULT_BAND_SIZE,
+  STROKE_BANDS,
+} from '../src/render/strokes/bands.ts';
+import { createStrokeBatch, type StrokeBatch } from '../src/render/strokes/batch.ts';
 import {
   createStrokeBuffers,
   packInstance,
   STROKE_LAYER,
   type StrokeBuffers,
 } from '../src/render/strokes/instance.ts';
+import { mulberry32 } from '../src/util/prng.ts';
 
 function tinyAtlas(): DataTexture {
   return new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat);
@@ -38,6 +44,70 @@ function row(count: number, zStart = -1): StrokeBuffers {
   return buffers;
 }
 
+/** `count` strokes within 0.4 m of `center`, facing +z: one chunk at 4 m cells. */
+function cluster(
+  count: number,
+  center: readonly [number, number, number],
+  seed = 1,
+): StrokeBuffers {
+  const rand = mulberry32(seed);
+  const buffers = createStrokeBuffers(count);
+  for (let i = 0; i < count; i++) {
+    packInstance(buffers, i, {
+      position: [
+        center[0] + (rand() - 0.5) * 0.8,
+        center[1] + (rand() - 0.5) * 0.8,
+        center[2] + (rand() - 0.5) * 0.8,
+      ],
+      normal: [0, 0, 1],
+      tangent: 0,
+      color: [200, 180, 40, 255],
+      size: [0.04, 0.02],
+      brush: i % 16,
+      layer: STROKE_LAYER.sky,
+      phase: 0,
+    });
+  }
+  return buffers;
+}
+
+function concat(...parts: StrokeBuffers[]): StrokeBuffers {
+  const out = createStrokeBuffers(parts.reduce((sum, b) => sum + b.count, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.position.set(part.position, at * 3);
+    out.normal.set(part.normal, at * 2);
+    out.tangent.set(part.tangent, at);
+    out.color.set(part.color, at * 4);
+    out.size.set(part.size, at * 2);
+    out.meta.set(part.meta, at * 4);
+    at += part.count;
+  }
+  return out;
+}
+
+/** A camera at the origin looking down -z with a 90 degree square frustum. */
+function originCamera(): PerspectiveCamera {
+  const camera = new PerspectiveCamera(90, 1, 0.05, 1000);
+  camera.updateMatrixWorld();
+  return camera;
+}
+
+/** Chunks of 100, 7 and 1 strokes in the near band, 50 in mid and 40 in far, all in view. */
+function bandedBatch(): StrokeBatch {
+  // Each cluster sits inside one 4 m cell.
+  return createStrokeBatch(
+    concat(
+      cluster(100, [1, 1, -3]),
+      cluster(7, [-1, 1, -3], 2),
+      cluster(1, [1, -1, -3], 3),
+      cluster(50, [2, 2, -14], 4),
+      cluster(40, [2, 2, -42], 5),
+    ),
+    { cellSize: 4, createAtlas: tinyAtlas },
+  );
+}
+
 function render(batch: ReturnType<typeof createStrokeBatch>, camera: PerspectiveCamera): void {
   camera.updateMatrixWorld();
   batch.update(camera);
@@ -55,7 +125,8 @@ describe('createStrokeBatch', () => {
     expect(batch.group.children).toHaveLength(4);
     expect(batch.atlas).toBe(atlas);
     for (const chunk of batch.chunks) {
-      expect(chunk.mesh.material).toBe(batch.material);
+      expect(chunk.band).toBeNull();
+      expect(chunk.mesh.material).toBe(batch.materials.near);
       expect(chunk.mesh.frustumCulled).toBe(false);
       expect(chunk.geometry.instanceCount).toBe(chunk.count);
       expect(chunk.drawCount).toBe(chunk.count);
@@ -67,10 +138,19 @@ describe('createStrokeBatch', () => {
       expect(chunk.geometry.getAttribute('iColor').normalized).toBe(true);
     }
     expect(batch.chunks.reduce((sum, c) => sum + c.count, 0)).toBe(16);
-    expect(batch.material.uniforms.uAtlas.value).toBe(atlas);
-    expect(batch.material.alphaToCoverage).toBe(true);
-    expect(batch.material.transparent).toBe(false);
-    expect(batch.material.depthWrite).toBe(true);
+    for (const band of STROKE_BANDS) {
+      const material = batch.materials[band];
+      expect(material.uniforms.uAtlas.value).toBe(atlas);
+      expect(material.uniforms.uSizeScale.value).toBe(DEFAULT_BAND_SIZE[band]);
+      expect(material.alphaToCoverage).toBe(true);
+      expect(material.transparent).toBe(false);
+      expect(material.depthWrite).toBe(true);
+      // Same source and defines: three compiles one program for all three bands.
+      expect(material.vertexShader).toBe(batch.materials.near.vertexShader);
+      expect(material.fragmentShader).toBe(batch.materials.near.fragmentShader);
+      expect(material.defines).toEqual(batch.materials.near.defines);
+    }
+    expect(new Set(STROKE_BANDS.map((b) => batch.materials[b])).size).toBe(3);
     batch.dispose();
   });
 
@@ -89,6 +169,159 @@ describe('createStrokeBatch', () => {
     expect(chunk.drawCount).toBe(4);
     chunk.setDrawCount(-3);
     expect(chunk.drawCount).toBe(0);
+    batch.dispose();
+  });
+});
+
+describe('bands', () => {
+  test('update puts each chunk in the band of its nearest point, with that band material', () => {
+    const batch = bandedBatch();
+    batch.update(originCamera());
+    expect(batch.chunks.map((c) => [c.count, c.band])).toEqual([
+      [7, 'near'],
+      [1, 'near'],
+      [40, 'far'],
+      [50, 'mid'],
+      [100, 'near'],
+    ]);
+    for (const chunk of batch.chunks) {
+      expect(chunk.mesh.material).toBe(batch.materials[chunk.band ?? 'near']);
+    }
+    batch.dispose();
+  });
+
+  test('setDensity sets every chunk in the band to exactly floor(d * count)', () => {
+    const batch = bandedBatch();
+    batch.update(originCamera());
+    const byCount = (n: number) => batch.chunks.find((c) => c.count === n);
+    const versions = batch.chunks.map(
+      (c) => (c.geometry.getAttribute('iPosition') as InstancedBufferAttribute).version,
+    );
+    expect(byCount(50)?.drawCount).toBe(Math.floor(DEFAULT_BAND_DENSITY.mid * 50));
+    expect(byCount(40)?.drawCount).toBe(Math.floor(DEFAULT_BAND_DENSITY.far * 40));
+
+    batch.setDensity('near', 0.29);
+    expect(batch.density('near')).toBe(0.29);
+    expect(byCount(100)?.drawCount).toBe(29);
+    expect(byCount(7)?.drawCount).toBe(2);
+    expect(byCount(1)?.drawCount).toBe(0);
+    expect(byCount(50)?.drawCount).toBe(Math.floor(DEFAULT_BAND_DENSITY.mid * 50));
+
+    batch.setDensity('near', 0.5);
+    expect(byCount(100)?.drawCount).toBe(50);
+    expect(byCount(7)?.drawCount).toBe(3);
+    batch.setDensity('mid', 2);
+    expect(batch.density('mid')).toBe(1);
+    expect(byCount(50)?.drawCount).toBe(50);
+    batch.setDensity('far', -1);
+    expect(batch.density('far')).toBe(0);
+    expect(byCount(40)?.drawCount).toBe(0);
+    expect(() => batch.setDensity('far', Number.NaN)).toThrow(RangeError);
+    expect(() => batch.setDensity('huge' as 'far', 0.5)).toThrow(RangeError);
+
+    // Only instance counts change: no attribute was rewritten or replaced.
+    batch.chunks.forEach((c, i) => {
+      expect((c.geometry.getAttribute('iPosition') as InstancedBufferAttribute).version).toBe(
+        versions[i],
+      );
+    });
+    // Later frames keep the counts while the bands hold.
+    batch.update(originCamera());
+    expect(byCount(100)?.drawCount).toBe(50);
+    batch.dispose();
+  });
+
+  test('visibleCount and the per-band stats agree with the drawn chunks', () => {
+    const batch = bandedBatch();
+    const camera = originCamera();
+    batch.update(camera);
+    const drawn = batch.chunks
+      .filter((c) => c.mesh.visible)
+      .reduce((sum, c) => sum + c.drawCount, 0);
+    expect(batch.visibleCount()).toBe(drawn);
+    const stats = batch.stats();
+    expect(stats.visible).toBe(drawn);
+    const bands = STROKE_BANDS.map((b) => stats.bands[b]);
+    expect(bands.reduce((sum, b) => sum + b.visible, 0)).toBe(stats.visible);
+    expect(bands.reduce((sum, b) => sum + b.chunks, 0)).toBe(stats.visibleChunks);
+    expect(stats.bands.near).toEqual({
+      d: 1,
+      size: DEFAULT_BAND_SIZE.near,
+      chunks: 3,
+      visible: 108,
+    });
+    batch.setDensity('near', 0.5);
+    expect(batch.visibleCount()).toBe(drawn - 108 + 53);
+    expect(batch.stats().bands.near.d).toBe(0.5);
+
+    // Facing away culls everything: nothing is drawn, whatever the densities.
+    camera.rotation.set(0, Math.PI, 0);
+    camera.updateMatrixWorld();
+    batch.update(camera);
+    expect(batch.visibleCount()).toBe(0);
+    expect(batch.stats().bands.near).toMatchObject({ chunks: 0, visible: 0 });
+    batch.dispose();
+  });
+
+  test('setSizeMultiplier drives the band uniform and widens its cull sphere', () => {
+    // One 1 x 1 m stroke in the mid band whose 1x bounds sit 0.7 m outside the left frustum plane.
+    const buffers = createStrokeBuffers(1);
+    packInstance(buffers, 0, {
+      position: [-7, 0.1, -5],
+      normal: [0, 0, 1],
+      tangent: 0,
+      color: [255, 255, 255, 255],
+      size: [1, 1],
+      brush: 0,
+      layer: STROKE_LAYER.sky,
+      phase: 0,
+    });
+    const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    const [chunk] = batch.chunks;
+    batch.setSizeMultiplier('mid', 1);
+    batch.update(originCamera());
+    expect(chunk.band).toBe('mid');
+    expect(chunk.mesh.visible).toBe(false);
+    batch.setSizeMultiplier('mid', 2.5);
+    expect(batch.sizeMultiplier('mid')).toBe(2.5);
+    expect(batch.materials.mid.uniforms.uSizeScale.value).toBe(2.5);
+    expect(batch.materials.near.uniforms.uSizeScale.value).toBe(DEFAULT_BAND_SIZE.near);
+    expect(batch.stats().bands.mid.size).toBe(2.5);
+    batch.update(originCamera());
+    expect(chunk.mesh.visible).toBe(true);
+    expect(() => batch.setSizeMultiplier('mid', 0)).toThrow(RangeError);
+    expect(() => batch.setSizeMultiplier('mid', Number.POSITIVE_INFINITY)).toThrow(RangeError);
+    batch.dispose();
+  });
+
+  test('a camera swaying 0.4 m across 6 m keeps the band; crossing by 1 m switches it once', () => {
+    const batch = createStrokeBatch(cluster(10, [2, 2, 2]), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+    });
+    const [chunk] = batch.chunks;
+    const { center, radius } = chunk.bounds;
+    const camera = new PerspectiveCamera(90, 1, 0.05, 1000);
+    const at = (distance: number) => {
+      camera.position.set(center.x, center.y, center.z + radius + distance);
+      camera.updateMatrixWorld();
+      batch.update(camera);
+      return chunk.band;
+    };
+    expect(at(6.2)).toBe('mid');
+    for (let step = 0; step < 100; step++) {
+      expect(at(6 + 0.4 * Math.sin(step))).toBe('mid');
+    }
+    const bands: (string | null)[] = [];
+    const materials: unknown[] = [];
+    for (const distance of [5.8, 5.4, 5.8, 6.4, 6.6, 6.2, 5.6, 5.4]) {
+      bands.push(at(distance));
+      materials.push(chunk.mesh.material);
+    }
+    expect(bands).toEqual(['mid', 'near', 'near', 'near', 'mid', 'mid', 'mid', 'near']);
+    expect(materials[1]).toBe(batch.materials.near);
+    expect(materials[4]).toBe(batch.materials.mid);
+    expect(chunk.drawCount).toBe(10);
     batch.dispose();
   });
 });
@@ -151,7 +384,7 @@ describe('update', () => {
 });
 
 describe('dispose', () => {
-  test('releases every chunk geometry, the material and the atlas', () => {
+  test('releases every chunk geometry, each band material and the atlas once', () => {
     const atlas = tinyAtlas();
     const batch = createStrokeBatch(row(16, -0.5), { cellSize: 4, createAtlas: () => atlas });
     const scene = new Scene();
@@ -159,14 +392,14 @@ describe('dispose', () => {
     batch.attach(scene);
     expect(scene.onBeforeRender).not.toBe(hook);
     const geometrySpies = batch.chunks.map((c) => vi.spyOn(c.geometry, 'dispose'));
-    const materialSpy = vi.spyOn(batch.material, 'dispose');
+    const materialSpies = STROKE_BANDS.map((b) => vi.spyOn(batch.materials[b], 'dispose'));
     const atlasSpy = vi.spyOn(atlas, 'dispose');
     const meshes: Mesh[] = batch.chunks.map((c) => c.mesh);
 
     batch.dispose();
 
     for (const spy of geometrySpies) expect(spy).toHaveBeenCalledTimes(1);
-    expect(materialSpy).toHaveBeenCalledTimes(1);
+    for (const spy of materialSpies) expect(spy).toHaveBeenCalledTimes(1);
     expect(atlasSpy).toHaveBeenCalledTimes(1);
     expect(batch.group.parent).toBeNull();
     expect(scene.onBeforeRender).toBe(hook);

@@ -1,6 +1,11 @@
 import { Frustum, Matrix4, PerspectiveCamera, Sphere, Vector3 } from 'three';
 import { describe, expect, test } from 'vitest';
-import { computeBounds, cullAndSort, partitionStrokes } from '../src/render/strokes/chunks.ts';
+import {
+  computeBounds,
+  cullAndSort,
+  partitionIndices,
+  partitionStrokes,
+} from '../src/render/strokes/chunks.ts';
 import { strokeAxes, type Vec3 } from '../src/render/strokes/frame.ts';
 import {
   createStrokeBuffers,
@@ -120,12 +125,37 @@ describe('partitionStrokes', () => {
     expect(partitionStrokes(createStrokeBuffers(0), 4)).toEqual([]);
     expect(() => partitionStrokes(buffers, 0)).toThrow(RangeError);
   });
+
+  test('rejects non-finite positions and cells beyond the packed range', () => {
+    const buffers = randomBuffers(3, 14);
+    buffers.position[4] = Number.NaN;
+    expect(() => partitionStrokes(buffers, 4)).toThrow(RangeError);
+    buffers.position[4] = 1e9;
+    expect(() => partitionStrokes(buffers, 4)).toThrow(RangeError);
+  });
+});
+
+describe('partitionIndices', () => {
+  test('groups stroke indices by cell in the order partitionStrokes returns', () => {
+    const source = randomBuffers(4000, 15);
+    const part = partitionIndices(source, 5);
+    const chunks = partitionStrokes(source, 5);
+    expect(part.offsets.length).toBe(chunks.length + 1);
+    expect(part.offsets[chunks.length]).toBe(source.count);
+    chunks.forEach((chunk, c) => {
+      expect([part.cells[c * 3], part.cells[c * 3 + 1], part.cells[c * 3 + 2]]).toEqual(chunk.cell);
+      expect(part.order.subarray(part.offsets[c], part.offsets[c + 1])).toEqual(
+        chunk.sourceIndices,
+      );
+    });
+  });
 });
 
 describe('computeBounds', () => {
   test('the sphere contains every quad corner of every stroke', () => {
     for (const chunk of partitionStrokes(randomBuffers(1500, 21), 4)) {
-      const { center, radius } = chunk.bounds;
+      const { center, radius, reach, halfDiagonal } = chunk.bounds;
+      expect(radius).toBe(reach + halfDiagonal);
       for (let i = 0; i < chunk.buffers.count; i++) {
         for (const c of corners(chunk.buffers, i)) {
           const d = Math.hypot(c[0] - center[0], c[1] - center[1], c[2] - center[2]);
@@ -150,6 +180,8 @@ describe('computeBounds', () => {
     const bounds = computeBounds(buffers);
     expect(bounds.center).toEqual([1, 2, 3]);
     expect(bounds.radius).toBeCloseTo(0.5, 6);
+    expect(bounds.reach).toBe(0);
+    expect(bounds.halfDiagonal).toBeCloseTo(0.5, 6);
   });
 });
 

@@ -7,6 +7,18 @@ interface StrokesDiag {
   total: number;
   visible: number;
   atlasMs: number;
+  bands: Record<
+    'near' | 'mid' | 'far',
+    { d: number; size: number; chunks: number; visible: number }
+  >;
+}
+
+/** The per-band diag splits the totals exactly. */
+function expectBandsSumToTotals(stats: StrokesDiag): void {
+  const bands = Object.values(stats.bands);
+  expect(bands).toHaveLength(3);
+  expect(bands.reduce((sum, b) => sum + b.visible, 0)).toBe(stats.visible);
+  expect(bands.reduce((sum, b) => sum + b.chunks, 0)).toBe(stats.visibleChunks);
 }
 
 async function strokes(xr: Xr): Promise<StrokesDiag> {
@@ -40,6 +52,9 @@ test('strokesTest renders its chunks in XR without WebGL errors', async ({ page,
   expect(stats.atlasMs).toBeGreaterThan(0);
   expect(stats.visible).toBeGreaterThan(0);
   expect(stats.visibleChunks).toBeLessThan(stats.chunks);
+  expectBandsSumToTotals(stats);
+  // The whole test scene lies within 6 m of the start pose.
+  expect(stats.bands.near.visible).toBe(stats.visible);
   test.info().annotations.push({ type: 'atlasMs', description: stats.atlasMs.toFixed(1) });
   console.log(`[e2e] strokes ${JSON.stringify(stats)}`);
   expect(await glErrors(page)).toEqual([]);
@@ -50,6 +65,7 @@ test('strokesTest renders its chunks in XR without WebGL errors', async ({ page,
   const turned = await strokes(xr);
   expect(turned.visible).toBeGreaterThan(0);
   expect(turned.visible).not.toBe(stats.visible);
+  expectBandsSumToTotals(turned);
   expect(await glErrors(page)).toEqual([]);
 });
 

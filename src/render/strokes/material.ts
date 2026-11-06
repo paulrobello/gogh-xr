@@ -16,6 +16,8 @@ export interface StrokeMaterialUniforms {
   uBrushRects: { value: Vector4[] };
   uMoonDir: { value: Vector3 };
   uRelief: { value: number };
+  /** Stroke-size multiplier: the quad's length and width scale by it. */
+  uSizeScale: { value: number };
 }
 
 export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUniforms };
@@ -24,7 +26,7 @@ export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUnifo
  * Opaque alpha-to-coverage stroke material: no blending, depth write on, back faces culled (each
  * quad faces its instance normal). Colours are written as given, like the bench material.
  */
-export function createStrokeMaterial(atlas: Texture): StrokeMaterial {
+export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMaterial {
   const uniforms: StrokeMaterialUniforms = {
     uAtlas: { value: atlas },
     uBrushRects: {
@@ -35,6 +37,7 @@ export function createStrokeMaterial(atlas: Texture): StrokeMaterial {
     },
     uMoonDir: { value: MOON_DIRECTION.clone() },
     uRelief: { value: RELIEF_STRENGTH },
+    uSizeScale: { value: sizeScale },
   };
   const material = new RawShaderMaterial({
     glslVersion: GLSL3,
