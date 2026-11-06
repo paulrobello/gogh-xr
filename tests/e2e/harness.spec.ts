@@ -14,7 +14,7 @@ test('IWER Quest 3 enters immersive VR and reports a right-trigger press', async
     expect(renderer).toMatch(/Apple|NVIDIA|AMD|Intel|Metal/);
   }
 
-  expect(before.xr.supported).toBe(true);
+  await expect.poll(async () => (await xr.diag()).xr.supported).toBe(true);
   await xr.enterXR();
   const presenting = await xr.diag();
   expect(presenting.xr.presenting).toBe(true);
