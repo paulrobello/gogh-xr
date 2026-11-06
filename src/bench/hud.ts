@@ -20,6 +20,7 @@ export interface BenchSnapshot {
   readonly mode: BenchMode;
   readonly order: BenchOrder;
   readonly sizePx: number;
+  readonly foveation: number;
   /** Eye viewport in device pixels, for converting size to degrees. */
   readonly viewport: { readonly width: number; readonly height: number } | null;
   readonly chunks: number;
@@ -52,12 +53,12 @@ export function formatHudLines(snap: BenchSnapshot, rates: HudRates): string[] {
   const supported = rates.supported?.length ? rates.supported.join('/') : 'n/a';
   const eye = snap.viewport ? `${snap.viewport.width}x${snap.viewport.height}` : 'n/a';
   return [
-    `N ${snap.n.toLocaleString('en-US')}  mode ${snap.mode}  order ${snap.order}  size ${snap.sizePx}px`,
+    `N ${snap.n.toLocaleString('en-US')}  mode ${snap.mode}  order ${snap.order}  size ${snap.sizePx}px  fov ${snap.foveation}`,
     `chunks ${snap.chunks}  instances ${snap.instances.toLocaleString('en-US')}  eye ${eye}`,
     `FPS ${snap.fps}  mean ${ms(snap.meanMs)}  p95 ${ms(snap.p95Ms)}  p99 ${ms(snap.p99Ms)} ms${snap.settling ? '  settling' : ''}`,
     `target ${rates.target} Hz  current ${rates.current ?? 'n/a'}  supported ${supported}`,
     gpu,
-    'stick: N +/- 25k  X: mode  Y: target Hz',
+    'stick: N +/-25k  X: mode  Y: Hz  A (right): foveation',
   ];
 }
 

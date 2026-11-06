@@ -1,4 +1,5 @@
 import type { BenchMode, BenchOrder } from '../diag/flags';
+import { FOVEATION } from '../xr/session';
 
 export const RESULTS_STORAGE_NAME = 'gogh-xr.bench.results.v1';
 /** Oldest results drop off past this many, so localStorage stays small. */
@@ -11,6 +12,8 @@ export interface BenchResult {
   readonly n: number;
   readonly sizePx: number;
   readonly targetHz: number;
+  /** Fixed foveation, 0 to 1. Results stored before it was recorded ran at the app default. */
+  readonly foveation?: number;
   /** The rate the session reported, which differs from the target when the request was refused. */
   readonly currentHz: number | null;
   readonly fps: number;
@@ -26,7 +29,7 @@ export interface ResultStore {
 }
 
 export function resultKey(r: BenchResult): string {
-  return [r.mode, r.order, r.n, r.sizePx, r.targetHz].join('|');
+  return [r.mode, r.order, r.n, r.sizePx, r.targetHz, r.foveation ?? FOVEATION].join('|');
 }
 
 /** Replaces any earlier result for the same settings and moves it to the end. */
@@ -76,5 +79,6 @@ function ms(value: number | null): string {
 
 export function formatResultLine(r: BenchResult): string {
   const n = r.n.toLocaleString('en-US');
-  return `${r.mode} ${n} ${r.targetHz}/${r.currentHz ?? '?'}Hz fps ${r.fps} p95 ${ms(r.p95Ms)} p99 ${ms(r.p99Ms)}`;
+  const fov = r.foveation ?? FOVEATION;
+  return `${r.mode} ${n} ${r.targetHz}/${r.currentHz ?? '?'}Hz f${fov} fps ${r.fps} p95 ${ms(r.p95Ms)} p99 ${ms(r.p99Ms)}`;
 }

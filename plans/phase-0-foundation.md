@@ -142,7 +142,7 @@ Pre-commit hooks: gitleaks and `detect-private-key` from `pre-commit/pre-commit-
   - `?bench=<N>&mode=a2c|blend&size=<px>` fills a full sphere around the viewer with N instanced stroke quads, uniform per solid angle, so every view direction is the worst case. Each settings combination records mean, p95 and p99 once its window settles, persisted in localStorage and shown on the HUD. Use one `InstancedMesh` per 64k-instance chunk and a procedural brush alpha.
     - `a2c` uses `alphaToCoverage: true` in an opaque pass.
     - `blend` uses sorted alpha blending.
-  - In XR, left stick X steps N by ±25k, the left X button toggles a2c and blend, and the left Y button steps the target frame rate through `supportedFrameRates`.
+  - In XR, left stick X steps N by ±25k, the left X button toggles a2c and blend, the left Y button steps the target frame rate through `supportedFrameRates`, and the right A button steps fixed foveation through 0, 0.5 and 1.
   - The HUD shows:
     - FPS (render callbacks per second);
     - mean and p99 frame ms;

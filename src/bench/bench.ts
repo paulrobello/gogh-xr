@@ -1,10 +1,11 @@
 import type { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
 import { registerDiag, unregisterDiag } from '../diag/diag';
 import { flags } from '../diag/flags';
-import { resolveTargetFrameRate, type XrState } from '../xr/session';
+import { FOVEATION, resolveTargetFrameRate, type XrState } from '../xr/session';
 import {
   type BenchConfig,
   defaultOrder,
+  nextFoveation,
   nextFrameRate,
   resolveBenchConfig,
   stepCount,
@@ -21,7 +22,16 @@ import {
   upsertResult,
 } from './results';
 import { FrameStats } from './stats';
-import { BUTTON_X, BUTTON_Y, buttonEdge, leftButtonPressed, leftStickX, stickStep } from './stick';
+import {
+  BUTTON_A,
+  BUTTON_X,
+  BUTTON_Y,
+  buttonEdge,
+  buttonPressed,
+  leftButtonPressed,
+  leftStickX,
+  stickStep,
+} from './stick';
 
 export interface BenchDeps {
   renderer: WebGLRenderer;
@@ -37,6 +47,7 @@ export interface BenchHandle {
   toggleMode(): void;
   cycleFrameRate(): void;
   targetFrameRate(): number;
+  cycleFoveation(): void;
   snapshot(): BenchSnapshot;
   results(): readonly BenchResult[];
   dispose(): void;
@@ -72,6 +83,8 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   let armed = true;
   let xDown = false;
   let yDown = false;
+  let aDown = false;
+  let foveation = FOVEATION;
   let lastHud = Number.NEGATIVE_INFINITY;
 
   function snapshot(): BenchSnapshot {
@@ -80,6 +93,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
       mode,
       order,
       sizePx,
+      foveation,
       viewport: lastEyeViewport(),
       chunks: field.meshes.length,
       instances: field.instanceCount(),
@@ -133,6 +147,13 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     });
   }
 
+  /** Steps fixed foveation 0 -> 0.5 -> 1; a lower level costs more fragment work at the edges. */
+  function cycleFoveation(): void {
+    foveation = nextFoveation(foveation);
+    renderer.xr.setFoveation(foveation);
+    restartMeasurement();
+  }
+
   /** Headset only: desktop frame timing says nothing about the Quest budget. */
   function recordIfSettled(): void {
     if (recorded || !renderer.xr.isPresenting || stats.settling()) return;
@@ -144,6 +165,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
       n: snap.n,
       sizePx: snap.sizePx,
       targetHz: targetFrameRate,
+      foveation,
       currentHz: deps.getXrState().frameRate,
       fps: snap.fps,
       meanMs: snap.meanMs,
@@ -191,6 +213,9 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
       const y = buttonEdge(yDown, leftButtonPressed(sources, BUTTON_Y));
       yDown = y.down;
       if (y.fired) cycleFrameRate();
+      const a = buttonEdge(aDown, buttonPressed(sources, 'right', BUTTON_A));
+      aDown = a.down;
+      if (a.fired) cycleFoveation();
     }
     drawHud(performance.now());
   };
@@ -203,6 +228,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     toggleMode,
     cycleFrameRate,
     targetFrameRate: () => targetFrameRate,
+    cycleFoveation,
     snapshot,
     results: () => results,
     dispose: () => {

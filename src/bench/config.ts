@@ -62,3 +62,11 @@ export function nextFrameRate(current: number, supported: readonly number[] | nu
   const sorted = [...supported].sort((a, b) => a - b);
   return sorted.find((rate) => rate > current) ?? sorted[0] ?? current;
 }
+
+/** Fixed-foveation levels the bench steps through: off, the app default, maximum. */
+export const FOVEATION_STEPS: readonly number[] = [0, 0.5, 1];
+
+/** The next foveation step above `current`, wrapping to the lowest. */
+export function nextFoveation(current: number): number {
+  return FOVEATION_STEPS.find((level) => level > current) ?? FOVEATION_STEPS[0] ?? 0;
+}

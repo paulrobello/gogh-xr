@@ -1,6 +1,7 @@
 import { PerspectiveCamera, Scene } from 'three';
 import { afterEach, expect, test, vi } from 'vitest';
 import { type BenchDeps, startBench } from '../src/bench/bench.ts';
+import { nextFoveation } from '../src/bench/config.ts';
 import {
   GPU_WARMUP_SAMPLES,
   GpuTimer,
@@ -15,13 +16,16 @@ import {
   MAX_RESULTS,
   RESULTS_STORAGE_NAME,
   type ResultStore,
+  resultKey,
   upsertResult,
 } from '../src/bench/results.ts';
 import { FrameStats, WARMUP_INTERVALS } from '../src/bench/stats.ts';
 import {
+  BUTTON_A,
   BUTTON_X,
   BUTTON_Y,
   buttonEdge,
+  buttonPressed,
   leftButtonPressed,
   leftStickX,
   stickStep,
@@ -335,6 +339,7 @@ const snap: BenchSnapshot = {
   mode: 'a2c',
   order: 'random',
   sizePx: 24,
+  foveation: 0.5,
   viewport: { width: 1680, height: 1760 },
   chunks: 2,
   instances: 100000,
@@ -349,7 +354,7 @@ const snap: BenchSnapshot = {
 
 test('HUD lines show N, mode, rates and the GPU timer state', () => {
   const lines = formatHudLines(snap, { target: 90, current: 90, supported: [72, 90, 120] });
-  expect(lines[0]).toBe('N 100,000  mode a2c  order random  size 24px');
+  expect(lines[0]).toBe('N 100,000  mode a2c  order random  size 24px  fov 0.5');
   expect(lines[1]).toBe('chunks 2  instances 100,000  eye 1680x1760');
   expect(lines[2]).toBe('FPS 90  mean 11.10  p95 11.30  p99 12.50 ms');
   expect(lines[3]).toBe('target 90 Hz  current 90  supported 72/90/120');
@@ -523,6 +528,47 @@ test('dispose removes a camera the bench added, and leaves a camera it did not a
   expect(own.camera.parent).toBe(own.scene);
 });
 
+test('cycleFoveation steps 0.5 -> 1 -> 0 -> 0.5, applies it, and keys results by it', () => {
+  const store = memoryStore();
+  const deps = presentingDeps(store);
+  const setFoveation = vi.fn();
+  (deps.renderer.xr as unknown as { setFoveation: typeof setFoveation }).setFoveation =
+    setFoveation;
+  const bench = startBench(deps, { n: 1000, mode: 'a2c', order: 'random', sizePx: 24, seed: 1 });
+  if (!bench) throw new Error('bench did not start');
+  benches.push(bench);
+  const clockState = { t: 0 };
+  runFrames(deps.scene, 600, clockState);
+  const seen: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    bench.cycleFoveation();
+    seen.push(bench.snapshot().foveation);
+    runFrames(deps.scene, 600, clockState);
+  }
+  expect(seen).toEqual([1, 0, 0.5]);
+  expect(setFoveation.mock.calls.map((call) => call[0])).toEqual([1, 0, 0.5]);
+  // 0.5 is re-recorded, so three keys remain, with 0.5 newest.
+  expect(bench.results().map((r) => r.foveation)).toEqual([1, 0, 0.5]);
+});
+
+test('the right A button reads the right gamepad only', () => {
+  const pad = (pressed: boolean) => ({
+    axes: [],
+    buttons: [0, 1, 2, 3, 4].map((i) => ({ pressed: pressed && i === BUTTON_A })),
+  });
+  const sources = [
+    { handedness: 'left', gamepad: pad(true) },
+    { handedness: 'right', gamepad: pad(false) },
+  ];
+  expect(buttonPressed(sources, 'right', BUTTON_A)).toBe(false);
+  expect(buttonPressed(sources, 'left', BUTTON_X)).toBe(true);
+  expect(nextFoveation(0)).toBe(0.5);
+  expect(nextFoveation(1)).toBe(0);
+  expect(resultKey({ ...baseResult, foveation: undefined })).toBe(
+    resultKey({ ...baseResult, foveation: 0.5 }),
+  );
+});
+
 test('startBench returns null without a bench config', () => {
   expect(startBench(fakeDeps())).toBeNull();
 });
@@ -646,7 +692,7 @@ test('results upsert by settings, cap the list, and survive corrupt storage', ()
   expect(many).toHaveLength(MAX_RESULTS);
   expect(many[0]?.n).toBe(5);
   expect(formatResultLine({ ...base, n: 225000, currentHz: null })).toBe(
-    'a2c 225,000 90/?Hz fps 90 p95 11.25 p99 12.50',
+    'a2c 225,000 90/?Hz f0.5 fps 90 p95 11.25 p99 12.50',
   );
 
   const storage = new Map<string, string>();
@@ -665,3 +711,17 @@ test('results upsert by settings, cap the list, and survive corrupt storage', ()
   expect(store.load()).toEqual([base]);
   expect(localResultStore(undefined).load()).toEqual([]);
 });
+
+const baseResult: BenchResult = {
+  mode: 'a2c',
+  order: 'random',
+  n: 1,
+  sizePx: 24,
+  targetHz: 90,
+  currentHz: 90,
+  fps: 90,
+  meanMs: 11,
+  p95Ms: 11,
+  p99Ms: 11,
+  recordedAt: 'x',
+};
