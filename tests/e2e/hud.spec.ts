@@ -29,6 +29,7 @@ interface Sample {
   frame: FrameDiag;
   governor?: GovernorDiag;
   canvas: { strokes: { visible: number } };
+  xr: { targetFrameRate: number | null };
 }
 
 /**
@@ -69,7 +70,7 @@ function ms(value: number | null): string {
 
 /** Parses the HUD text and checks every field against the diag's own fields. */
 function expectHudMatches(sample: Sample): void {
-  const { hud, frame, governor, canvas } = sample;
+  const { hud, frame, governor, canvas, xr } = sample;
   const lines = hud.text.split('\n');
   const line = (pattern: RegExp): RegExpExecArray => {
     const match = lines.map((l) => pattern.exec(l)).find((m) => m !== null);
@@ -85,7 +86,7 @@ function expectHudMatches(sample: Sample): void {
   const [, gpu, target] = line(/^gpu (n\/a|\d+\.\d+ ms) {3}target (\d+) Hz$/);
   const gpuMs = governor?.gpuMs ?? null;
   expect(gpu, 'gpu').toBe(gpuMs === null ? 'n/a' : `${gpuMs.toFixed(2)} ms`);
-  expect(Number(target), 'target Hz').toBe(governor ? governor.targetHz : 90);
+  expect(Number(target), 'target Hz').toBe(governor ? governor.targetHz : xr.targetFrameRate);
 
   const [, visible] = line(/^visible ([\d,]+) strokes$/);
   expect(Number(visible?.replaceAll(',', '')), 'visible strokes').toBe(canvas.strokes.visible);

@@ -25,6 +25,8 @@ export interface DiagDeps {
   renderer: DiagRenderer;
   camera: DiagCamera;
   getXrState: () => XrState;
+  /** The frame rate the app requests of an XR session (`?hz`, `?beauty`); null when unknown. */
+  targetFrameRate?: number;
 }
 
 declare global {
@@ -88,6 +90,7 @@ export function buildDiagPayload(deps: DiagDeps): Record<string, unknown> {
       presenting: renderer.xr.isPresenting,
       sessionMode: xr.sessionMode,
       frameRate: xr.frameRate,
+      targetFrameRate: deps.targetFrameRate ?? null,
       supportedFrameRates: xr.supportedFrameRates,
       foveation: renderer.xr.getFoveation?.() ?? null,
     },

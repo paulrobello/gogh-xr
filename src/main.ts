@@ -80,7 +80,13 @@ function renderFrame(time: number): void {
 renderer.setAnimationLoop(renderFrame);
 
 if (flags.diag) {
-  installDiag({ build: version, renderer, camera, getXrState: () => session.state });
+  installDiag({
+    build: version,
+    renderer,
+    camera,
+    getXrState: () => session.state,
+    targetFrameRate,
+  });
   const input = createInputCounter(renderer.xr);
   registerDiag('input', () => ({ selectstart: { ...input.selectstart } }));
 }

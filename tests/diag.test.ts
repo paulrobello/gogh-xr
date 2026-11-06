@@ -38,6 +38,7 @@ test('payload has build, renderer, xr and camera sections', () => {
     renderer: fakeRenderer(),
     camera,
     getXrState: () => xr,
+    targetFrameRate: 90,
   });
   expect(payload).toEqual({
     build: '0.1.0',
@@ -57,6 +58,7 @@ test('payload has build, renderer, xr and camera sections', () => {
       presenting: false,
       sessionMode: null,
       frameRate: 90,
+      targetFrameRate: 90,
       supportedFrameRates: [72, 90],
       foveation: 0.5,
     },
@@ -72,9 +74,13 @@ test('unmaskedRenderer is null without the extension; foveation null when unavai
     renderer,
     camera,
     getXrState: createXrState,
-  }) as { renderer: { unmaskedRenderer: unknown }; xr: { foveation: unknown } };
+  }) as {
+    renderer: { unmaskedRenderer: unknown };
+    xr: { foveation: unknown; targetFrameRate: unknown };
+  };
   expect(payload.renderer.unmaskedRenderer).toBeNull();
   expect(payload.xr.foveation).toBeNull();
+  expect(payload.xr.targetFrameRate).toBeNull();
 });
 
 test('registered sections are merged; throwing providers are contained', () => {
