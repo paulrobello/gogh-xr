@@ -90,9 +90,14 @@ if (flags.bench !== null) {
     .catch((error: unknown) => console.warn('bench failed to start', error));
 }
 
-/** Every scene with a stroke batch runs the governor, except the bench and `?nogov`. */
+let governed = false;
+/**
+ * Every scene with a stroke batch runs the governor, except the bench and `?nogov`. With two
+ * stroke scenes at once, the first batch to load is the one governed.
+ */
 async function governStrokes(batch: StrokeBatch): Promise<void> {
-  if (flags.nogov || flags.bench !== null || governor) return;
+  if (flags.nogov || flags.bench !== null || governed) return;
+  governed = true;
   const { startGovernor } = await import('./render/governor-runtime');
   governor = startGovernor({
     renderer,
