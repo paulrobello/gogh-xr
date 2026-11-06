@@ -2,7 +2,6 @@ import { Frustum, Matrix4, PerspectiveCamera, Sphere, Vector3 } from 'three';
 import { describe, expect, test } from 'vitest';
 import {
   computeBounds,
-  cullAndSort,
   cullAndSortInto,
   partitionIndices,
   partitionStrokes,
@@ -186,7 +185,32 @@ describe('computeBounds', () => {
   });
 });
 
-describe('cullAndSort', () => {
+/** The kept indices from `cullAndSortInto`, as a plain array. */
+function cullAndSort(spheres: readonly Sphere[], frustum: Frustum, eye: Vector3): number[] {
+  const order = new Uint32Array(spheres.length);
+  const distances = new Float64Array(spheres.length);
+  return Array.from(order.subarray(0, cullAndSortInto(spheres, frustum, eye, order, distances)));
+}
+
+/**
+ * The pre-M3 implementation, kept here as an independent reference: kept objects sorted with a
+ * comparator on distance, ties by index.
+ */
+function referenceCullAndSort(
+  spheres: readonly Sphere[],
+  frustum: Frustum,
+  eye: Vector3,
+): { index: number; distance: number }[] {
+  const kept: { index: number; distance: number }[] = [];
+  spheres.forEach((sphere, index) => {
+    if (frustum.intersectsSphere(sphere)) {
+      kept.push({ index, distance: sphere.center.distanceToSquared(eye) });
+    }
+  });
+  return kept.sort((a, b) => a.distance - b.distance || a.index - b.index);
+}
+
+describe('cullAndSortInto order', () => {
   function frustumFor(camera: PerspectiveCamera): Frustum {
     camera.updateMatrixWorld();
     const m = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -232,7 +256,7 @@ describe('cullAndSort', () => {
 });
 
 describe('cullAndSortInto', () => {
-  test('writes the cullAndSort order into the given arrays and returns the kept count', () => {
+  test('matches the comparator-sort reference on 300 spheres, distance ties included', () => {
     const rand = mulberry32(7);
     const camera = new PerspectiveCamera(80, 1.2, 0.05, 1000);
     const spheres: Sphere[] = [];
@@ -244,6 +268,7 @@ describe('cullAndSortInto', () => {
     }
     const order = new Uint32Array(spheres.length);
     const distances = new Float64Array(spheres.length);
+    let ties = 0;
     for (let heading = 0; heading < 8; heading++) {
       camera.position.set((rand() - 0.5) * 10, 1.6, (rand() - 0.5) * 10);
       camera.rotation.set(0, (heading * Math.PI) / 4, 0);
@@ -251,13 +276,14 @@ describe('cullAndSortInto', () => {
       const m = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       const frustum = new Frustum().setFromProjectionMatrix(m);
       const eye = new Vector3().setFromMatrixPosition(camera.matrixWorld);
-      const expected = cullAndSort(spheres, frustum, eye);
+      const expected = referenceCullAndSort(spheres, frustum, eye);
       const n = cullAndSortInto(spheres, frustum, eye, order, distances);
       expect(n).toBe(expected.length);
-      expect(Array.from(order.subarray(0, n))).toEqual(expected);
-      for (let k = 0; k < n; k++) {
-        expect(distances[k]).toBe(spheres[order[k]].center.distanceToSquared(eye));
-      }
+      expect(Array.from(order.subarray(0, n))).toEqual(expected.map((e) => e.index));
+      expect(Array.from(distances.subarray(0, n))).toEqual(expected.map((e) => e.distance));
+      for (let k = 1; k < n; k++) if (distances[k] === distances[k - 1]) ties++;
     }
+    // The tie-break is exercised, not just possible.
+    expect(ties).toBeGreaterThan(10);
   });
 });

@@ -158,20 +158,11 @@ export function partitionStrokes(
 }
 
 /**
- * Indices of the spheres that intersect `frustum`, nearest centre first, ties by index. Opaque
- * front-to-back order lets the depth test reject hidden strokes before shading. Allocates; the
- * per-frame path uses `cullAndSortInto`.
- */
-export function cullAndSort(spheres: readonly Sphere[], frustum: Frustum, eye: Vector3): number[] {
-  const order = new Uint32Array(spheres.length);
-  const distances = new Float64Array(spheres.length);
-  return Array.from(order.subarray(0, cullAndSortInto(spheres, frustum, eye, order, distances)));
-}
-
-/**
- * `cullAndSort` without allocating: writes the kept indices to `order` and their squared distances
- * to `distances`, both at least `spheres.length` long, and returns how many were kept. Sorts in
- * place by insertion on (distance, index), a total order, so the result matches `cullAndSort`.
+ * Indices of the spheres that intersect `frustum`, nearest centre first, ties by index: opaque
+ * front-to-back order lets the depth test reject hidden strokes before shading. Allocates nothing:
+ * writes the kept indices to `order` and their squared distances to `distances`, both at least
+ * `spheres.length` long, and returns how many were kept. Sorts in place by insertion on
+ * (distance, index), a total order.
  */
 export function cullAndSortInto(
   spheres: readonly Sphere[],
