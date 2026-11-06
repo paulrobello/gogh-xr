@@ -13,6 +13,7 @@ import {
   type Texture,
   Vector3,
 } from 'three';
+import { addBeforeRender } from '../scene-hooks';
 import {
   bandDrawCount,
   chunkDistance,
@@ -88,7 +89,8 @@ export interface StrokeBatch {
   /**
    * Adds the group to `scene` and culls it in `scene.onBeforeRender`, which three calls after
    * swapping in the XR ArrayCamera (whose frustum covers both eyes) and before it builds its render
-   * list. Chains any existing hook. A batch attaches to one scene at most.
+   * list. The hook goes through `scene-hooks.ts`, so other owners' hooks on the scene stay
+   * independent of it. A batch attaches to one scene at most.
    */
   attach(scene: Scene): void;
   /**
@@ -117,9 +119,8 @@ export interface StrokeBatch {
   visibleByBand(): Readonly<Record<StrokeBand, number>>;
   stats(): StrokeBatchStats;
   /**
-   * Releases every chunk geometry, the band materials and the atlas texture, and restores the
-   * scene's previous `onBeforeRender`. A hook chained on top after `attach` would be dropped with
-   * it.
+   * Releases every chunk geometry, the band materials and the atlas texture, and removes the
+   * batch's own render hook, leaving any other hook on the scene in place.
    */
   dispose(): void;
 }
@@ -282,14 +283,7 @@ export function createStrokeBatch(
     attach(scene: Scene) {
       if (detach) throw new Error('stroke batch is already attached to a scene');
       scene.add(group);
-      const previous = scene.onBeforeRender;
-      scene.onBeforeRender = function (this: Scene, ...args) {
-        previous.apply(this, args);
-        batch.update(args[2]);
-      };
-      detach = () => {
-        scene.onBeforeRender = previous;
-      };
+      detach = addBeforeRender(scene, (_renderer, _scene, camera) => batch.update(camera));
     },
     update(camera: Camera) {
       eye.setFromMatrixPosition(camera.matrixWorld);

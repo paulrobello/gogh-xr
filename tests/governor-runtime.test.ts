@@ -1,5 +1,6 @@
-import { Scene } from 'three';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { DataTexture, PerspectiveCamera, RGBAFormat, Scene } from 'three';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { GpuTimer } from '../src/bench/gpu-timer.ts';
 import { buildDiagPayload, type DiagDeps } from '../src/diag/diag.ts';
 import { RATE_NOTICE } from '../src/render/governor.ts';
 import {
@@ -10,6 +11,8 @@ import {
   startGovernor,
 } from '../src/render/governor-runtime.ts';
 import { DEFAULT_BAND_DENSITY, type StrokeBand } from '../src/render/strokes/bands.ts';
+import { createStrokeBatch } from '../src/render/strokes/batch.ts';
+import { createStrokeBuffers, packInstance, STROKE_LAYER } from '../src/render/strokes/instance.ts';
 import { createXrState } from '../src/xr/session.ts';
 
 class Listeners {
@@ -320,4 +323,102 @@ test('dispose unregisters the diag key and unwraps the layer', () => {
   runtime = null;
   expect(xr.layer.getViewport).toBe(original);
   expect(diagOf()).toBeUndefined();
+});
+
+describe('scene render hooks (M1)', () => {
+  function realBatch() {
+    const buffers = createStrokeBuffers(8);
+    for (let i = 0; i < 8; i++) {
+      packInstance(buffers, i, {
+        position: [0.5, 1.6, -1 - i],
+        normal: [0, 0, 1],
+        tangent: 0,
+        color: [200, 180, 40, 255],
+        size: [0.2, 0.1],
+        brush: i % 16,
+        layer: STROKE_LAYER.sky,
+        phase: 0,
+      });
+    }
+    return createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: () => new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat),
+    });
+  }
+
+  /** The batch culls, then the governor times the GPU, on one scene, both hooks chained. */
+  function setup() {
+    const scene = new Scene();
+    const before = vi.fn();
+    const after = vi.fn();
+    scene.onBeforeRender = before;
+    scene.onAfterRender = after;
+    const batch = realBatch();
+    batch.attach(scene);
+    const xr = new FakeXr();
+    xr.isPresenting = true;
+    const rt = startGovernor({
+      renderer: { xr, ...noTimer },
+      scene,
+      batch,
+      mode: 'default',
+      targetHz: 90,
+    });
+    xr.emit('sessionstart');
+    const update = vi.spyOn(batch, 'update');
+    const begin = vi.spyOn(GpuTimer.prototype, 'begin');
+    const end = vi.spyOn(GpuTimer.prototype, 'end');
+    const camera = new PerspectiveCamera(70, 1, 0.05, 100);
+    camera.updateMatrixWorld();
+    const args = [{}, scene, camera, null] as unknown as Parameters<Scene['onBeforeRender']>;
+    const render = (): void => {
+      scene.onBeforeRender(...args);
+      scene.onAfterRender(...args);
+    };
+    const calls = () => ({
+      before: before.mock.calls.length,
+      after: after.mock.calls.length,
+      update: update.mock.calls.length,
+      begin: begin.mock.calls.length,
+      end: end.mock.calls.length,
+    });
+    const clear = (): void => {
+      for (const spy of [before, after, update, begin, end]) spy.mockClear();
+    };
+    return { scene, batch, rt, render, calls, clear, before, after };
+  }
+
+  test('both run while attached', () => {
+    const { batch, rt, render, calls } = setup();
+    render();
+    expect(calls()).toEqual({ before: 1, after: 1, update: 1, begin: 1, end: 1 });
+    rt.dispose();
+    batch.dispose();
+  });
+
+  test('batch disposed first: the governor keeps its hooks, then the scene gets its own back', () => {
+    const { scene, batch, rt, render, calls, clear, before, after } = setup();
+    batch.dispose();
+    render();
+    expect(calls()).toEqual({ before: 1, after: 1, update: 0, begin: 1, end: 1 });
+    clear();
+    rt.dispose();
+    render();
+    expect(calls()).toEqual({ before: 1, after: 1, update: 0, begin: 0, end: 0 });
+    expect(scene.onBeforeRender).toBe(before);
+    expect(scene.onAfterRender).toBe(after);
+  });
+
+  test('governor disposed first: the batch keeps culling, then the scene gets its own back', () => {
+    const { scene, batch, rt, render, calls, clear, before, after } = setup();
+    rt.dispose();
+    render();
+    expect(calls()).toEqual({ before: 1, after: 1, update: 1, begin: 0, end: 0 });
+    clear();
+    batch.dispose();
+    render();
+    expect(calls()).toEqual({ before: 1, after: 1, update: 0, begin: 0, end: 0 });
+    expect(scene.onBeforeRender).toBe(before);
+    expect(scene.onAfterRender).toBe(after);
+  });
 });

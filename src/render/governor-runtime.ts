@@ -27,6 +27,7 @@ import {
   type GovernorSnapshot,
   RATE_NOTICE,
 } from './governor';
+import { addAfterRender, addBeforeRender } from './scene-hooks';
 import { STROKE_BANDS } from './strokes/bands';
 import type { StrokeBatch } from './strokes/batch';
 
@@ -57,7 +58,7 @@ export type GovernedBatch = Pick<StrokeBatch, 'setDensity' | 'setSizeMultiplier'
 
 export interface GovernorRuntimeDeps {
   renderer: GovernorRenderer;
-  /** GPU timing hooks chain onto its `onBeforeRender` and `onAfterRender`. */
+  /** GPU timing hooks on its `onBeforeRender` and `onAfterRender`, through `scene-hooks.ts`. */
   scene: Scene;
   batch: GovernedBatch;
   mode: GovernorMode;
@@ -181,16 +182,10 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   xr.addEventListener('sessionend', onEnd);
   reset();
 
-  const prevBefore = scene.onBeforeRender;
-  const prevAfter = scene.onAfterRender;
-  scene.onBeforeRender = function (this: Scene, ...args) {
-    prevBefore.apply(this, args);
+  const removeBefore = addBeforeRender(scene, () => {
     if (xr.isPresenting) timer.begin();
-  };
-  scene.onAfterRender = function (this: Scene, ...args) {
-    timer.end();
-    prevAfter.apply(this, args);
-  };
+  });
+  const removeAfter = addAfterRender(scene, () => timer.end());
 
   function diag(): GovernorDiag {
     const snap = governor.snapshot();
@@ -232,8 +227,8 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       session?.removeEventListener('visibilitychange', onVisibility);
       session?.removeEventListener('frameratechange', onFrameRate);
       session = null;
-      scene.onBeforeRender = prevBefore;
-      scene.onAfterRender = prevAfter;
+      removeBefore();
+      removeAfter();
       scaler?.uninstall();
       scaler = null;
       timer.dispose();
