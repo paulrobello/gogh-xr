@@ -1,5 +1,4 @@
-import type { Page } from '@playwright/test';
-import { expect, test, type Xr } from './fixtures';
+import { expect, glErrors, test, type Xr } from './fixtures';
 
 interface StrokesDiag {
   chunks: number;
@@ -25,20 +24,6 @@ async function strokes(xr: Xr): Promise<StrokesDiag> {
   // The test scene registers its diag key after an async chunk import.
   await expect.poll(async () => (await xr.diag()).strokes !== undefined).toBe(true);
   return (await xr.diag()).strokes as StrokesDiag;
-}
-
-/** Drains the GL error queue; the pageErrors fixture separately fails on console GL errors. */
-function glErrors(page: Page): Promise<number[]> {
-  return page.evaluate(() => {
-    const canvas = document.querySelector('canvas');
-    const gl = canvas?.getContext('webgl2');
-    if (!gl) throw new Error('no WebGL2 context on the app canvas');
-    const errors: number[] = [];
-    for (let e = gl.getError(); e !== gl.NO_ERROR && errors.length < 16; e = gl.getError()) {
-      errors.push(e);
-    }
-    return errors;
-  });
 }
 
 test('strokesTest renders its chunks in XR without WebGL errors', async ({ page, xr }) => {

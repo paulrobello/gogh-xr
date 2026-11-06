@@ -41,6 +41,20 @@ export interface Xr {
 const GL_ERROR =
   /GL_INVALID_|WebGL: INVALID_|CONTEXT_LOST|THREE\.WebGL(Program|Shader)|Shader Error/;
 
+/** Drains the GL error queue; the pageErrors fixture separately fails on console GL errors. */
+export function glErrors(page: Page): Promise<number[]> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('canvas');
+    const gl = canvas?.getContext('webgl2');
+    if (!gl) throw new Error('no WebGL2 context on the app canvas');
+    const errors: number[] = [];
+    for (let e = gl.getError(); e !== gl.NO_ERROR && errors.length < 16; e = gl.getError()) {
+      errors.push(e);
+    }
+    return errors;
+  });
+}
+
 function readDiag(page: Page): Promise<Diag> {
   return page.evaluate(() => {
     const diag = window.__goghDiag;

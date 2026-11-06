@@ -1,5 +1,11 @@
+import { PerspectiveCamera } from 'three';
 import { expect, test, vi } from 'vitest';
-import { requestLock } from '../src/desktop/controls.ts';
+import {
+  DEFAULT_DESKTOP_START,
+  installDesktopControls,
+  requestLock,
+} from '../src/desktop/controls.ts';
+import { EYE_HEIGHT } from '../src/desktop/walk.ts';
 
 function canvasWith(requestPointerLock: () => unknown): HTMLCanvasElement {
   return { requestPointerLock } as unknown as HTMLCanvasElement;
@@ -29,4 +35,14 @@ test('non-promise and throwing variants are tolerated', () => {
       }),
     ),
   ).not.toThrow();
+});
+
+test('the desktop viewer starts at the given floor position, or the default one', () => {
+  const at = (start?: { x: number; z: number }): number[] => {
+    const camera = new PerspectiveCamera();
+    installDesktopControls(document.createElement('canvas'), camera, start).update(0);
+    return camera.position.toArray();
+  };
+  expect(at()).toEqual([DEFAULT_DESKTOP_START.x, EYE_HEIGHT, DEFAULT_DESKTOP_START.z]);
+  expect(at({ x: 1, z: -2 })).toEqual([1, EYE_HEIGHT, -2]);
 });

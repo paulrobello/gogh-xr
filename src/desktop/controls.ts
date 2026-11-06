@@ -24,12 +24,16 @@ export interface DesktopControls {
   update(dt: number): void;
 }
 
+/** Where the desktop viewer starts on the floor, facing -z. */
+export const DEFAULT_DESKTOP_START: Readonly<{ x: number; z: number }> = { x: 0, z: 4 };
+
 export function installDesktopControls(
   canvas: HTMLCanvasElement,
   camera: PerspectiveCamera,
+  start: Readonly<{ x: number; z: number }> = DEFAULT_DESKTOP_START,
 ): DesktopControls {
   const input = emptyInput();
-  let pose: WalkPose = { x: 0, z: 4, yaw: 0, pitch: 0 };
+  let pose: WalkPose = { x: start.x, z: start.z, yaw: 0, pitch: 0 };
   camera.rotation.order = 'YXZ';
 
   function setKey(event: KeyboardEvent, down: boolean): void {

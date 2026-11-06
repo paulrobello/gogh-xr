@@ -36,7 +36,12 @@ document.body.appendChild(renderer.domElement);
 
 const scene = createBareScene();
 const camera = new PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 1000);
-const desktop = installDesktopControls(renderer.domElement, camera);
+// The test canvas stands in front of the XR origin, so the desktop viewer starts there too.
+const desktop = installDesktopControls(
+  renderer.domElement,
+  camera,
+  flags.demo === 'canvas' ? { x: 0, z: 0 } : undefined,
+);
 const session = createSessionController({
   renderer,
   xr: navigator.xr,
@@ -80,6 +85,12 @@ if (flags.strokesTest) {
   import('./render/strokes/test-scene')
     .then(({ startStrokesTest }) => startStrokesTest({ scene }))
     .catch((error: unknown) => console.warn('strokes test failed to start', error));
+}
+
+if (flags.demo === 'canvas') {
+  import('./demo/canvas/demo')
+    .then(({ startCanvasDemo }) => startCanvasDemo({ scene, seed: flags.seed }))
+    .catch((error: unknown) => console.warn('canvas demo failed to start', error));
 }
 
 void isVrSupported(navigator.xr).then((supported) => {

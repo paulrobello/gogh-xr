@@ -15,11 +15,14 @@ export interface Flags {
   readonly hz: TargetHz | null;
   /** Builds the small deterministic stroke-engine test scene. */
   readonly strokesTest: boolean;
+  /** `?demo=canvas`: the P1 test canvas, the painting re-painted in strokes. */
+  readonly demo: DemoName | null;
 }
 
 export type BenchMode = 'a2c' | 'blend';
 export type BenchOrder = 'sorted' | 'random';
 export type TargetHz = 72 | 90 | 120;
+export type DemoName = 'canvas';
 
 const TARGET_HZ: readonly number[] = [72, 90, 120];
 
@@ -53,6 +56,10 @@ function parseHz(raw: string | null): TargetHz | null {
   return value !== null && TARGET_HZ.includes(value) ? (value as TargetHz) : null;
 }
 
+function parseDemo(raw: string | null): DemoName | null {
+  return raw?.trim().toLowerCase() === 'canvas' ? 'canvas' : null;
+}
+
 /** Repeated keys resolve to the first occurrence. */
 export function parseFlags(search: string): Flags {
   const params = new URLSearchParams(search);
@@ -71,6 +78,7 @@ export function parseFlags(search: string): Flags {
     benchOrder: parseBenchOrder(params.get('order')),
     hz: parseHz(params.get('hz')),
     strokesTest: parseBool(params, 'strokesTest'),
+    demo: parseDemo(params.get('demo')),
   });
 }
 

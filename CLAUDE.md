@@ -33,6 +33,7 @@ Parsed in `src/diag/flags.ts`.
 - `?hz=72|90|120`: requested XR target frame rate (default 90). Quest 3 reports `supportedFrameRates` of 72, 80, 90 and 120. In the headset, the left controller's Y button steps the target through the supported rates.
 - `?shot`: boolean, honoured only together with `?diag`. Enables `window.__goghShot()` (canvas PNG data URL) and `preserveDrawingBuffer`. It takes no value.
 - `?strokesTest`: boolean. Builds the deterministic stroke-engine test scene (`src/render/strokes/test-scene.ts`): 6000 strokes over 14 chunks, including a sky wall at z = -2 and a building wall behind the viewer at z = +6. It registers `strokes` in `__goghDiag()`, reporting `{ chunks, visibleChunks, total, visible, atlasMs }`.
+- `?demo=canvas`: the P1 test canvas (`src/demo/canvas/`). It repaints the painting in about 200k strokes on a 4 × 3.17 m plane centred at (0, 1.6, -2.55), facing the XR origin. In this mode the desktop viewer starts at the origin too. Placement is deterministic for `?seed`, and no seed means seed 1. It registers `canvas` in `__goghDiag()`: `{ seed, count, decodeMs, placeMs, batchMs, buildMs, strokes }`, where `strokes` holds the batch stats. Capture the P1-A2 shot with `bun scripts/capture-shot.ts "http://localhost:PORT/?diag&shot&demo=canvas&noanim&seed=1" docs/shots/p1-canvas.png --wait canvas`.
 
 ## Model routing
 

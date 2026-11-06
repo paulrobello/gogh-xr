@@ -15,12 +15,13 @@ test('defaults when search is empty', () => {
     benchOrder: null,
     hz: null,
     strokesTest: false,
+    demo: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas',
   );
   expect(f).toEqual({
     seed: 42,
@@ -35,6 +36,7 @@ test('parses every flag', () => {
     benchOrder: 'random',
     hz: 120,
     strokesTest: true,
+    demo: 'canvas',
   });
 });
 
@@ -113,4 +115,14 @@ test('hz accepts 72, 90 and 120 only', () => {
   for (const bad of ['60', '80', '144', 'fast', '', '90.5']) {
     expect(parseFlags(`?hz=${bad}`).hz).toBeNull();
   }
+});
+
+test('demo accepts canvas only, anything else is null', () => {
+  expect(parseFlags('?demo=canvas').demo).toBe('canvas');
+  expect(parseFlags('?demo=Canvas').demo).toBe('canvas');
+  for (const bad of ['', 'sky', 'canvas2', '1']) {
+    expect(parseFlags(`?demo=${bad}`).demo).toBeNull();
+  }
+  expect(parseFlags('?demo').demo).toBeNull();
+  expect(parseFlags('').demo).toBeNull();
 });
