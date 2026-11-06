@@ -14,8 +14,11 @@ test('enter VR button reflects support and fires the callback', () => {
   let calls = 0;
   const on = createEnterVrButton(true, () => calls++);
   expect(on.textContent).toBe('Enter VR');
+  on.focus();
   on.click();
   expect(calls).toBe(1);
+  // Blurred after the click, so Space cannot press it again.
+  expect(document.activeElement).not.toBe(on);
   const off = createEnterVrButton(false, () => calls++);
   expect(off.disabled).toBe(true);
 });

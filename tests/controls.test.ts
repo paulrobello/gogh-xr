@@ -1,10 +1,6 @@
 import { PerspectiveCamera } from 'three';
 import { expect, test, vi } from 'vitest';
-import {
-  DEFAULT_DESKTOP_START,
-  installDesktopControls,
-  requestLock,
-} from '../src/desktop/controls.ts';
+import { installDesktopControls, requestLock } from '../src/desktop/controls.ts';
 import { EYE_HEIGHT } from '../src/desktop/walk.ts';
 
 function canvasWith(requestPointerLock: () => unknown): HTMLCanvasElement {
@@ -37,26 +33,24 @@ test('non-promise and throwing variants are tolerated', () => {
   ).not.toThrow();
 });
 
-test('the desktop viewer starts at the given floor position, or the default one', () => {
-  const at = (start?: { x: number; z: number }): number[] => {
-    const camera = new PerspectiveCamera();
-    installDesktopControls(document.createElement('canvas'), camera, start).update(0);
-    return camera.position.toArray();
-  };
-  expect(at()).toEqual([DEFAULT_DESKTOP_START.x, EYE_HEIGHT, DEFAULT_DESKTOP_START.z]);
-  expect(at({ x: 1, z: -2 })).toEqual([1, EYE_HEIGHT, -2]);
+test('the camera sits EYE_HEIGHT above its rig, looking level, until the mouse looks', () => {
+  const camera = new PerspectiveCamera();
+  installDesktopControls(document.createElement('canvas'), camera).update();
+  expect(camera.position.toArray()).toEqual([0, EYE_HEIGHT, 0]);
+  expect(camera.rotation.toArray().slice(0, 3)).toEqual([0, 0, 0]);
 });
 
-test('setPose places the eye exactly, straight down and up included', () => {
+test('setLook sets yaw and pitch exactly, straight down and up included', () => {
   const camera = new PerspectiveCamera();
   const controls = installDesktopControls(document.createElement('canvas'), camera);
-  controls.setPose(3, 30, -4, 0.5, -Math.PI / 2);
-  controls.update(0.016);
-  expect(camera.position.toArray()).toEqual([3, 30, -4]);
+  controls.setLook(0.5, -Math.PI / 2);
+  controls.update();
+  expect(camera.position.toArray()).toEqual([0, EYE_HEIGHT, 0]);
   expect(camera.rotation.x).toBe(-Math.PI / 2);
   expect(camera.rotation.y).toBe(0.5);
-  controls.setPose(0, 1.6, 0, 0, Math.PI / 2);
-  controls.update(0.016);
+  expect(camera.rotation.order).toBe('YXZ');
+  controls.setLook(0, Math.PI / 2);
+  controls.update();
   expect(camera.rotation.x).toBe(Math.PI / 2);
-  expect(camera.position.toArray()).toEqual([0, 1.6, 0]);
+  expect(camera.rotation.y).toBe(0);
 });

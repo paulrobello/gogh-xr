@@ -1,14 +1,5 @@
 import type { PerspectiveCamera } from 'three';
-import { applyLook, EYE_HEIGHT, emptyInput, stepWalk, type WalkInput, type WalkPose } from './walk';
-
-const KEY_MAP: Readonly<Record<string, keyof WalkInput>> = {
-  KeyW: 'forward',
-  KeyS: 'back',
-  KeyA: 'left',
-  KeyD: 'right',
-  ShiftLeft: 'sprint',
-  ShiftRight: 'sprint',
-};
+import { applyLook, EYE_HEIGHT, type Look } from './walk';
 
 /** Pointer lock is optional: keyboard walking works without it, so refusals are ignored. */
 export function requestLock(canvas: HTMLCanvasElement): void {
@@ -20,55 +11,42 @@ export function requestLock(canvas: HTMLCanvasElement): void {
   }
 }
 
+/**
+ * Desktop mouse look. The camera sits in the locomotion rig (src/locomotion/), which carries the
+ * position and the rig yaw, so these controls only write the camera's local transform: the eye
+ * EYE_HEIGHT above the rig, turned by the look yaw and pitch. Movement keys reach locomotion
+ * through the input action layer (src/xr/input.ts).
+ */
 export interface DesktopControls {
-  update(dt: number): void;
-  /**
-   * Puts the eye at (x, y, z) with the given yaw and pitch, exactly: pitch is not clamped, so
-   * ±π/2 looks straight up or down. Walking afterwards keeps the eye at y. The `?diag` pose hook
-   * (`__goghPose`) drives it.
-   */
-  setPose(x: number, y: number, z: number, yaw: number, pitch: number): void;
+  /** Writes the look onto the camera. Call once per desktop frame, before locomotion reads it. */
+  update(): void;
+  /** Sets the look exactly: pitch is not clamped, so ±π/2 looks straight up or down. */
+  setLook(yaw: number, pitch: number): void;
 }
-
-/** Where the desktop viewer starts on the floor, facing -z. */
-export const DEFAULT_DESKTOP_START: Readonly<{ x: number; z: number }> = { x: 0, z: 4 };
 
 export function installDesktopControls(
   canvas: HTMLCanvasElement,
   camera: PerspectiveCamera,
-  start: Readonly<{ x: number; z: number }> = DEFAULT_DESKTOP_START,
 ): DesktopControls {
-  const input = emptyInput();
-  let pose: WalkPose = { x: start.x, z: start.z, yaw: 0, pitch: 0 };
-  let eyeY = EYE_HEIGHT;
+  let look: Look = { yaw: 0, pitch: 0 };
   camera.rotation.order = 'YXZ';
 
-  function setKey(event: KeyboardEvent, down: boolean): void {
-    const action = KEY_MAP[event.code];
-    if (action) input[action] = down;
-  }
-
-  window.addEventListener('keydown', (event) => setKey(event, true));
-  window.addEventListener('keyup', (event) => setKey(event, false));
-  window.addEventListener('blur', () => Object.assign(input, emptyInput()));
   canvas.addEventListener('click', () => {
     if (document.pointerLockElement !== canvas) requestLock(canvas);
   });
   document.addEventListener('mousemove', (event) => {
     if (document.pointerLockElement === canvas) {
-      pose = applyLook(pose, event.movementX, event.movementY);
+      look = applyLook(look, event.movementX, event.movementY);
     }
   });
 
   return {
-    update(dt: number): void {
-      pose = stepWalk(pose, input, dt);
-      camera.position.set(pose.x, eyeY, pose.z);
-      camera.rotation.set(pose.pitch, pose.yaw, 0);
+    update(): void {
+      camera.position.set(0, EYE_HEIGHT, 0);
+      camera.rotation.set(look.pitch, look.yaw, 0);
     },
-    setPose(x: number, y: number, z: number, yaw: number, pitch: number): void {
-      pose = { x, z, yaw, pitch };
-      eyeY = y;
+    setLook(yaw: number, pitch: number): void {
+      look = { yaw, pitch };
     },
   };
 }

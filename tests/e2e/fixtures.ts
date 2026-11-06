@@ -20,7 +20,18 @@ export interface Diag {
   renderer: { frame: number; programs: number; unmaskedRenderer: string | null };
   xr: { supported: boolean | null; presenting: boolean; sessionMode: string | null };
   camera: { position: number[]; quaternion: number[] };
-  input?: { selectstart: Record<'none' | 'left' | 'right', number> };
+  input?: {
+    selectstart: Record<'none' | 'left' | 'right', number>;
+    /** The last Actions frame (src/xr/input.ts), null before the first rendered frame. */
+    actions: {
+      move: { x: number; y: number };
+      turn: { x: number; snap: number };
+      vertical: number;
+      select: { down: boolean; fired: boolean };
+      grip: { down: boolean; fired: boolean };
+      [key: string]: unknown;
+    } | null;
+  };
   [key: string]: unknown;
 }
 

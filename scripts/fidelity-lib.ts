@@ -27,7 +27,7 @@ export const GRID_COLS = 16;
 export const GRID_ROWS = 12;
 
 /**
- * The first accepted render (OQ6, ruling P7, provisional pending owner review Q4): the production
+ * The first accepted render (OQ6, accepted by Paul on 2026-11-06): the production
  * build at bf9d9a9 captured with `?painting=starry-night&diag&shot&noanim&seed=1&painter` at
  * 1280 × 1014 on ANGLE Metal, rounded to 4 decimals. See docs/verification.md P2-A2.
  */

@@ -16,7 +16,11 @@ export function createEnterVrButton(
     font: '16px system-ui, sans-serif',
     zIndex: '10',
   });
-  button.addEventListener('click', onEnter);
+  button.addEventListener('click', () => {
+    // A focused button would take the next Space, which desktop flight uses for up.
+    button.blur();
+    onEnter();
+  });
   doc.body.appendChild(button);
   return button;
 }

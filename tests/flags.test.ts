@@ -26,12 +26,13 @@ test('defaults when search is empty', () => {
     bare: false,
     coverage: false,
     painter: false,
+    seated: false,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated',
   );
   expect(f).toEqual({
     seed: 42,
@@ -57,6 +58,7 @@ test('parses every flag', () => {
     bare: true,
     coverage: true,
     painter: true,
+    seated: true,
   });
 });
 

@@ -37,6 +37,8 @@ export interface Flags {
   readonly coverage: boolean;
   /** `?painter`, with `?diag` and a world only: the desktop camera becomes the painter camera. */
   readonly painter: boolean;
+  /** `?seated`: seated mode, calibrated from the head height on the first XR frame. */
+  readonly seated: boolean;
 }
 
 export type BenchMode = 'a2c' | 'blend';
@@ -131,6 +133,7 @@ export function parseFlags(search: string): Flags {
     bare: parseBool(params, 'bare'),
     coverage: parseBool(params, 'coverage'),
     painter: parseBool(params, 'painter'),
+    seated: parseBool(params, 'seated'),
   });
 }
 

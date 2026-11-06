@@ -37,3 +37,47 @@ test('setPose moves the XR camera by the head offset', async ({ xr }) => {
   expect(end[1] - start[1]).toBeCloseTo(-0.4, 2);
   expect(end[2] - start[2]).toBeCloseTo(-0.3, 2);
 });
+
+test('the input layer reports the controller and the keyboard in diag', async ({ xr, page }) => {
+  await xr.boot();
+  await page.keyboard.down('KeyW');
+  await expect.poll(async () => (await xr.diag()).input?.actions?.move.y).toBe(1);
+  await page.keyboard.up('KeyW');
+  await expect.poll(async () => (await xr.diag()).input?.actions?.move.y).toBe(0);
+
+  await xr.enterXR();
+  // xr-standard: forward on the stick is negative Y, reported as move.y = +1.
+  await xr.stick('left', 0, -1);
+  await expect.poll(async () => (await xr.diag()).input?.actions?.move.y).toBeCloseTo(1, 6);
+  await xr.stick('left', 0, 0);
+  await xr.stick('right', 0, -1);
+  await expect.poll(async () => (await xr.diag()).input?.actions?.vertical).toBeCloseTo(1, 6);
+  await xr.stick('right', 0, 0);
+  await expect.poll(async () => (await xr.diag()).input?.actions?.vertical).toBe(0);
+});
+
+test('IWER trigger and squeeze reach select and grip at their xr-standard indices', async ({
+  xr,
+  page,
+}) => {
+  const hold = (button: string, value: number) =>
+    page.evaluate(([b, v]) => window.__goghIwer?.controllers.right?.updateButtonValue(b, v), [
+      button,
+      value,
+    ] as const);
+  await xr.boot();
+  await xr.enterXR();
+  const actions = async () => (await xr.diag()).input?.actions;
+
+  await hold('trigger', 1);
+  await expect.poll(async () => (await actions())?.select.down).toBe(true);
+  expect((await actions())?.grip.down).toBe(false);
+  await hold('trigger', 0);
+  await expect.poll(async () => (await actions())?.select.down).toBe(false);
+
+  await hold('squeeze', 1);
+  await expect.poll(async () => (await actions())?.grip.down).toBe(true);
+  expect((await actions())?.select.down).toBe(false);
+  await hold('squeeze', 0);
+  await expect.poll(async () => (await actions())?.grip.down).toBe(false);
+});

@@ -1,10 +1,11 @@
-import { PerspectiveCamera, WebGLRenderer } from 'three';
+import { PerspectiveCamera, Quaternion, Vector3, WebGLRenderer } from 'three';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { installDesktopControls } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
-import { EYE_HEIGHT } from './desktop/walk';
 import { installDiag, installPose, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
+import { createLocomotion } from './locomotion/locomotion';
+import { clampLocomotionSettings, DEFAULT_LOCOMOTION_SETTINGS } from './locomotion/settings';
 import { livePainting } from './paintings/registry';
 import type { PainterCamera, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
@@ -15,7 +16,9 @@ import { clearNotices, showNotice } from './ui/notice';
 import { busyWait } from './util/busy-wait';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
+import { type Actions, createInput } from './xr/input';
 import { createInputCounter } from './xr/input-counter';
+import { installKeyboardInput } from './xr/input-keyboard';
 import { createSessionController, isVrSupported, resolveTargetFrameRate } from './xr/session';
 
 // Must run before any WebXR code reads navigator.xr. The MODE guard keeps IWER out of production.
@@ -47,13 +50,19 @@ document.body.appendChild(renderer.domElement);
 const painting = flags.bench === null ? livePainting(flags.painting) : null;
 const scene = createBareScene(painting === null);
 const camera = new PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 1000);
-// The test canvas stands in front of the XR origin, so the desktop viewer starts there too. A
-// world moves it to the module's `spawnPose()` once the module loads, before it builds.
-const desktop = installDesktopControls(
-  renderer.domElement,
+const desktop = installDesktopControls(renderer.domElement, camera);
+/**
+ * The rig, the camera's parent, which locomotion moves (P3.2). It starts at the XR origin; a world
+ * moves it to the module's `spawnPose()` once the module loads, before it builds. The bench never
+ * runs locomotion, so its rig stays at the origin.
+ */
+const locomotion = createLocomotion({
+  scene,
   camera,
-  flags.demo === 'canvas' && !painting ? { x: 0, z: 0 } : undefined,
-);
+  look: desktop,
+  settings: clampLocomotionSettings({ ...DEFAULT_LOCOMOTION_SETTINGS, seated: flags.seated }),
+});
+const runLocomotion = flags.bench === null;
 /** `?painter` (fidelity capture): the world's painter camera, applied before the world builds. */
 let painterView: PainterCamera | null = null;
 // Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls.
@@ -101,37 +110,57 @@ const strokes = createStrokeBinding({
         },
 });
 let world: WorldModule | null = null;
+/** The input action layer; locomotion consumes it. */
+const input = createInput();
+const keyboard = installKeyboardInput(window, renderer.domElement, document).state;
+/** The last frame's actions, one object reused every frame (`input` diag key). */
+let actions: Actions | null = null;
 let lastTime = 0;
 /** Draw calls of the last animation frame's render, read right after it (`draw` diag key). */
 let drawCalls = 0;
 function renderFrame(time: number): void {
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
   lastTime = time;
+  const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
+  actions = input.read(sources, keyboard, dt);
   if (flags.slow > 0) busyWait(flags.slow);
   strokes.frame(time);
   world?.update(time / 1000, dt);
-  if (!renderer.xr.isPresenting) desktop.update(dt);
+  if (!renderer.xr.isPresenting) desktop.update();
+  if (runLocomotion) locomotion.frame(actions, renderer.xr.isPresenting);
   renderer.render(scene, camera);
   drawCalls = renderer.info.render.calls;
-  if (hud) {
-    const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
-    hud.frame(time, leftButtonPressed(sources, BUTTON_X));
-  }
+  hud?.frame(time, leftButtonPressed(sources, BUTTON_X));
 }
 renderer.setAnimationLoop(renderFrame);
 
 if (flags.diag) {
+  // The camera that rendered the last frame, in world space: in XR three's XR camera, whose
+  // matrices include the rig, and on the desktop the camera itself.
+  const view = { position: new Vector3(), quaternion: new Quaternion(), scale: new Vector3() };
+  const decomposeView = (): typeof view => {
+    const rendered = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+    rendered.matrixWorld.decompose(view.position, view.quaternion, view.scale);
+    return view;
+  };
   installDiag({
     build: version,
     renderer,
-    camera,
+    camera: {
+      position: { toArray: () => decomposeView().position.toArray() },
+      quaternion: { toArray: () => decomposeView().quaternion.toArray() },
+    },
     getXrState: () => session.state,
     targetFrameRate,
   });
-  const input = createInputCounter(renderer.xr);
-  registerDiag('input', () => ({ selectstart: { ...input.selectstart } }));
+  const counter = createInputCounter(renderer.xr);
+  registerDiag('input', () => ({
+    selectstart: { ...counter.selectstart },
+    actions: actions && structuredClone(actions),
+  }));
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
-  installPose((x, y, z, yaw, pitch) => desktop.setPose(x, y, z, yaw, pitch));
+  if (runLocomotion) registerDiag('rig', () => locomotion.diag());
+  installPose(locomotion.setPose);
 }
 if (flags.diag && flags.shot) {
   installShot(renderer.domElement, () => renderer.render(scene, camera));
@@ -195,16 +224,17 @@ if (flags.demo === 'canvas' && !painting) {
 }
 
 if (painting?.world) {
+  locomotion.awaitGround();
   const load = painting.world;
   Promise.all([load(), import('./demo/canvas/demo')])
     .then(async ([module, { loadRaster }]) => {
       // Before build, which registers the `world` diag key that captures wait for.
       if (flags.diag && flags.painter) {
         painterView = module.painterCamera();
-        applyPainterCamera(camera, desktop, painterView);
+        applyPainterCamera(camera, locomotion.setPose, painterView);
       } else {
         const { position, yaw } = module.spawnPose();
-        desktop.setPose(position[0], position[1] + EYE_HEIGHT, position[2], yaw, 0);
+        locomotion.spawn(position[0], position[1], position[2], yaw);
       }
       const handle = await module.build({
         scene,
@@ -215,9 +245,13 @@ if (painting?.world) {
         debug: flags.diag ? (flags.bare ? 'bare' : flags.coverage ? 'coverage' : null) : null,
       });
       world = module;
+      locomotion.setGround(handle.ground);
       await governStrokes(handle.batch);
     })
-    .catch((error: unknown) => console.warn(`painting ${painting.id} failed to start`, error));
+    .catch((error: unknown) => {
+      locomotion.setGround(null);
+      console.warn(`painting ${painting.id} failed to start`, error);
+    });
 }
 
 void isVrSupported(navigator.xr).then((supported) => {
