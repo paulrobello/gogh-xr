@@ -53,6 +53,7 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
   const { camera, scene, xr } = deps;
   const stats = new FrameStats();
   let lastFrame: number | null = null;
+  let disposed = false;
 
   const panel = new Group();
   panel.name = 'perf-hud';
@@ -99,6 +100,8 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
 
   /** The plate grows down from its top edge to fit the typeset block. */
   function fitPlate(): void {
+    // A sync started before dispose() can still complete after it.
+    if (disposed) return;
     const bounds = text.textRenderInfo?.blockBounds;
     if (!bounds) return;
     plate.scale.y = bounds[3] - bounds[1] + PAD * 2;
@@ -158,6 +161,8 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
       updater.tick(time, sample);
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       xr.removeEventListener('sessionstart', onSession);
       xr.removeEventListener('sessionend', onSession);
       unregisterDiag('hud');
