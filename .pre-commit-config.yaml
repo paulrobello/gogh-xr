@@ -3,7 +3,7 @@ repos:
     hooks:
       - id: gitleaks
         name: Scan staged secrets
-        entry: gitleaks git --staged --redact --no-banner
+        entry: gitleaks git --pre-commit --staged --redact --no-banner
         language: system
         pass_filenames: false
   - repo: https://github.com/pre-commit/pre-commit-hooks

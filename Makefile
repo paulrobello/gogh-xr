@@ -15,6 +15,7 @@ typecheck:
 checkall: lint typecheck test build bundle-check
 checkall-ci: checkall
 	gitleaks dir . --redact --no-banner
+	gitleaks git --redact --no-banner
 	bun audit --audit-level high
 	$(MAKE) asset-check
 # XRDevice and metaQuest3 survive only in sourcemaps; the other markers survive minification.
