@@ -29,7 +29,7 @@ Parsed in `src/diag/flags.ts`.
 - `&mode=a2c|blend`: benchmark transparency mode, alpha-to-coverage (default) or blended. In the headset, the left controller's X button toggles the mode and resets the order to that mode's default.
 - `&size=px`: benchmark stroke size in pixels (default 24).
 - `&order=sorted|random`: benchmark draw order. Default is random for a2c and sorted for blend.
-- `?hz=72|90|120`: requested XR target frame rate (default 90).
+- `?hz=72|90|120`: requested XR target frame rate (default 90). Quest 3 supports 70, 80, 90 and 120, so 72 is rejected and the session keeps its own rate. In the headset, the left controller's Y button steps the target through the supported rates.
 - `?shot`: boolean, honoured only together with `?diag`. Enables `window.__goghShot()` (canvas PNG data URL) and `preserveDrawingBuffer`. It takes no value.
 
 ## Model routing

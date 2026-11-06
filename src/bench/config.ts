@@ -55,3 +55,10 @@ export function chunkCounts(n: number, chunkSize: number = CHUNK_SIZE): number[]
 export function stepCount(n: number, step: number): number {
   return Math.min(BENCH_MAX, Math.max(0, n + step * N_STEP));
 }
+
+/** The next supported rate above `current`, wrapping to the lowest; `current` when none are known. */
+export function nextFrameRate(current: number, supported: readonly number[] | null): number {
+  if (!supported?.length) return current;
+  const sorted = [...supported].sort((a, b) => a - b);
+  return sorted.find((rate) => rate > current) ?? sorted[0] ?? current;
+}

@@ -54,7 +54,7 @@ export function formatHudLines(snap: BenchSnapshot, rates: HudRates): string[] {
     `FPS ${snap.fps}  mean ${ms(snap.meanMs)} ms  p99 ${ms(snap.p99Ms)} ms${snap.settling ? '  settling' : ''}`,
     `target ${rates.target} Hz  current ${rates.current ?? 'n/a'}  supported ${supported}`,
     gpu,
-    'left stick X: N +/- 25k',
+    'stick: N +/- 25k  X: mode  Y: target Hz',
   ];
 }
 

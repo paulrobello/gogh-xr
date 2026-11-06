@@ -7,6 +7,7 @@ import {
   DEFAULT_SEED,
   DEFAULT_SIZE_PX,
   defaultOrder,
+  nextFrameRate,
   parseBenchCount,
   resolveBenchConfig,
   resolveSeed,
@@ -99,4 +100,14 @@ test('bench count and stick stepping clamp to BENCH_MAX', () => {
   expect(stepCount(BENCH_MAX - 1, 1)).toBe(BENCH_MAX);
   expect(stepCount(BENCH_MAX, 4)).toBe(BENCH_MAX);
   expect(resolveBenchConfig(parseFlags('?bench=9999999999'))?.n).toBe(BENCH_MAX);
+});
+
+test('nextFrameRate steps up through supported rates and wraps to the lowest', () => {
+  const quest3 = [70, 80, 90, 120];
+  expect(nextFrameRate(90, quest3)).toBe(120);
+  expect(nextFrameRate(120, quest3)).toBe(70);
+  expect(nextFrameRate(72, quest3)).toBe(80);
+  expect(nextFrameRate(90, [120, 70])).toBe(120);
+  expect(nextFrameRate(90, null)).toBe(90);
+  expect(nextFrameRate(90, [])).toBe(90);
 });

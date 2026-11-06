@@ -23,8 +23,9 @@ export interface StickSource {
   } | null;
 }
 
-/** xr-standard gamepad mapping: buttons[4] is the lower face button, X on the left controller. */
-const FACE_BUTTON_LOWER = 4;
+/** xr-standard gamepad mapping: buttons[4] and [5] are the face buttons, X and Y on the left controller. */
+export const BUTTON_X = 4;
+export const BUTTON_Y = 5;
 
 export interface ButtonEdge {
   readonly down: boolean;
@@ -36,11 +37,14 @@ export function buttonEdge(wasDown: boolean, isDown: boolean): ButtonEdge {
   return { down: isDown, fired: isDown && !wasDown };
 }
 
-export function leftXPressed(sources: Iterable<StickSource> | null | undefined): boolean {
+export function leftButtonPressed(
+  sources: Iterable<StickSource> | null | undefined,
+  button: number,
+): boolean {
   if (!sources) return false;
   for (const source of sources) {
     if (source.handedness === 'left' && source.gamepad) {
-      return source.gamepad.buttons?.[FACE_BUTTON_LOWER]?.pressed ?? false;
+      return source.gamepad.buttons?.[button]?.pressed ?? false;
     }
   }
   return false;

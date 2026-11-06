@@ -2,13 +2,19 @@ import type { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
 import { registerDiag, unregisterDiag } from '../diag/diag';
 import { flags } from '../diag/flags';
 import { resolveTargetFrameRate, type XrState } from '../xr/session';
-import { type BenchConfig, defaultOrder, resolveBenchConfig, stepCount } from './config';
+import {
+  type BenchConfig,
+  defaultOrder,
+  nextFrameRate,
+  resolveBenchConfig,
+  stepCount,
+} from './config';
 import { buildStrokeField, type StrokeField } from './field';
 import { GpuTimer, type TimerGl } from './gpu-timer';
 import { type BenchSnapshot, createHud, formatHudLines, HUD_INTERVAL_MS } from './hud';
 import { lastEyeViewport } from './material';
 import { FrameStats } from './stats';
-import { buttonEdge, leftStickX, leftXPressed, stickStep } from './stick';
+import { BUTTON_X, BUTTON_Y, buttonEdge, leftButtonPressed, leftStickX, stickStep } from './stick';
 
 export interface BenchDeps {
   renderer: WebGLRenderer;
@@ -20,6 +26,8 @@ export interface BenchDeps {
 export interface BenchHandle {
   setCount(n: number): void;
   toggleMode(): void;
+  cycleFrameRate(): void;
+  targetFrameRate(): number;
   snapshot(): BenchSnapshot;
   dispose(): void;
 }
@@ -33,7 +41,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   const { renderer, scene, camera } = deps;
   const { sizePx, seed } = resolved;
   let { mode, order } = resolved;
-  const targetFrameRate = resolveTargetFrameRate(flags.hz);
+  let targetFrameRate = resolveTargetFrameRate(flags.hz);
   let n = resolved.n;
   let field: StrokeField = buildStrokeField({ n, mode, order, sizePx, seed });
   scene.add(field.group);
@@ -46,6 +54,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   const hud = createHud(camera);
   let armed = true;
   let xDown = false;
+  let yDown = false;
   let lastHud = Number.NEGATIVE_INFINITY;
 
   function snapshot(): BenchSnapshot {
@@ -88,6 +97,20 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     rebuild();
   }
 
+  /** Steps the requested rate through the session's supported rates; the HUD's current shows what applied. */
+  function cycleFrameRate(): void {
+    const session = renderer.xr.getSession();
+    const next = nextFrameRate(targetFrameRate, deps.getXrState().supportedFrameRates);
+    if (!session || typeof session.updateTargetFrameRate !== 'function' || next === targetFrameRate)
+      return;
+    targetFrameRate = next;
+    stats.reset();
+    timer.reset();
+    session.updateTargetFrameRate(next).catch((error: unknown) => {
+      console.warn(`updateTargetFrameRate(${next}) failed: ${String(error)}`);
+    });
+  }
+
   function drawHud(now: number): void {
     if (now - lastHud < HUD_INTERVAL_MS) return;
     lastHud = now;
@@ -118,9 +141,12 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
       const result = stickStep(armed, leftStickX(sources));
       armed = result.armed;
       if (result.step !== 0) setCount(stepCount(n, result.step));
-      const press = buttonEdge(xDown, leftXPressed(sources));
-      xDown = press.down;
-      if (press.fired) toggleMode();
+      const x = buttonEdge(xDown, leftButtonPressed(sources, BUTTON_X));
+      xDown = x.down;
+      if (x.fired) toggleMode();
+      const y = buttonEdge(yDown, leftButtonPressed(sources, BUTTON_Y));
+      yDown = y.down;
+      if (y.fired) cycleFrameRate();
     }
     drawHud(performance.now());
   };
@@ -130,6 +156,8 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   return {
     setCount,
     toggleMode,
+    cycleFrameRate,
+    targetFrameRate: () => targetFrameRate,
     snapshot,
     dispose: () => {
       scene.onBeforeRender = prevBefore;

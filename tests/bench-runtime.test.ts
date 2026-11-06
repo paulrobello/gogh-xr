@@ -9,7 +9,14 @@ import {
 } from '../src/bench/gpu-timer.ts';
 import { type BenchSnapshot, formatHudLines } from '../src/bench/hud.ts';
 import { FrameStats, WARMUP_INTERVALS } from '../src/bench/stats.ts';
-import { buttonEdge, leftStickX, leftXPressed, stickStep } from '../src/bench/stick.ts';
+import {
+  BUTTON_X,
+  BUTTON_Y,
+  buttonEdge,
+  leftButtonPressed,
+  leftStickX,
+  stickStep,
+} from '../src/bench/stick.ts';
 import { buildDiagPayload, type DiagRenderer } from '../src/diag/diag.ts';
 import { createXrState } from '../src/xr/session.ts';
 
@@ -109,7 +116,7 @@ test('left stick X reads axes[2] of the left-handed gamepad only', () => {
   expect(leftStickX(null)).toBe(0);
 });
 
-test('X button fires once per press and reads buttons[4] of the left gamepad only', () => {
+test('face buttons fire once per press and read the left gamepad only', () => {
   let down = false;
   const fired: boolean[] = [];
   for (const pressed of [false, true, true, false, true]) {
@@ -123,14 +130,20 @@ test('X button fires once per press and reads buttons[4] of the left gamepad onl
     buttons: [0, 1, 2, 3, 4].map((i) => ({ pressed: pressed && i === 4 })),
   });
   expect(
-    leftXPressed([
-      { handedness: 'right', gamepad: press(true) },
-      { handedness: 'left', gamepad: press(false) },
-    ]),
+    leftButtonPressed(
+      [
+        { handedness: 'right', gamepad: press(true) },
+        { handedness: 'left', gamepad: press(false) },
+      ],
+      BUTTON_X,
+    ),
   ).toBe(false);
-  expect(leftXPressed([{ handedness: 'left', gamepad: press(true) }])).toBe(true);
-  expect(leftXPressed([{ handedness: 'left', gamepad: { axes: [] } }])).toBe(false);
-  expect(leftXPressed(null)).toBe(false);
+  expect(leftButtonPressed([{ handedness: 'left', gamepad: press(true) }], BUTTON_X)).toBe(true);
+  expect(leftButtonPressed([{ handedness: 'left', gamepad: { axes: [] } }], BUTTON_X)).toBe(false);
+  expect(leftButtonPressed(null, BUTTON_X)).toBe(false);
+  const y = { axes: [], buttons: [0, 1, 2, 3, 4, 5].map((i) => ({ pressed: i === 5 })) };
+  expect(leftButtonPressed([{ handedness: 'left', gamepad: y }], BUTTON_Y)).toBe(true);
+  expect(leftButtonPressed([{ handedness: 'left', gamepad: y }], BUTTON_X)).toBe(false);
 });
 
 function fakeTimerGl(withExt: boolean) {
@@ -423,6 +436,53 @@ test('toggleMode swaps a2c and blend, resets order to the mode default, and rebu
   expect(material.transparent).toBe(true);
   bench.toggleMode();
   expect(bench.snapshot()).toMatchObject({ mode: 'a2c', order: 'random' });
+});
+
+test('cycleFrameRate steps through supported rates, wraps, and requests each from the session', () => {
+  const update = vi.fn(() => Promise.resolve());
+  const deps = fakeDeps();
+  const xr = { ...createXrState(), supportedFrameRates: [120, 70, 90, 80] };
+  const session = { updateTargetFrameRate: update };
+  const withSession: BenchDeps = {
+    ...deps,
+    renderer: {
+      ...deps.renderer,
+      xr: { isPresenting: true, getSession: () => session },
+    } as unknown as BenchDeps['renderer'],
+    getXrState: () => xr,
+  };
+  const bench = startBench(withSession, {
+    n: 1000,
+    mode: 'a2c',
+    order: 'random',
+    sizePx: 24,
+    seed: 1,
+  });
+  if (!bench) throw new Error('bench did not start');
+  benches.push(bench);
+  expect(bench.targetFrameRate()).toBe(90);
+  const seen: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    bench.cycleFrameRate();
+    seen.push(bench.targetFrameRate());
+  }
+  expect(seen).toEqual([120, 70, 80, 90]);
+  expect(update.mock.calls.map((call) => (call as unknown[])[0])).toEqual([120, 70, 80, 90]);
+  expect(bench.snapshot().settling).toBe(true);
+});
+
+test('cycleFrameRate keeps the target without a session or supported rates', () => {
+  const bench = startBench(fakeDeps(), {
+    n: 10,
+    mode: 'a2c',
+    order: 'random',
+    sizePx: 24,
+    seed: 1,
+  });
+  if (!bench) throw new Error('bench did not start');
+  benches.push(bench);
+  bench.cycleFrameRate();
+  expect(bench.targetFrameRate()).toBe(90);
 });
 
 test('dispose removes a camera the bench added, and leaves a camera it did not add', () => {
