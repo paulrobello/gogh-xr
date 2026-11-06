@@ -98,15 +98,19 @@ let governed = false;
 async function governStrokes(batch: StrokeBatch): Promise<void> {
   if (flags.nogov || flags.bench !== null || governed) return;
   governed = true;
-  const { startGovernor } = await import('./render/governor-runtime');
-  governor = startGovernor({
-    renderer,
-    scene,
-    batch,
-    mode: beauty ? 'beauty' : 'default',
-    targetHz: targetFrameRate,
-    notify: (message) => showNotice(message),
-  });
+  try {
+    const { startGovernor } = await import('./render/governor-runtime');
+    governor = startGovernor({
+      renderer,
+      scene,
+      batch,
+      mode: beauty ? 'beauty' : 'default',
+      targetHz: targetFrameRate,
+      notify: (message) => showNotice(message),
+    });
+  } catch (error) {
+    console.warn('quality governor failed to start', error);
+  }
 }
 
 if (flags.strokesTest) {
