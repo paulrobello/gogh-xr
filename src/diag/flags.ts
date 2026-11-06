@@ -1,7 +1,8 @@
 export interface Flags {
   readonly seed: number | null;
   readonly noanim: boolean;
-  readonly shot: number | null;
+  /** Enables `__goghShot()` in diag mode; carries no value. */
+  readonly shot: boolean;
   readonly diag: boolean;
   readonly hud: boolean;
   readonly iwer: boolean;
@@ -53,13 +54,12 @@ function parseHz(raw: string | null): TargetHz | null {
 /** Repeated keys resolve to the first occurrence. */
 export function parseFlags(search: string): Flags {
   const params = new URLSearchParams(search);
-  const shot = parseNumber(params.get('shot'));
   const bench = params.get('bench')?.trim();
   const size = parseNumber(params.get('size'));
   return Object.freeze({
     seed: parseNumber(params.get('seed')),
     noanim: parseBool(params, 'noanim'),
-    shot: shot !== null && shot >= 0 ? shot : null,
+    shot: parseBool(params, 'shot'),
     diag: parseBool(params, 'diag'),
     hud: parseBool(params, 'hud'),
     iwer: parseBool(params, 'iwer'),

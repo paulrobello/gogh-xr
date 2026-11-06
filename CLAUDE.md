@@ -19,6 +19,19 @@ A Meta Quest 3 WebXR experience built with three.js, Vite and bun. Requirements 
 - Never pipe a gate. Redirect to a file, capture the exit code, then tail the log.
 - No push without Paul's approval.
 
+## URL flags
+
+Parsed in `src/diag/flags.ts`.
+
+- `?diag`: installs `window.__goghDiag()` (renderer info, XR state, frame rates, camera pose, counts).
+- `?iwer`: installs the IWER Meta Quest 3 emulator. Only honoured in `--mode e2e` builds, never in production.
+- `?bench=N`: runs the stroke benchmark with N strokes (default 100000, capped at 2,000,000). A non-numeric value uses the default.
+- `&mode=a2c|blend`: benchmark transparency mode, alpha-to-coverage (default) or blended.
+- `&size=px`: benchmark stroke size in pixels (default 24).
+- `&order=sorted|random`: benchmark draw order. Default is random for a2c and sorted for blend.
+- `?hz=72|90|120`: requested XR target frame rate (default 90).
+- `?shot`: boolean, honoured only together with `?diag`. Enables `window.__goghShot()` (canvas PNG data URL) and `preserveDrawingBuffer`. It takes no value.
+
 ## Model routing
 
 Opus 5.5 for complex or visual work, Sonnet 5.5 otherwise.

@@ -5,7 +5,7 @@ test('defaults when search is empty', () => {
   expect(parseFlags('')).toEqual({
     seed: null,
     noanim: false,
-    shot: null,
+    shot: false,
     diag: false,
     hud: false,
     iwer: false,
@@ -19,12 +19,12 @@ test('defaults when search is empty', () => {
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot=1500&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120',
   );
   expect(f).toEqual({
     seed: 42,
     noanim: true,
-    shot: 1500,
+    shot: true,
     diag: true,
     hud: true,
     iwer: true,
@@ -38,18 +38,22 @@ test('parses every flag', () => {
 
 test('malformed numbers become null', () => {
   for (const bad of ['abc', '', '1e3', '0x10', 'NaN', 'Infinity', '12px', '1.2.3']) {
-    const f = parseFlags(`?seed=${bad}&shot=${bad}`);
-    expect(f.seed).toBeNull();
-    expect(f.shot).toBeNull();
+    expect(parseFlags(`?seed=${bad}`).seed).toBeNull();
   }
   expect(parseFlags('?seed').seed).toBeNull();
 });
 
-test('numbers accept sign and decimals; negative shot is null', () => {
+test('numbers accept sign and decimals', () => {
   expect(parseFlags('?seed=-7').seed).toBe(-7);
   expect(parseFlags('?seed=1.5').seed).toBe(1.5);
-  expect(parseFlags('?shot=-5').shot).toBeNull();
-  expect(parseFlags('?shot=0').shot).toBe(0);
+});
+
+test('shot is a boolean flag, off for 0 and false, and ignores any value', () => {
+  expect(parseFlags('?shot').shot).toBe(true);
+  expect(parseFlags('?shot=1500').shot).toBe(true);
+  expect(parseFlags('?shot=0').shot).toBe(false);
+  expect(parseFlags('?shot=false').shot).toBe(false);
+  expect(parseFlags('').shot).toBe(false);
 });
 
 test('repeated keys use the first occurrence', () => {

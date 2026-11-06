@@ -16,7 +16,7 @@ if (import.meta.env.MODE === 'e2e' && flags.iwer) {
 
 const renderer = new WebGLRenderer({
   antialias: true,
-  preserveDrawingBuffer: flags.shot !== null,
+  preserveDrawingBuffer: flags.diag && flags.shot,
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -54,7 +54,7 @@ if (flags.diag) {
   const input = createInputCounter(renderer.xr);
   registerDiag('input', () => ({ selectstart: { ...input.selectstart } }));
 }
-if (flags.shot !== null) {
+if (flags.diag && flags.shot) {
   installShot(renderer.domElement, () => renderer.render(scene, camera));
 }
 if (flags.bench !== null) {
