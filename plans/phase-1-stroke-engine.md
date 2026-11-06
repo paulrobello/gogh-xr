@@ -7,7 +7,7 @@ PRD: [P1](../PRD.md#p1--stroke-engine). Phase 1 builds the renderer that every w
 | Mode | Target | Drawn strokes (governor range) | Source |
 | --- | --- | --- | --- |
 | Default | 90 Hz | 325k (150k–325k) | P0.8, 2026-11-05: blend holds 325k and a2c 350k |
-| Max beauty | 72 Hz | 400k, provisional | P0.8: a2c holds 400k at 80 Hz. 72 Hz was not measured for a2c, and blend was only shown to hold 225k. |
+| Max beauty | 72 Hz | 500k (150k–500k) | P0.8, 2026-11-05: a2c holds 500k (525k fails). Blend holds 325k, so the 500k figure assumes the a2c path P1.3 uses. |
 | Authored world total | — | 1–1.5M across bands | Planning estimate. Only the strokes that LOD and culling keep get drawn, so the drawn count must stay inside the row above. |
 
 The budget counts drawn instances, not strokes on screen. The bench drew every instance with about half on screen, and foveation made no difference to frame time, so the cost is per instance, in the vertex stage. A stroke that is off screen but still submitted costs nearly as much as a visible one. P1.4 must therefore cull per chunk before the draw, not rely on the GPU to clip. Measured at 24 px, see [docs/perf.md](../docs/perf.md).
