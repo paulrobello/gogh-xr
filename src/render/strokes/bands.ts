@@ -20,7 +20,9 @@ const BAND_INDEX: Readonly<Record<StrokeBand, number>> = { near: 0, mid: 1, far:
 /**
  * Densities the governor starts from. The budget counts instances drawn per frame after culling
  * (ruling R9), so these are tuned on forward Quest-like views in the 1.2M-stroke reference world
- * of `tests/strokes-budget.test.ts`: every tested heading draws at most the default-mode maximum.
+ * of `tests/strokes-budget.test.ts`: every heading from the centre and from 10 m out draws inside
+ * the default-mode range. Views toward the boundary may fall outside it either way; the governor
+ * sheds the dense ones, and a sparse one simply draws less.
  */
 export const DEFAULT_BAND_DENSITY: Readonly<Record<StrokeBand, number>> = Object.freeze({
   near: 1,
@@ -41,7 +43,10 @@ export const DEFAULT_BAND_SIZE: Readonly<Record<StrokeBand, number>> = Object.fr
 export interface StrokeBudget {
   /** XR target frame rate. */
   readonly hz: number;
-  /** Fewest drawn instances the governor sheds to. */
+  /**
+   * The governor's shed limit: it never lowers density below the level that would draw this many
+   * (ruling R10). Not a per-view guarantee, since a sparse view cannot draw strokes it lacks.
+   */
   readonly min: number;
   /** Most drawn instances the mode holds its frame rate at. */
   readonly max: number;

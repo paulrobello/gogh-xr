@@ -92,24 +92,26 @@ describe('budget', () => {
     },
   );
 
-  test.each([0, 90, 180])(
-    'from 20 m out, heading %s, the defaults draw inside the 90 Hz budget',
+  test.each([0, 90, 180, 270])(
+    'from 10 m out, heading %s, the defaults draw inside the 90 Hz budget',
     (yaw) => {
-      const drawn = viewFrom(batch, 20, 0, yaw);
+      const drawn = viewFrom(batch, 10, 0, yaw);
       expect(drawn).toBeGreaterThanOrEqual(STROKE_BUDGET.default.min);
       expect(drawn).toBeLessThanOrEqual(STROKE_BUDGET.default.max);
     },
   );
 
-  test('from 20 m out facing the boundary the view holds fewer strokes than the floor', () => {
-    // Heading 270 faces +x, out to the boundary: 25 m of ground and the near side of the sky.
-    // Measured 108.7k at the defaults against 302.9k facing in (heading 90), a spread of 2.79.
-    // The budget allows 325/150 = 2.17, and near and mid sit at or close to 1 while far adds only
-    // about 6k per 0.1 here, so no uniform per-band defaults fit both. The floor is an open
-    // ruling for the coordinator; the maximum, the frame-rate constraint, holds on every view.
-    const drawn = viewFrom(batch, 20, 0, 270);
-    expect(drawn).toBeGreaterThan(0);
-    expect(drawn).toBeLessThan(STROKE_BUDGET.default.min);
+  // Governor territory (ruling R10). Toward the boundary, one heading's view can hold several
+  // times another's (2.8x at 20 m, 17x at 40 m), more than the budget's 325/150 spread, so no
+  // static defaults fit every view. The 150k floor is the governor's shed limit, not a per-view
+  // guarantee: a sparse view cannot draw strokes it does not have. Over-budget views are P1.6's
+  // to shed. These assert only which side of the budget each view lands on.
+  test('a sparse view facing the boundary from 20 m out draws under the floor', () => {
+    expect(viewFrom(batch, 20, 0, 270)).toBeLessThan(STROKE_BUDGET.default.min);
+  });
+
+  test('facing in from the boundary at 40 m the defaults exceed the maximum: P1.6 must shed', () => {
+    expect(viewFrom(batch, 40, 0, 90)).toBeGreaterThan(STROKE_BUDGET.default.max);
   });
 
   test('every band holds strokes, so each lever has something to pull', () => {
