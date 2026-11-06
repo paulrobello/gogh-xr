@@ -12,7 +12,8 @@
  * never sheds, so the frame-interval path stands alone.
  *
  * Shed order: far, mid, then near density, down to per-band minimums and never below the drawn
- * floor of the budget (ruling R10); framebuffer scale 1 to 0.85; foveation 0 to 0.5. After 3 s
+ * floor of the budget (ruling R10), skipping a band whose step would save under 2% of the drawn
+ * total; framebuffer scale 1 to 0.85; foveation 0 to 0.5. After 3 s
  * of continuous overrun with nothing left to shed, it requests 72 Hz once. The 72 Hz budget and
  * the notice take effect only when the runtime reports the request applied (`rateApplied`); a
  * failed request (`rateFailed`) leaves the rate step unavailable. Restore pops the shed stack, so
@@ -57,6 +58,11 @@ export const GPU_HEADROOM = 0.8;
 export const DENSITY_STEP = 0.7;
 /** A density step smaller than this counts as nothing left to shed in that band. */
 export const MIN_DENSITY_STEP = 0.01;
+/**
+ * A density step that would cut less than this share of the drawn total is skipped for the next
+ * band or step, so a sparse band does not spend a window on a shed that buys no time.
+ */
+export const MIN_SHED_YIELD = 0.02;
 /** Per-band density floors, so no band ever vanishes. */
 export const MIN_BAND_DENSITY: Readonly<Record<StrokeBand, number>> = Object.freeze({
   near: 0.25,
@@ -130,7 +136,10 @@ export interface GovernorSnapshot {
   level: number;
   /** The most recent step still shed, or 'none'. */
   step: GovernorStep | 'none';
-  /** No density step is left: every band is at its minimum or the floor binds. */
+  /**
+   * No density step is left: every band is at its minimum, the floor binds, or each remaining step
+   * would save under `MIN_SHED_YIELD` of the drawn total.
+   */
   densityMin: boolean;
   densities: Record<StrokeBand, number>;
   sizes: Record<StrokeBand, number>;
@@ -270,11 +279,18 @@ export function createGovernor(config: GovernorConfig): Governor {
     };
   }
 
-  /** The next density step, or null when every band is at its minimum or the floor binds. */
+  /**
+   * The next density step, or null when every band is at its minimum, the floor binds, or what is
+   * left would save under `MIN_SHED_YIELD` of the drawn total. A failed probe's shed-back skips this
+   * yield check (`shedBack`), so it always returns the step it restored.
+   */
   function nextDensityShed(drawn: Readonly<Record<StrokeBand, number>>): ShedEntry | null {
+    const total = drawn.near + drawn.mid + drawn.far;
     for (const band of DENSITY_ORDER) {
       const entry = densityShed(band, density[band] * DENSITY_STEP, drawn);
-      if (entry) return entry;
+      if (entry && drawn[band] * (1 - entry.to / entry.from) >= MIN_SHED_YIELD * total) {
+        return entry;
+      }
     }
     return null;
   }

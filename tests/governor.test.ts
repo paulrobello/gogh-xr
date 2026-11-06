@@ -8,6 +8,7 @@ import {
   type GovernorLevels,
   MAX_PROBE_WAIT_MS,
   MIN_BAND_DENSITY,
+  MIN_SHED_YIELD,
   RESTORE_HOLD_MS,
   WARMUP_MS,
 } from '../src/render/governor.ts';
@@ -148,6 +149,48 @@ describe('governor shedding', () => {
       until: () => true,
     });
     expect(events[0].step).toBe('mid-density');
+  });
+
+  /** 300k near, 100k mid and a sparse 4k far at the default densities, scaling with density. */
+  const sparseFar = (levels: GovernorLevels): Drawn => ({
+    near: Math.floor(300_000 * levels.density.near),
+    mid: Math.floor((100_000 * levels.density.mid) / DEFAULT_BAND_DENSITY.mid),
+    far: Math.floor((4_000 * levels.density.far) / DEFAULT_BAND_DENSITY.far),
+  });
+
+  test('a band whose shed would save under 2% of the drawn strokes is skipped (M5)', () => {
+    expect(MIN_SHED_YIELD).toBe(0.02);
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const { events } = drive(gov, 0, 5000, {
+      interval: () => OVER,
+      drawn: sparseFar,
+      until: () => true,
+    });
+    // Far would save 1.2k of 404k (0.3%); mid saves 30k (7%).
+    expect(events[0].step).toBe('mid-density');
+    expect(gov.levels.density.far).toBe(DEFAULT_BAND_DENSITY.far);
+  });
+
+  test('skipping a sparse band keeps the full shed and restore exactly reversible (M5)', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const shed = drive(gov, 0, 60_000, {
+      interval: () => OVER,
+      drawn: sparseFar,
+      until: (e) => e.step === 'foveation',
+    });
+    const sheds = summary(shed.events);
+    expect(sheds.some((s) => s.includes('far-density'))).toBe(false);
+    expect(sheds.at(-2)).toBe('shed fb-scale x1');
+    expect(sheds.at(-1)).toBe('shed foveation x1');
+    const restore = drive(gov, shed.t, 200_000, { interval: () => CLEAN, drawn: sparseFar });
+    expect(restore.events.map((e) => e.step)).toEqual(shed.events.map((e) => e.step).reverse());
+    for (let i = 0; i < restore.events.length; i++) {
+      const back = shed.events[shed.events.length - 1 - i];
+      expect(restore.events[i]).toMatchObject({ action: 'restore', from: back.to, to: back.from });
+    }
+    expect(gov.levels.density).toEqual(DEFAULT_BAND_DENSITY);
+    expect(gov.levels.size).toEqual(DEFAULT_BAND_SIZE);
+    expect(gov.snapshot().level).toBe(0);
   });
 
   test('a short overrun spike under 5% of budget on the window mean does not shed', () => {
