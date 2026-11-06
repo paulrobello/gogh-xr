@@ -69,7 +69,7 @@ test('strokesTest renders its chunks in XR without WebGL errors', async ({ page,
   expect(await glErrors(page)).toEqual([]);
 
   // Stepping back 20 m puts the whole scene 14-22 m away: the bands follow the XR eye into mid,
-  // drawing the mid material at half density.
+  // drawing the mid material.
   await xr.setPose({ head: { position: [0, 1.6, 20], quaternion: [0, 0, 0, 1] } });
   await xr.waitFrames(3);
   const back = await strokes(xr);
@@ -78,7 +78,18 @@ test('strokesTest renders its chunks in XR without WebGL errors', async ({ page,
   expect(back.bands.far.chunks).toBe(0);
   expect(back.bands.mid.visible).toBeGreaterThan(0);
   expect(back.visible).toBe(back.bands.mid.visible);
-  expect(back.visible).toBeLessThan(stats.visible);
+  expect(await glErrors(page)).toEqual([]);
+
+  // At 40 m every chunk is past 25.5 m: the far material draws, at the far band's lower density.
+  await xr.setPose({ head: { position: [0, 1.6, 40], quaternion: [0, 0, 0, 1] } });
+  await xr.waitFrames(3);
+  const far = await strokes(xr);
+  expectBandsSumToTotals(far);
+  expect(far.bands.near.chunks).toBe(0);
+  expect(far.bands.mid.chunks).toBe(0);
+  expect(far.bands.far.visible).toBeGreaterThan(0);
+  expect(far.visible).toBe(far.bands.far.visible);
+  expect(far.visible).toBeLessThan(back.visible);
   expect(await glErrors(page)).toEqual([]);
 });
 

@@ -264,6 +264,46 @@ describe('bands', () => {
     batch.dispose();
   });
 
+  test('before the first update nothing draws and the band sums already hold', () => {
+    const batch = bandedBatch();
+    for (const chunk of batch.chunks) expect(chunk.mesh.visible).toBe(false);
+    const stats = batch.stats();
+    expect(batch.visibleCount()).toBe(0);
+    expect(stats).toMatchObject({ chunks: 5, visibleChunks: 0, total: 198, visible: 0 });
+    for (const band of STROKE_BANDS) {
+      expect(stats.bands[band]).toMatchObject({ chunks: 0, visible: 0 });
+    }
+    batch.update(originCamera());
+    expect(batch.stats().visibleChunks).toBe(5);
+    batch.dispose();
+  });
+
+  test('a density set while chunks are culled holds once they come into view', () => {
+    const batch = bandedBatch();
+    const camera = originCamera();
+    camera.rotation.set(0, Math.PI, 0);
+    camera.updateMatrixWorld();
+    batch.update(camera);
+    expect(batch.visibleCount()).toBe(0);
+    batch.setDensity('near', 0.29);
+    const near = batch.chunks.filter((c) => c.band === 'near');
+    expect(near.map((c) => [c.count, c.drawCount])).toEqual([
+      [7, 2],
+      [1, 0],
+      [100, 29],
+    ]);
+    camera.rotation.set(0, 0, 0);
+    camera.updateMatrixWorld();
+    batch.update(camera);
+    expect(near.map((c) => [c.mesh.visible, c.drawCount])).toEqual([
+      [true, 2],
+      [true, 0],
+      [true, 29],
+    ]);
+    expect(batch.stats().bands.near).toMatchObject({ chunks: 3, visible: 31 });
+    batch.dispose();
+  });
+
   test('setSizeMultiplier drives the band uniform and widens its cull sphere', () => {
     // One 1 x 1 m stroke in the mid band whose 1x bounds sit 0.7 m outside the left frustum plane.
     const buffers = createStrokeBuffers(1);

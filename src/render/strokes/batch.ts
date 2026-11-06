@@ -40,7 +40,7 @@ export interface StrokeChunk {
   readonly drawCount: number;
   /** World-space bounds at size multiplier 1; chunk meshes stay at the identity transform. */
   readonly bounds: Sphere;
-  /** Distance band, `null` until the first `update`. */
+  /** Distance band, `null` until the first `update`; the mesh stays hidden until then. */
   readonly band: StrokeBand | null;
   /**
    * Draws the first `n` instances, clamped to 0..count. The band density overwrites it whenever
@@ -223,6 +223,8 @@ export function createStrokeBatch(
     const mesh = new Mesh(geometry, materials.near);
     mesh.name = `strokes-${cells[c * 3]}_${cells[c * 3 + 1]}_${cells[c * 3 + 2]}`;
     mesh.frustumCulled = false;
+    // Hidden until the first update has banded and culled it, so stats agree from construction.
+    mesh.visible = false;
     mesh.matrixAutoUpdate = false;
     mesh.renderOrder = c;
     group.add(mesh);

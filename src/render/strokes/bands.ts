@@ -18,13 +18,14 @@ const EDGES = [NEAR_BAND_MAX_M, MID_BAND_MAX_M] as const;
 const BAND_INDEX: Readonly<Record<StrokeBand, number>> = { near: 0, mid: 1, far: 2 };
 
 /**
- * Densities the governor starts from. Tuned so a full turn in the reference world of
- * `tests/strokes-budget.test.ts` (1.2M strokes) draws inside the default-mode budget.
+ * Densities the governor starts from. The budget counts instances drawn per frame after culling
+ * (ruling R9), so these are tuned on forward Quest-like views in the 1.2M-stroke reference world
+ * of `tests/strokes-budget.test.ts`: every tested heading draws at most the default-mode maximum.
  */
 export const DEFAULT_BAND_DENSITY: Readonly<Record<StrokeBand, number>> = Object.freeze({
   near: 1,
-  mid: 0.5,
-  far: 0.15,
+  mid: 0.9,
+  far: 0.4,
 });
 
 /**
@@ -33,8 +34,8 @@ export const DEFAULT_BAND_DENSITY: Readonly<Record<StrokeBand, number>> = Object
  */
 export const DEFAULT_BAND_SIZE: Readonly<Record<StrokeBand, number>> = Object.freeze({
   near: 1,
-  mid: 1.4,
-  far: 2.5,
+  mid: 1.05,
+  far: 1.6,
 });
 
 export interface StrokeBudget {
@@ -46,7 +47,10 @@ export interface StrokeBudget {
   readonly max: number;
 }
 
-/** Drawn-instance budgets per mode, from the P0.8 headset measurements (plans/phase-1). */
+/**
+ * Drawn-instance budgets per mode, from the P0.8 headset measurements (plans/phase-1). They count
+ * instances submitted per frame after culling for the actual view (ruling R9).
+ */
 export const STROKE_BUDGET: Readonly<Record<'default' | 'maxBeauty', StrokeBudget>> = Object.freeze(
   {
     default: Object.freeze({ hz: 90, min: 150_000, max: 325_000 }),
