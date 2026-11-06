@@ -150,11 +150,21 @@ test('the HUD matches diag within one update while the governor sheds, notice in
   expect(gap).toBeLessThan(500);
   expectHudMatches(next);
 
-  // At the bottom of the shed order the governor drops to 72 Hz and the HUD shows its notice.
+  // At the bottom of the shed order the governor drops to 72 Hz and the HUD shows its notice. The
+  // 72 Hz target and the notice commit in the updateTargetFrameRate callback, outside any frame,
+  // so the sample must come from an update after the read that first saw the notice.
+  let seenAt: number | null = null;
   await expect
-    .poll(async () => ((await xr.diag()).governor as GovernorDiag).notice, { timeout: 30_000 })
+    .poll(
+      async () => {
+        const diag = await xr.diag();
+        seenAt = (diag.hud as HudDiag).updatedAt;
+        return (diag.governor as GovernorDiag).notice;
+      },
+      { timeout: 30_000 },
+    )
     .toMatch(/72 Hz/);
-  const noticed = await alignedSample(page);
+  const noticed = await alignedSample(page, seenAt);
   expectHudMatches(noticed);
   expect(noticed.hud.text).toContain(noticed.governor?.notice ?? 'missing notice');
   expect(noticed.hud.text).toMatch(/target 72 Hz/);
