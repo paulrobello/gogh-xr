@@ -6,8 +6,15 @@ import { createLocomotion, type FrameActions } from '../src/locomotion/locomotio
 import { DEFAULT_LOCOMOTION_SETTINGS, type LocomotionSettings } from '../src/locomotion/settings';
 import type { Ground } from '../src/locomotion/step';
 
-const IDLE: FrameActions = { dt: 0.05, move: { x: 0, y: 0 }, sprint: false };
-const FORWARD: FrameActions = { dt: 0.05, move: { x: 0, y: 1 }, sprint: false };
+const IDLE: FrameActions = {
+  dt: 0.05,
+  move: { x: 0, y: 0 },
+  sprint: false,
+  turn: { x: 0, snap: 0 },
+};
+const FORWARD: FrameActions = { ...IDLE, move: { x: 0, y: 1 } };
+/** A right-stick push past the snap threshold, on its first frame. */
+const SNAP_RIGHT: FrameActions = { ...IDLE, turn: { x: 1, snap: 1 } };
 /** Rises 0.5 m per metre of -z. */
 const SLOPE: Ground = { heightAt: (_x, z) => -0.5 * z };
 
@@ -148,6 +155,132 @@ describe('XR movement', () => {
   });
 });
 
+describe('turning', () => {
+  it('a desktop snap (E) turns the rig 30° right about the eye, leaving the mouse look alone', () => {
+    const { camera, desktop, locomotion, desktopFrame, eye } = setup();
+    locomotion.spawn(1, 0, -2, 0);
+    desktop.setLook(0.4, 0.1);
+    desktopFrame(IDLE);
+    const before = eye();
+    desktopFrame(SNAP_RIGHT);
+    expect(locomotion.diag().yaw).toBeCloseTo(-Math.PI / 6, 14);
+    expect(locomotion.rig.rotation.y).toBeCloseTo(-Math.PI / 6, 14);
+    const after = eye();
+    for (let i = 0; i < 3; i += 1) expect(after[i]).toBeCloseTo(before[i] as number, 12);
+    // The look is the camera's own rotation, inside the rig.
+    expect(camera.rotation.y).toBeCloseTo(0.4, 14);
+  });
+
+  it('an XR snap pivots on the head read from the camera, so the rendered eye stays put', () => {
+    const { camera, locomotion, xrFrame, scene } = setup();
+    locomotion.spawn(1, 0, 2, 0.5);
+    const head = new Vector3(0.5, 1.5, -0.4);
+    xrFrame(IDLE, head);
+    scene.updateMatrixWorld();
+    const before = camera.getWorldPosition(new Vector3());
+    xrFrame(SNAP_RIGHT, head);
+    scene.updateMatrixWorld();
+    const after = camera.getWorldPosition(new Vector3());
+    expect(locomotion.diag().yaw).toBeCloseTo(0.5 - Math.PI / 6, 14);
+    expect(after.x).toBeCloseTo(before.x, 12);
+    expect(after.y).toBeCloseTo(before.y, 12);
+    expect(after.z).toBeCloseTo(before.z, 12);
+  });
+
+  it('smooth mode turns continuously and ignores the snap request', () => {
+    const { locomotion, desktopFrame } = setup({
+      ...DEFAULT_LOCOMOTION_SETTINGS,
+      turnMode: 'smooth',
+    });
+    for (let i = 0; i < 20; i += 1) desktopFrame(SNAP_RIGHT);
+    expect(locomotion.diag().yaw).toBeCloseTo(-Math.PI / 2, 12);
+    expect(locomotion.diag().turnMode).toBe('smooth');
+  });
+});
+
+describe('the vignette', () => {
+  /** A rig whose vignette records every alpha it is given. */
+  function withVignette(settings: LocomotionSettings = DEFAULT_LOCOMOTION_SETTINGS) {
+    const alphas: number[] = [];
+    const scene = new Scene();
+    const camera = new PerspectiveCamera();
+    const desktop = installDesktopControls(document.createElement('canvas'), camera);
+    const vignette = { setAlpha: (alpha: number) => void alphas.push(alpha) };
+    const locomotion = createLocomotion({ scene, camera, look: desktop, settings, vignette });
+    const head = new Vector3(0, 1.6, 0);
+    const xr = (actions: FrameActions, frames = 1): number => {
+      for (let i = 0; i < frames; i += 1) {
+        camera.position.copy(head);
+        locomotion.frame(actions, true);
+      }
+      return locomotion.diag().vignette;
+    };
+    const flat = (actions: FrameActions, frames = 1): number => {
+      for (let i = 0; i < frames; i += 1) {
+        desktop.update();
+        locomotion.frame(actions, false);
+      }
+      return locomotion.diag().vignette;
+    };
+    return { alphas, xr, flat };
+  }
+  const SMOOTH_RIGHT: FrameActions = { ...IDLE, turn: { x: 1, snap: 0 } };
+
+  it('is exactly 0 at rest, and drives the mesh with that 0', () => {
+    const { alphas, xr } = withVignette();
+    expect(xr(IDLE, 20)).toBe(0);
+    expect(alphas).toHaveLength(20);
+    expect(alphas.every((alpha) => alpha === 0)).toBe(true);
+  });
+
+  it('rises with smooth-move speed to the full 0.6 strength at full stick, never above', () => {
+    const { alphas, xr } = withVignette();
+    expect(xr(FORWARD)).toBeGreaterThan(0);
+    xr(FORWARD, 40);
+    expect(xr(FORWARD)).toBeCloseTo(0.6, 6);
+    expect(Math.max(...alphas)).toBeLessThanOrEqual(0.6);
+    for (let i = 1; i < alphas.length; i += 1) {
+      expect(alphas[i] as number).toBeGreaterThanOrEqual(alphas[i - 1] as number);
+    }
+    // Half stick: half the comfort factor, at any move speed setting.
+    const half: FrameActions = { ...IDLE, move: { x: 0, y: 0.5 } };
+    expect(withVignette().xr(half, 40)).toBeCloseTo(0.3, 6);
+    const slow = { ...DEFAULT_LOCOMOTION_SETTINGS, moveSpeed: 1 };
+    expect(withVignette(slow).xr(FORWARD, 40)).toBeCloseTo(0.6, 6);
+  });
+
+  it('rises to the full strength at the full smooth-turn rate, and follows the strength', () => {
+    expect(withVignette().xr({ ...IDLE, turn: { x: 1, snap: 0 } }, 1)).toBe(0);
+    const smooth = { ...DEFAULT_LOCOMOTION_SETTINGS, turnMode: 'smooth' as const };
+    expect(withVignette(smooth).xr(SMOOTH_RIGHT, 60)).toBeCloseTo(0.6, 6);
+    expect(withVignette({ ...smooth, vignette: 1 }).xr(SMOOTH_RIGHT, 60)).toBeCloseTo(1, 6);
+    expect(withVignette({ ...smooth, vignette: 0 }).xr(SMOOTH_RIGHT, 60)).toBe(0);
+  });
+
+  it('adds nothing for a snap turn', () => {
+    const { xr } = withVignette();
+    expect(xr(SNAP_RIGHT)).toBe(0);
+    expect(xr(IDLE, 5)).toBe(0);
+  });
+
+  it('eases back to exactly 0 within a second of stopping', () => {
+    const { alphas, xr } = withVignette();
+    xr(FORWARD, 40);
+    expect(xr(IDLE)).toBeGreaterThan(0.2);
+    // 20 frames of 50 ms.
+    expect(xr(IDLE, 20)).toBe(0);
+    expect(alphas.at(-1)).toBe(0);
+  });
+
+  it('shows in XR only: never on the desktop, and gone at once when the session ends', () => {
+    const { alphas, xr, flat } = withVignette();
+    expect(flat(FORWARD, 40)).toBe(0);
+    expect(xr(FORWARD, 40)).toBeGreaterThan(0.3);
+    expect(flat(FORWARD)).toBe(0);
+    expect(alphas.at(-1)).toBe(0);
+  });
+});
+
 describe('seated mode', () => {
   const SEATED = { ...DEFAULT_LOCOMOTION_SETTINGS, seated: true };
 
@@ -207,6 +340,8 @@ describe('diag', () => {
       seated: false,
       grounded: true,
       speed: 2,
+      turnMode: 'snap',
+      vignette: 0,
     });
     expect(first.position).toHaveLength(3);
     desktopFrame(IDLE);

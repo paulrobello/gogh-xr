@@ -27,12 +27,13 @@ test('defaults when search is empty', () => {
     coverage: false,
     painter: false,
     seated: false,
+    turn: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth',
   );
   expect(f).toEqual({
     seed: 42,
@@ -59,6 +60,7 @@ test('parses every flag', () => {
     coverage: true,
     painter: true,
     seated: true,
+    turn: 'smooth',
   });
 });
 
@@ -217,4 +219,13 @@ test('bare and coverage are boolean flags, off for 0 and false', () => {
     expect(parseFlags(`?${key}=false`)[key]).toBe(false);
     expect(parseFlags('')[key]).toBe(false);
   }
+});
+
+test('turn is snap or smooth, trimmed and lower-cased, null when absent or unknown', () => {
+  expect(parseFlags('?turn=smooth').turn).toBe('smooth');
+  expect(parseFlags('?turn=%20Smooth%20').turn).toBe('smooth');
+  expect(parseFlags('?turn=snap').turn).toBe('snap');
+  expect(parseFlags('?turn=spin').turn).toBeNull();
+  expect(parseFlags('?turn').turn).toBeNull();
+  expect(parseFlags('').turn).toBeNull();
 });

@@ -1,3 +1,5 @@
+import type { TurnMode } from '../locomotion/settings';
+
 export interface Flags {
   readonly seed: number | null;
   readonly noanim: boolean;
@@ -39,6 +41,8 @@ export interface Flags {
   readonly painter: boolean;
   /** `?seated`: seated mode, calibrated from the head height on the first XR frame. */
   readonly seated: boolean;
+  /** `?turn=snap|smooth`: the turn mode. null means the settings default (snap). */
+  readonly turn: TurnMode | null;
 }
 
 export type BenchMode = 'a2c' | 'blend';
@@ -99,6 +103,11 @@ function parseDemo(raw: string | null): DemoName | null {
   return raw?.trim().toLowerCase() === 'canvas' ? 'canvas' : null;
 }
 
+function parseTurn(raw: string | null): TurnMode | null {
+  const value = raw?.trim().toLowerCase();
+  return value === 'snap' || value === 'smooth' ? value : null;
+}
+
 function parseId(raw: string | null): string | null {
   const value = raw?.trim().toLowerCase();
   return value ? value : null;
@@ -134,6 +143,7 @@ export function parseFlags(search: string): Flags {
     coverage: parseBool(params, 'coverage'),
     painter: parseBool(params, 'painter'),
     seated: parseBool(params, 'seated'),
+    turn: parseTurn(params.get('turn')),
   });
 }
 

@@ -50,6 +50,10 @@ export interface LocomotionState {
   grounded: boolean;
   /** Horizontal stick speed of the last step, m/s. */
   speed: number;
+  /** Smooth turn rate of the last turn, rad/s, positive left. Snap turns leave it 0. */
+  turnRate: number;
+  /** Seconds since the last snap turn (src/locomotion/turn.ts). Infinity: none yet. */
+  sinceSnap: number;
 }
 
 export function createLocomotionState(): LocomotionState {
@@ -61,6 +65,8 @@ export function createLocomotionState(): LocomotionState {
     held: false,
     grounded: true,
     speed: 0,
+    turnRate: 0,
+    sinceSnap: Number.POSITIVE_INFINITY,
   };
 }
 
@@ -80,6 +86,8 @@ export function spawnAt(
   state.held = false;
   state.grounded = true;
   state.speed = 0;
+  state.turnRate = 0;
+  state.sinceSnap = Number.POSITIVE_INFINITY;
 }
 
 /**

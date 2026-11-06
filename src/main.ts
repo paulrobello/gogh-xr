@@ -13,6 +13,7 @@ import type { StrokeBatch } from './render/strokes/batch';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
+import { createVignette } from './ui/vignette';
 import { busyWait } from './util/busy-wait';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
@@ -56,15 +57,25 @@ const desktop = installDesktopControls(renderer.domElement, camera);
 /**
  * The rig, the camera's parent, which locomotion moves (P3.2). It starts at the XR origin; a world
  * moves it to the module's `spawnPose()` once the module loads, before it builds. The bench never
- * runs locomotion, so its rig stays at the origin.
+ * runs locomotion, so its rig stays at the origin and it has no vignette.
  */
+const runLocomotion = flags.bench === null;
+const vignette = runLocomotion ? createVignette(camera) : undefined;
 const locomotion = createLocomotion({
   scene,
   camera,
   look: desktop,
-  settings: clampLocomotionSettings({ ...DEFAULT_LOCOMOTION_SETTINGS, seated: flags.seated }),
+  settings: clampLocomotionSettings({
+    ...DEFAULT_LOCOMOTION_SETTINGS,
+    seated: flags.seated,
+    turnMode: flags.turn ?? DEFAULT_LOCOMOTION_SETTINGS.turnMode,
+  }),
+  vignette,
 });
-const runLocomotion = flags.bench === null;
+// three compiles a program on its first visible draw, which for the vignette is the first smooth
+// move in XR. `compile` also takes hidden meshes, and a raw shader's program does not depend on
+// the render target, so the XR draw reuses this one.
+if (vignette) renderer.compile(vignette.mesh, camera, scene);
 /** `?painter` (fidelity capture): the world's painter camera, applied before the world builds. */
 let painterView: PainterCamera | null = null;
 // Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls.

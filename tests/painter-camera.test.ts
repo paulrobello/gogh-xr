@@ -30,7 +30,10 @@ function painterCamera(): PerspectiveCamera {
   // The next frames must keep the pose.
   for (let i = 0; i < 10; i += 1) {
     look.update();
-    locomotion.frame({ dt: 0.016, move: { x: 0, y: 0 }, sprint: false }, false);
+    locomotion.frame(
+      { dt: 0.016, move: { x: 0, y: 0 }, sprint: false, turn: { x: 0, snap: 0 } },
+      false,
+    );
   }
   scene.updateMatrixWorld();
   return camera;

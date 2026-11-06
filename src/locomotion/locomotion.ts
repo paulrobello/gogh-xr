@@ -1,6 +1,6 @@
 /**
  * Locomotion wiring (P3.2): the rig, a three.js Group in the scene with the camera as its child,
- * driven every frame by the pure core in step.ts. XR and desktop share this one path.
+ * driven every frame by the pure core in turn.ts and step.ts. XR and desktop share this one path.
  *
  * The head pose is read from the camera's local transform, which is rig-relative in both modes.
  * In XR, three's XR camera writes it at each render, so a frame reads the pose of the last render.
@@ -9,7 +9,8 @@
  */
 import { Euler, Group, type Object3D } from 'three';
 import { EYE_HEIGHT } from '../desktop/walk';
-import type { LocomotionSettings } from './settings';
+import { comfortFactor, easeVignette } from '../ui/vignette-alpha';
+import type { LocomotionSettings, TurnMode } from './settings';
 import {
   calibrateSeated,
   createLocomotionState,
@@ -20,9 +21,10 @@ import {
   spawnAt,
   step,
 } from './step';
+import { type TurnInput, turn } from './turn';
 
 /** The part of a P3.1 `Actions` frame locomotion reads. */
-export interface FrameActions extends MoveInput {
+export interface FrameActions extends MoveInput, TurnInput {
   /** Seconds, already clamped by the input layer. */
   readonly dt: number;
 }
@@ -33,14 +35,21 @@ export interface LookTarget {
   update(): void;
 }
 
+/** The tunnel vignette mesh (src/ui/vignette.ts). */
+export interface VignetteTarget {
+  setAlpha(alpha: number): void;
+}
+
 export interface LocomotionDeps {
   readonly scene: Object3D;
   readonly camera: Object3D;
   readonly look: LookTarget;
   readonly settings: LocomotionSettings;
+  /** Given the vignette alpha every frame. Omitted where nothing draws it. */
+  readonly vignette?: VignetteTarget;
 }
 
-/** `__goghDiag().rig`. P3.3-P3.5 extend it. */
+/** `__goghDiag().rig`. P3.4-P3.5 extend it. */
 export interface RigDiag {
   readonly position: [number, number, number];
   yaw: number;
@@ -48,6 +57,9 @@ export interface RigDiag {
   seated: boolean;
   grounded: boolean;
   speed: number;
+  turnMode: TurnMode;
+  /** The tunnel vignette alpha of the last frame, 0 at rest and always 0 outside XR. */
+  vignette: number;
 }
 
 export interface Locomotion {
@@ -82,7 +94,7 @@ export interface Locomotion {
 const MIN_CALIBRATION_HEAD_Y = 0.3;
 
 export function createLocomotion(deps: LocomotionDeps): Locomotion {
-  const { scene, camera, look, settings } = deps;
+  const { scene, camera, look, settings, vignette } = deps;
   const rig = new Group();
   rig.name = 'rig';
   scene.add(rig);
@@ -103,7 +115,10 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     seated: settings.seated,
     grounded: true,
     speed: 0,
+    turnMode: settings.turnMode,
+    vignette: 0,
   };
+  let vignetteAlpha = 0;
 
   function readHead(): void {
     head.x = camera.position.x;
@@ -133,8 +148,18 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
         state.seatedOffset = 0;
       }
       presenting = isPresenting;
+      turn(state, actions, settings, actions.dt, head);
       step(state, actions, ground, settings, actions.dt, head);
       writeRig();
+      // XR only: the desktop preview and its captures never show the vignette, even fading out.
+      vignetteAlpha = isPresenting
+        ? easeVignette(
+            vignetteAlpha,
+            settings.vignette * comfortFactor(state.speed, state.turnRate, settings),
+            actions.dt,
+          )
+        : 0;
+      vignette?.setAlpha(vignetteAlpha);
     },
     setGround(next) {
       ground = next ?? FLAT_GROUND;
@@ -168,6 +193,8 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       rigDiag.seated = settings.seated;
       rigDiag.grounded = state.grounded;
       rigDiag.speed = state.speed;
+      rigDiag.turnMode = settings.turnMode;
+      rigDiag.vignette = vignetteAlpha;
       return rigDiag;
     },
   };
