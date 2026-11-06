@@ -147,7 +147,11 @@ async function governStrokes(batch: StrokeBatch): Promise<void> {
       batch,
       mode: beauty ? 'beauty' : 'default',
       targetHz: targetFrameRate,
-      notify: (message) => showNotice(message),
+      // The DOM notice is invisible in immersive mode, so the HUD carries it there, hidden or not.
+      notify: (message) => {
+        showNotice(message);
+        hud?.setVisible(true);
+      },
     });
   } catch (error) {
     console.warn('quality governor failed to start', error);

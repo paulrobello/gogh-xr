@@ -123,6 +123,35 @@ describe('createHudToggle', () => {
   });
 });
 
+describe('setVisible, as the 72 Hz notice calls it (R16, I3)', () => {
+  it('builds and shows a hidden, unbuilt HUD, which stays toggleable afterwards', async () => {
+    const { toggle, build, hud } = setup(false);
+    expect(toggle.diag()).toEqual({ visible: false, built: false });
+    toggle.setVisible(true);
+    expect(build).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(hud.setVisible).toHaveBeenLastCalledWith(true);
+    expect(toggle.diag()).toMatchObject({ visible: true, built: true });
+    toggle.toggle();
+    expect(toggle.visible).toBe(false);
+    toggle.frame(0, true);
+    toggle.frame(16, false);
+    expect(toggle.visible).toBe(true);
+    expect(build).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-shows a HUD the user hid, and leaves a shown HUD shown', async () => {
+    const { toggle, hud } = setup(true);
+    await settle();
+    toggle.toggle();
+    toggle.setVisible(true);
+    expect(toggle.visible).toBe(true);
+    expect(hud.setVisible).toHaveBeenLastCalledWith(true);
+    toggle.setVisible(true);
+    expect(toggle.visible).toBe(true);
+  });
+});
+
 describe('left X press detection', () => {
   it('toggles once for a press held across frames', async () => {
     const { toggle } = setup(false);

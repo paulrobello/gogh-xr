@@ -57,6 +57,8 @@ test('slow=14 sheds density to its minimum, then fb scale and foveation, then re
 }) => {
   await xr.boot('demo=canvas&slow=14');
   await governor(xr);
+  // No ?hud: the HUD starts hidden and unbuilt, so only the notice can show it.
+  expect((await xr.diag()).hud).toEqual({ visible: false, built: false });
   await xr.enterXR();
   await expect
     .poll(async () => (await governor(xr)).history.some((e) => e.action === 'rate'), {
@@ -97,6 +99,14 @@ test('slow=14 sheds density to its minimum, then fb scale and foveation, then re
   expect(gov.frameRate).toBe(72);
   expect(gov.budgetMs).toBeCloseTo(1000 / 72, 3);
   expect(gov.notice).toMatch(/72 Hz/);
+  // The DOM notice is invisible in immersive mode, so the notice shows the hidden HUD that carries
+  // it (R16). The HUD builds asynchronously on that first show.
+  await expect
+    .poll(async () => {
+      const hud = (await xr.diag()).hud as { visible: boolean; built: boolean; text?: string };
+      return hud.visible && hud.built && (hud.text ?? '').includes(gov.notice ?? 'missing');
+    })
+    .toBe(true);
   // The busy-wait shows in the XR frame intervals.
   expect(gov.meanMs ?? 0).toBeGreaterThan(14);
   // IWER implements updateTargetFrameRate and reports the new nominal rate.
