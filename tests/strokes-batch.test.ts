@@ -9,6 +9,7 @@ import {
 } from 'three';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+  bandDrawCount,
   DEFAULT_BAND_DENSITY,
   DEFAULT_BAND_SIZE,
   STROKE_BANDS,
@@ -294,36 +295,42 @@ describe('bands', () => {
     batch.dispose();
   });
 
-  test('a camera swaying 0.4 m across 6 m keeps the band; crossing by 1 m switches it once', () => {
-    const batch = createStrokeBatch(cluster(10, [2, 2, 2]), {
-      cellSize: 4,
-      createAtlas: tinyAtlas,
-    });
-    const [chunk] = batch.chunks;
-    const { center, radius } = chunk.bounds;
-    const camera = new PerspectiveCamera(90, 1, 0.05, 1000);
-    const at = (distance: number) => {
-      camera.position.set(center.x, center.y, center.z + radius + distance);
-      camera.updateMatrixWorld();
-      batch.update(camera);
-      return chunk.band;
-    };
-    expect(at(6.2)).toBe('mid');
-    for (let step = 0; step < 100; step++) {
-      expect(at(6 + 0.4 * Math.sin(step))).toBe('mid');
-    }
-    const bands: (string | null)[] = [];
-    const materials: unknown[] = [];
-    for (const distance of [5.8, 5.4, 5.8, 6.4, 6.6, 6.2, 5.6, 5.4]) {
-      bands.push(at(distance));
-      materials.push(chunk.mesh.material);
-    }
-    expect(bands).toEqual(['mid', 'near', 'near', 'near', 'mid', 'mid', 'mid', 'near']);
-    expect(materials[1]).toBe(batch.materials.near);
-    expect(materials[4]).toBe(batch.materials.mid);
-    expect(chunk.drawCount).toBe(10);
-    batch.dispose();
-  });
+  test.each([
+    [6, 'near', 'mid'],
+    [25, 'mid', 'far'],
+  ] as const)(
+    'a camera swaying 0.4 m across %s m keeps the band; crossing switches it once',
+    (edge, inner, outer) => {
+      const batch = createStrokeBatch(cluster(10, [2, 2, 2]), {
+        cellSize: 4,
+        createAtlas: tinyAtlas,
+      });
+      const [chunk] = batch.chunks;
+      const { center, radius } = chunk.bounds;
+      const camera = new PerspectiveCamera(90, 1, 0.05, 1000);
+      const at = (distance: number) => {
+        camera.position.set(center.x, center.y, center.z + radius + distance);
+        camera.updateMatrixWorld();
+        batch.update(camera);
+        return chunk.band;
+      };
+      expect(at(edge + 0.2)).toBe(outer);
+      for (let step = 0; step < 100; step++) {
+        expect(at(edge + 0.4 * Math.sin(step))).toBe(outer);
+      }
+      const bands: (string | null)[] = [];
+      const materials: unknown[] = [];
+      for (const offset of [-0.2, -0.6, -0.2, 0.4, 0.6, 0.2, -0.4, -0.6]) {
+        bands.push(at(edge + offset));
+        materials.push(chunk.mesh.material);
+      }
+      expect(bands).toEqual([outer, inner, inner, inner, outer, outer, outer, inner]);
+      expect(materials[1]).toBe(batch.materials[inner]);
+      expect(materials[4]).toBe(batch.materials[outer]);
+      expect(chunk.drawCount).toBe(bandDrawCount(DEFAULT_BAND_DENSITY[inner], 10));
+      batch.dispose();
+    },
+  );
 });
 
 describe('update', () => {

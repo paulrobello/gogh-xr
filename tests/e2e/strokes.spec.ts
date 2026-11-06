@@ -67,6 +67,19 @@ test('strokesTest renders its chunks in XR without WebGL errors', async ({ page,
   expect(turned.visible).not.toBe(stats.visible);
   expectBandsSumToTotals(turned);
   expect(await glErrors(page)).toEqual([]);
+
+  // Stepping back 20 m puts the whole scene 14-22 m away: the bands follow the XR eye into mid,
+  // drawing the mid material at half density.
+  await xr.setPose({ head: { position: [0, 1.6, 20], quaternion: [0, 0, 0, 1] } });
+  await xr.waitFrames(3);
+  const back = await strokes(xr);
+  expectBandsSumToTotals(back);
+  expect(back.bands.near.chunks).toBe(0);
+  expect(back.bands.far.chunks).toBe(0);
+  expect(back.bands.mid.visible).toBeGreaterThan(0);
+  expect(back.visible).toBe(back.bands.mid.visible);
+  expect(back.visible).toBeLessThan(stats.visible);
+  expect(await glErrors(page)).toEqual([]);
 });
 
 test('strokesTest renders on the desktop page without errors', async ({ page, xr }) => {
