@@ -40,16 +40,20 @@ test('instance translations come from the seeded placement', () => {
   field.dispose();
 });
 
-test('placement is deterministic per seed and stays inside the hemisphere shell', () => {
+test('placement is deterministic per seed and fills the whole spherical shell', () => {
   const a = placeStrokes(500, 7, 'random');
   expect(placeStrokes(500, 7, 'random').positions).toEqual(a.positions);
   expect(placeStrokes(500, 8, 'random').positions).not.toEqual(a.positions);
+  let below = 0;
   for (let i = 0; i < 500; i++) {
     const r = radiusAt(a.positions, i);
     expect(r).toBeGreaterThanOrEqual(MIN_RADIUS - 1e-4);
     expect(r).toBeLessThanOrEqual(MAX_RADIUS + 1e-4);
-    expect(a.positions[i * 3 + 1]).toBeGreaterThan(0);
+    if ((a.positions[i * 3 + 1] ?? 0) < 0) below++;
   }
+  // Uniform per solid angle: about half the strokes sit below the horizon.
+  expect(below).toBeGreaterThan(200);
+  expect(below).toBeLessThan(300);
 });
 
 test('layouts: sorted a2c is near-first, sorted blend is far-first, random is random', () => {

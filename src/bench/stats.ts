@@ -62,10 +62,19 @@ export class FrameStats {
     return this.intervals.reduce((sum, ms) => sum + ms, 0) / this.intervals.length;
   }
 
+  /** Nearest-rank p95. */
+  p95Ms(): number | null {
+    return this.percentile(0.95);
+  }
+
   /** Nearest-rank p99. */
   p99Ms(): number | null {
+    return this.percentile(0.99);
+  }
+
+  private percentile(q: number): number | null {
     if (this.intervals.length === 0) return null;
     const sorted = [...this.intervals].sort((a, b) => a - b);
-    return sorted[Math.ceil(sorted.length * 0.99) - 1] ?? null;
+    return sorted[Math.ceil(sorted.length * q) - 1] ?? null;
   }
 }

@@ -10,7 +10,9 @@ import type { BenchMode, BenchOrder } from '../diag/flags';
 
 export const HUD_INTERVAL_MS = 250;
 const CANVAS_W = 640;
-const CANVAS_H = 200;
+/** Room for the six live lines, a heading and six recorded results. */
+const CANVAS_H = 340;
+const LINE_H = 25;
 const PLANE_W = 0.42;
 
 export interface BenchSnapshot {
@@ -24,6 +26,7 @@ export interface BenchSnapshot {
   readonly instances: number;
   readonly fps: number;
   readonly meanMs: number | null;
+  readonly p95Ms: number | null;
   readonly p99Ms: number | null;
   /** True while the frame window refills after start or an N change. */
   readonly settling: boolean;
@@ -51,7 +54,7 @@ export function formatHudLines(snap: BenchSnapshot, rates: HudRates): string[] {
   return [
     `N ${snap.n.toLocaleString('en-US')}  mode ${snap.mode}  order ${snap.order}  size ${snap.sizePx}px`,
     `chunks ${snap.chunks}  instances ${snap.instances.toLocaleString('en-US')}  eye ${eye}`,
-    `FPS ${snap.fps}  mean ${ms(snap.meanMs)} ms  p99 ${ms(snap.p99Ms)} ms${snap.settling ? '  settling' : ''}`,
+    `FPS ${snap.fps}  mean ${ms(snap.meanMs)}  p95 ${ms(snap.p95Ms)}  p99 ${ms(snap.p99Ms)} ms${snap.settling ? '  settling' : ''}`,
     `target ${rates.target} Hz  current ${rates.current ?? 'n/a'}  supported ${supported}`,
     gpu,
     'stick: N +/- 25k  X: mode  Y: target Hz',
@@ -80,7 +83,9 @@ export function createHud(parent: Object3D): BenchHud {
   });
   const mesh = new Mesh(geometry, material);
   mesh.name = 'bench-hud';
-  mesh.position.set(-0.12, 0.1, -0.6);
+  // Below the eye line, tilted up to face the eye, so the strokes ahead stay unobstructed.
+  mesh.position.set(-0.08, -0.15, -0.6);
+  mesh.rotation.x = Math.atan2(0.15, 0.6);
   mesh.renderOrder = 1_000_000;
   mesh.frustumCulled = false;
   parent.add(mesh);
@@ -95,7 +100,7 @@ export function createHud(parent: Object3D): BenchHud {
     ctx.font = '18px ui-monospace, Menlo, Consolas, monospace';
     ctx.textBaseline = 'top';
     lines.forEach((line, i) => {
-      ctx.fillText(line, 12, 10 + i * 30);
+      ctx.fillText(line, 12, 8 + i * LINE_H);
     });
     texture.needsUpdate = true;
   }

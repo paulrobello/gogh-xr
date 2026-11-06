@@ -1,6 +1,5 @@
 export const MIN_RADIUS = 2;
 export const MAX_RADIUS = 30;
-const MIN_ELEVATION = 0.02;
 
 const PALETTE: readonly (readonly [number, number, number])[] = [
   [0.09, 0.17, 0.42],
@@ -31,7 +30,7 @@ export interface Placement {
   readonly colors: Float32Array;
 }
 
-/** Draw order of the instances relative to a viewer at the hemisphere centre. */
+/** Draw order of the instances relative to a viewer at the sphere centre. */
 export type Layout = 'near-first' | 'far-first' | 'random';
 
 /** Seeded Fisher-Yates permutation of 0..count-1. */
@@ -49,7 +48,9 @@ export function shuffledSlots(count: number, seed: number): Uint32Array {
 }
 
 /**
- * Places `n` strokes on an upper hemisphere shell around the origin. Radii are stratified, so
+ * Places `n` strokes in a full spherical shell around the origin, uniform per solid angle, so
+ * every view direction sees the same density and a reading does not depend on where the viewer
+ * looks. Radii are stratified, so
  * stroke i is strictly nearer than stroke i + 1. `near-first` keeps that order, `far-first`
  * reverses it (back-to-front for blending), and `random` scatters it with a seeded shuffle.
  */
@@ -62,7 +63,7 @@ export function placeStrokes(n: number, seed: number, layout: Layout): Placement
   for (let i = 0; i < count; i++) {
     const t = (i + rand()) / count;
     const radius = MIN_RADIUS + (MAX_RADIUS - MIN_RADIUS) * t;
-    const y = MIN_ELEVATION + (1 - MIN_ELEVATION) * rand();
+    const y = 2 * rand() - 1;
     const ring = Math.sqrt(1 - y * y);
     const azimuth = rand() * Math.PI * 2;
     const slot = shuffle ? (shuffle[i] ?? i) : layout === 'far-first' ? count - 1 - i : i;

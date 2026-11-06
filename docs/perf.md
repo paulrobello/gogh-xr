@@ -13,6 +13,8 @@ N steps by 25,000 with the left stick. "Holds" means the HUD reads the target FP
 
 Note on the 72 Hz column: Quest 3 reports `supportedFrameRates` of 70, 80, 90 and 120, so `updateTargetFrameRate(72)` is rejected and the session ran at whatever rate it already had. Those two readings are unconfirmed until they are re-measured at 70 or 80 with the Y-button toggle.
 
+These readings used the original upper-hemisphere layout looking straight up. The bench now fills a full sphere, so any view direction is the worst case. At the same N, a view now holds about half as many strokes on screen, while every stroke still runs through the vertex shader. The rows above are therefore not comparable with full-sphere readings and are kept only as history. The full-sphere run replaces them, using the p95 values the bench now records.
+
 ## Other findings
 
 | Question | Result |

@@ -139,7 +139,7 @@ Pre-commit hooks: gitleaks and `detect-private-key` from `pre-commit/pre-commit-
 ### P0.7: Stroke stress benchmark scene
 - **Depends on:** P0.2.
 - **Steps:**
-  - `?bench=<N>&mode=a2c|blend&size=<px>` fills a hemisphere around the viewer with N instanced stroke quads. Use one `InstancedMesh` per 64k-instance chunk and a procedural brush alpha.
+  - `?bench=<N>&mode=a2c|blend&size=<px>` fills a full sphere around the viewer with N instanced stroke quads, uniform per solid angle, so every view direction is the worst case. Each settings combination records mean, p95 and p99 once its window settles, persisted in localStorage and shown on the HUD. Use one `InstancedMesh` per 64k-instance chunk and a procedural brush alpha.
     - `a2c` uses `alphaToCoverage: true` in an opaque pass.
     - `blend` uses sorted alpha blending.
   - In XR, left stick X steps N by ±25k, the left X button toggles a2c and blend, and the left Y button steps the target frame rate through `supportedFrameRates`.

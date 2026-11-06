@@ -8,6 +8,15 @@ import {
   type TimerGl,
 } from '../src/bench/gpu-timer.ts';
 import { type BenchSnapshot, formatHudLines } from '../src/bench/hud.ts';
+import {
+  type BenchResult,
+  formatResultLine,
+  localResultStore,
+  MAX_RESULTS,
+  RESULTS_STORAGE_NAME,
+  type ResultStore,
+  upsertResult,
+} from '../src/bench/results.ts';
 import { FrameStats, WARMUP_INTERVALS } from '../src/bench/stats.ts';
 import {
   BUTTON_X,
@@ -35,6 +44,18 @@ test('frame stats: fps counts callbacks in the last second, p99 is nearest-rank'
   }
   // 99 intervals: 98 of 10 ms and one of 40 ms; nearest rank 99 picks the 40.
   expect(p99.p99Ms()).toBe(40);
+  expect(p99.p95Ms()).toBe(10);
+});
+
+test('frame stats: p95 is nearest-rank over the window', () => {
+  const stats = new FrameStats(100, 0);
+  expect(stats.p95Ms()).toBeNull();
+  const step = clock(stats);
+  // 100 intervals: 94 of 11 ms and 6 of 22 ms; rank 95 lands on the first 22.
+  step(11, 94);
+  step(22, 6);
+  expect(stats.p95Ms()).toBe(22);
+  expect(new FrameStats(100, 0).p95Ms()).toBeNull();
 });
 
 test('frame stats keep a bounded window', () => {
@@ -319,6 +340,7 @@ const snap: BenchSnapshot = {
   instances: 100000,
   fps: 90,
   meanMs: 11.1,
+  p95Ms: 11.3,
   p99Ms: 12.5,
   settling: false,
   gpuTimer: 'unavailable',
@@ -329,7 +351,7 @@ test('HUD lines show N, mode, rates and the GPU timer state', () => {
   const lines = formatHudLines(snap, { target: 90, current: 90, supported: [72, 90, 120] });
   expect(lines[0]).toBe('N 100,000  mode a2c  order random  size 24px');
   expect(lines[1]).toBe('chunks 2  instances 100,000  eye 1680x1760');
-  expect(lines[2]).toBe('FPS 90  mean 11.10 ms  p99 12.50 ms');
+  expect(lines[2]).toBe('FPS 90  mean 11.10  p95 11.30  p99 12.50 ms');
   expect(lines[3]).toBe('target 90 Hz  current 90  supported 72/90/120');
   expect(lines[4]).toBe('GPU timer: unavailable');
   const gpu = formatHudLines(
@@ -339,7 +361,7 @@ test('HUD lines show N, mode, rates and the GPU timer state', () => {
   expect(gpu[3]).toBe('target 90 Hz  current n/a  supported n/a');
   expect(gpu[4]).toBe('GPU 3.46 ms');
   expect(gpu[1]).toBe('chunks 2  instances 100,000  eye n/a');
-  expect(gpu[2]).toBe('FPS 90  mean 11.10 ms  p99 12.50 ms  settling');
+  expect(gpu[2]).toBe('FPS 90  mean 11.10  p95 11.30  p99 12.50 ms  settling');
 });
 
 const benches: { dispose(): void }[] = [];
@@ -503,4 +525,143 @@ test('dispose removes a camera the bench added, and leaves a camera it did not a
 
 test('startBench returns null without a bench config', () => {
   expect(startBench(fakeDeps())).toBeNull();
+});
+
+function memoryStore(initial: BenchResult[] = []): ResultStore & { saved: BenchResult[][] } {
+  const saved: BenchResult[][] = [];
+  let current = initial;
+  return {
+    saved,
+    load: () => current,
+    save: (results) => {
+      current = [...results];
+      saved.push(current);
+    },
+  };
+}
+
+function presentingDeps(store: ResultStore): BenchDeps & { scene: Scene } {
+  const deps = fakeDeps();
+  const xr = { ...createXrState(), frameRate: 90, supportedFrameRates: [70, 80, 90, 120] };
+  const session = { inputSources: [], updateTargetFrameRate: () => Promise.resolve() };
+  return {
+    ...deps,
+    renderer: {
+      ...deps.renderer,
+      xr: { isPresenting: true, getSession: () => session },
+    } as unknown as BenchDeps['renderer'],
+    getXrState: () => xr,
+    results: store,
+  };
+}
+
+/** Runs `frames` render callbacks 11 ms apart. */
+function runFrames(scene: Scene, frames: number, clockState = { t: 0 }): void {
+  const now = vi.spyOn(performance, 'now');
+  for (let i = 0; i < frames; i++) {
+    clockState.t += 11;
+    now.mockReturnValue(clockState.t);
+    (scene.onBeforeRender as unknown as () => void)();
+    (scene.onAfterRender as unknown as () => void)();
+  }
+  now.mockRestore();
+}
+
+test('the bench records one result per settings once the window settles, and re-records on change', () => {
+  const store = memoryStore();
+  const deps = presentingDeps(store);
+  const bench = startBench(deps, { n: 1000, mode: 'a2c', order: 'random', sizePx: 24, seed: 1 });
+  if (!bench) throw new Error('bench did not start');
+  benches.push(bench);
+  const clockState = { t: 0 };
+  runFrames(deps.scene, 100, clockState);
+  expect(bench.results()).toHaveLength(0);
+  runFrames(deps.scene, 500, clockState);
+  expect(bench.results()).toHaveLength(1);
+  expect(bench.results()[0]).toMatchObject({
+    mode: 'a2c',
+    n: 1000,
+    targetHz: 90,
+    currentHz: 90,
+    p95Ms: 11,
+    p99Ms: 11,
+  });
+  runFrames(deps.scene, 200, clockState);
+  expect(store.saved).toHaveLength(1);
+
+  bench.setCount(26000);
+  runFrames(deps.scene, 600, clockState);
+  bench.setCount(1000);
+  runFrames(deps.scene, 600, clockState);
+  expect(bench.results().map((r) => r.n)).toEqual([26000, 1000]);
+  expect(store.saved).toHaveLength(3);
+});
+
+test('the bench records nothing outside XR, and starts from the stored results', () => {
+  const prior: BenchResult = {
+    mode: 'blend',
+    order: 'sorted',
+    n: 5,
+    sizePx: 24,
+    targetHz: 90,
+    currentHz: 90,
+    fps: 90,
+    meanMs: 11,
+    p95Ms: 11,
+    p99Ms: 11,
+    recordedAt: '2026-11-05T00:00:00.000Z',
+  };
+  const store = memoryStore([prior]);
+  const deps = { ...fakeDeps(), results: store };
+  const bench = startBench(deps, { n: 10, mode: 'a2c', order: 'random', sizePx: 24, seed: 1 });
+  if (!bench) throw new Error('bench did not start');
+  benches.push(bench);
+  runFrames(deps.scene, 600);
+  expect(bench.results()).toEqual([prior]);
+  expect(store.saved).toHaveLength(0);
+});
+
+test('results upsert by settings, cap the list, and survive corrupt storage', () => {
+  const base: BenchResult = {
+    mode: 'a2c',
+    order: 'random',
+    n: 1,
+    sizePx: 24,
+    targetHz: 90,
+    currentHz: 90,
+    fps: 90,
+    meanMs: 11,
+    p95Ms: 11.25,
+    p99Ms: 12.5,
+    recordedAt: 'x',
+  };
+  const other = { ...base, targetHz: 120 };
+  const replaced = upsertResult(upsertResult([base, other], { ...base, fps: 80 }), other);
+  expect(replaced.map((r) => [r.targetHz, r.fps])).toEqual([
+    [90, 80],
+    [120, 90],
+  ]);
+  let many: BenchResult[] = [];
+  for (let i = 0; i < MAX_RESULTS + 5; i++) many = upsertResult(many, { ...base, n: i });
+  expect(many).toHaveLength(MAX_RESULTS);
+  expect(many[0]?.n).toBe(5);
+  expect(formatResultLine({ ...base, n: 225000, currentHz: null })).toBe(
+    'a2c 225,000 90/?Hz fps 90 p95 11.25 p99 12.50',
+  );
+
+  const storage = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => storage.get(k) ?? null,
+    setItem: (k: string, v: string) => void storage.set(k, v),
+  } as unknown as Storage;
+  const store = localResultStore(fake);
+  expect(store.load()).toEqual([]);
+  store.save([base]);
+  expect(storage.get(RESULTS_STORAGE_NAME)).toBeDefined();
+  expect(store.load()).toEqual([base]);
+  storage.set(RESULTS_STORAGE_NAME, '{not json');
+  expect(store.load()).toEqual([]);
+  storage.set(RESULTS_STORAGE_NAME, JSON.stringify([base, { mode: 1 }, null]));
+  expect(store.load()).toEqual([base]);
+  expect(localResultStore(undefined).load()).toEqual([]);
 });

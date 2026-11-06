@@ -13,6 +13,13 @@ import { buildStrokeField, type StrokeField } from './field';
 import { GpuTimer, type TimerGl } from './gpu-timer';
 import { type BenchSnapshot, createHud, formatHudLines, HUD_INTERVAL_MS } from './hud';
 import { lastEyeViewport } from './material';
+import {
+  type BenchResult,
+  formatResultLine,
+  localResultStore,
+  type ResultStore,
+  upsertResult,
+} from './results';
 import { FrameStats } from './stats';
 import { BUTTON_X, BUTTON_Y, buttonEdge, leftButtonPressed, leftStickX, stickStep } from './stick';
 
@@ -21,6 +28,8 @@ export interface BenchDeps {
   scene: Scene;
   camera: PerspectiveCamera;
   getXrState: () => XrState;
+  /** Where recorded results persist; defaults to localStorage. */
+  results?: ResultStore;
 }
 
 export interface BenchHandle {
@@ -29,11 +38,14 @@ export interface BenchHandle {
   cycleFrameRate(): void;
   targetFrameRate(): number;
   snapshot(): BenchSnapshot;
+  results(): readonly BenchResult[];
   dispose(): void;
 }
 
 /** A HUD redraw disturbs two intervals: the canvas draw, then the texture upload next frame. */
 export const HUD_EXCLUDED_INTERVALS = 2;
+/** Recorded results shown under the live lines, newest last. */
+export const HUD_RESULT_LINES = 6;
 
 export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle | null {
   const resolved = config ?? resolveBenchConfig(flags);
@@ -45,6 +57,11 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   let n = resolved.n;
   let field: StrokeField = buildStrokeField({ n, mode, order, sizePx, seed });
   scene.add(field.group);
+
+  const store = deps.results ?? localResultStore(globalThis.localStorage);
+  let results: BenchResult[] = store.load();
+  // One record per settings change: set once the first full window after the change completes.
+  let recorded = false;
 
   const stats = new FrameStats();
   const timer = new GpuTimer(renderer.getContext() as unknown as TimerGl);
@@ -68,6 +85,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
       instances: field.instanceCount(),
       fps: stats.fps(),
       meanMs: stats.meanMs(),
+      p95Ms: stats.p95Ms(),
       p99Ms: stats.p99Ms(),
       settling: stats.settling(),
       gpuTimer: timer.available ? 'available' : 'unavailable',
@@ -75,12 +93,17 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     };
   }
 
+  function restartMeasurement(): void {
+    stats.reset();
+    timer.reset();
+    recorded = false;
+  }
+
   function rebuild(): void {
     field.dispose();
     field = buildStrokeField({ n, mode, order, sizePx, seed });
     scene.add(field.group);
-    stats.reset();
-    timer.reset();
+    restartMeasurement();
   }
 
   function setCount(next: number): void {
@@ -104,11 +127,31 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     if (!session || typeof session.updateTargetFrameRate !== 'function' || next === targetFrameRate)
       return;
     targetFrameRate = next;
-    stats.reset();
-    timer.reset();
+    restartMeasurement();
     session.updateTargetFrameRate(next).catch((error: unknown) => {
       console.warn(`updateTargetFrameRate(${next}) failed: ${String(error)}`);
     });
+  }
+
+  /** Headset only: desktop frame timing says nothing about the Quest budget. */
+  function recordIfSettled(): void {
+    if (recorded || !renderer.xr.isPresenting || stats.settling()) return;
+    recorded = true;
+    const snap = snapshot();
+    results = upsertResult(results, {
+      mode: snap.mode,
+      order: snap.order,
+      n: snap.n,
+      sizePx: snap.sizePx,
+      targetHz: targetFrameRate,
+      currentHz: deps.getXrState().frameRate,
+      fps: snap.fps,
+      meanMs: snap.meanMs,
+      p95Ms: snap.p95Ms,
+      p99Ms: snap.p99Ms,
+      recordedAt: new Date().toISOString(),
+    });
+    store.save(results);
   }
 
   function drawHud(now: number): void {
@@ -117,13 +160,13 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     stats.exclude(HUD_EXCLUDED_INTERVALS);
     timer.excludeNext();
     const xr = deps.getXrState();
-    hud.draw(
-      formatHudLines(snapshot(), {
-        target: targetFrameRate,
-        current: xr.frameRate,
-        supported: xr.supportedFrameRates,
-      }),
-    );
+    const live = formatHudLines(snapshot(), {
+      target: targetFrameRate,
+      current: xr.frameRate,
+      supported: xr.supportedFrameRates,
+    });
+    const recent = results.slice(-HUD_RESULT_LINES).map(formatResultLine);
+    hud.draw(recent.length ? [...live, 'recorded (target/actual):', ...recent] : live);
   }
 
   const prevBefore = scene.onBeforeRender;
@@ -136,6 +179,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   scene.onAfterRender = (...args) => {
     timer.end();
     prevAfter.apply(scene, args);
+    recordIfSettled();
     if (renderer.xr.isPresenting) {
       const sources = renderer.xr.getSession()?.inputSources;
       const result = stickStep(armed, leftStickX(sources));
@@ -152,6 +196,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   };
 
   registerDiag('bench', snapshot);
+  registerDiag('benchResults', () => results);
 
   return {
     setCount,
@@ -159,10 +204,12 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     cycleFrameRate,
     targetFrameRate: () => targetFrameRate,
     snapshot,
+    results: () => results,
     dispose: () => {
       scene.onBeforeRender = prevBefore;
       scene.onAfterRender = prevAfter;
       unregisterDiag('bench');
+      unregisterDiag('benchResults');
       field.dispose();
       hud.dispose();
       timer.dispose();
