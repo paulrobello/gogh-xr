@@ -313,6 +313,22 @@ Acceptance:
 - **P7-A2.** SC1–SC6 are each evidenced in `docs/verification.md`.
 - **P7-A3.** Headset check. The owner gives final acceptance on the live URL.
 
+## Roadmap (after v1)
+
+Owner-requested items with no phase yet. Each needs its own plan before it is scheduled.
+
+- **RM1. Find the painter's spot.** An optional start mode. Today a world starts the viewer at the painter's spot (`painterSpot`, D14). In this mode the viewer starts somewhere in the middle of the world instead, and the objective is to find the spot where the 3D world lines up into the painting. Reaching it ends the round, for example by settling the view into the canvas framing. Builds on P2 (the painter's spot and its perceptual match metric), P3 (locomotion) and P5 (the settings panel, where the mode is chosen). Decided by Paul on 2026-11-06:
+  - **Start.** A random position in the world.
+  - **Hints.** Only when the player asks for one. Nothing is shown unprompted.
+  - **No timer or score.**
+  - **Reference view.** A HUD panel can show the painting, so the player can try to line up their view with it.
+  - **Found.** The view is within 10% of the painter's-spot view, which means a match of 90% or better. The threshold is a tunable setting for testing.
+  - **Match readout.** The HUD can show the current percent match.
+  Open for its plan:
+  - how the percent match is computed in real time on Quest, for example pose and view-angle error against `painterSpot`, or a downscaled image compare;
+  - what a hint looks like;
+  - what happens when the player finds the spot.
+
 ## Risks
 
 - **R-1. Fill rate and overdraw.** Dense alpha-to-coverage strokes at 4x MSAA may cap the visible count far below targets. Mitigations: the P0 benchmark measures the cap first, there are distance bands, the governor sheds density, and stroke size is tuned per band.
