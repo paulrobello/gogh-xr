@@ -6,6 +6,7 @@ import type { GovernorRuntime } from './render/governor-runtime';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createEnterVrButton } from './ui/enter-vr';
 import { clearNotices, showNotice } from './ui/notice';
+import type { PerfHud } from './ui/perf-hud';
 import { busyWait } from './util/busy-wait';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
@@ -63,6 +64,9 @@ window.addEventListener('resize', () => {
 });
 
 let governor: GovernorRuntime | null = null;
+let hud: PerfHud | null = null;
+/** The batch the HUD counts visible strokes from: the first to load, as with the governor. */
+let hudBatch: StrokeBatch | null = null;
 let lastTime = 0;
 function renderFrame(time: number): void {
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
@@ -71,6 +75,7 @@ function renderFrame(time: number): void {
   governor?.frame(time);
   if (!renderer.xr.isPresenting) desktop.update(dt);
   renderer.render(scene, camera);
+  hud?.frame(time);
 }
 renderer.setAnimationLoop(renderFrame);
 
@@ -90,12 +95,29 @@ if (flags.bench !== null) {
     .catch((error: unknown) => console.warn('bench failed to start', error));
 }
 
+// The bench keeps its own HUD, so `?hud` does nothing there.
+if (flags.hud && flags.bench === null) {
+  import('./ui/perf-hud')
+    .then(({ startPerfHud }) => {
+      hud = startPerfHud({
+        camera,
+        scene,
+        xr: renderer.xr,
+        targetHz: targetFrameRate,
+        getGovernor: () => governor?.diag() ?? null,
+        getVisible: () => hudBatch?.visibleCount() ?? null,
+      });
+    })
+    .catch((error: unknown) => console.warn('perf HUD failed to start', error));
+}
+
 let governed = false;
 /**
  * Every scene with a stroke batch runs the governor, except the bench and `?nogov`. With two
  * stroke scenes at once, the first batch to load is the one governed.
  */
 async function governStrokes(batch: StrokeBatch): Promise<void> {
+  hudBatch ??= batch;
   if (flags.nogov || flags.bench !== null || governed) return;
   governed = true;
   try {
