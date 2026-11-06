@@ -20,6 +20,11 @@ A Meta Quest 3 WebXR experience built with three.js, Vite and bun. Requirements 
 - Never pipe a gate. Redirect to a file, capture the exit code, then tail the log.
 - No push without Paul's approval.
 
+## Deploy
+
+- A push to `main` deploys GitHub Pages (`.github/workflows/pages.yml`) to `https://gogh-xr.pardev.net`.
+- A Pages deployment is keyed by the commit SHA. Once a deploy for a SHA is cancelled or times out, every later attempt for that same SHA ends at once with "Deployment cancelled". This includes "re-run failed jobs", which also trips on the duplicate `github-pages` artifact, and `workflow_dispatch`. Push a new commit to deploy again.
+
 ## URL flags
 
 Parsed in `src/diag/flags.ts`.
