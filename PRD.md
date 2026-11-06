@@ -134,7 +134,7 @@ troika 0.53.1 is the latest release. 0.52.5 is pinned because it is proven on th
   - `?iwer` installs the IWER Quest 3 runtime and works in test builds only.
   - `?seed=` fixes randomness.
   - `?noanim` freezes time.
-  - `?shot=<ms>` writes a canvas PNG via `window.__goghShot()`.
+  - `?diag&shot` (a boolean, diag mode only) enables `window.__goghShot()`, which writes a canvas PNG.
   - `?diag` exposes `window.__goghDiag()`, which returns renderer info, stroke counts, governor state, the active painting and the pose.
   - `?hud` shows the perf HUD.
 - **D16. Delivery.**
