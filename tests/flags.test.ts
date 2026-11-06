@@ -16,12 +16,15 @@ test('defaults when search is empty', () => {
     hz: null,
     strokesTest: false,
     demo: null,
+    beauty: false,
+    slow: 0,
+    nogov: false,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov',
   );
   expect(f).toEqual({
     seed: 42,
@@ -37,6 +40,9 @@ test('parses every flag', () => {
     hz: 120,
     strokesTest: true,
     demo: 'canvas',
+    beauty: true,
+    slow: 14,
+    nogov: true,
   });
 });
 
@@ -125,4 +131,25 @@ test('demo accepts canvas only, anything else is null', () => {
   }
   expect(parseFlags('?demo').demo).toBeNull();
   expect(parseFlags('').demo).toBeNull();
+});
+
+test('slow is a busy-wait in ms, clamped to 0-50, and 0 for anything malformed', () => {
+  expect(parseFlags('?slow=14').slow).toBe(14);
+  expect(parseFlags('?slow=2.5').slow).toBe(2.5);
+  expect(parseFlags('?slow=0').slow).toBe(0);
+  expect(parseFlags('?slow=-3').slow).toBe(0);
+  expect(parseFlags('?slow=500').slow).toBe(50);
+  for (const bad of ['', 'abc', '14ms', 'NaN', 'Infinity', '1e2']) {
+    expect(parseFlags(`?slow=${bad}`).slow).toBe(0);
+  }
+  expect(parseFlags('?slow').slow).toBe(0);
+  expect(parseFlags('').slow).toBe(0);
+});
+
+test('beauty and nogov are boolean flags, off for 0 and false', () => {
+  expect(parseFlags('?beauty').beauty).toBe(true);
+  expect(parseFlags('?beauty=0').beauty).toBe(false);
+  expect(parseFlags('?beauty=false').beauty).toBe(false);
+  expect(parseFlags('?nogov').nogov).toBe(true);
+  expect(parseFlags('?nogov=0').nogov).toBe(false);
 });

@@ -40,6 +40,24 @@ export const DEFAULT_BAND_SIZE: Readonly<Record<StrokeBand, number>> = Object.fr
   far: 1.6,
 });
 
+/**
+ * Densities the governor starts from in max-beauty mode (72 Hz, 500k budget). In the reference
+ * world of `tests/strokes-budget.test.ts` they draw 306k-412k from the centre and 10 m out, inside
+ * the max-beauty range with room under 500k.
+ */
+export const BEAUTY_BAND_DENSITY: Readonly<Record<StrokeBand, number>> = Object.freeze({
+  near: 1,
+  mid: 1,
+  far: 0.8,
+});
+
+/** Size multipliers for the max-beauty densities, about 1/sqrt(d) as for the defaults. */
+export const BEAUTY_BAND_SIZE: Readonly<Record<StrokeBand, number>> = Object.freeze({
+  near: 1,
+  mid: 1,
+  far: 1.12,
+});
+
 export interface StrokeBudget {
   /** XR target frame rate. */
   readonly hz: number;

@@ -1,7 +1,11 @@
 export const TARGET_FRAME_RATE = 90;
 
-/** The `?hz` override, or the default target. */
-export function resolveTargetFrameRate(hz: number | null): number {
+/** Max-beauty mode's target (ruling R12). */
+export const BEAUTY_FRAME_RATE = 72;
+
+/** Max beauty forces 72 Hz over any `?hz`; otherwise the `?hz` override, or the default target. */
+export function resolveTargetFrameRate(hz: number | null, beauty = false): number {
+  if (beauty) return BEAUTY_FRAME_RATE;
   return hz ?? TARGET_FRAME_RATE;
 }
 /** Off: P0.8 showed shimmer at 0.5 and 1.0 and no frame-time gain from either. */

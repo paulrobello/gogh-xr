@@ -1,7 +1,10 @@
 import { DataTexture, PerspectiveCamera, RGBAFormat } from 'three';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { createGovernor, type GovernorEvent } from '../src/render/governor.ts';
 import {
+  BEAUTY_BAND_DENSITY,
   DEFAULT_BAND_DENSITY,
+  DEFAULT_BAND_SIZE,
   STROKE_BANDS,
   STROKE_BUDGET,
   type StrokeBand,
@@ -70,6 +73,43 @@ function viewFrom(batch: StrokeBatch, x: number, z: number, yaw = 0): number {
   return batch.visibleCount();
 }
 
+/**
+ * Runs a governor on a sustained 16 ms overrun at 90 Hz for the view from (x, 1.6, z) facing
+ * `yaw`, applying each density shed to the batch, until the first non-density step. Returns the
+ * density events and the drawn count then. Restores the default levels afterwards.
+ */
+function shedDensity(
+  batch: StrokeBatch,
+  x: number,
+  z: number,
+  yaw: number,
+): { events: GovernorEvent[]; drawn: number } {
+  const gov = createGovernor({ mode: 'default', targetHz: 90 });
+  const events: GovernorEvent[] = [];
+  let drawn = viewFrom(batch, x, z, yaw);
+  for (let t = 16; t < 60_000; t += 16) {
+    const { bands } = batch.stats();
+    const event = gov.sample({
+      t,
+      intervalMs: 16,
+      drawn: { near: bands.near.visible, mid: bands.mid.visible, far: bands.far.visible },
+    });
+    if (!event) continue;
+    if (!event.step.endsWith('-density')) break;
+    events.push(event);
+    for (const band of STROKE_BANDS) {
+      batch.setDensity(band, gov.levels.density[band]);
+      batch.setSizeMultiplier(band, gov.levels.size[band]);
+    }
+    drawn = viewFrom(batch, x, z, yaw);
+  }
+  for (const band of STROKE_BANDS) {
+    batch.setDensity(band, DEFAULT_BAND_DENSITY[band]);
+    batch.setSizeMultiplier(band, DEFAULT_BAND_SIZE[band]);
+  }
+  return { events, drawn };
+}
+
 describe('budget', () => {
   let batch: StrokeBatch;
 
@@ -104,15 +144,42 @@ describe('budget', () => {
   // Governor territory (ruling R10). Toward the boundary, one heading's view can hold several
   // times another's (2.8x at 20 m, 17x at 40 m), more than the budget's 325/150 spread, so no
   // static defaults fit every view. The 150k floor is the governor's shed limit, not a per-view
-  // guarantee: a sparse view cannot draw strokes it does not have. Over-budget views are P1.6's
-  // to shed. These assert only which side of the budget each view lands on.
-  test('a sparse view facing the boundary from 20 m out draws under the floor', () => {
+  // guarantee: a sparse view cannot draw strokes it does not have.
+  test('a sparse view under the floor from 20 m out: the governor sheds no density', () => {
     expect(viewFrom(batch, 20, 0, 270)).toBeLessThan(STROKE_BUDGET.default.min);
+    expect(shedDensity(batch, 20, 0, 270).events).toEqual([]);
   });
 
-  test('facing in from the boundary at 40 m the defaults exceed the maximum: P1.6 must shed', () => {
-    expect(viewFrom(batch, 40, 0, 90)).toBeGreaterThan(STROKE_BUDGET.default.max);
+  test('facing in from the boundary at 40 m: density sheds to the floor and no further', () => {
+    const before = viewFrom(batch, 40, 0, 90);
+    expect(before).toBeGreaterThan(STROKE_BUDGET.default.max);
+    const { events, drawn } = shedDensity(batch, 40, 0, 90);
+    expect(events.length).toBeGreaterThan(1);
+    expect(events.every((e) => e.action === 'shed')).toBe(true);
+    // Far sheds before mid and mid before near.
+    const order = events.map((e) =>
+      STROKE_BANDS.indexOf(e.step.replace('-density', '') as StrokeBand),
+    );
+    expect([...order].sort((a, b) => b - a)).toEqual(order);
+    expect(drawn).toBeLessThan(STROKE_BUDGET.default.max);
+    // Per-chunk flooring can lose at most one instance per visible chunk against the prediction.
+    expect(drawn).toBeGreaterThanOrEqual(STROKE_BUDGET.default.min - batch.stats().visibleChunks);
   });
+
+  test.each([0, 90, 180, 270])(
+    'max beauty, heading %s: the beauty densities draw more, inside the 72 Hz budget',
+    (yaw) => {
+      for (const x of [0, 10]) {
+        const defaults = viewFrom(batch, x, 0, yaw);
+        for (const band of STROKE_BANDS) batch.setDensity(band, BEAUTY_BAND_DENSITY[band]);
+        const drawn = viewFrom(batch, x, 0, yaw);
+        for (const band of STROKE_BANDS) batch.setDensity(band, DEFAULT_BAND_DENSITY[band]);
+        expect(drawn).toBeGreaterThan(defaults * 1.2);
+        expect(drawn).toBeGreaterThanOrEqual(STROKE_BUDGET.maxBeauty.min);
+        expect(drawn).toBeLessThanOrEqual(STROKE_BUDGET.maxBeauty.max);
+      }
+    },
+  );
 
   test('every band holds strokes, so each lever has something to pull', () => {
     viewFrom(batch, 0, 0);

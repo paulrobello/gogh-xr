@@ -17,6 +17,12 @@ export interface Flags {
   readonly strokesTest: boolean;
   /** `?demo=canvas`: the P1 test canvas, the painting re-painted in strokes. */
   readonly demo: DemoName | null;
+  /** `?beauty`: max-beauty mode, 72 Hz with the 500k budget. Overrides `?hz`. */
+  readonly beauty: boolean;
+  /** `?slow=<ms>`: CPU busy-wait per frame, 0-50 ms, for testing the governor. 0 means off. */
+  readonly slow: number;
+  /** `?nogov`: keeps the quality governor off, so e2e checks see fixed densities. */
+  readonly nogov: boolean;
 }
 
 export type BenchMode = 'a2c' | 'blend';
@@ -25,6 +31,8 @@ export type TargetHz = 72 | 90 | 120;
 export type DemoName = 'canvas';
 
 const TARGET_HZ: readonly number[] = [72, 90, 120];
+
+export const MAX_SLOW_MS = 50;
 
 const NUMBER_PATTERN = /^[+-]?(\d+\.?\d*|\.\d+)$/;
 
@@ -56,6 +64,11 @@ function parseHz(raw: string | null): TargetHz | null {
   return value !== null && TARGET_HZ.includes(value) ? (value as TargetHz) : null;
 }
 
+function parseSlow(raw: string | null): number {
+  const value = parseNumber(raw);
+  return value === null ? 0 : Math.min(MAX_SLOW_MS, Math.max(0, value));
+}
+
 function parseDemo(raw: string | null): DemoName | null {
   return raw?.trim().toLowerCase() === 'canvas' ? 'canvas' : null;
 }
@@ -79,6 +92,9 @@ export function parseFlags(search: string): Flags {
     hz: parseHz(params.get('hz')),
     strokesTest: parseBool(params, 'strokesTest'),
     demo: parseDemo(params.get('demo')),
+    beauty: parseBool(params, 'beauty'),
+    slow: parseSlow(params.get('slow')),
+    nogov: parseBool(params, 'nogov'),
   });
 }
 

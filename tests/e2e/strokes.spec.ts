@@ -27,7 +27,8 @@ async function strokes(xr: Xr): Promise<StrokesDiag> {
 }
 
 test('strokesTest renders its chunks in XR without WebGL errors', async ({ page, xr }) => {
-  await xr.boot('strokesTest');
+  // The headless page vsyncs at 60 Hz, over the 90 Hz budget: keep the governor's hands off.
+  await xr.boot('strokesTest&nogov');
   await xr.enterXR();
   await xr.waitFrames(5);
 

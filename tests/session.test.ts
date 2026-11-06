@@ -236,4 +236,6 @@ test('?hz overrides the default target of 90', () => {
   expect(resolveTargetFrameRate(null)).toBe(90);
   expect(resolveTargetFrameRate(72)).toBe(72);
   expect(resolveTargetFrameRate(120)).toBe(120);
+  expect(resolveTargetFrameRate(null, true)).toBe(72);
+  expect(resolveTargetFrameRate(120, true)).toBe(72);
 });

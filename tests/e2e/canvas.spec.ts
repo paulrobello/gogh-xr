@@ -35,7 +35,8 @@ function expectWholeCanvasNear(stats: CanvasDiag): void {
 }
 
 test('the canvas demo renders in XR without WebGL errors', async ({ page, xr }) => {
-  await xr.boot('demo=canvas&seed=1&noanim');
+  // The headless page vsyncs at 60 Hz, over the 90 Hz budget: keep the governor from thinning it.
+  await xr.boot('demo=canvas&seed=1&noanim&nogov');
   await xr.enterXR();
   await xr.waitFrames(5);
   const stats = await canvas(xr);

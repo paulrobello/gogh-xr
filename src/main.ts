@@ -2,8 +2,11 @@ import { PerspectiveCamera, WebGLRenderer } from 'three';
 import { installDesktopControls } from './desktop/controls';
 import { installDiag, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
+import type { GovernorRuntime } from './render/governor-runtime';
+import type { StrokeBatch } from './render/strokes/batch';
 import { createEnterVrButton } from './ui/enter-vr';
 import { clearNotices, showNotice } from './ui/notice';
+import { busyWait } from './util/busy-wait';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
 import { createInputCounter } from './xr/input-counter';
@@ -42,12 +45,15 @@ const desktop = installDesktopControls(
   camera,
   flags.demo === 'canvas' ? { x: 0, z: 0 } : undefined,
 );
+// Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls.
+const beauty = flags.beauty && flags.bench === null;
+const targetFrameRate = resolveTargetFrameRate(flags.hz, beauty);
 const session = createSessionController({
   renderer,
   xr: navigator.xr,
   notify: (message) => showNotice(message),
   clearNotices: () => clearNotices(),
-  targetFrameRate: resolveTargetFrameRate(flags.hz),
+  targetFrameRate,
 });
 
 window.addEventListener('resize', () => {
@@ -56,10 +62,13 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+let governor: GovernorRuntime | null = null;
 let lastTime = 0;
 function renderFrame(time: number): void {
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
   lastTime = time;
+  if (flags.slow > 0) busyWait(flags.slow);
+  governor?.frame(time);
   if (!renderer.xr.isPresenting) desktop.update(dt);
   renderer.render(scene, camera);
 }
@@ -81,15 +90,31 @@ if (flags.bench !== null) {
     .catch((error: unknown) => console.warn('bench failed to start', error));
 }
 
+/** Every scene with a stroke batch runs the governor, except the bench and `?nogov`. */
+async function governStrokes(batch: StrokeBatch): Promise<void> {
+  if (flags.nogov || flags.bench !== null || governor) return;
+  const { startGovernor } = await import('./render/governor-runtime');
+  governor = startGovernor({
+    renderer,
+    scene,
+    batch,
+    mode: beauty ? 'beauty' : 'default',
+    targetHz: targetFrameRate,
+    notify: (message) => showNotice(message),
+  });
+}
+
 if (flags.strokesTest) {
   import('./render/strokes/test-scene')
-    .then(({ startStrokesTest }) => startStrokesTest({ scene }))
+    .then(({ startStrokesTest }) => governStrokes(startStrokesTest({ scene }).batch))
     .catch((error: unknown) => console.warn('strokes test failed to start', error));
 }
 
 if (flags.demo === 'canvas') {
   import('./demo/canvas/demo')
-    .then(({ startCanvasDemo }) => startCanvasDemo({ scene, seed: flags.seed }))
+    .then(async ({ startCanvasDemo }) =>
+      governStrokes((await startCanvasDemo({ scene, seed: flags.seed })).batch),
+    )
     .catch((error: unknown) => console.warn('canvas demo failed to start', error));
 }
 
