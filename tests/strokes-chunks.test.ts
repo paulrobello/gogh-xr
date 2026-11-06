@@ -256,6 +256,19 @@ describe('cullAndSortInto order', () => {
 });
 
 describe('cullAndSortInto', () => {
+  test('throws a RangeError when order or distances is shorter than spheres (N4)', () => {
+    const spheres = [new Sphere(new Vector3(0, 0, -3), 1), new Sphere(new Vector3(0, 0, -5), 1)];
+    const frustum = new Frustum();
+    const eye = new Vector3();
+    expect(() =>
+      cullAndSortInto(spheres, frustum, eye, new Uint32Array(1), new Float64Array(2)),
+    ).toThrow(RangeError);
+    expect(() =>
+      cullAndSortInto(spheres, frustum, eye, new Uint32Array(2), new Float64Array(1)),
+    ).toThrow(RangeError);
+    expect(cullAndSortInto(spheres, frustum, eye, new Uint32Array(2), new Float64Array(3))).toBe(2);
+  });
+
   test('matches the comparator-sort reference on 300 spheres, distance ties included', () => {
     const rand = mulberry32(7);
     const camera = new PerspectiveCamera(80, 1.2, 0.05, 1000);

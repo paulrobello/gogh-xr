@@ -162,7 +162,7 @@ export function partitionStrokes(
  * front-to-back order lets the depth test reject hidden strokes before shading. Allocates nothing:
  * writes the kept indices to `order` and their squared distances to `distances`, both at least
  * `spheres.length` long, and returns how many were kept. Sorts in place by insertion on
- * (distance, index), a total order.
+ * (distance, index), a total order. Throws RangeError when either array is shorter than `spheres`.
  */
 export function cullAndSortInto(
   spheres: readonly Sphere[],
@@ -171,6 +171,11 @@ export function cullAndSortInto(
   order: Uint32Array,
   distances: Float64Array,
 ): number {
+  if (order.length < spheres.length || distances.length < spheres.length) {
+    throw new RangeError(
+      `cull output holds ${Math.min(order.length, distances.length)}, needs ${spheres.length}`,
+    );
+  }
   let n = 0;
   for (let index = 0; index < spheres.length; index++) {
     const sphere = spheres[index];
