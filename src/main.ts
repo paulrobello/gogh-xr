@@ -3,7 +3,7 @@ import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { installDesktopControls } from './desktop/controls';
 import { installDiag, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
-import type { GovernorRuntime } from './render/governor-runtime';
+import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
@@ -64,16 +64,39 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-let governor: GovernorRuntime | null = null;
 let hud: HudToggle | null = null;
-/** The batch the HUD counts visible strokes from: the first to load, as with the governor. */
-let hudBatch: StrokeBatch | null = null;
+/**
+ * The governed batch, which the HUD also counts. Every scene with a stroke batch runs the governor,
+ * except the bench and `?nogov`. A world switch rebinds it with `strokes.bind`.
+ */
+const strokes = createStrokeBinding({
+  loadGovernor:
+    flags.nogov || flags.bench !== null
+      ? null
+      : async () => {
+          const { startGovernor } = await import('./render/governor-runtime');
+          return (batch) =>
+            startGovernor({
+              renderer,
+              scene,
+              batch,
+              mode: beauty ? 'beauty' : 'default',
+              targetHz: targetFrameRate,
+              // The DOM notice is invisible in immersive mode, so the HUD carries it there, hidden
+              // or not.
+              notify: (message) => {
+                showNotice(message);
+                hud?.setVisible(true);
+              },
+            });
+        },
+});
 let lastTime = 0;
 function renderFrame(time: number): void {
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
   lastTime = time;
   if (flags.slow > 0) busyWait(flags.slow);
-  governor?.frame(time);
+  strokes.frame(time);
   if (!renderer.xr.isPresenting) desktop.update(dt);
   renderer.render(scene, camera);
   if (hud) {
@@ -117,8 +140,8 @@ if (flags.bench === null) {
         scene,
         xr: renderer.xr,
         targetHz: targetFrameRate,
-        getGovernor: () => governor?.diag() ?? null,
-        getVisible: () => hudBatch?.visibleCount() ?? null,
+        getGovernor: () => strokes.governorDiag(),
+        getVisible: () => strokes.visibleCount(),
       });
     },
     onError: (error) => console.warn('perf HUD failed to start', error),
@@ -130,32 +153,9 @@ if (flags.bench === null) {
   });
 }
 
-let governed = false;
-/**
- * Every scene with a stroke batch runs the governor, except the bench and `?nogov`. With two
- * stroke scenes at once, the first batch to load is the one governed.
- */
-async function governStrokes(batch: StrokeBatch): Promise<void> {
-  hudBatch ??= batch;
-  if (flags.nogov || flags.bench !== null || governed) return;
-  governed = true;
-  try {
-    const { startGovernor } = await import('./render/governor-runtime');
-    governor = startGovernor({
-      renderer,
-      scene,
-      batch,
-      mode: beauty ? 'beauty' : 'default',
-      targetHz: targetFrameRate,
-      // The DOM notice is invisible in immersive mode, so the HUD carries it there, hidden or not.
-      notify: (message) => {
-        showNotice(message);
-        hud?.setVisible(true);
-      },
-    });
-  } catch (error) {
-    console.warn('quality governor failed to start', error);
-  }
+/** With two stroke scenes at once, the first batch to load is the one bound. */
+function governStrokes(batch: StrokeBatch): Promise<void> {
+  return strokes.batch ? Promise.resolve() : strokes.bind(batch);
 }
 
 if (flags.strokesTest) {

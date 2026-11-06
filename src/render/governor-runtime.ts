@@ -98,6 +98,8 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   let lastTime: number | null = null;
   /** The rate asked of the session, used while it reports no `frameRate`. */
   let requestedHz = deps.targetHz;
+  /** A rate request can settle after `dispose`; it must not notify or touch a disposed runtime. */
+  let disposed = false;
   const timer = new GpuTimer(renderer.getContext() as TimerGl);
 
   function applyLevels(): void {
@@ -120,7 +122,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     const target = session;
     const fail = (reason: string): void => {
       console.warn(`[governor] ${event.to} Hz fallback unavailable: ${reason}`);
-      if (owner === governor) owner.rateFailed(event.t);
+      if (!disposed && owner === governor) owner.rateFailed(event.t);
     };
     if (!target || typeof target.updateTargetFrameRate !== 'function') {
       fail('the session has no updateTargetFrameRate');
@@ -128,7 +130,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     }
     target.updateTargetFrameRate(event.to).then(
       () => {
-        if (owner !== governor) return;
+        if (disposed || owner !== governor) return;
         requestedHz = event.to;
         owner.rateApplied(event.to);
         owner.setFrameRate(target.frameRate ?? event.to);
@@ -222,6 +224,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     },
     diag,
     dispose() {
+      disposed = true;
       xr.removeEventListener('sessionstart', onStart);
       xr.removeEventListener('sessionend', onEnd);
       session?.removeEventListener('visibilitychange', onVisibility);

@@ -10,6 +10,7 @@ import {
   type GovernorXr,
   startGovernor,
 } from '../src/render/governor-runtime.ts';
+import { type BoundBatch, createStrokeBinding } from '../src/render/stroke-binding.ts';
 import { DEFAULT_BAND_DENSITY, type StrokeBand } from '../src/render/strokes/bands.ts';
 import { createStrokeBatch } from '../src/render/strokes/batch.ts';
 import { createStrokeBuffers, packInstance, STROKE_LAYER } from '../src/render/strokes/instance.ts';
@@ -420,5 +421,163 @@ describe('scene render hooks (M1)', () => {
     expect(calls()).toEqual({ before: 1, after: 1, update: 0, begin: 0, end: 0 });
     expect(scene.onBeforeRender).toBe(before);
     expect(scene.onAfterRender).toBe(after);
+  });
+});
+
+test('a rate request that settles after dispose neither notifies nor touches the new owner', async () => {
+  const xr = new FakeXr();
+  const batch = fakeBatch(200_000);
+  const { runtime: rt, notify } = start(xr, batch);
+  xr.isPresenting = true;
+  xr.emit('sessionstart');
+  vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  let t = 0;
+  while (!diagOf().history.some((e) => e.action === 'rate') && t < 20_000) {
+    t = frames(rt, t, 16, 16);
+  }
+  expect(xr.session.updateTargetFrameRate).toHaveBeenCalledWith(72);
+  rt.dispose();
+  runtime = null;
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(notify).not.toHaveBeenCalled();
+});
+
+describe('stroke binding (M2)', () => {
+  /** A fake batch whose methods throw once it is disposed, with call counts per method. */
+  function countedBatch(visibleNear: number) {
+    const inner = fakeBatch(visibleNear);
+    let disposed = false;
+    const counts = { setDensity: 0, setSizeMultiplier: 0, visibleByBand: 0, visibleCount: 0 };
+    const guard = (name: keyof typeof counts): void => {
+      if (disposed) throw new Error(`${name} on a disposed batch`);
+      counts[name]++;
+    };
+    const batch: BoundBatch = {
+      setDensity: (band, d) => {
+        guard('setDensity');
+        inner.setDensity(band, d);
+      },
+      setSizeMultiplier: (band, m) => {
+        guard('setSizeMultiplier');
+        inner.setSizeMultiplier(band, m);
+      },
+      visibleByBand: () => {
+        guard('visibleByBand');
+        return inner.visibleByBand();
+      },
+      visibleCount: () => {
+        guard('visibleCount');
+        return inner.visibleByBand().near;
+      },
+    };
+    return {
+      batch,
+      inner,
+      counts,
+      dispose: () => {
+        disposed = true;
+      },
+    };
+  }
+
+  function binding(xr: FakeXr, governs = true) {
+    const scene = new Scene();
+    const started: BoundBatch[] = [];
+    const strokes = createStrokeBinding({
+      loadGovernor: governs
+        ? async () => (batch) => {
+            started.push(batch as BoundBatch);
+            return startGovernor({
+              renderer: { xr, ...noTimer },
+              scene,
+              batch,
+              mode: 'default',
+              targetHz: 90,
+            });
+          }
+        : null,
+    });
+    return { strokes, started };
+  }
+
+  function drive(strokes: { frame(t: number): void }, from: number, ms: number): number {
+    let t = from;
+    while (t < from + ms) {
+      t += 16;
+      strokes.frame(t);
+    }
+    return t;
+  }
+
+  test('after a swap the governor and HUD count drive the new batch, never the disposed one', async () => {
+    const xr = new FakeXr();
+    const { strokes, started } = binding(xr);
+    const a = countedBatch(400_000);
+    const b = countedBatch(300_000);
+    await strokes.bind(a.batch);
+    expect(strokes.batch).toBe(a.batch);
+    xr.isPresenting = true;
+    xr.emit('sessionstart');
+    let t = drive(strokes, 0, 3000);
+    expect(a.inner.densities.near).toBeLessThan(1);
+    expect(strokes.visibleCount()).toBe(a.batch.visibleCount());
+
+    await strokes.bind(b.batch);
+    a.dispose();
+    const frozen = { ...a.counts };
+    expect(strokes.batch).toBe(b.batch);
+    expect(started).toEqual([a.batch, b.batch]);
+    // A new world starts from full quality, and the diag key belongs to the new governor.
+    expect(b.inner.densities.near).toBe(1);
+    expect(diagOf()).toMatchObject({ level: 0, history: [] });
+
+    t = drive(strokes, t, 3000);
+    expect(b.inner.densities.near).toBeLessThan(1);
+    expect(b.counts.visibleByBand).toBeGreaterThan(0);
+    expect(strokes.visibleCount()).toBe(b.batch.visibleCount());
+    expect(strokes.governorDiag()?.level).toBeGreaterThan(0);
+    expect(a.counts).toEqual(frozen);
+
+    await strokes.bind(null);
+    expect(strokes.batch).toBeNull();
+    expect(strokes.visibleCount()).toBeNull();
+    expect(strokes.governorDiag()).toBeNull();
+    expect(diagOf()).toBeUndefined();
+    drive(strokes, t, 1000);
+    expect(a.counts).toEqual(frozen);
+  });
+
+  test('a swap while the governor module loads starts one governor, on the newest batch', async () => {
+    const xr = new FakeXr();
+    const { strokes, started } = binding(xr);
+    const a = countedBatch(400_000);
+    const b = countedBatch(300_000);
+    const first = strokes.bind(a.batch);
+    const second = strokes.bind(b.batch);
+    await Promise.all([first, second]);
+    expect(started).toEqual([b.batch]);
+    expect(a.counts).toEqual({
+      setDensity: 0,
+      setSizeMultiplier: 0,
+      visibleByBand: 0,
+      visibleCount: 0,
+    });
+    await strokes.bind(null);
+  });
+
+  test('without a governor the HUD source still rebinds', async () => {
+    const xr = new FakeXr();
+    const { strokes, started } = binding(xr, false);
+    const a = countedBatch(400_000);
+    const b = countedBatch(300_000);
+    await strokes.bind(a.batch);
+    expect(strokes.visibleCount()).toBe(400_000);
+    await strokes.bind(b.batch);
+    a.dispose();
+    expect(strokes.visibleCount()).toBe(300_000);
+    expect(strokes.governorDiag()).toBeNull();
+    expect(started).toEqual([]);
   });
 });
