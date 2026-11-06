@@ -2,7 +2,25 @@
 
 A Meta Quest 3 WebXR experience: step through a gallery frame and walk inside Van Gogh's *The Starry Night*, painted in more than a million animated GPU brushstrokes.
 
-Status: planned. There is no code yet. Start with [PRD.md](PRD.md), then follow the per-phase plans in [plans/](plans/). The kanban board tracks the work under the project `gogh-xr`.
+Status: Phase 0 (foundation and feasibility). The repo has the Vite and three.js scaffold, a desktop preview with WASD and mouse look, WebXR session entry, the `?diag` hooks, a stroke benchmark (`?bench`), the e2e harness and the asset provenance gate. The painting itself arrives in later phases. Requirements are in [PRD.md](PRD.md) and the per-phase plans are in [plans/](plans/). The kanban board tracks the work under the project `gogh-xr`.
+
+## Setup
+
+```sh
+make install                    # bun install --frozen-lockfile
+bunx playwright install chromium  # once, before make e2e
+make dev                        # Vite dev server on http://localhost:4252
+```
+
+Gate targets:
+
+- `make checkall` is the fast gate (lint, typecheck, test, build, bundle-check).
+- `make checkall-ci` adds gitleaks (working tree and history), `bun audit` and `asset-check`. Run it before any push.
+- `make e2e` runs the Playwright suite against the IWER-emulated Quest 3. It is local only.
+
+## License
+
+The source code is MIT licensed (see [LICENSE](LICENSE)). Media under `assets/` and `public/paintings/` is not covered by the MIT license. Its source, license and rights status are listed per file in [assets/PROVENANCE.md](assets/PROVENANCE.md).
 
 | Phase | Plan |
 | --- | --- |
