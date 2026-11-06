@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { parseFlags } from '../src/diag/flags.ts';
+import { MAX_CANVAS_COUNT, MIN_CANVAS_COUNT, parseFlags } from '../src/diag/flags.ts';
 
 test('defaults when search is empty', () => {
   expect(parseFlags('')).toEqual({
@@ -19,12 +19,13 @@ test('defaults when search is empty', () => {
     beauty: false,
     slow: 0,
     nogov: false,
+    count: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000',
   );
   expect(f).toEqual({
     seed: 42,
@@ -43,6 +44,7 @@ test('parses every flag', () => {
     beauty: true,
     slow: 14,
     nogov: true,
+    count: 325_000,
   });
 });
 
@@ -152,4 +154,19 @@ test('beauty and nogov are boolean flags, off for 0 and false', () => {
   expect(parseFlags('?beauty=false').beauty).toBe(false);
   expect(parseFlags('?nogov').nogov).toBe(true);
   expect(parseFlags('?nogov=0').nogov).toBe(false);
+});
+
+test('count is a canvas stroke target, rounded and clamped to 10k-1M, null when malformed', () => {
+  expect(parseFlags('?count=325000').count).toBe(325_000);
+  expect(parseFlags('?count=500000').count).toBe(500_000);
+  expect(parseFlags('?count=12345.6').count).toBe(12_346);
+  expect(parseFlags('?count=10').count).toBe(MIN_CANVAS_COUNT);
+  expect(parseFlags('?count=-5').count).toBe(MIN_CANVAS_COUNT);
+  expect(parseFlags('?count=5000000').count).toBe(MAX_CANVAS_COUNT);
+  expect([MIN_CANVAS_COUNT, MAX_CANVAS_COUNT]).toEqual([10_000, 1_000_000]);
+  for (const bad of ['', 'abc', '1e5', '325k', 'NaN', 'Infinity', '0x10']) {
+    expect(parseFlags(`?count=${bad}`).count).toBeNull();
+  }
+  expect(parseFlags('?count').count).toBeNull();
+  expect(parseFlags('').count).toBeNull();
 });

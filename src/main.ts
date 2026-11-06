@@ -167,7 +167,7 @@ if (flags.strokesTest) {
 if (flags.demo === 'canvas') {
   import('./demo/canvas/demo')
     .then(async ({ startCanvasDemo }) =>
-      governStrokes((await startCanvasDemo({ scene, seed: flags.seed })).batch),
+      governStrokes((await startCanvasDemo({ scene, seed: flags.seed, count: flags.count })).batch),
     )
     .catch((error: unknown) => console.warn('canvas demo failed to start', error));
 }

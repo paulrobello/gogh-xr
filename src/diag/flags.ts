@@ -23,6 +23,8 @@ export interface Flags {
   readonly slow: number;
   /** `?nogov`: keeps the quality governor off, so e2e checks see fixed densities. */
   readonly nogov: boolean;
+  /** `&count=N`: the `?demo=canvas` stroke target, 10k-1M. null means the canvas default. */
+  readonly count: number | null;
 }
 
 export type BenchMode = 'a2c' | 'blend';
@@ -33,6 +35,9 @@ export type DemoName = 'canvas';
 const TARGET_HZ: readonly number[] = [72, 90, 120];
 
 export const MAX_SLOW_MS = 50;
+/** `&count` bounds: wide enough for the 325k default budget and the 500k max-beauty budget. */
+export const MIN_CANVAS_COUNT = 10_000;
+export const MAX_CANVAS_COUNT = 1_000_000;
 
 const NUMBER_PATTERN = /^[+-]?(\d+\.?\d*|\.\d+)$/;
 
@@ -69,6 +74,13 @@ function parseSlow(raw: string | null): number {
   return value === null ? 0 : Math.min(MAX_SLOW_MS, Math.max(0, value));
 }
 
+function parseCount(raw: string | null): number | null {
+  const value = parseNumber(raw);
+  return value === null
+    ? null
+    : Math.min(MAX_CANVAS_COUNT, Math.max(MIN_CANVAS_COUNT, Math.round(value)));
+}
+
 function parseDemo(raw: string | null): DemoName | null {
   return raw?.trim().toLowerCase() === 'canvas' ? 'canvas' : null;
 }
@@ -95,6 +107,7 @@ export function parseFlags(search: string): Flags {
     beauty: parseBool(params, 'beauty'),
     slow: parseSlow(params.get('slow')),
     nogov: parseBool(params, 'nogov'),
+    count: parseCount(params.get('count')),
   });
 }
 

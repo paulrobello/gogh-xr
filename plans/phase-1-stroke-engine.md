@@ -121,12 +121,30 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
 
 ### P1.8: Headset check P1 (owner)
 - **Depends on:** P1.5, P1.6, P1.7, and an owner-approved deploy.
-- **Steps:**
-  - Paul views `?demo=canvas&hud` on the Quest 3:
-    - near, at arm's length;
-    - at 2 m;
-    - at oblique angles.
-  - He records the stroke-look verdict, the OVR Metrics frame times at the default budget, and the governor behaviour under the benchmark load.
+- **Steps:** Paul runs each check on the Quest 3 against the deployed build.
+  - **Look:** `?demo=canvas&hud`.
+    - View it near, at arm's length.
+    - View it at 2 m.
+    - View it at oblique angles.
+    - Record the stroke-look verdict.
+  - **Frame times at the default budget:** `?demo=canvas&hud&count=325000`.
+    - This draws about 325k strokes, the P0-measured budget, with the P1 stroke material.
+    - Record the OVR Metrics frame times at 90 Hz.
+  - **Max-beauty spot check:** `?demo=canvas&hud&beauty&count=500000`.
+    - This targets 72 Hz with about 500k strokes.
+    - Record the OVR Metrics frame times and the look.
+  - **Governor behaviour on the device:** `?demo=canvas&hud&slow=N`.
+    - Raise N until the frame overruns the budget.
+    - The HUD shows the shed order as it happens: band density first, then fb scale, then foveation.
+    - The HUD shows the 72 Hz notice once the rate drops. The notice also shows the HUD if it was hidden.
+    - Record the sequence and the time it took.
+  - **Checklist from the Phase 1 review:**
+    - [ ] Record one OVR run with the HUD shown and one with it hidden (left X), because troika re-typesets every 250 ms.
+    - [ ] Check that `__goghDiag().governor.fbScalePath` reads `projection-layer` on Quest.
+    - [ ] Record the applied fb scale, `__goghDiag().governor.fbScaleApplied`, after the fb-scale step. The HUD shows `(applied X.XX)` when it differs from the request.
+    - [ ] Record `__goghDiag().canvas.strokes.atlasMs` against ruling R2's trigger: over 300 ms means moving the atlas into a bake. Record `__goghDiag().canvas.buildMs` with it.
+    - [ ] Look for the a2c bright-rim artifact at stroke edges.
+    - [ ] Read diag over adb with `chrome://inspect`. Run `adb forward tcp:9333 localabstract:chrome_devtools_remote`, then open the page's DevTools. Add `&diag` to each URL above.
 - **Verify:**
   - `docs/verification.md` records P1-A4 with OVR screenshots.
   - **The card stays open until Paul signs off.**

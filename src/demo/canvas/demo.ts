@@ -7,7 +7,12 @@ import type { Scene } from 'three';
 import { registerDiag, unregisterDiag } from '../../diag/diag';
 import { createStrokeBatch, type StrokeBatch } from '../../render/strokes/batch';
 import { buildFlowField, type Raster } from './field';
-import { buildCanvasStrokes, CANVAS_CELL_SIZE, DEFAULT_CANVAS_SEED } from './placement';
+import {
+  buildCanvasStrokes,
+  CANVAS_CELL_SIZE,
+  CANVAS_STROKE_TARGET,
+  DEFAULT_CANVAS_SEED,
+} from './placement';
 
 const PAINTING_DIR = `${import.meta.env.BASE_URL}paintings/starry-night/`;
 
@@ -35,6 +40,8 @@ export interface CanvasDemoDeps {
   scene: Scene;
   /** `?seed`; null means `DEFAULT_CANVAS_SEED`. */
   seed: number | null;
+  /** `&count`, the stroke target; null means `CANVAS_STROKE_TARGET`. */
+  count: number | null;
 }
 
 /** Wall times of the build stages, ms. GPU upload happens at the first render and is not timed. */
@@ -66,7 +73,8 @@ export async function startCanvasDemo(deps: CanvasDemoDeps): Promise<CanvasDemoH
   ]);
   const field = buildFlowField(flow);
   const decoded = performance.now();
-  const buffers = buildCanvasStrokes({ color, flow: field, regions }, { seed });
+  const target = deps.count ?? CANVAS_STROKE_TARGET;
+  const buffers = buildCanvasStrokes({ color, flow: field, regions }, { seed, target });
   const placed = performance.now();
   const batch = createStrokeBatch(buffers, { cellSize: CANVAS_CELL_SIZE });
   const batched = performance.now();
