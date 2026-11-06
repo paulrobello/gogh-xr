@@ -8,7 +8,7 @@ N steps by 25,000 with the left stick. "Holds" means the HUD reads the target FP
 
 | Mode | 72 Hz | 90 Hz | 120 Hz |
 | --- | --- | --- | --- |
-| blend | | 225,000 (275,000 drops to 75 fps) | |
+| blend | 300,000 | 225,000 (275,000 drops to 75 fps) | |
 | a2c | 325,000 | 225,000 (300,000 drops to 75 fps) | |
 
 ## Other findings
