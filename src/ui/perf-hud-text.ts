@@ -45,6 +45,8 @@ export interface PerfHudValues {
   targetHz: number;
   /** Strokes drawn after the last cull; null before a stroke batch exists. */
   visible: number | null;
+  /** Chunks that passed the last cull; null before a stroke batch exists. */
+  visibleChunks: number | null;
   /** null for a scene without a governor, or under `?nogov`. */
   governor: PerfHudGovernor | null;
 }
@@ -57,10 +59,12 @@ export function formatPerfHud(values: PerfHudValues): string {
   const gov = values.governor;
   const gpu = values.gpuMs === null ? 'n/a' : `${values.gpuMs.toFixed(2)} ms`;
   const visible = values.visible === null ? '--' : values.visible.toLocaleString('en-US');
+  const chunks =
+    values.visibleChunks === null ? '--' : values.visibleChunks.toLocaleString('en-US');
   const lines = [
     `fps ${values.fps}   mean ${ms(values.meanMs)} ms   p99 ${ms(values.p99Ms)} ms`,
     `gpu ${gpu}   target ${gov ? gov.targetHz : values.targetHz} Hz`,
-    `visible ${visible} strokes`,
+    `visible ${visible} strokes   ${chunks} chunks`,
   ];
   if (!gov) {
     lines.push('governor off');

@@ -226,3 +226,14 @@ export function selectStrokes(source: StrokeBuffers, indices: ArrayLike<number>)
   }
   return out;
 }
+
+/** New buffers holding `buffers` as packed, followed by `extra` packed in order. */
+export function appendStrokes(
+  buffers: StrokeBuffers,
+  extra: readonly StrokeInstance[],
+): StrokeBuffers {
+  const out = createStrokeBuffers(buffers.count + extra.length);
+  for (const spec of STROKE_ATTRIBUTES) out[spec.key].set(buffers[spec.key]);
+  for (let i = 0; i < extra.length; i++) packInstance(out, buffers.count + i, extra[i]);
+  return out;
+}

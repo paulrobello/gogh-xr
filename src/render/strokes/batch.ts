@@ -111,6 +111,8 @@ export interface StrokeBatch {
   sizeMultiplier(band: StrokeBand): number;
   /** Instances drawn after the last cull and the current densities: `stats().visible`. */
   visibleCount(): number;
+  /** Chunks that passed the last frustum cull: `stats().visibleChunks`, without allocating. */
+  visibleChunkCount(): number;
   /**
    * Instances drawn per band, as `stats().bands[band].visible`, without allocating: the record is
    * the batch's own and changes with the next `update`, `setDensity` or `setDrawCount`. `update`
@@ -364,6 +366,11 @@ export function createStrokeBatch(
     visibleCount() {
       let visible = 0;
       for (const chunk of chunks) if (chunk.mesh.visible) visible += chunk.drawCount;
+      return visible;
+    },
+    visibleChunkCount() {
+      let visible = 0;
+      for (const chunk of chunks) if (chunk.mesh.visible) visible++;
       return visible;
     },
     stats() {

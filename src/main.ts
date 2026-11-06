@@ -1,8 +1,12 @@
 import { PerspectiveCamera, WebGLRenderer } from 'three';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { installDesktopControls } from './desktop/controls';
-import { installDiag, installShot, registerDiag } from './diag/diag';
+import { applyPainterCamera } from './desktop/painter-camera';
+import { EYE_HEIGHT } from './desktop/walk';
+import { installDiag, installPose, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
+import { livePainting } from './paintings/registry';
+import type { PainterCamera, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createEnterVrButton } from './ui/enter-vr';
@@ -39,14 +43,19 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
 
-const scene = createBareScene();
+// An unknown or coming-soon `?painting` warns here and boots the bare scene.
+const painting = flags.bench === null ? livePainting(flags.painting) : null;
+const scene = createBareScene(painting === null);
 const camera = new PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 1000);
-// The test canvas stands in front of the XR origin, so the desktop viewer starts there too.
+// The test canvas stands in front of the XR origin, so the desktop viewer starts there too. A
+// world moves it to the module's `spawnPose()` once the module loads, before it builds.
 const desktop = installDesktopControls(
   renderer.domElement,
   camera,
-  flags.demo === 'canvas' ? { x: 0, z: 0 } : undefined,
+  flags.demo === 'canvas' && !painting ? { x: 0, z: 0 } : undefined,
 );
+/** `?painter` (fidelity capture): the world's painter camera, applied before the world builds. */
+let painterView: PainterCamera | null = null;
 // Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls.
 const beauty = flags.beauty && flags.bench === null;
 const targetFrameRate = resolveTargetFrameRate(flags.hz, beauty);
@@ -59,7 +68,7 @@ const session = createSessionController({
 });
 
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.aspect = painterView ? painterView.aspect : window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
@@ -91,14 +100,19 @@ const strokes = createStrokeBinding({
             });
         },
 });
+let world: WorldModule | null = null;
 let lastTime = 0;
+/** Draw calls of the last animation frame's render, read right after it (`draw` diag key). */
+let drawCalls = 0;
 function renderFrame(time: number): void {
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
   lastTime = time;
   if (flags.slow > 0) busyWait(flags.slow);
   strokes.frame(time);
+  world?.update(time / 1000, dt);
   if (!renderer.xr.isPresenting) desktop.update(dt);
   renderer.render(scene, camera);
+  drawCalls = renderer.info.render.calls;
   if (hud) {
     const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
     hud.frame(time, leftButtonPressed(sources, BUTTON_X));
@@ -116,6 +130,8 @@ if (flags.diag) {
   });
   const input = createInputCounter(renderer.xr);
   registerDiag('input', () => ({ selectstart: { ...input.selectstart } }));
+  registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
+  installPose((x, y, z, yaw, pitch) => desktop.setPose(x, y, z, yaw, pitch));
 }
 if (flags.diag && flags.shot) {
   installShot(renderer.domElement, () => renderer.render(scene, camera));
@@ -142,6 +158,7 @@ if (flags.bench === null) {
         targetHz: targetFrameRate,
         getGovernor: () => strokes.governorDiag(),
         getVisible: () => strokes.visibleCount(),
+        getVisibleChunks: () => strokes.visibleChunkCount(),
       });
     },
     onError: (error) => console.warn('perf HUD failed to start', error),
@@ -158,18 +175,49 @@ function governStrokes(batch: StrokeBatch): Promise<void> {
   return strokes.batch ? Promise.resolve() : strokes.bind(batch);
 }
 
-if (flags.strokesTest) {
+// Boot modes are exclusive: a world wins over the test scenes, so only one batch is governed.
+if (painting && (flags.strokesTest || flags.demo !== null)) {
+  console.warn(`?painting=${painting.id} wins; ignoring ?strokesTest and ?demo`);
+}
+
+if (flags.strokesTest && !painting) {
   import('./render/strokes/test-scene')
     .then(({ startStrokesTest }) => governStrokes(startStrokesTest({ scene }).batch))
     .catch((error: unknown) => console.warn('strokes test failed to start', error));
 }
 
-if (flags.demo === 'canvas') {
+if (flags.demo === 'canvas' && !painting) {
   import('./demo/canvas/demo')
     .then(async ({ startCanvasDemo }) =>
       governStrokes((await startCanvasDemo({ scene, seed: flags.seed, count: flags.count })).batch),
     )
     .catch((error: unknown) => console.warn('canvas demo failed to start', error));
+}
+
+if (painting?.world) {
+  const load = painting.world;
+  Promise.all([load(), import('./demo/canvas/demo')])
+    .then(async ([module, { loadRaster }]) => {
+      // Before build, which registers the `world` diag key that captures wait for.
+      if (flags.diag && flags.painter) {
+        painterView = module.painterCamera();
+        applyPainterCamera(camera, desktop, painterView);
+      } else {
+        const { position, yaw } = module.spawnPose();
+        desktop.setPose(position[0], position[1] + EYE_HEIGHT, position[2], yaw, 0);
+      }
+      const handle = await module.build({
+        scene,
+        seed: flags.seed,
+        loadRaster,
+        nocache: flags.nocache,
+        cache: flags.cache,
+        debug: flags.diag ? (flags.bare ? 'bare' : flags.coverage ? 'coverage' : null) : null,
+      });
+      world = module;
+      await governStrokes(handle.batch);
+    })
+    .catch((error: unknown) => console.warn(`painting ${painting.id} failed to start`, error));
 }
 
 void isVrSupported(navigator.xr).then((supported) => {

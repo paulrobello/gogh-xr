@@ -83,6 +83,15 @@ Blend, 90 Hz, full sphere, recorded 2026-11-06 05:24–05:28Z (9:24–9:28 PM PS
 | 375,000 | 1 | 83 | 12.16 | 14.4 | 15.2 |
 | 400,000 | 0.5 | 78 | 12.83 | 14.9 | 17.0 |
 
+## Surface stroke scatter (P2.6)
+
+`bun scripts/scatter-time.ts` times the app's own world scatter, `scatterWorld` (src/paintings/starry-night/world.ts), over the default world: generator seed 1, scatter seed 1, `LAYER_DENSITY`, P2.7's scaled `LAYER_SIZE`, face normals and the ridge override. It runs on the desktop with the real bake rasters, decoded with sharp. The time covers the scatter alone, after a low-density warm-up run. Decoding, the flow field, the histograms, the geometry and the boundary haze are excluded. A time is recorded only when the 1-minute load average is at most 15 both before and after the run.
+
+| Date | Stored strokes | Scatter time | Load before | Load after | Host |
+| --- | --- | --- | --- | --- | --- |
+| 2026-11-06 | 535,114 (P2.6 `scatterSurfaces`, SCATTER_VERSION 2) | not measured (host load 42.03), superseded by the next row | 42.03 | | bun 1.4.4, darwin/arm64 |
+| 2026-11-06 | 535,011 world scatter (commit c121951), plus 30,000 haze for 565,011 stored | 367 ms | 2.43 | 2.43 | minimac, Apple M4, bun 1.4.4, darwin/arm64 |
+
 ## History: upper-hemisphere readings
 
 Taken earlier the same evening with the original upper-hemisphere layout, looking straight up as the worst case. They are not comparable with the full-sphere table, because at the same N a view held about twice as many strokes on screen.

@@ -2,9 +2,11 @@ import { Color, GridHelper, Mesh, MeshBasicMaterial, PlaneGeometry, Scene } from
 
 export const PLACEHOLDER_SKY = 0x1b2a55;
 
-export function createBareScene(): Scene {
+/** The placeholder sky, plus a ground plane and grid unless `placeholders` is false (a world boots). */
+export function createBareScene(placeholders = true): Scene {
   const scene = new Scene();
   scene.background = new Color(PLACEHOLDER_SKY);
+  if (!placeholders) return scene;
   const ground = new Mesh(new PlaneGeometry(200, 200), new MeshBasicMaterial({ color: 0x2b3a2b }));
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);

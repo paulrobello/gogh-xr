@@ -460,10 +460,16 @@ test('a rate request that settles after dispose neither notifies nor touches the
 
 describe('stroke binding (M2)', () => {
   /** A fake batch whose methods throw once it is disposed, with call counts per method. */
-  function countedBatch(visibleNear: number) {
+  function countedBatch(visibleNear: number, visibleChunks = 0) {
     const inner = fakeBatch(visibleNear);
     let disposed = false;
-    const counts = { setDensity: 0, setSizeMultiplier: 0, visibleByBand: 0, visibleCount: 0 };
+    const counts = {
+      setDensity: 0,
+      setSizeMultiplier: 0,
+      visibleByBand: 0,
+      visibleCount: 0,
+      visibleChunkCount: 0,
+    };
     const guard = (name: keyof typeof counts): void => {
       if (disposed) throw new Error(`${name} on a disposed batch`);
       counts[name]++;
@@ -484,6 +490,10 @@ describe('stroke binding (M2)', () => {
       visibleCount: () => {
         guard('visibleCount');
         return inner.visibleByBand().near;
+      },
+      visibleChunkCount: () => {
+        guard('visibleChunkCount');
+        return visibleChunks;
       },
     };
     return {
@@ -577,6 +587,7 @@ describe('stroke binding (M2)', () => {
       setSizeMultiplier: 0,
       visibleByBand: 0,
       visibleCount: 0,
+      visibleChunkCount: 0,
     });
     await strokes.bind(null);
   });
@@ -584,13 +595,18 @@ describe('stroke binding (M2)', () => {
   test('without a governor the HUD source still rebinds', async () => {
     const xr = new FakeXr();
     const { strokes, started } = binding(xr, false);
-    const a = countedBatch(400_000);
-    const b = countedBatch(300_000);
+    const a = countedBatch(400_000, 12);
+    const b = countedBatch(300_000, 9);
+    expect(strokes.visibleChunkCount()).toBeNull();
     await strokes.bind(a.batch);
     expect(strokes.visibleCount()).toBe(400_000);
+    expect(strokes.visibleChunkCount()).toBe(12);
     await strokes.bind(b.batch);
     a.dispose();
     expect(strokes.visibleCount()).toBe(300_000);
+    expect(strokes.visibleChunkCount()).toBe(9);
+    await strokes.bind(null);
+    expect(strokes.visibleChunkCount()).toBeNull();
     expect(strokes.governorDiag()).toBeNull();
     expect(started).toEqual([]);
   });

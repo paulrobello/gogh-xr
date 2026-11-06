@@ -14,6 +14,7 @@ const GOVERNED: PerfHudValues = {
   gpuMs: 6.25,
   targetHz: 90,
   visible: 183_412,
+  visibleChunks: 112,
   governor: {
     judging: true,
     level: 3,
@@ -33,15 +34,16 @@ const UNGOVERNED: PerfHudValues = {
   gpuMs: null,
   targetHz: 90,
   visible: 200_000,
+  visibleChunks: 56,
   governor: null,
 };
 
 describe('formatPerfHud', () => {
-  it('shows frame stats, GPU, target, visible strokes and the governor levels', () => {
+  it('shows frame stats, GPU, target, visible strokes and chunks and the governor levels', () => {
     expect(formatPerfHud(GOVERNED).split('\n')).toEqual([
       'fps 72   mean 13.89 ms   p99 15.00 ms',
       'gpu 6.25 ms   target 72 Hz',
-      'visible 183,412 strokes',
+      'visible 183,412 strokes   112 chunks',
       'gov level 3   near 0.49   mid 1.00   far 0.70',
       'foveation 0.50   fb scale 0.85',
     ]);
@@ -64,6 +66,7 @@ describe('formatPerfHud', () => {
       p99Ms: null,
       gpuMs: null,
       visible: null,
+      visibleChunks: null,
       governor: {
         ...(GOVERNED.governor as NonNullable<PerfHudValues['governor']>),
         fbScale: 'unavailable',
@@ -71,7 +74,7 @@ describe('formatPerfHud', () => {
     }).split('\n');
     expect(lines[0]).toBe('fps 72   mean -- ms   p99 -- ms');
     expect(lines[1]).toBe('gpu n/a   target 72 Hz');
-    expect(lines[2]).toBe('visible -- strokes');
+    expect(lines[2]).toBe('visible -- strokes   -- chunks');
     expect(lines[4]).toBe('foveation 0.50   fb scale n/a');
   });
 
@@ -79,7 +82,7 @@ describe('formatPerfHud', () => {
     expect(formatPerfHud(UNGOVERNED).split('\n')).toEqual([
       'fps 60   mean 16.67 ms   p99 17.10 ms',
       'gpu n/a   target 90 Hz',
-      'visible 200,000 strokes',
+      'visible 200,000 strokes   56 chunks',
       'governor off',
     ]);
   });

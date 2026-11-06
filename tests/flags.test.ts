@@ -20,12 +20,18 @@ test('defaults when search is empty', () => {
     slow: 0,
     nogov: false,
     count: null,
+    nocache: false,
+    cache: false,
+    painting: null,
+    bare: false,
+    coverage: false,
+    painter: false,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter',
   );
   expect(f).toEqual({
     seed: 42,
@@ -45,6 +51,12 @@ test('parses every flag', () => {
     slow: 14,
     nogov: true,
     count: 325_000,
+    nocache: true,
+    cache: true,
+    painting: 'starry-night',
+    bare: true,
+    coverage: true,
+    painter: true,
   });
 });
 
@@ -148,6 +160,22 @@ test('slow is a busy-wait in ms, clamped to 0-50, and 0 for anything malformed',
   expect(parseFlags('').slow).toBe(0);
 });
 
+test('cache is a boolean flag, off for 0 and false', () => {
+  expect(parseFlags('?cache').cache).toBe(true);
+  expect(parseFlags('?cache=1').cache).toBe(true);
+  expect(parseFlags('?cache=0').cache).toBe(false);
+  expect(parseFlags('?cache=false').cache).toBe(false);
+  expect(parseFlags('?nocache').cache).toBe(false);
+});
+
+test('nocache is a boolean flag, off for 0 and false', () => {
+  expect(parseFlags('?nocache').nocache).toBe(true);
+  expect(parseFlags('?nocache=1').nocache).toBe(true);
+  expect(parseFlags('?nocache=0').nocache).toBe(false);
+  expect(parseFlags('?nocache=false').nocache).toBe(false);
+  expect(parseFlags('').nocache).toBe(false);
+});
+
 test('beauty and nogov are boolean flags, off for 0 and false', () => {
   expect(parseFlags('?beauty').beauty).toBe(true);
   expect(parseFlags('?beauty=0').beauty).toBe(false);
@@ -169,4 +197,22 @@ test('count is a canvas stroke target, rounded and clamped to 10k-1M, null when 
   }
   expect(parseFlags('?count').count).toBeNull();
   expect(parseFlags('').count).toBeNull();
+});
+
+test('painting is a trimmed lower-case id, or null when absent or empty', () => {
+  expect(parseFlags('?painting=starry-night').painting).toBe('starry-night');
+  expect(parseFlags('?painting=%20Starry-Night%20').painting).toBe('starry-night');
+  expect(parseFlags('?painting=water-lilies').painting).toBe('water-lilies');
+  expect(parseFlags('?painting').painting).toBeNull();
+  expect(parseFlags('?painting=%20').painting).toBeNull();
+  expect(parseFlags('').painting).toBeNull();
+});
+
+test('bare and coverage are boolean flags, off for 0 and false', () => {
+  for (const key of ['bare', 'coverage'] as const) {
+    expect(parseFlags(`?${key}`)[key]).toBe(true);
+    expect(parseFlags(`?${key}=0`)[key]).toBe(false);
+    expect(parseFlags(`?${key}=false`)[key]).toBe(false);
+    expect(parseFlags('')[key]).toBe(false);
+  }
 });

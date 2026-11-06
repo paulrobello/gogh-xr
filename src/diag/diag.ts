@@ -33,6 +33,7 @@ declare global {
   interface Window {
     __goghDiag?: () => Record<string, unknown>;
     __goghShot?: () => string;
+    __goghPose?: (x: number, y: number, z: number, yaw: number, pitch: number) => void;
   }
 }
 
@@ -108,4 +109,11 @@ export function installShot(canvas: HTMLCanvasElement, renderNow: () => void): v
     renderNow();
     return canvas.toDataURL('image/png');
   };
+}
+
+/** `window.__goghPose(x, y, z, yaw, pitch)`: puts the desktop eye there, for the coverage sweep. */
+export function installPose(
+  setPose: (x: number, y: number, z: number, yaw: number, pitch: number) => void,
+): void {
+  window.__goghPose = setPose;
 }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { BRUSH_COUNT } from '../src/render/strokes/brush-atlas-data.ts';
 import {
+  appendStrokes,
   BYTES_PER_INSTANCE,
   createStrokeBuffers,
   octDecode,
@@ -175,4 +176,20 @@ describe('octahedral normals', () => {
       expect(Math.abs(v)).toBeLessThanOrEqual(1);
     }
   });
+});
+
+test('appendStrokes copies the packed buffers, then packs the extra instances after them', () => {
+  const rand = mulberry32(31);
+  const first = Array.from({ length: 5 }, () => randomInstance(rand));
+  const extra = Array.from({ length: 3 }, () => randomInstance(rand));
+  const packed = createStrokeBuffers(first.length);
+  for (let i = 0; i < first.length; i++) packInstance(packed, i, first[i]);
+  const all = createStrokeBuffers(first.length + extra.length);
+  for (const [i, s] of [...first, ...extra].entries()) packInstance(all, i, s);
+  const merged = appendStrokes(packed, extra);
+  expect(merged.count).toBe(8);
+  for (const key of ['position', 'normal', 'tangent', 'color', 'size', 'meta'] as const) {
+    expect(Array.from(merged[key])).toEqual(Array.from(all[key]));
+  }
+  expect(appendStrokes(packed, []).count).toBe(5);
 });

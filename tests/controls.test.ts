@@ -46,3 +46,17 @@ test('the desktop viewer starts at the given floor position, or the default one'
   expect(at()).toEqual([DEFAULT_DESKTOP_START.x, EYE_HEIGHT, DEFAULT_DESKTOP_START.z]);
   expect(at({ x: 1, z: -2 })).toEqual([1, EYE_HEIGHT, -2]);
 });
+
+test('setPose places the eye exactly, straight down and up included', () => {
+  const camera = new PerspectiveCamera();
+  const controls = installDesktopControls(document.createElement('canvas'), camera);
+  controls.setPose(3, 30, -4, 0.5, -Math.PI / 2);
+  controls.update(0.016);
+  expect(camera.position.toArray()).toEqual([3, 30, -4]);
+  expect(camera.rotation.x).toBe(-Math.PI / 2);
+  expect(camera.rotation.y).toBe(0.5);
+  controls.setPose(0, 1.6, 0, 0, Math.PI / 2);
+  controls.update(0.016);
+  expect(camera.rotation.x).toBe(Math.PI / 2);
+  expect(camera.position.toArray()).toEqual([0, 1.6, 0]);
+});

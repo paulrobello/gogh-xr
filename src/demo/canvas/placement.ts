@@ -157,8 +157,14 @@ const ANGLE_JITTER = 0.08;
 const FLAT_ANGLE_JITTER = 0.6;
 /** Per-stroke brightness jitter, ±. */
 const VALUE_JITTER = 0.06;
-/** frame.webp has a pale mat about 12 texels wide at the sides; colour uv is inset past it. */
-const COLOR_INSET: readonly [number, number] = [12 / 1024, 4 / 811];
+/**
+ * frame.webp has a pale mat about 12 texels wide at the sides (4 at top and bottom); colour uv is
+ * inset past it: painting uv u reads the image at COLOR_INSET[0] + u·(1 − 2·COLOR_INSET[0]).
+ */
+export const COLOR_INSET: readonly [number, number] = Object.freeze([
+  12 / 1024,
+  4 / 811,
+]) as readonly [number, number];
 
 export interface CanvasSources {
   /** The painting (frame.webp), display-referred sRGB. */
@@ -174,9 +180,12 @@ export interface CanvasStrokeOptions {
   readonly layout?: CanvasLayout;
 }
 
+/** One reused instance: packInstance overwrites every field, so no state carries between calls. */
+const NORMAL_PROBE = createStrokeBuffers(1);
+
 /** The normal as the GPU decodes it from the packed instance, quantisation included. */
 export function decodedNormal(normal: Vec3): Vec3 {
-  const probe = createStrokeBuffers(1);
+  const probe = NORMAL_PROBE;
   packInstance(probe, 0, {
     position: [0, 0, 0],
     normal,
@@ -203,6 +212,15 @@ export function canvasTangent(normal: Vec3, right: Vec3, up: Vec3, angle: number
   const s = Math.sin(angle);
   const dir: Vec3 = [c * right[0] + s * up[0], c * right[1] + s * up[1], c * right[2] + s * up[2]];
   return Math.atan2(dot(dir, b2), dot(dir, b1));
+}
+
+/**
+ * The light factor the stroke shader multiplies a stroke's colour by, for the decoded `normal`.
+ * Dividing a sampled colour by it keeps the scan's values on screen. Must match `shade` in
+ * stroke.frag.glsl.
+ */
+export function strokeShade(normal: Vec3): number {
+  return 0.85 + 0.3 * (dot(normal, MOON_DIRECTION.toArray() as Vec3) * 0.5 + 0.5);
 }
 
 /** Share of the painting's area per region, from the regions raster. */
@@ -244,8 +262,7 @@ export function buildCanvasStrokes(
     right[0] * up[1] - right[1] * up[0],
   ];
   const decoded = decodedNormal(normal);
-  // The shader brightens a stroke facing the moon light; dividing it out keeps the scan's values.
-  const shade = 0.85 + 0.3 * (dot(decoded, MOON_DIRECTION.toArray() as Vec3) * 0.5 + 0.5);
+  const shade = strokeShade(decoded);
 
   const shares = regionShares(sources.regions);
   let strokesPerCell = 0;

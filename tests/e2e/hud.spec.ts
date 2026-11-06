@@ -32,7 +32,7 @@ interface Sample {
   hud: HudDiag;
   frame: FrameDiag;
   governor?: GovernorDiag;
-  canvas: { strokes: { visible: number } };
+  canvas: { strokes: { visible: number; visibleChunks: number } };
   xr: { targetFrameRate: number | null };
 }
 
@@ -92,8 +92,9 @@ function expectHudMatches(sample: Sample): void {
   expect(gpu, 'gpu').toBe(gpuMs === null ? 'n/a' : `${gpuMs.toFixed(2)} ms`);
   expect(Number(target), 'target Hz').toBe(governor ? governor.targetHz : xr.targetFrameRate);
 
-  const [, visible] = line(/^visible ([\d,]+) strokes$/);
+  const [, visible, chunks] = line(/^visible ([\d,]+) strokes {3}([\d,]+) chunks$/);
   expect(Number(visible?.replaceAll(',', '')), 'visible strokes').toBe(canvas.strokes.visible);
+  expect(Number(chunks?.replaceAll(',', '')), 'visible chunks').toBe(canvas.strokes.visibleChunks);
 
   if (!governor) {
     expect(lines).toContain('governor off');

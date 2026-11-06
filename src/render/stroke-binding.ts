@@ -10,7 +10,7 @@
 import type { GovernedBatch, GovernorDiag, GovernorRuntime } from './governor-runtime';
 import type { StrokeBatch } from './strokes/batch';
 
-export type BoundBatch = GovernedBatch & Pick<StrokeBatch, 'visibleCount'>;
+export type BoundBatch = GovernedBatch & Pick<StrokeBatch, 'visibleCount' | 'visibleChunkCount'>;
 
 /** Starts the quality governor for one batch. */
 export type GovernorStarter = (batch: GovernedBatch) => GovernorRuntime;
@@ -32,6 +32,8 @@ export interface StrokeBinding {
   governorDiag(): GovernorDiag | null;
   /** The bound batch's drawn strokes, or null with no batch bound. */
   visibleCount(): number | null;
+  /** The bound batch's chunks that passed the last cull, or null with no batch bound. */
+  visibleChunkCount(): number | null;
 }
 
 export function createStrokeBinding(deps: StrokeBindingDeps): StrokeBinding {
@@ -65,6 +67,9 @@ export function createStrokeBinding(deps: StrokeBindingDeps): StrokeBinding {
     },
     visibleCount() {
       return current?.visibleCount() ?? null;
+    },
+    visibleChunkCount() {
+      return current?.visibleChunkCount() ?? null;
     },
   };
 }

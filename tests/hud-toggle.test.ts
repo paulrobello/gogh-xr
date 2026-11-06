@@ -9,6 +9,7 @@ const VALUES: PerfHudValues = {
   gpuMs: null,
   targetHz: 90,
   visible: 1000,
+  visibleChunks: 4,
   governor: null,
 };
 

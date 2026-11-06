@@ -22,6 +22,12 @@ export function requestLock(canvas: HTMLCanvasElement): void {
 
 export interface DesktopControls {
   update(dt: number): void;
+  /**
+   * Puts the eye at (x, y, z) with the given yaw and pitch, exactly: pitch is not clamped, so
+   * ±π/2 looks straight up or down. Walking afterwards keeps the eye at y. The `?diag` pose hook
+   * (`__goghPose`) drives it.
+   */
+  setPose(x: number, y: number, z: number, yaw: number, pitch: number): void;
 }
 
 /** Where the desktop viewer starts on the floor, facing -z. */
@@ -34,6 +40,7 @@ export function installDesktopControls(
 ): DesktopControls {
   const input = emptyInput();
   let pose: WalkPose = { x: start.x, z: start.z, yaw: 0, pitch: 0 };
+  let eyeY = EYE_HEIGHT;
   camera.rotation.order = 'YXZ';
 
   function setKey(event: KeyboardEvent, down: boolean): void {
@@ -56,8 +63,12 @@ export function installDesktopControls(
   return {
     update(dt: number): void {
       pose = stepWalk(pose, input, dt);
-      camera.position.set(pose.x, EYE_HEIGHT, pose.z);
+      camera.position.set(pose.x, eyeY, pose.z);
       camera.rotation.set(pose.pitch, pose.yaw, 0);
+    },
+    setPose(x: number, y: number, z: number, yaw: number, pitch: number): void {
+      pose = { x, z, yaw, pitch };
+      eyeY = y;
     },
   };
 }

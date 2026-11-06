@@ -251,6 +251,8 @@ describe('bands', () => {
     const bands = STROKE_BANDS.map((b) => stats.bands[b]);
     expect(bands.reduce((sum, b) => sum + b.visible, 0)).toBe(stats.visible);
     expect(bands.reduce((sum, b) => sum + b.chunks, 0)).toBe(stats.visibleChunks);
+    expect(batch.visibleChunkCount()).toBe(stats.visibleChunks);
+    expect(stats.visibleChunks).toBeGreaterThan(0);
     expect(stats.bands.near).toEqual({
       d: 1,
       size: DEFAULT_BAND_SIZE.near,
@@ -274,6 +276,7 @@ describe('bands', () => {
     camera.updateMatrixWorld();
     batch.update(camera);
     expect(batch.visibleCount()).toBe(0);
+    expect(batch.visibleChunkCount()).toBe(0);
     expect(batch.stats().bands.near).toMatchObject({ chunks: 0, visible: 0 });
     expect(batch.visibleByBand()).toEqual({ near: 0, mid: 0, far: 0 });
     batch.dispose();
@@ -288,8 +291,10 @@ describe('bands', () => {
     for (const band of STROKE_BANDS) {
       expect(stats.bands[band]).toMatchObject({ chunks: 0, visible: 0 });
     }
+    expect(batch.visibleChunkCount()).toBe(0);
     batch.update(originCamera());
     expect(batch.stats().visibleChunks).toBe(5);
+    expect(batch.visibleChunkCount()).toBe(5);
     batch.dispose();
   });
 

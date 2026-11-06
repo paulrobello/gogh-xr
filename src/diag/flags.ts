@@ -25,6 +25,18 @@ export interface Flags {
   readonly nogov: boolean;
   /** `&count=N`: the `?demo=canvas` stroke target, 10k-1M. null means the canvas default. */
   readonly count: number | null;
+  /** `?nocache`: skips the IndexedDB scatter cache, so the world re-scatters on every load. */
+  readonly nocache: boolean;
+  /** `?cache`: uses the scatter cache in a non-production build. `?nocache` wins over it. */
+  readonly cache: boolean;
+  /** `?painting=<id>`: boots straight into that painting's world. Lower-cased; null when absent. */
+  readonly painting: string | null;
+  /** `?bare`, with `?diag` only: base meshes and clear colour magenta, strokes hidden. */
+  readonly bare: boolean;
+  /** `?coverage`, with `?diag` only: base meshes and clear colour magenta under the strokes. */
+  readonly coverage: boolean;
+  /** `?painter`, with `?diag` and a world only: the desktop camera becomes the painter camera. */
+  readonly painter: boolean;
 }
 
 export type BenchMode = 'a2c' | 'blend';
@@ -85,6 +97,11 @@ function parseDemo(raw: string | null): DemoName | null {
   return raw?.trim().toLowerCase() === 'canvas' ? 'canvas' : null;
 }
 
+function parseId(raw: string | null): string | null {
+  const value = raw?.trim().toLowerCase();
+  return value ? value : null;
+}
+
 /** Repeated keys resolve to the first occurrence. */
 export function parseFlags(search: string): Flags {
   const params = new URLSearchParams(search);
@@ -108,6 +125,12 @@ export function parseFlags(search: string): Flags {
     slow: parseSlow(params.get('slow')),
     nogov: parseBool(params, 'nogov'),
     count: parseCount(params.get('count')),
+    nocache: parseBool(params, 'nocache'),
+    cache: parseBool(params, 'cache'),
+    painting: parseId(params.get('painting')),
+    bare: parseBool(params, 'bare'),
+    coverage: parseBool(params, 'coverage'),
+    painter: parseBool(params, 'painter'),
   });
 }
 

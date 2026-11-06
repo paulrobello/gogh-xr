@@ -351,4 +351,4 @@ These are all measured on the device in P0 or P1, not decided now:
 - **OQ3.** Whether IWER 2.8.0 runs under Playwright headless Chromium, and how.
 - **OQ4.** The cost and look of alpha-to-coverage vs blended strokes at the target density.
 - **OQ5.** How the 0–1 `fixedFoveation` values map to Quest 3 levels, and how visible the artifacts are on high-contrast strokes.
-- **OQ6.** The painter's-spot perceptual metric and its threshold, set in the P2 plan after the first renders.
+- **OQ6.** The painter's-spot perceptual metric and its threshold, set in the P2 plan after the first renders. Set in P2.8: SSIM on Rec. 709 luma and mean CIEDE2000 over a 16 × 12 block grid, at 256 px, with provisional thresholds from the first render. See `docs/verification.md` P2-A2.

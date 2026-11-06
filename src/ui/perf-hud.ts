@@ -43,6 +43,7 @@ export interface PerfHudDeps {
   targetHz: number;
   getGovernor(): GovernorDiag | null;
   getVisible(): number | null;
+  getVisibleChunks(): number | null;
 }
 
 export interface PerfHud extends ToggleableHud {
@@ -129,6 +130,7 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
       gpuMs: gov?.gpuMs ?? null,
       targetHz: deps.targetHz,
       visible: deps.getVisible(),
+      visibleChunks: deps.getVisibleChunks(),
       governor: gov && {
         judging: gov.judging,
         level: gov.level,
