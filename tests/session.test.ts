@@ -99,6 +99,24 @@ test('controller requests immersive-vr with the optional features and sets state
   expect(controller.state.presenting).toBe(false);
 });
 
+test('frameratechange refreshes frameRate and end clears the frame-rate state', async () => {
+  const session = fakeSession({ updateTargetFrameRate: async () => undefined, frameRate: 72 });
+  const controller = createSessionController({
+    renderer: fakeRenderer().renderer,
+    xr: { requestSession: async () => session } as unknown as XRSystem,
+    notify: vi.fn(),
+  });
+  expect(await controller.enter()).toBe(true);
+  expect(controller.state.frameRate).toBe(72);
+  expect(controller.state.supportedFrameRates).toEqual([72, 90]);
+  (session as unknown as { frameRate: number }).frameRate = 90;
+  session.dispatchEvent(new Event('frameratechange'));
+  expect(controller.state.frameRate).toBe(90);
+  session.dispatchEvent(new Event('end'));
+  expect(controller.state.frameRate).toBeNull();
+  expect(controller.state.supportedFrameRates).toBeNull();
+});
+
 test('concurrent enter calls issue a single request', async () => {
   let resolve: (s: XRSession) => void = () => undefined;
   const requestSession = vi.fn(() => new Promise<XRSession>((r) => (resolve = r)));

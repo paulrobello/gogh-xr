@@ -96,9 +96,15 @@ export function createSessionController(deps: SessionDeps): SessionController {
       await deps.renderer.xr.setSession(session);
       state.presenting = true;
       state.sessionMode = 'immersive-vr';
+      const endedSession = session;
       session.addEventListener('end', () => {
         state.presenting = false;
         state.sessionMode = null;
+        state.frameRate = null;
+        state.supportedFrameRates = null;
+      });
+      session.addEventListener('frameratechange', () => {
+        state.frameRate = endedSession.frameRate ?? null;
       });
       await applySessionSettings(session, deps.renderer, state, deps.targetFrameRate);
       deps.clearNotices?.();
