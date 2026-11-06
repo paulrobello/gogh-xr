@@ -165,6 +165,20 @@ test('desktop frames are not judged: a slow page sheds nothing', () => {
   expect(batch.densities.near).toBe(1);
 });
 
+test('the diag says whether the governor judges frames: only in a visible XR session', () => {
+  const xr = new FakeXr();
+  const { runtime: rt } = start(xr, fakeBatch(200_000));
+  expect(diagOf().judging).toBe(false);
+  xr.isPresenting = true;
+  xr.emit('sessionstart');
+  expect(diagOf().judging).toBe(true);
+  xr.session.visibilityState = 'hidden';
+  expect(diagOf().judging).toBe(false);
+  xr.session.visibilityState = 'visible';
+  rt.frame(0);
+  expect(diagOf().judging).toBe(true);
+});
+
 /** Enters XR and runs overrun frames to the 72 Hz request, then lets its promise settle. */
 async function toRateRequest(xr: FakeXr, batch = fakeBatch(200_000)) {
   const started = start(xr, batch);

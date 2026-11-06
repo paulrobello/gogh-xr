@@ -130,6 +130,7 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
       targetHz: deps.targetHz,
       visible: deps.getVisible(),
       governor: gov && {
+        judging: gov.judging,
         level: gov.level,
         targetHz: gov.targetHz,
         densities: gov.densities,

@@ -15,6 +15,7 @@ const GOVERNED: PerfHudValues = {
   targetHz: 90,
   visible: 183_412,
   governor: {
+    judging: true,
     level: 3,
     targetHz: 72,
     densities: { near: 0.49, mid: 1, far: 0.7 },
@@ -44,6 +45,16 @@ describe('formatPerfHud', () => {
       'gov level 3   near 0.49   mid 1.00   far 0.70',
       'foveation 0.50   fb scale 0.85',
     ]);
+  });
+
+  it('shows "gov idle" instead of the level while the governor does not judge, as on desktop', () => {
+    const governor = GOVERNED.governor as NonNullable<PerfHudValues['governor']>;
+    const lines = formatPerfHud({
+      ...GOVERNED,
+      governor: { ...governor, judging: false, level: 0 },
+    }).split('\n');
+    expect(lines[3]).toBe('gov idle   near 0.49   mid 1.00   far 0.70');
+    expect(lines[4]).toBe('foveation 0.50   fb scale 0.85');
   });
 
   it('reads n/a for a missing GPU time and an unavailable fb scale, and -- for empty stats', () => {

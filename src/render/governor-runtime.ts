@@ -79,6 +79,8 @@ export interface GovernorDiag extends Omit<GovernorSnapshot, 'fbScale'> {
   /** Which viewport query the framebuffer-scale adapter wraps; null outside a session. */
   fbScalePath: ViewportScalePath | null;
   gpuTimer: 'available' | 'unavailable';
+  /** Frames are judged: an XR session presents and is visible. Desktop frames never are. */
+  judging: boolean;
 }
 
 export interface GovernorRuntime {
@@ -189,6 +191,10 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   });
   const removeAfter = addAfterRender(scene, () => timer.end());
 
+  function judging(): boolean {
+    return xr.isPresenting && (!session || session.visibilityState === 'visible');
+  }
+
   function diag(): GovernorDiag {
     const snap = governor.snapshot();
     return {
@@ -197,13 +203,14 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       fbScaleApplied: scaler?.applied ?? null,
       fbScalePath: scaler?.path ?? null,
       gpuTimer: timer.available ? 'available' : 'unavailable',
+      judging: judging(),
     };
   }
   registerDiag('governor', diag);
 
   return {
     frame(time: number) {
-      if (!xr.isPresenting || (session && session.visibilityState !== 'visible')) {
+      if (!judging()) {
         lastTime = null;
         return;
       }

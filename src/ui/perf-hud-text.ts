@@ -11,6 +11,8 @@ import type { StrokeBand } from '../render/strokes/bands';
 export const PERF_HUD_INTERVAL_MS = 250;
 
 export interface PerfHudGovernor {
+  /** Whether the governor judges frames; on desktop it does not, and the HUD says "gov idle". */
+  judging: boolean;
   level: number;
   /** The governor's target, which drops to 72 once the fallback applies. */
   targetHz: number;
@@ -65,7 +67,7 @@ export function formatPerfHud(values: PerfHudValues): string {
   } else {
     const { near, mid, far } = gov.densities;
     lines.push(
-      `gov level ${gov.level}   near ${near.toFixed(2)}   mid ${mid.toFixed(2)}   far ${far.toFixed(2)}`,
+      `${gov.judging ? `gov level ${gov.level}` : 'gov idle'}   near ${near.toFixed(2)}   mid ${mid.toFixed(2)}   far ${far.toFixed(2)}`,
       `foveation ${gov.foveation.toFixed(2)}   fb scale ${fbScaleText(gov)}`,
     );
     if (gov.notice) lines.push(gov.notice);

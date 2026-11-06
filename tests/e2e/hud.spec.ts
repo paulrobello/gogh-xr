@@ -17,6 +17,7 @@ interface FrameDiag {
 }
 
 interface GovernorDiag {
+  judging: boolean;
   level: number;
   targetHz: number;
   densities: Record<'near' | 'mid' | 'far', number>;
@@ -99,10 +100,12 @@ function expectHudMatches(sample: Sample): void {
     expect(hud.text).not.toMatch(/gov level|foveation/);
     return;
   }
+  // On desktop the governor does not judge frames, so the HUD shows "gov idle" for the level.
   const [, level, near, mid, far] = line(
-    /^gov level (\d+) {3}near (\d\.\d\d) {3}mid (\d\.\d\d) {3}far (\d\.\d\d)$/,
+    /^gov (?:level (\d+)|idle) {3}near (\d\.\d\d) {3}mid (\d\.\d\d) {3}far (\d\.\d\d)$/,
   );
-  expect(Number(level), 'governor level').toBe(governor.level);
+  if (governor.judging) expect(Number(level), 'governor level').toBe(governor.level);
+  else expect(level, 'governor idle').toBeUndefined();
   expect(near, 'near density').toBe(governor.densities.near.toFixed(2));
   expect(mid, 'mid density').toBe(governor.densities.mid.toFixed(2));
   expect(far, 'far density').toBe(governor.densities.far.toFixed(2));
