@@ -8,7 +8,7 @@ import {
   Scene,
 } from 'three';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { createStrokeBatch, cullOnRender } from '../src/render/strokes/batch.ts';
+import { createStrokeBatch } from '../src/render/strokes/batch.ts';
 import {
   createStrokeBuffers,
   packInstance,
@@ -125,12 +125,14 @@ describe('update', () => {
     batch.dispose();
   });
 
-  test('cullOnRender culls with the camera three passes to scene.onBeforeRender', () => {
+  test('attach culls with the camera three passes to scene.onBeforeRender', () => {
     const batch = createStrokeBatch(row(16, 7.5), { cellSize: 4, createAtlas: tinyAtlas });
     const scene = new Scene();
     const previous = vi.fn();
     scene.onBeforeRender = previous;
-    const uninstall = cullOnRender(scene, batch);
+    batch.attach(scene);
+    expect(batch.group.parent).toBe(scene);
+    expect(() => batch.attach(scene)).toThrow();
     const camera = new PerspectiveCamera(70, 1, 0.05, 100);
     camera.position.set(0, 1.6, 20);
     camera.rotation.set(0, Math.PI, 0);
@@ -142,9 +144,9 @@ describe('update', () => {
     expect(previous).toHaveBeenCalledTimes(1);
     expect(batch.stats().visibleChunks).toBe(0);
     expect(batch.stats().visible).toBe(0);
-    uninstall();
-    expect(scene.onBeforeRender).toBe(previous);
     batch.dispose();
+    expect(scene.onBeforeRender).toBe(previous);
+    expect(batch.group.parent).toBeNull();
   });
 });
 
@@ -153,7 +155,9 @@ describe('dispose', () => {
     const atlas = tinyAtlas();
     const batch = createStrokeBatch(row(16, -0.5), { cellSize: 4, createAtlas: () => atlas });
     const scene = new Scene();
-    scene.add(batch.group);
+    const hook = scene.onBeforeRender;
+    batch.attach(scene);
+    expect(scene.onBeforeRender).not.toBe(hook);
     const geometrySpies = batch.chunks.map((c) => vi.spyOn(c.geometry, 'dispose'));
     const materialSpy = vi.spyOn(batch.material, 'dispose');
     const atlasSpy = vi.spyOn(atlas, 'dispose');
@@ -165,6 +169,7 @@ describe('dispose', () => {
     expect(materialSpy).toHaveBeenCalledTimes(1);
     expect(atlasSpy).toHaveBeenCalledTimes(1);
     expect(batch.group.parent).toBeNull();
+    expect(scene.onBeforeRender).toBe(hook);
     for (const mesh of meshes) expect(mesh.parent).toBeNull();
     expect(batch.chunks).toHaveLength(0);
     expect(batch.stats()).toMatchObject({ chunks: 0, visibleChunks: 0, total: 0, visible: 0 });

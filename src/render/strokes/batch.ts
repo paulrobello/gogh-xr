@@ -48,10 +48,19 @@ export interface StrokeBatch {
   readonly chunks: readonly StrokeChunk[];
   readonly material: StrokeMaterial;
   readonly atlas: Texture;
+  /**
+   * Adds the group to `scene` and culls it in `scene.onBeforeRender`, which three calls after
+   * swapping in the XR ArrayCamera (whose frustum covers both eyes) and before it builds its render
+   * list. Chains any existing hook. A batch attaches to one scene at most.
+   */
+  attach(scene: Scene): void;
   /** Culls chunks against `camera`'s frustum and orders the survivors front to back. */
   update(camera: Camera): void;
   stats(): StrokeBatchStats;
-  /** Releases every chunk geometry, the material and the atlas texture. */
+  /**
+   * Releases every chunk geometry, the material and the atlas texture, and restores the scene's
+   * previous `onBeforeRender`. A hook chained on top after `attach` would be dropped with it.
+   */
   dispose(): void;
 }
 
@@ -96,7 +105,7 @@ function createChunkGeometry(
 /**
  * Partitions `buffers` into spatial chunks, one `Mesh` + `InstancedBufferGeometry` per chunk,
  * sharing one material and one atlas. Three's own frustum culling is off; call `update(camera)`
- * once per frame with the camera three renders with (see `cullOnRender`).
+ * once per frame with the camera three renders with, which `attach(scene)` arranges.
  */
 export function createStrokeBatch(
   buffers: StrokeBuffers,
@@ -143,11 +152,25 @@ export function createStrokeBatch(
   const viewProjection = new Matrix4();
   const eye = new Vector3();
 
-  return {
+  let detach: (() => void) | null = null;
+
+  const batch: StrokeBatch = {
     group,
     chunks,
     material,
     atlas,
+    attach(scene: Scene) {
+      if (detach) throw new Error('stroke batch is already attached to a scene');
+      scene.add(group);
+      const previous = scene.onBeforeRender;
+      scene.onBeforeRender = function (this: Scene, ...args) {
+        previous.apply(this, args);
+        batch.update(args[2]);
+      };
+      detach = () => {
+        scene.onBeforeRender = previous;
+      };
+    },
     update(camera: Camera) {
       viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       frustum.setFromProjectionMatrix(
@@ -176,6 +199,8 @@ export function createStrokeBatch(
       return { chunks: chunks.length, visibleChunks, total, visible, atlasMs };
     },
     dispose() {
+      detach?.();
+      detach = null;
       group.removeFromParent();
       for (const chunk of chunks) {
         group.remove(chunk.mesh);
@@ -187,20 +212,5 @@ export function createStrokeBatch(
       atlas.dispose();
     },
   };
-}
-
-/**
- * Culls `batch` in `scene.onBeforeRender`, which three calls after swapping in the XR ArrayCamera
- * (whose frustum covers both eyes) and before it builds its render list. Chains any existing hook.
- * Returns the uninstaller.
- */
-export function cullOnRender(scene: Scene, batch: StrokeBatch): () => void {
-  const previous = scene.onBeforeRender;
-  scene.onBeforeRender = function (this: Scene, ...args) {
-    previous.apply(this, args);
-    batch.update(args[2]);
-  };
-  return () => {
-    scene.onBeforeRender = previous;
-  };
+  return batch;
 }

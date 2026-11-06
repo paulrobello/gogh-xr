@@ -14,10 +14,21 @@ if (import.meta.env.MODE === 'e2e' && flags.iwer) {
   (await import('./xr/iwer-install')).installIwer();
 }
 
-const renderer = new WebGLRenderer({
+// three r186 always requests `alpha: true` itself, which lets the partial alpha-to-coverage alpha at
+// stroke rims show the page through the canvas. These are three's own defaults with alpha off.
+const canvas = document.createElement('canvas');
+const context = canvas.getContext('webgl2', {
+  alpha: false,
+  depth: true,
+  stencil: false,
   antialias: true,
+  premultipliedAlpha: true,
   preserveDrawingBuffer: flags.diag && flags.shot,
+  powerPreference: 'default',
+  failIfMajorPerformanceCaveat: false,
 });
+if (!context) throw new Error('WebGL2 is not available');
+const renderer = new WebGLRenderer({ canvas, context });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;

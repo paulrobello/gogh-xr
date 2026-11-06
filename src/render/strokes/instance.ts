@@ -8,7 +8,7 @@
  * | `iPosition`| float32 × 3     | 12    | stroke centre in world metres                   |
  * | `iNormal`  | snorm16 × 2     | 4     | surface normal, octahedral encoded              |
  * | `iTangent` | unorm16 × 1     | 2     | long-axis angle about the normal, 0..2π (R6)    |
- * | `iColor`   | unorm8 × 4      | 4     | display-referred RGB, A scales coverage         |
+ * | `iColor`   | unorm8 × 4      | 4     | display-referred RGB; A reserved, unused        |
  * | `iSize`    | float32 × 2     | 8     | quad length (long axis) and width in metres     |
  * | `iMeta`    | uint8 × 4 (int) | 4     | brush, layer, phase, spare; read as `uvec4`     |
  *
@@ -32,11 +32,19 @@ export type StrokeLayer = (typeof STROKE_LAYER)[StrokeLayerName];
 
 export interface StrokeInstance {
   readonly position: Vec3;
-  /** Unit surface normal; the quad lies in the plane perpendicular to it. */
+  /** Surface normal, normalised on pack; the quad lies in the plane perpendicular to it. */
   readonly normal: Vec3;
-  /** Radians about the normal, measured from the surface basis b1 towards b2. */
+  /**
+   * Radians about the normal, measured from the surface basis b1 towards b2. Duff's basis turns
+   * by π across n.z = 0, so compute the angle against the basis of the decoded (quantised) normal,
+   * e.g. `surfaceBasis(unpackInstance(...).normal)`, not the source normal: near n.z = 0 the two
+   * can fall on opposite sides and flip the stroke end for end.
+   */
   readonly tangent: number;
-  /** RGBA bytes 0..255. */
+  /**
+   * RGBA bytes 0..255. A is packed but reserved: the shader ignores it, because alpha below 1
+   * inside a stroke dithers under alpha-to-coverage (ruling R3).
+   */
   readonly color: readonly [number, number, number, number];
   /** Length along the stroke and width across it, in metres. */
   readonly size: readonly [number, number];
@@ -114,9 +122,16 @@ function signNotZero(v: number): number {
   return v >= 0 ? 1 : -1;
 }
 
-/** Octahedral encoding of a unit vector into [-1, 1]². Matches `octDecode` in stroke.vert.glsl. */
+/**
+ * Octahedral encoding of a direction into [-1, 1]². Accepts any non-zero finite vector and encodes
+ * its direction; throws RangeError otherwise. Matches `octDecode` in stroke.vert.glsl.
+ */
 export function octEncode(x: number, y: number, z: number): [number, number] {
   const l1 = Math.abs(x) + Math.abs(y) + Math.abs(z);
+  // Dividing by the L1 norm also normalises a non-unit vector; zero or non-finite input would NaN.
+  if (!(l1 > 0) || !Number.isFinite(l1)) {
+    throw new RangeError(`normal (${x}, ${y}, ${z}) is zero-length or not finite`);
+  }
   const u = x / l1;
   const v = y / l1;
   if (z >= 0) return [u, v];

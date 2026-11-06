@@ -11,7 +11,8 @@ uniform vec3 uMoonDir;
 uniform float uRelief;
 
 in vec2 vUv;
-flat in vec4 vColor;
+flat in vec3 vColor;
+flat in vec4 vRect;
 flat in vec3 vNormal;
 flat in vec3 vLong;
 flat in vec3 vShort;
@@ -28,7 +29,7 @@ void main() {
   float cov = t.r;
   // Ruling R3: sharpen coverage to ~0 or 1 except a one-pixel rim, so alpha-to-coverage does not
   // dither the stroke interior into flickering stripes.
-  float alpha = clamp((cov - 0.5) / max(fwidth(cov), 1e-4) + 0.5, 0.0, 1.0) * vColor.a;
+  float alpha = clamp((cov - 0.5) / max(fwidth(cov), 1e-4) + 0.5, 0.0, 1.0);
 
   // Forward differences along the stroke frame (atlas u runs along the stroke, v across it). The
   // step follows the pixel footprint, so a distant stroke compares mip texels a pixel apart and
@@ -36,8 +37,9 @@ void main() {
   vec2 footprint = fwidth(vUv) * float(ATLAS_SIZE);
   float stepTexels = max(float(RELIEF_MIN_TEXELS), max(footprint.x, footprint.y));
   float stepUv = stepTexels / float(ATLAS_SIZE);
-  vec4 tu = texture(uAtlas, vUv + vec2(stepUv, 0.0));
-  vec4 tv = texture(uAtlas, vUv + vec2(0.0, stepUv));
+  // Clamped to the brush's own rect: a distant footprint can exceed the atlas gutter.
+  vec4 tu = texture(uAtlas, clamp(vUv + vec2(stepUv, 0.0), vRect.xy, vRect.zw));
+  vec4 tv = texture(uAtlas, clamp(vUv + vec2(0.0, stepUv), vRect.xy, vRect.zw));
   float h = height(t);
   // Fade the relief where any tap nears the rim, so the coverage falloff never reads as an outline.
   float rim = smoothstep(0.5, 0.9, min(cov, min(tu.r, tv.r)));
@@ -48,5 +50,5 @@ void main() {
   float moon = dot(n, uMoonDir) * 0.5 + 0.5;
   float shade = 0.85 + 0.3 * moon;
   float tone = 0.75 + 0.5 * t.b;
-  fragColor = vec4(vColor.rgb * tone * shade, alpha);
+  fragColor = vec4(vColor * tone * shade, alpha);
 }

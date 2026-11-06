@@ -18,7 +18,9 @@ in vec2 iSize;
 in uvec4 iMeta;
 
 out vec2 vUv;
-flat out vec4 vColor;
+flat out vec3 vColor;
+// Brush uv rect as (min.xy, max.xy), for clamping relief taps.
+flat out vec4 vRect;
 flat out vec3 vNormal;
 flat out vec3 vLong;
 flat out vec3 vShort;
@@ -61,5 +63,7 @@ void main() {
 
   vec4 rect = uBrushRects[min(iMeta.x, uint(BRUSH_COUNT - 1))];
   vUv = rect.xy + rect.zw * (position.xy + 0.5);
-  vColor = iColor;
+  vRect = vec4(rect.xy, rect.xy + rect.zw);
+  // iColor.a is reserved: under alpha-to-coverage, alpha below 1 inside a stroke dithers (R3).
+  vColor = iColor.rgb;
 }

@@ -146,6 +146,26 @@ describe('octahedral normals', () => {
     }
   });
 
+  test('rejects zero-length and non-finite normals', () => {
+    const bad: [number, number, number][] = [
+      [0, 0, 0],
+      [Number.NaN, 0, 1],
+      [0, Number.POSITIVE_INFINITY, 0],
+    ];
+    for (const n of bad) expect(() => octEncode(n[0], n[1], n[2])).toThrow(RangeError);
+    const buffers = createStrokeBuffers(1);
+    const base = randomInstance(mulberry32(4));
+    expect(() => packInstance(buffers, 0, { ...base, normal: [0, 0, 0] })).toThrow(RangeError);
+  });
+
+  test('non-unit normals pack as their direction', () => {
+    const buffers = createStrokeBuffers(1);
+    const base = randomInstance(mulberry32(6));
+    packInstance(buffers, 0, { ...base, normal: [0, 3, -4] });
+    const out = unpackInstance(buffers, 0).normal;
+    expect(angleBetween(out, [0, 0.6, -0.8])).toBeLessThan(2e-4);
+  });
+
   test('encoded values stay in [-1, 1]', () => {
     const rand = mulberry32(77);
     for (let i = 0; i < 500; i++) {

@@ -7,7 +7,7 @@
 import type { Scene } from 'three';
 import { registerDiag, unregisterDiag } from '../../diag/diag';
 import { mulberry32 } from '../../util/prng';
-import { createStrokeBatch, cullOnRender, type StrokeBatch } from './batch';
+import { createStrokeBatch, type StrokeBatch } from './batch';
 import { BRUSH_COUNT, BRUSHES } from './brush-atlas-data';
 import type { Vec3 } from './frame';
 import {
@@ -167,14 +167,12 @@ export function startStrokesTest(deps: StrokesTestDeps): StrokesTestHandle {
   const batch = createStrokeBatch(buildStrokesTestBuffers(), {
     cellSize: STROKES_TEST_CELL_SIZE,
   });
-  deps.scene.add(batch.group);
-  const uninstall = cullOnRender(deps.scene, batch);
+  batch.attach(deps.scene);
   registerDiag('strokes', () => batch.stats());
   return {
     batch,
     dispose() {
       unregisterDiag('strokes');
-      uninstall();
       batch.dispose();
     },
   };
