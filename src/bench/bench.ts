@@ -2,13 +2,13 @@ import type { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
 import { registerDiag, unregisterDiag } from '../diag/diag';
 import { flags } from '../diag/flags';
 import { resolveTargetFrameRate, type XrState } from '../xr/session';
-import { type BenchConfig, resolveBenchConfig, stepCount } from './config';
+import { type BenchConfig, defaultOrder, resolveBenchConfig, stepCount } from './config';
 import { buildStrokeField, type StrokeField } from './field';
 import { GpuTimer, type TimerGl } from './gpu-timer';
 import { type BenchSnapshot, createHud, formatHudLines, HUD_INTERVAL_MS } from './hud';
 import { lastEyeViewport } from './material';
 import { FrameStats } from './stats';
-import { leftStickX, stickStep } from './stick';
+import { buttonEdge, leftStickX, leftXPressed, stickStep } from './stick';
 
 export interface BenchDeps {
   renderer: WebGLRenderer;
@@ -19,6 +19,7 @@ export interface BenchDeps {
 
 export interface BenchHandle {
   setCount(n: number): void;
+  toggleMode(): void;
   snapshot(): BenchSnapshot;
   dispose(): void;
 }
@@ -30,7 +31,8 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   const resolved = config ?? resolveBenchConfig(flags);
   if (!resolved) return null;
   const { renderer, scene, camera } = deps;
-  const { mode, order, sizePx, seed } = resolved;
+  const { sizePx, seed } = resolved;
+  let { mode, order } = resolved;
   const targetFrameRate = resolveTargetFrameRate(flags.hz);
   let n = resolved.n;
   let field: StrokeField = buildStrokeField({ n, mode, order, sizePx, seed });
@@ -43,6 +45,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
   if (addedCamera) scene.add(camera);
   const hud = createHud(camera);
   let armed = true;
+  let xDown = false;
   let lastHud = Number.NEGATIVE_INFINITY;
 
   function snapshot(): BenchSnapshot {
@@ -63,15 +66,26 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     };
   }
 
-  function setCount(next: number): void {
-    const clamped = Math.max(0, Math.floor(next));
-    if (clamped === n) return;
+  function rebuild(): void {
     field.dispose();
-    n = clamped;
     field = buildStrokeField({ n, mode, order, sizePx, seed });
     scene.add(field.group);
     stats.reset();
     timer.reset();
+  }
+
+  function setCount(next: number): void {
+    const clamped = Math.max(0, Math.floor(next));
+    if (clamped === n) return;
+    n = clamped;
+    rebuild();
+  }
+
+  /** Switches a2c and blend; the order resets to the new mode's default, overriding `&order`. */
+  function toggleMode(): void {
+    mode = mode === 'a2c' ? 'blend' : 'a2c';
+    order = defaultOrder(mode);
+    rebuild();
   }
 
   function drawHud(now: number): void {
@@ -100,9 +114,13 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     timer.end();
     prevAfter.apply(scene, args);
     if (renderer.xr.isPresenting) {
-      const result = stickStep(armed, leftStickX(renderer.xr.getSession()?.inputSources));
+      const sources = renderer.xr.getSession()?.inputSources;
+      const result = stickStep(armed, leftStickX(sources));
       armed = result.armed;
       if (result.step !== 0) setCount(stepCount(n, result.step));
+      const press = buttonEdge(xDown, leftXPressed(sources));
+      xDown = press.down;
+      if (press.fired) toggleMode();
     }
     drawHud(performance.now());
   };
@@ -111,6 +129,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
 
   return {
     setCount,
+    toggleMode,
     snapshot,
     dispose: () => {
       scene.onBeforeRender = prevBefore;

@@ -17,7 +17,33 @@ export function stickStep(armed: boolean, x: number): StickStep {
 
 export interface StickSource {
   readonly handedness: string;
-  readonly gamepad?: { readonly axes: readonly number[] } | null;
+  readonly gamepad?: {
+    readonly axes: readonly number[];
+    readonly buttons?: readonly { readonly pressed: boolean }[];
+  } | null;
+}
+
+/** xr-standard gamepad mapping: buttons[4] is the lower face button, X on the left controller. */
+const FACE_BUTTON_LOWER = 4;
+
+export interface ButtonEdge {
+  readonly down: boolean;
+  readonly fired: boolean;
+}
+
+/** Fires once on the press, not again until the button is released. */
+export function buttonEdge(wasDown: boolean, isDown: boolean): ButtonEdge {
+  return { down: isDown, fired: isDown && !wasDown };
+}
+
+export function leftXPressed(sources: Iterable<StickSource> | null | undefined): boolean {
+  if (!sources) return false;
+  for (const source of sources) {
+    if (source.handedness === 'left' && source.gamepad) {
+      return source.gamepad.buttons?.[FACE_BUTTON_LOWER]?.pressed ?? false;
+    }
+  }
+  return false;
 }
 
 export function leftStickX(sources: Iterable<StickSource> | null | undefined): number {

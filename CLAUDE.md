@@ -26,7 +26,7 @@ Parsed in `src/diag/flags.ts`.
 - `?diag`: installs `window.__goghDiag()` (renderer info, XR state, frame rates, camera pose, counts).
 - `?iwer`: installs the IWER Meta Quest 3 emulator. Only honoured in `--mode e2e` builds, never in production.
 - `?bench=N`: runs the stroke benchmark with N strokes (default 100000, capped at 2,000,000). A non-numeric value uses the default.
-- `&mode=a2c|blend`: benchmark transparency mode, alpha-to-coverage (default) or blended.
+- `&mode=a2c|blend`: benchmark transparency mode, alpha-to-coverage (default) or blended. In the headset, the left controller's X button toggles the mode and resets the order to that mode's default.
 - `&size=px`: benchmark stroke size in pixels (default 24).
 - `&order=sorted|random`: benchmark draw order. Default is random for a2c and sorted for blend.
 - `?hz=72|90|120`: requested XR target frame rate (default 90).

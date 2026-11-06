@@ -9,7 +9,7 @@ import {
 } from '../src/bench/gpu-timer.ts';
 import { type BenchSnapshot, formatHudLines } from '../src/bench/hud.ts';
 import { FrameStats, WARMUP_INTERVALS } from '../src/bench/stats.ts';
-import { leftStickX, stickStep } from '../src/bench/stick.ts';
+import { buttonEdge, leftStickX, leftXPressed, stickStep } from '../src/bench/stick.ts';
 import { buildDiagPayload, type DiagRenderer } from '../src/diag/diag.ts';
 import { createXrState } from '../src/xr/session.ts';
 
@@ -107,6 +107,30 @@ test('left stick X reads axes[2] of the left-handed gamepad only', () => {
   expect(leftStickX(sources)).toBe(-0.8);
   expect(leftStickX([{ handedness: 'left', gamepad: null }])).toBe(0);
   expect(leftStickX(null)).toBe(0);
+});
+
+test('X button fires once per press and reads buttons[4] of the left gamepad only', () => {
+  let down = false;
+  const fired: boolean[] = [];
+  for (const pressed of [false, true, true, false, true]) {
+    const edge = buttonEdge(down, pressed);
+    down = edge.down;
+    fired.push(edge.fired);
+  }
+  expect(fired).toEqual([false, true, false, false, true]);
+  const press = (pressed: boolean) => ({
+    axes: [],
+    buttons: [0, 1, 2, 3, 4].map((i) => ({ pressed: pressed && i === 4 })),
+  });
+  expect(
+    leftXPressed([
+      { handedness: 'right', gamepad: press(true) },
+      { handedness: 'left', gamepad: press(false) },
+    ]),
+  ).toBe(false);
+  expect(leftXPressed([{ handedness: 'left', gamepad: press(true) }])).toBe(true);
+  expect(leftXPressed([{ handedness: 'left', gamepad: { axes: [] } }])).toBe(false);
+  expect(leftXPressed(null)).toBe(false);
 });
 
 function fakeTimerGl(withExt: boolean) {
@@ -377,6 +401,28 @@ test('startBench registers diag, and setCount disposes the old field before rebu
   expect(bench.snapshot()).toMatchObject({ n: 125000, chunks: 2, instances: 125000 });
   bench.setCount(-10);
   expect(bench.snapshot()).toMatchObject({ n: 0, chunks: 0, instances: 0 });
+});
+
+test('toggleMode swaps a2c and blend, resets order to the mode default, and rebuilds', () => {
+  const deps = fakeDeps();
+  const bench = startBench(deps, { n: 1000, mode: 'a2c', order: 'random', sizePx: 24, seed: 1 });
+  if (!bench) throw new Error('bench did not start');
+  benches.push(bench);
+  const oldGroup = deps.scene.getObjectByName('bench-strokes');
+  bench.toggleMode();
+  expect(bench.snapshot()).toMatchObject({
+    mode: 'blend',
+    order: 'sorted',
+    n: 1000,
+    settling: true,
+  });
+  expect(oldGroup?.parent).toBeNull();
+  const material = (
+    deps.scene.getObjectByName('bench-chunk-0') as unknown as { material: { transparent: boolean } }
+  ).material;
+  expect(material.transparent).toBe(true);
+  bench.toggleMode();
+  expect(bench.snapshot()).toMatchObject({ mode: 'a2c', order: 'random' });
 });
 
 test('dispose removes a camera the bench added, and leaves a camera it did not add', () => {
