@@ -88,6 +88,22 @@ describe('asset hash checks', () => {
     ]);
   });
 
+  it('fails on a font with no provenance row', () => {
+    write('public/fonts/Extra.ttf', 'x');
+    expect(checkAssets(root, fullManifest()).failures).toEqual([
+      'public/fonts/Extra.ttf: public file has no provenance row',
+    ]);
+  });
+
+  it('verifies a font row hash and ignores OS junk under public/fonts', () => {
+    write('public/fonts/A.ttf', 'hello');
+    write('public/fonts/.DS_Store', 'x');
+    const md = `${fullManifest()}\n${row('public/fonts/A.ttf', HELLO)}`;
+    expect(checkAssets(root, md)).toEqual({ failures: [], checked: 9 });
+    write('public/fonts/A.ttf', 'hellp');
+    expect(checkAssets(root, md).failures[0]).toContain('public/fonts/A.ttf: hash drift');
+  });
+
   it('fails on an unlisted file under assets/ and names its path', () => {
     write('assets/audio/stray.wav', 'x');
     expect(checkAssets(root, fullManifest()).failures).toEqual([

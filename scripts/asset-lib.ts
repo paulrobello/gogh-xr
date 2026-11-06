@@ -84,7 +84,7 @@ function isJunk(file: string): boolean {
 
 /**
  * Recompute every manifest hash under `root`, and require a row for every file in
- * `public/paintings` and `assets/` (except PROVENANCE.md itself). OS junk files are ignored.
+ * `public/paintings`, `public/fonts` and `assets/` (except PROVENANCE.md itself). OS junk files are ignored.
  */
 export function checkAssets(root: string, markdown: string): CheckResult {
   const rows = parseHashRows(markdown);
@@ -113,6 +113,11 @@ export function checkAssets(root: string, markdown: string): CheckResult {
     if (isJunk(file)) continue;
     const rel = relative(root, file).split('\\').join('/');
     if (!seen.has(rel)) failures.push(`${rel}: derivative has no provenance row`);
+  }
+  for (const file of listFiles(join(root, 'public/fonts'))) {
+    if (isJunk(file)) continue;
+    const rel = relative(root, file).split('\\').join('/');
+    if (!seen.has(rel)) failures.push(`${rel}: public file has no provenance row`);
   }
   const required = new Set(requiredFiles(markdown));
   for (const file of listFiles(join(root, 'assets'))) {

@@ -88,3 +88,12 @@ Provider: the ElevenLabs Sound Effects API, `POST /v1/sound-generation`, model `
 | `assets/audio/source/elevenlabs/stroke-rustle-take1.mp3` | 452474a08b9819c1d81af45f40346d7fb15abdcba0a299fa0f3cc3afc09d35e1 | stroke-rustle | 1.00 s | duration 1, influence 0.5 | 2026-11-05 15:32:05 | Very soft brush bristle and paper-like rustle, a subtle gentle dry swish of a paintbrush brushing across canvas. Quiet and delicate. |
 
 Paul's note on the church bell: the single bell is retriggered with overlapping tails when more than one chime is wanted, which is P6.5 mixer behavior. Levels vary widely between cues (stroke-rustle −45 LUFS, portal-whoosh −14 LUFS), so P6.4 sets gain at mastering. Approval state: source selection is done. Mastering, the positional mono downmix, creative acceptance in the headset and release rights are still open.
+
+## Fonts
+
+Copied unchanged from the mux-xr repo (`public/fonts/`), which vendored them from the official Noto source. Nothing was downloaded for this project. The perf HUD (`src/ui/perf-hud.ts`) loads the font from this local path, so troika never fetches its default CDN font. `asset-check` recomputes these hashes and requires a row for every file under `public/fonts/`.
+
+| file | SHA-256 | source | license | bytes |
+| --- | --- | --- | --- | --- |
+| `public/fonts/NotoSans-Regular.ttf` | b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5 | https://github.com/notofonts/noto-fonts/blob/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf | SIL OFL 1.1 | 569208 |
+| `public/fonts/OFL.txt` | 0dab92d0544f7b233403f14b84a663bdbfa746982eda629e7f4f9ffe1b036feb | the license text distributed with NotoSans-Regular.ttf, same Noto source | SIL OFL 1.1 | 4377 |
