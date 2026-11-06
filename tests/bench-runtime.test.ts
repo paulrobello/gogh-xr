@@ -178,6 +178,23 @@ test('gpu timer reads GPU_DISJOINT once per poll and drops every result in a dis
   expect(timer.meanMs()).toBeCloseTo(4);
 });
 
+test('gpu timer does not consume GPU_DISJOINT before any result is available', () => {
+  const { gl, state } = fakeTimerGl(true);
+  state.available = false;
+  state.disjoint = true;
+  const timer = new GpuTimer(gl);
+  for (let i = 0; i < 3; i++) {
+    timer.begin();
+    timer.end();
+  }
+  expect(state.disjointReads).toBe(0);
+  state.available = true;
+  timer.begin();
+  timer.end();
+  expect(state.disjointReads).toBe(1);
+  expect(timer.meanMs()).toBeNull();
+});
+
 test('gpu timer drops the sample of a frame marked by excludeNext', () => {
   const { gl } = fakeTimerGl(true);
   const timer = new GpuTimer(gl);

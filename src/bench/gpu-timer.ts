@@ -97,9 +97,14 @@ export class GpuTimer {
     return query;
   }
 
-  /** A disjoint flag invalidates every result read in the same poll. */
+  /**
+   * A disjoint flag invalidates every result read in the same poll. Reading the flag clears it,
+   * so it is read only once a result is available to consume.
+   */
   private poll(): void {
-    if (!this.ext || this.pending.length === 0) return;
+    if (!this.ext) return;
+    const first = this.pending[0];
+    if (!first || !this.gl.getQueryParameter(first, this.gl.QUERY_RESULT_AVAILABLE)) return;
     const disjoint = Boolean(this.gl.getParameter(this.ext.GPU_DISJOINT_EXT));
     while (this.pending.length > 0) {
       const query = this.pending[0];
