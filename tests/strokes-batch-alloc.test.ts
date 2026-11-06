@@ -4,8 +4,9 @@ import { createStrokeBatch } from '../src/render/strokes/batch.ts';
 import { createStrokeBuffers, packInstance, STROKE_LAYER } from '../src/render/strokes/instance.ts';
 
 /**
- * M3: the per-frame cull and sort allocate nothing. Kept apart from `strokes-batch.test.ts`, whose
- * module mock records its calls with `push` and would count here.
+ * M3: `update` calls no Array or TypedArray method. This counts method calls; it does not measure
+ * heap allocation. Kept apart from `strokes-batch.test.ts`, whose module mock records its calls
+ * with `push` and would count here.
  */
 
 /** Strokes on a 9 x 9 x 3 grid of 4 m cells around the origin: 243 chunks over every band. */
@@ -36,7 +37,7 @@ function grid() {
   });
 }
 
-test('update calls no allocating array method: no closures, mapped arrays or sorts', () => {
+test('update calls no Array forEach, map, filter, sort, push, slice or concat, and no TypedArray sort', () => {
   const batch = grid();
   expect(batch.chunks.length).toBe(243);
   const camera = new PerspectiveCamera(90, 1, 0.05, 1000);

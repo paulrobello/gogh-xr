@@ -445,8 +445,8 @@ describe('update', () => {
   });
 });
 
-describe('per-frame cost (M3)', () => {
-  test('cull and sort reuse the same preallocated arrays every frame', () => {
+describe('per-frame cull buffers (M3)', () => {
+  test('update passes the same order and distance arrays to cullAndSortInto every frame', () => {
     const batch = bandedBatch();
     const camera = originCamera();
     const cull = vi.mocked(cullAndSortInto);
