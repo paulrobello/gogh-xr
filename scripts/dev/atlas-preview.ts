@@ -4,6 +4,8 @@
  *
  *   bun scripts/dev/atlas-preview.ts [seed] [outDir]
  */
+
+import { mkdirSync } from 'node:fs';
 import sharp from 'sharp';
 import {
   ATLAS_CELL_SIZE,
@@ -18,6 +20,7 @@ import {
 
 const seed = Number(process.argv[2] ?? DEFAULT_BRUSH_SEED);
 const outDir = process.argv[3] ?? '/tmp';
+mkdirSync(outDir, { recursive: true });
 
 generateBrushAtlas(seed);
 const started = performance.now();
