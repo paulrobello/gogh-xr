@@ -1,4 +1,4 @@
-import { PerspectiveCamera, Scene } from 'three';
+import { DataTexture, PerspectiveCamera, RGBAFormat, Scene } from 'three';
 import { afterEach, expect, test, vi } from 'vitest';
 import { type BenchDeps, startBench } from '../src/bench/bench.ts';
 import { nextFoveation } from '../src/bench/config.ts';
@@ -31,6 +31,8 @@ import {
   stickStep,
 } from '../src/bench/stick.ts';
 import { buildDiagPayload, type DiagRenderer } from '../src/diag/diag.ts';
+import { createStrokeBatch } from '../src/render/strokes/batch.ts';
+import { createStrokeBuffers, packInstance, STROKE_LAYER } from '../src/render/strokes/instance.ts';
 import { createXrState } from '../src/xr/session.ts';
 
 test('frame stats: fps counts callbacks in the last second, p99 is nearest-rank', () => {
@@ -725,3 +727,77 @@ const baseResult: BenchResult = {
   p99Ms: 11,
   recordedAt: 'x',
 };
+
+test.each([
+  ['bench', 'bench'],
+  ['bench', 'batch'],
+  ['batch', 'bench'],
+  ['batch', 'batch'],
+] as const)(
+  'started %s first, %s disposed first: no render hook is lost or left stale (N2)',
+  (startFirst, disposeFirst) => {
+    const deps = fakeDeps();
+    const { scene } = deps;
+    const before = vi.fn();
+    const after = vi.fn();
+    scene.onBeforeRender = before;
+    scene.onAfterRender = after;
+    const buffers = createStrokeBuffers(4);
+    for (let i = 0; i < 4; i++) {
+      packInstance(buffers, i, {
+        position: [0.5, 1.6, -1 - i],
+        normal: [0, 0, 1],
+        tangent: 0,
+        color: [200, 180, 40, 255],
+        size: [0.2, 0.1],
+        brush: 0,
+        layer: STROKE_LAYER.sky,
+        phase: 0,
+      });
+    }
+    const batch = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: () => new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat),
+    });
+    const config = { n: 100, mode: 'a2c', order: 'random', sizePx: 24, seed: 1 } as const;
+    let bench: ReturnType<typeof startBench> = null;
+    if (startFirst === 'bench') {
+      bench = startBench(deps, config);
+      batch.attach(scene);
+    } else {
+      batch.attach(scene);
+      bench = startBench(deps, config);
+    }
+    if (!bench) throw new Error('bench did not start');
+    // The bench's hooks run its GPU timer; the batch's hook culls.
+    const update = vi.spyOn(batch, 'update');
+    const begin = vi.spyOn(GpuTimer.prototype, 'begin');
+    const end = vi.spyOn(GpuTimer.prototype, 'end');
+    const args = [{}, scene, deps.camera, null] as unknown as Parameters<Scene['onBeforeRender']>;
+    const render = () => {
+      for (const spy of [before, after, update, begin, end]) spy.mockClear();
+      scene.onBeforeRender(...args);
+      scene.onAfterRender(...args);
+      return {
+        before: before.mock.calls.length,
+        after: after.mock.calls.length,
+        update: update.mock.calls.length,
+        begin: begin.mock.calls.length,
+        end: end.mock.calls.length,
+      };
+    };
+    expect(render()).toEqual({ before: 1, after: 1, update: 1, begin: 1, end: 1 });
+    if (disposeFirst === 'bench') {
+      bench.dispose();
+      expect(render()).toEqual({ before: 1, after: 1, update: 1, begin: 0, end: 0 });
+      batch.dispose();
+    } else {
+      batch.dispose();
+      expect(render()).toEqual({ before: 1, after: 1, update: 0, begin: 1, end: 1 });
+      bench.dispose();
+    }
+    expect(render()).toEqual({ before: 1, after: 1, update: 0, begin: 0, end: 0 });
+    expect(scene.onBeforeRender).toBe(before);
+    expect(scene.onAfterRender).toBe(after);
+  },
+);

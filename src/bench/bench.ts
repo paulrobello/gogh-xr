@@ -1,6 +1,7 @@
 import type { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
 import { registerDiag, unregisterDiag } from '../diag/diag';
 import { flags } from '../diag/flags';
+import { addAfterRender, addBeforeRender } from '../render/scene-hooks';
 import { FOVEATION, resolveTargetFrameRate, type XrState } from '../xr/session';
 import {
   type BenchConfig,
@@ -191,16 +192,12 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     hud.draw(recent.length ? [...live, 'recorded (target/actual):', ...recent] : live);
   }
 
-  const prevBefore = scene.onBeforeRender;
-  const prevAfter = scene.onAfterRender;
-  scene.onBeforeRender = (...args) => {
-    prevBefore.apply(scene, args);
+  const removeBefore = addBeforeRender(scene, () => {
     stats.record(performance.now());
     timer.begin();
-  };
-  scene.onAfterRender = (...args) => {
+  });
+  const removeAfter = addAfterRender(scene, () => {
     timer.end();
-    prevAfter.apply(scene, args);
     recordIfSettled();
     if (renderer.xr.isPresenting) {
       const sources = renderer.xr.getSession()?.inputSources;
@@ -218,7 +215,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
       if (a.fired) cycleFoveation();
     }
     drawHud(performance.now());
-  };
+  });
 
   registerDiag('bench', snapshot);
   registerDiag('benchResults', () => results);
@@ -232,8 +229,8 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     snapshot,
     results: () => results,
     dispose: () => {
-      scene.onBeforeRender = prevBefore;
-      scene.onAfterRender = prevAfter;
+      removeBefore();
+      removeAfter();
       unregisterDiag('bench');
       unregisterDiag('benchResults');
       field.dispose();
