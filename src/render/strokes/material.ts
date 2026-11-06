@@ -1,0 +1,57 @@
+import { GLSL3, RawShaderMaterial, type Texture, Vector3, Vector4 } from 'three';
+import { ATLAS_SIZE, BRUSH_COUNT, brushTexelRect, brushUvRect } from './brush-atlas-data';
+import fragmentShader from './stroke.frag.glsl?raw';
+import vertexShader from './stroke.vert.glsl?raw';
+
+/** Towards the moon: from the upper right, in front of a viewer looking down -z. */
+export const MOON_DIRECTION: Readonly<Vector3> = new Vector3(0.45, 0.6, 0.66).normalize();
+/** Normal tilt per unit of height change over one stroke length. */
+export const RELIEF_STRENGTH = 0.08;
+/** Smallest relief finite-difference step, in mip-0 atlas texels. */
+export const RELIEF_MIN_TEXELS = 2;
+
+export interface StrokeMaterialUniforms {
+  [name: string]: { value: unknown };
+  uAtlas: { value: Texture };
+  uBrushRects: { value: Vector4[] };
+  uMoonDir: { value: Vector3 };
+  uRelief: { value: number };
+}
+
+export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUniforms };
+
+/**
+ * Opaque alpha-to-coverage stroke material: no blending, depth write on, back faces culled (each
+ * quad faces its instance normal). Colours are written as given, like the bench material.
+ */
+export function createStrokeMaterial(atlas: Texture): StrokeMaterial {
+  const uniforms: StrokeMaterialUniforms = {
+    uAtlas: { value: atlas },
+    uBrushRects: {
+      value: Array.from({ length: BRUSH_COUNT }, (_, i) => {
+        const rect = brushUvRect(i);
+        return new Vector4(rect.u, rect.v, rect.width, rect.height);
+      }),
+    },
+    uMoonDir: { value: MOON_DIRECTION.clone() },
+    uRelief: { value: RELIEF_STRENGTH },
+  };
+  const material = new RawShaderMaterial({
+    glslVersion: GLSL3,
+    vertexShader,
+    fragmentShader,
+    uniforms,
+    defines: {
+      BRUSH_COUNT,
+      ATLAS_SIZE,
+      // Every brush rect spans the same texel width: one stroke length.
+      RECT_TEXELS: brushTexelRect(0).width,
+      RELIEF_MIN_TEXELS,
+    },
+    transparent: false,
+    depthWrite: true,
+    alphaToCoverage: true,
+  });
+  material.name = 'stroke-a2c';
+  return material as StrokeMaterial;
+}

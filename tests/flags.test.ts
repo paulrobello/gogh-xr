@@ -14,12 +14,13 @@ test('defaults when search is empty', () => {
     benchSize: null,
     benchOrder: null,
     hz: null,
+    strokesTest: false,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest',
   );
   expect(f).toEqual({
     seed: 42,
@@ -33,6 +34,7 @@ test('parses every flag', () => {
     benchSize: 32,
     benchOrder: 'random',
     hz: 120,
+    strokesTest: true,
   });
 });
 
@@ -60,6 +62,12 @@ test('repeated keys use the first occurrence', () => {
   expect(parseFlags('?seed=1&seed=2').seed).toBe(1);
   expect(parseFlags('?seed=abc&seed=2').seed).toBeNull();
   expect(parseFlags('?bench=a&bench=b').bench).toBe('a');
+});
+
+test('strokesTest is a boolean flag, off by default', () => {
+  expect(parseFlags('?strokesTest').strokesTest).toBe(true);
+  expect(parseFlags('?strokesTest=0').strokesTest).toBe(false);
+  expect(parseFlags('?diag').strokesTest).toBe(false);
 });
 
 test('boolean flags are off for 0 and false', () => {

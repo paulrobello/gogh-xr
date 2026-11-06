@@ -65,6 +65,12 @@ if (flags.bench !== null) {
     .catch((error: unknown) => console.warn('bench failed to start', error));
 }
 
+if (flags.strokesTest) {
+  import('./render/strokes/test-scene')
+    .then(({ startStrokesTest }) => startStrokesTest({ scene }))
+    .catch((error: unknown) => console.warn('strokes test failed to start', error));
+}
+
 void isVrSupported(navigator.xr).then((supported) => {
   session.state.supported = supported;
   createEnterVrButton(supported, () => void session.enter());

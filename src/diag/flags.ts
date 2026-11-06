@@ -13,6 +13,8 @@ export interface Flags {
   readonly benchOrder: BenchOrder | null;
   /** Requested XR target frame rate; null means the default. */
   readonly hz: TargetHz | null;
+  /** Builds the small deterministic stroke-engine test scene. */
+  readonly strokesTest: boolean;
 }
 
 export type BenchMode = 'a2c' | 'blend';
@@ -68,6 +70,7 @@ export function parseFlags(search: string): Flags {
     benchSize: size !== null && size > 0 ? size : null,
     benchOrder: parseBenchOrder(params.get('order')),
     hz: parseHz(params.get('hz')),
+    strokesTest: parseBool(params, 'strokesTest'),
   });
 }
 

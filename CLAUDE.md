@@ -32,6 +32,7 @@ Parsed in `src/diag/flags.ts`.
 - `&order=sorted|random`: benchmark draw order. Default is random for a2c and sorted for blend.
 - `?hz=72|90|120`: requested XR target frame rate (default 90). Quest 3 reports `supportedFrameRates` of 72, 80, 90 and 120. In the headset, the left controller's Y button steps the target through the supported rates.
 - `?shot`: boolean, honoured only together with `?diag`. Enables `window.__goghShot()` (canvas PNG data URL) and `preserveDrawingBuffer`. It takes no value.
+- `?strokesTest`: boolean. Builds the deterministic stroke-engine test scene (`src/render/strokes/test-scene.ts`): 6000 strokes over 14 chunks, including a sky wall at z = -2 and a building wall behind the viewer at z = +6. It registers `strokes` in `__goghDiag()`, reporting `{ chunks, visibleChunks, total, visible, atlasMs }`.
 
 ## Model routing
 
