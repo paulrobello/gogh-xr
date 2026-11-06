@@ -1,4 +1,9 @@
 export const TARGET_FRAME_RATE = 90;
+
+/** The `?hz` override, or the default target. */
+export function resolveTargetFrameRate(hz: number | null): number {
+  return hz ?? TARGET_FRAME_RATE;
+}
 export const FOVEATION = 0.5;
 
 export const SESSION_INIT: XRSessionInit = {
@@ -22,6 +27,7 @@ export interface SessionDeps {
   xr: XRSystem | undefined;
   notify: (message: string) => void;
   clearNotices?: () => void;
+  targetFrameRate?: number;
 }
 
 export interface SessionController {
@@ -57,12 +63,13 @@ export async function applySessionSettings(
   session: XRSession,
   renderer: SessionRenderer,
   state: XrState,
+  targetFrameRate: number = TARGET_FRAME_RATE,
 ): Promise<void> {
   if (typeof session.updateTargetFrameRate === 'function') {
     try {
-      await session.updateTargetFrameRate(TARGET_FRAME_RATE);
+      await session.updateTargetFrameRate(targetFrameRate);
     } catch (error) {
-      console.warn(`updateTargetFrameRate(${TARGET_FRAME_RATE}) failed: ${messageOf(error)}`);
+      console.warn(`updateTargetFrameRate(${targetFrameRate}) failed: ${messageOf(error)}`);
     }
   }
   state.supportedFrameRates = session.supportedFrameRates
@@ -93,7 +100,7 @@ export function createSessionController(deps: SessionDeps): SessionController {
         state.presenting = false;
         state.sessionMode = null;
       });
-      await applySessionSettings(session, deps.renderer, state);
+      await applySessionSettings(session, deps.renderer, state, deps.targetFrameRate);
       deps.clearNotices?.();
       return true;
     } catch (error) {

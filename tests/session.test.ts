@@ -5,8 +5,10 @@ import {
   createSessionController,
   createXrState,
   isVrSupported,
+  resolveTargetFrameRate,
   SESSION_INIT,
   type SessionRenderer,
+  TARGET_FRAME_RATE,
 } from '../src/xr/session.ts';
 
 interface FakeOptions {
@@ -187,4 +189,33 @@ test('isVrSupported feature-detects and swallows errors', async () => {
     },
   } as unknown as XRSystem;
   expect(await isVrSupported(bad)).toBe(false);
+});
+
+test('applySessionSettings requests an overridden target frame rate', async () => {
+  const update = vi.fn(async () => undefined);
+  const session = fakeSession({ updateTargetFrameRate: update, frameRate: 120 });
+  const { renderer } = fakeRenderer();
+  await applySessionSettings(session, renderer, createXrState(), 120);
+  expect(update).toHaveBeenCalledWith(120);
+});
+
+test('the controller passes its target frame rate to the session', async () => {
+  const update = vi.fn(async () => undefined);
+  const session = fakeSession({ updateTargetFrameRate: update });
+  const { renderer } = fakeRenderer();
+  const controller = createSessionController({
+    renderer,
+    xr: { requestSession: async () => session } as unknown as XRSystem,
+    notify: vi.fn(),
+    targetFrameRate: 72,
+  });
+  expect(await controller.enter()).toBe(true);
+  expect(update).toHaveBeenCalledWith(72);
+});
+
+test('?hz overrides the default target of 90', () => {
+  expect(TARGET_FRAME_RATE).toBe(90);
+  expect(resolveTargetFrameRate(null)).toBe(90);
+  expect(resolveTargetFrameRate(72)).toBe(72);
+  expect(resolveTargetFrameRate(120)).toBe(120);
 });

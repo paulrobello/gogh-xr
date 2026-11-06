@@ -152,7 +152,7 @@ Pre-commit hooks: gitleaks and `detect-private-key` from `pre-commit/pre-commit-
   - Dispose both the meshes and the geometry when N changes.
 - **Verify:**
   - Unit tests cover the chunking math and the disposal calls.
-  - An e2e test boots `?iwer&bench=100000` and asserts the instance count in diag with no WebGL errors.
+  - An e2e test boots `?iwer&diag&bench=100000` and asserts the instance count in diag with no WebGL errors.
 
 ### P0.8: Headset benchmark session (owner)
 - **Depends on:** P0.7. Run over `adb reverse tcp:4252 tcp:4252`, then open `http://localhost:4252` on the headset. It does not wait for the Pages deploy in P0.6.

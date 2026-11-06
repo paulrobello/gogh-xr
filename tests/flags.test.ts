@@ -10,11 +10,17 @@ test('defaults when search is empty', () => {
     hud: false,
     iwer: false,
     bench: null,
+    benchMode: 'a2c',
+    benchSize: null,
+    benchOrder: null,
+    hz: null,
   });
 });
 
 test('parses every flag', () => {
-  const f = parseFlags('?seed=42&noanim&shot=1500&diag&hud&iwer&bench=strokes');
+  const f = parseFlags(
+    '?seed=42&noanim&shot=1500&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120',
+  );
   expect(f).toEqual({
     seed: 42,
     noanim: true,
@@ -23,6 +29,10 @@ test('parses every flag', () => {
     hud: true,
     iwer: true,
     bench: 'strokes',
+    benchMode: 'blend',
+    benchSize: 32,
+    benchOrder: 'random',
+    hz: 120,
   });
 });
 
@@ -59,4 +69,36 @@ test('empty bench is null and result is frozen', () => {
   expect(parseFlags('?bench=').bench).toBeNull();
   const f = parseFlags('?diag');
   expect(Object.isFrozen(f)).toBe(true);
+});
+
+test('bench mode accepts a2c and blend, anything else falls back to a2c', () => {
+  expect(parseFlags('?mode=a2c').benchMode).toBe('a2c');
+  expect(parseFlags('?mode=blend').benchMode).toBe('blend');
+  expect(parseFlags('?mode=BLEND').benchMode).toBe('blend');
+  expect(parseFlags('?mode=additive').benchMode).toBe('a2c');
+  expect(parseFlags('?mode=').benchMode).toBe('a2c');
+});
+
+test('bench size is a positive number of px, otherwise null', () => {
+  expect(parseFlags('?size=24').benchSize).toBe(24);
+  expect(parseFlags('?size=12.5').benchSize).toBe(12.5);
+  for (const bad of ['0', '-4', 'abc', '24px', '']) {
+    expect(parseFlags(`?size=${bad}`).benchSize).toBeNull();
+  }
+});
+
+test('bench order accepts sorted and random, anything else is null', () => {
+  expect(parseFlags('?order=sorted').benchOrder).toBe('sorted');
+  expect(parseFlags('?order=Random').benchOrder).toBe('random');
+  expect(parseFlags('?order=shuffle').benchOrder).toBeNull();
+  expect(parseFlags('').benchOrder).toBeNull();
+});
+
+test('hz accepts 72, 90 and 120 only', () => {
+  expect(parseFlags('?hz=72').hz).toBe(72);
+  expect(parseFlags('?hz=90').hz).toBe(90);
+  expect(parseFlags('?hz=120').hz).toBe(120);
+  for (const bad of ['60', '80', '144', 'fast', '', '90.5']) {
+    expect(parseFlags(`?hz=${bad}`).hz).toBeNull();
+  }
 });

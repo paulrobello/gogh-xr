@@ -7,7 +7,7 @@ import { clearNotices, showNotice } from './ui/notice';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
 import { createInputCounter } from './xr/input-counter';
-import { createSessionController, isVrSupported } from './xr/session';
+import { createSessionController, isVrSupported, resolveTargetFrameRate } from './xr/session';
 
 // Must run before any WebXR code reads navigator.xr. The MODE guard keeps IWER out of production.
 if (import.meta.env.MODE === 'e2e' && flags.iwer) {
@@ -31,6 +31,7 @@ const session = createSessionController({
   xr: navigator.xr,
   notify: (message) => showNotice(message),
   clearNotices: () => clearNotices(),
+  targetFrameRate: resolveTargetFrameRate(flags.hz),
 });
 
 window.addEventListener('resize', () => {
@@ -55,6 +56,13 @@ if (flags.diag) {
 }
 if (flags.shot !== null) {
   installShot(renderer.domElement, () => renderer.render(scene, camera));
+}
+if (flags.bench !== null) {
+  import('./bench/bench')
+    .then(({ startBench }) =>
+      startBench({ renderer, scene, camera, getXrState: () => session.state }),
+    )
+    .catch((error: unknown) => console.warn('bench failed to start', error));
 }
 
 void isVrSupported(navigator.xr).then((supported) => {
