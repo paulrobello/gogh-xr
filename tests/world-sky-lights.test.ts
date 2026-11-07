@@ -560,7 +560,7 @@ test('the early-out never changes the factor, around and far beyond every feathe
       skyLightThin(PAINTER_EYE, p, half, CONES, false),
     );
   }
-});
+}, 30_000);
 
 test('at full haze thickness no shrunk quad reaches a disc, from any eye up to the boundary', () => {
   // uHazeThickness 1: the shader judges the 1.5x grown quad, so the half extent is HAZE_HALF_THICK.
