@@ -5,13 +5,15 @@
  * turn and brightness, the amplitudes, by calm once. The gain is a loop's wrap envelope, which must
  * shrink the stroke to nothing as it jumps back at every calm, so it runs at full depth whenever the
  * gate is open (amended R-P4e).
- * P4.2 fills in the sky (src/motion/sky-swirl.ts) and P4.3 the stars and moon
- * (src/motion/sky-rings.ts); P4.4 (cypress) and P4.5 (reactive, every layer) fill in the rest. Each
+ * P4.2 fills in the sky (src/motion/sky-swirl.ts), P4.3 the stars and moon
+ * (src/motion/sky-rings.ts) and P4.4 the cypress (src/motion/cypress-flame.ts); P4.5 (reactive,
+ * every layer) fills in the rest. Each
  * one also sets its layer's bit in `MOTION_LAYERS`, and its GLSL in motion.glsl and its mirror here
  * change together.
  */
 import { PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import { STROKE_LAYER } from '../render/strokes/instance';
+import { CYPRESS_FLAME_NONE, cypressFlame } from './cypress-flame';
 import { motionGate } from './layers';
 import { ringOf, skyRing } from './sky-rings';
 import { SKY_SWIRL_MAX_ANGLE, skySwirl } from './sky-swirl';
@@ -48,6 +50,8 @@ export interface MotionInput {
   readonly phase: number;
   /** The phase byte itself, `iMeta.z`: a star stroke's names its star (P4.3). */
   readonly phaseByte: number;
+  /** The colour alpha byte, `iColor.a × 255`: a cypress stroke's flame data (P4.4). */
+  readonly flameByte: number;
   /** `uTime`, seconds. */
   readonly time: number;
 }
@@ -76,8 +80,8 @@ export const STUB_MOTION: MotionFunctions = Object.freeze({
 });
 
 /**
- * The motions motion.glsl runs: the sky swirl (P4.2) and the star and moon rings (P4.3), the rest
- * still until their cards land.
+ * The motions motion.glsl runs: the sky swirl (P4.2), the star and moon rings (P4.3) and the
+ * cypress flame (P4.4), the reactive term still until its card lands.
  */
 export const LIVE_MOTION: MotionFunctions = Object.freeze({
   ...STUB_MOTION,
@@ -89,6 +93,8 @@ export const LIVE_MOTION: MotionFunctions = Object.freeze({
     skyRing(ringOf(false, phaseByte), position, time),
   moon: ({ position, phaseByte, time }: MotionInput) =>
     skyRing(ringOf(true, phaseByte), position, time),
+  cypress: ({ position, normal, phase, flameByte, time }: MotionInput) =>
+    cypressFlame(position, normal, phase, flameByte, time),
 });
 
 function layerMotion(layer: number, fns: MotionFunctions): LayerMotion {
@@ -115,7 +121,7 @@ export interface MotionUniformValues {
 /**
  * Matches `motionOffset` in motion.glsl: at rest unless the layer's gate bit is set, otherwise the
  * layer's motion plus the reactive term, with the offset, turn and brightness times calm and the
- * gain unscaled.
+ * gain unscaled. `flameByte` is the stroke's colour alpha byte, which only the cypress reads.
  * stroke.vert.glsl's gated block also skips a haze stroke its sky-light thin has collapsed
  * (`thin` 0), which draws nothing either way, so this mirror leaves that skip out.
  */
@@ -126,6 +132,7 @@ export function motionOffset(
   normal: Vec3,
   uniforms: MotionUniformValues,
   fns: MotionFunctions = LIVE_MOTION,
+  flameByte: number = CYPRESS_FLAME_NONE,
 ): Motion {
   if (!motionGate(uniforms.layerMask, layer)) return REST;
   const input: MotionInput = {
@@ -133,6 +140,7 @@ export function motionOffset(
     normal,
     phase: phaseByte / 256,
     phaseByte,
+    flameByte,
     time: uniforms.time,
   };
   const a = layerMotion(layer, fns)(input);

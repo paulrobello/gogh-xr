@@ -19,6 +19,7 @@ import {
   REGION_STYLES,
   strokeShade,
 } from '../../demo/canvas/placement';
+import { CYPRESS_FLAME_NONE, encodeFlame } from '../../motion/cypress-flame';
 import {
   CANVAS_PITCH,
   LAYER_REGION,
@@ -55,6 +56,7 @@ import {
   trimBand,
 } from '../../paintings/starry-night/village-tint';
 import { mulberry32 } from '../../util/prng';
+import { CYPRESS_HEIGHT_ATTRIBUTE, CYPRESS_LOBE_ATTRIBUTE } from '../../world/cypress';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import { BRUSHES, type BrushKind } from './brush-atlas-data';
 import { DEPTH_RANKED_FLAG, DEPTH_TIE_BREAK_FRONT_FLAG, sizeShare } from './depth-tie-break';
@@ -71,7 +73,7 @@ import { strokeAxes, surfaceBasis, type Vec3 } from './frame';
 import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
 
 /** Bump when the scatter's output changes for the same inputs; part of the cache key. */
-export const SCATTER_VERSION: number = 11;
+export const SCATTER_VERSION: number = 12;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -251,6 +253,25 @@ function vertexIndex(geometry: BufferGeometry, triangle: number, corner: number)
 
 function read(attribute: Attribute, i: number): Vec3 {
   return [attribute.getX(i), attribute.getY(i), attribute.getZ(i)];
+}
+
+/**
+ * A cypress stroke's flame byte (`encodeFlame`, P4.4): the height interpolated from the triangle's
+ * corners `ia, ib, ic` at barycentric weights `w`, and the lobe of the heaviest corner, since a lobe
+ * id is never interpolated.
+ */
+export function flameByteAt(
+  height: Attribute,
+  lobe: Attribute,
+  corners: readonly [number, number, number],
+  w: readonly [number, number, number],
+): number {
+  const h =
+    w[0] * height.getX(corners[0]) +
+    w[1] * height.getX(corners[1]) +
+    w[2] * height.getX(corners[2]);
+  const k = w[0] >= w[1] && w[0] >= w[2] ? 0 : w[1] >= w[2] ? 1 : 2;
+  return encodeFlame(lobe.getX(corners[k]), h);
 }
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -640,6 +661,9 @@ export function scatterSurfaces(
     const backdrop = geometry.userData.backdrop === true;
     const position = geometry.getAttribute('position');
     const normalAttr = geometry.getAttribute('normal') as Attribute | undefined;
+    const heightAttr = geometry.getAttribute(CYPRESS_HEIGHT_ATTRIBUTE) as Attribute | undefined;
+    const lobeAttr = geometry.getAttribute(CYPRESS_LOBE_ATTRIBUTE) as Attribute | undefined;
+    const flame = heightAttr && lobeAttr ? { height: heightAttr, lobe: lobeAttr } : null;
     for (let t = 0; t < counts.length; t++) {
       if (counts[t] === 0) continue;
       const ia = vertexIndex(geometry, t, 0);
@@ -661,6 +685,10 @@ export function scatterSurfaces(
           r2 = 1 - r2;
         }
         const r0 = 1 - r1 - r2;
+        // The cypress flame's lobe and height (P4.4), from the mesh's own attributes: no draw.
+        const alpha = flame
+          ? flameByteAt(flame.height, flame.lobe, [ia, ib, ic], [r0, r1, r2])
+          : CYPRESS_FLAME_NONE;
         const point: Vec3 = [
           a[0] + r1 * ab[0] + r2 * ac[0],
           a[1] + r1 * ab[1] + r2 * ac[1],
@@ -740,7 +768,7 @@ export function scatterSurfaces(
           ],
           normal,
           tangent,
-          color: [rgb[0] / shade, rgb[1] / shade, rgb[2] / shade, 255],
+          color: [rgb[0] / shade, rgb[1] / shade, rgb[2] / shade, alpha],
           size: quad,
           brush,
           layer: style.layer,

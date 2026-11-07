@@ -139,14 +139,15 @@ void main() {
     size *= sqrt(thin);
   }
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
-  // iColor.a is reserved: under alpha-to-coverage, alpha below 1 inside a stroke dithers (R3).
+  // iColor.a never draws: under alpha-to-coverage, alpha below 1 inside a stroke dithers (R3). It
+  // carries a cypress stroke's flame data, read only behind the motion gate (P4.4).
   vec3 color = iColor.rgb;
   // Motion (P4.1): one AND, compare and branch for a stroke whose layer is still, or for every
   // stroke while frozen or at calm 0, and none for a thinned-out haze stroke. The motion is the
   // centre's, the same at every corner; the corner work is the turn of the axes. The depth hashes
   // below keep reading the rest iPosition, so a moving stroke keeps its depth order.
   if (motionGate(iMeta.y) && thin > 0.0) {
-    Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z);
+    Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a);
     // The turn is small (SKY_SWIRL_MAX_TURN), so cosine and sine are polynomials; this pair has
     // c² + s² <= 1, so a turned quad never outgrows its rest extent.
     float a2 = m.turn * m.turn;

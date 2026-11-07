@@ -4,6 +4,7 @@
  * moves the world's sky in proportion to calm at a pinned `?motiont`, and the P1 canvas demo stays
  * static.
  */
+import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import sharp from 'sharp';
 import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
@@ -26,6 +27,68 @@ async function motion(xr: Xr): Promise<MotionDiag> {
 async function rawPixels(dataUrl: string): Promise<Buffer> {
   const png = Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
   return sharp(png).raw().toBuffer();
+}
+
+function luma(raw: Buffer): Float32Array {
+  const { width, height } = CAPTURE_SIZE;
+  const channels = raw.length / (width * height);
+  const out = new Float32Array(width * height);
+  for (let i = 0; i < out.length; i++) {
+    const k = i * channels;
+    out[i] = 0.2126 * raw[k] + 0.7152 * raw[k + 1] + 0.0722 * raw[k + 2];
+  }
+  return out;
+}
+
+/**
+ * The shift s, pixels, that best maps the rest patch at (cx, cy) onto the moved image: the
+ * least squared difference of rest(x) against moved(x + s) over the (2 half + 1)² patch and integer
+ * shifts up to `search`, refined to a
+ * sub-pixel by a parabola through the neighbours. `sharpness` is the median error over the best:
+ * a clear match reads well above 1.
+ */
+function shiftAt(
+  rest: Float32Array,
+  moved: Float32Array,
+  cx: number,
+  cy: number,
+  half: number,
+  search: number,
+): { dx: number; dy: number; sharpness: number } {
+  const { width } = CAPTURE_SIZE;
+  const side = 2 * search + 1;
+  const error = new Float64Array(side * side);
+  for (let sy = -search; sy <= search; sy++) {
+    for (let sx = -search; sx <= search; sx++) {
+      let sum = 0;
+      for (let y = cy - half; y <= cy + half; y++) {
+        const a = y * width;
+        const b = (y + sy) * width + sx;
+        for (let x = cx - half; x <= cx + half; x++) {
+          const d = rest[a + x] - moved[b + x];
+          sum += d * d;
+        }
+      }
+      error[(sy + search) * side + sx + search] = sum;
+    }
+  }
+  let best = 0;
+  for (let i = 1; i < error.length; i++) if (error[i] < error[best]) best = i;
+  const bx = best % side;
+  const by = Math.floor(best / side);
+  const at = (x: number, y: number): number => error[y * side + x];
+  const refine = (m: number, z: number, p: number): number => {
+    const curve = m - 2 * z + p;
+    return curve > 0 ? (0.5 * (m - p)) / curve : 0;
+  };
+  const fx = bx > 0 && bx < side - 1 ? refine(at(bx - 1, by), at(bx, by), at(bx + 1, by)) : 0;
+  const fy = by > 0 && by < side - 1 ? refine(at(bx, by - 1), at(bx, by), at(bx, by + 1)) : 0;
+  const sorted = Float64Array.from(error).sort();
+  return {
+    dx: bx - search + fx,
+    dy: by - search + fy,
+    sharpness: sorted[sorted.length >> 1] / Math.max(error[best], 1e-9),
+  };
 }
 
 test('?noanim holds the motion clock and two world shots 500 ms apart match', async ({
@@ -164,65 +227,6 @@ test.describe('sky swirl (P4.2)', () => {
     return rawPixels(url);
   }
 
-  function luma(raw: Buffer): Float32Array {
-    const { width, height } = CAPTURE_SIZE;
-    const channels = raw.length / (width * height);
-    const out = new Float32Array(width * height);
-    for (let i = 0; i < out.length; i++) {
-      const k = i * channels;
-      out[i] = 0.2126 * raw[k] + 0.7152 * raw[k + 1] + 0.0722 * raw[k + 2];
-    }
-    return out;
-  }
-
-  /**
-   * The shift s, pixels, that best maps the rest patch at (cx, cy) onto the moved image: the
-   * least squared difference of rest(x) against moved(x + s) over integer shifts, refined to a
-   * sub-pixel by a parabola through the neighbours. `sharpness` is the median error over the best:
-   * a clear match reads well above 1.
-   */
-  function shiftAt(
-    rest: Float32Array,
-    moved: Float32Array,
-    cx: number,
-    cy: number,
-  ): { dx: number; dy: number; sharpness: number } {
-    const { width } = CAPTURE_SIZE;
-    const side = 2 * SEARCH + 1;
-    const error = new Float64Array(side * side);
-    for (let sy = -SEARCH; sy <= SEARCH; sy++) {
-      for (let sx = -SEARCH; sx <= SEARCH; sx++) {
-        let sum = 0;
-        for (let y = cy - HALF; y <= cy + HALF; y++) {
-          const a = y * width;
-          const b = (y + sy) * width + sx;
-          for (let x = cx - HALF; x <= cx + HALF; x++) {
-            const d = rest[a + x] - moved[b + x];
-            sum += d * d;
-          }
-        }
-        error[(sy + SEARCH) * side + sx + SEARCH] = sum;
-      }
-    }
-    let best = 0;
-    for (let i = 1; i < error.length; i++) if (error[i] < error[best]) best = i;
-    const bx = best % side;
-    const by = Math.floor(best / side);
-    const at = (x: number, y: number): number => error[y * side + x];
-    const refine = (m: number, z: number, p: number): number => {
-      const curve = m - 2 * z + p;
-      return curve > 0 ? (0.5 * (m - p)) / curve : 0;
-    };
-    const fx = bx > 0 && bx < side - 1 ? refine(at(bx - 1, by), at(bx, by), at(bx + 1, by)) : 0;
-    const fy = by > 0 && by < side - 1 ? refine(at(bx, by - 1), at(bx, by), at(bx, by + 1)) : 0;
-    const sorted = Float64Array.from(error).sort();
-    return {
-      dx: bx - SEARCH + fx,
-      dy: by - SEARCH + fy,
-      sharpness: sorted[sorted.length >> 1] / Math.max(error[best], 1e-9),
-    };
-  }
-
   test('a pinned coherent phase moves the sky along the TS prediction, half as far at calm 0.5', async ({
     page,
     xr,
@@ -259,8 +263,8 @@ test.describe('sky swirl (P4.2)', () => {
       const py = shift[1] * height;
       const cx = Math.round(u * width);
       const cy = Math.round(v * height);
-      const a = shiftAt(restL, fullL, cx, cy);
-      const b = shiftAt(restL, halfL, cx, cy);
+      const a = shiftAt(restL, fullL, cx, cy, HALF, SEARCH);
+      const b = shiftAt(restL, halfL, cx, cy, HALF, SEARCH);
       const fullMag = Math.hypot(a.dx, a.dy);
       const halfMag = Math.hypot(b.dx, b.dy);
       const angle =
@@ -610,6 +614,150 @@ test.describe('star and moon rings (P4.3)', () => {
     // IWER has no multiview, so three draws the halo once per eye.
     expect(immersive.additive).toEqual([2, 2]);
     expect(immersive.blended).toEqual(immersive.additive);
+    expect(await glErrors(page)).toEqual([]);
+  });
+});
+
+test.describe('cypress flame (P4.4)', () => {
+  test.use({ viewport: { width: CAPTURE_SIZE.width, height: CAPTURE_SIZE.height } });
+
+  /** Two pinned motion times, 1.6 s apart: 40% of a rise loop, so every stroke sits elsewhere. */
+  const TIMES = [1.3, 2.9] as const;
+  /**
+   * The painted cypress's canvas box (CYPRESS_OUTLINE, u 0.121-0.463, v down 0.058-1), grown by
+   * 0.05 on each side: the flame reach (at most 0.18 m, 1.0° at 10 m) plus half a stroke.
+   */
+  const BOX: readonly [number, number, number, number] = [0.071, 0.008, 0.513, 1];
+  const CYPRESS_ONLY = 1 << STROKE_LAYER.cypress;
+
+  async function cypressShot(page: Page, xr: Xr, extra: string): Promise<Buffer> {
+    await xr.boot(
+      `painting=starry-night&seed=1&shot&painter&nogov&motionlayers=cypress&nohalo&${extra}`,
+    );
+    await expect
+      .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+      .toBe(true);
+    await xr.waitFrames(5);
+    const url = await page.evaluate(() => {
+      if (!window.__goghShot) throw new Error('__goghShot is not installed; boot with ?diag&shot');
+      return window.__goghShot();
+    });
+    return rawPixels(url);
+  }
+
+  /** Mean absolute channel difference inside and pixels differing outside the box. */
+  function split(a: Buffer, b: Buffer): { inside: number; outsideDiffer: number } {
+    const { width, height } = CAPTURE_SIZE;
+    const channels = a.length / (width * height);
+    const [u0, v0, u1, v1] = BOX;
+    let sum = 0;
+    let n = 0;
+    let differ = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const k = (y * width + x) * channels;
+        const inBox = x >= u0 * width && x < u1 * width && y >= v0 * height && y < v1 * height;
+        let d = 0;
+        for (let c = 0; c < 3; c++) d += Math.abs(a[k + c] - b[k + c]);
+        if (inBox) {
+          sum += d;
+          n += 3;
+        } else if (d > 0) {
+          differ++;
+        }
+      }
+    }
+    return { inside: sum / n, outsideDiffer: differ };
+  }
+
+  test('the cypress moves between two pinned times while the ground and sky hold, and calm 0 is the rest pose', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(480_000);
+    const rest = await cypressShot(page, xr, 'noanim');
+    const still = await cypressShot(page, xr, `calm=0&motiont=${TIMES[0]}`);
+    expect(await motion(xr)).toEqual({
+      time: TIMES[0],
+      calm: 0,
+      frozen: false,
+      layers: CYPRESS_ONLY,
+    });
+    const a = await cypressShot(page, xr, `motiont=${TIMES[0]}`);
+    expect(await motion(xr)).toEqual({
+      time: TIMES[0],
+      calm: 1,
+      frozen: false,
+      layers: CYPRESS_ONLY,
+    });
+    const b = await cypressShot(page, xr, `motiont=${TIMES[1]}`);
+    // Calm 0 closes the gate: byte for byte the rest pose.
+    expect(still.equals(rest)).toBe(true);
+    const moved = split(a, b);
+    const fromRest = split(rest, a);
+    console.log(
+      `[e2e] cypress flame: box diff t ${TIMES[0]} vs ${TIMES[1]} ${moved.inside.toFixed(2)}, rest vs t ${TIMES[0]} ${fromRest.inside.toFixed(2)}; outside pixels differing ${moved.outsideDiffer}, ${fromRest.outsideDiffer}`,
+    );
+    expect(moved.inside).toBeGreaterThan(1);
+    expect(fromRest.inside).toBeGreaterThan(1);
+    // Nothing outside the cypress moves: the ground and sky are byte for byte the same.
+    expect(moved.outsideDiffer).toBe(0);
+    expect(fromRest.outsideDiffer).toBe(0);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
+  /**
+   * The GPU probe's prediction (tests/motion-cypress-flame.test.ts writes it): per pair of pinned
+   * times, the TS mirror's mean shift of the facing cypress strokes in each trunk patch, with
+   * every phase pinned to `phase`.
+   */
+  interface Probe {
+    phase: number;
+    half: number;
+    tolerance: { px: number; share: number };
+    pairs: {
+      name: string;
+      times: [number, number];
+      /** The shift components this pair holds to the prediction. */
+      checks: ('dx' | 'dy')[];
+      patches: { u: number; v: number; cx: number; cy: number; dx: number; dy: number }[];
+    }[];
+  }
+  const PROBE: Probe = JSON.parse(
+    readFileSync(new URL('../fixtures/cypress-probe.json', import.meta.url), 'utf8'),
+  );
+
+  test('trunk patches rise and sway by the TS prediction with every phase pinned (I3)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(480_000);
+    const times = [...new Set(PROBE.pairs.flatMap((p) => p.times))];
+    const shots = new Map<number, Float32Array>();
+    for (const t of times) {
+      shots.set(t, luma(await cypressShot(page, xr, `motionphase=${PROBE.phase}&motiont=${t}`)));
+      expect((await motion(xr)).time).toBe(t);
+    }
+    const { px, share } = PROBE.tolerance;
+    const tolerance = (v: number): number => px + share * Math.abs(v);
+    type Shift = { dx: number; dy: number };
+    const rows: { name: string; checks: ('dx' | 'dy')[]; p: Shift; m: Shift }[] = [];
+    for (const pair of PROBE.pairs) {
+      const [a, b] = pair.times.map((t) => shots.get(t) as Float32Array);
+      for (const p of pair.patches) {
+        const m = shiftAt(a, b, p.cx, p.cy, PROBE.half, 32);
+        console.log(
+          `cypress probe ${pair.name} (${p.u}, ${p.v}): predicted (${p.dx}, ${p.dy}) px, ` +
+            `measured (${m.dx.toFixed(2)}, ${m.dy.toFixed(2)}) sharp ${m.sharpness.toFixed(1)}`,
+        );
+        rows.push({ name: `${pair.name} patch (${p.u}, ${p.v})`, checks: pair.checks, p, m });
+      }
+    }
+    for (const { name, checks, p, m } of rows) {
+      for (const k of checks) {
+        expect(Math.abs(m[k] - p[k]), `${name} ${k}`).toBeLessThanOrEqual(tolerance(p[k]));
+      }
+    }
     expect(await glErrors(page)).toEqual([]);
   });
 });

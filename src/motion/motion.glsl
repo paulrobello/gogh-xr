@@ -89,13 +89,40 @@ Motion starMotion(vec3 p, uint phaseByte, float t) {
   return ringMotion(int(min(phaseByte, uint(SKY_RING_STAR_COUNT - 1))), p, t);
 }
 Motion moonMotion(vec3 p, float t) { return ringMotion(SKY_RING_MOON, p, t); }
-Motion cypressMotion(vec3 p, vec3 n, float phase, float t) { return Motion(vec3(0.0), 0.0, 0.0, 0.0); } // P4.4 flame
+// Matches cypressFlame in cypress-flame.ts. flame is the stroke's colour alpha, the byte the scatter
+// bakes its lobe id (top three bits) and height level (low five) into; 255 is a stroke with none,
+// which stays at rest. The stroke climbs s along up, its plane's steepest ascent (unnormalised,
+// vertical part 1 - n.y^2), over a bounded arc that wraps with its phase and tapers to 0 at each
+// apex, shrinking to nothing at the wrap. The lobe sways along side = Y x n, orthogonal to up and as
+// long, by two travelling sines in y phased by the lobe id, by the height squared toward the tips. Two sines, two
+// fracts and two smoothsteps per vertex.
+Motion cypressMotion(vec3 p, vec3 n, float phase, float flame, float t) {
+  uint b = uint(flame * 255.0 + 0.5);
+  if (b == CYPRESS_FLAME_NONE) return Motion(vec3(0.0), 0.0, 0.0, 0.0);
+  float h = float(b & 31u) * CYPRESS_INV_HEIGHT_LEVELS;
+  float lobe = float(b >> 5u);
+  float taper = smoothstep(0.0, CYPRESS_FLAME_TIP, 1.0 - h);
+  float f = fract(t * CYPRESS_FLAME_INV_PERIOD + phase);
+  float s = (2.0 * f - 1.0) * CYPRESS_FLAME_HALF_ARC * taper;
+  float w = CYPRESS_FLICKER_W1 *
+      sin(6.28318530718 * (p.y * CYPRESS_FLICKER_K1 - fract(t * CYPRESS_FLICKER_INV_P1) +
+        lobe * CYPRESS_FLICKER_L1)) +
+    CYPRESS_FLICKER_W2 *
+      sin(6.28318530718 * (p.y * CYPRESS_FLICKER_K2 - fract(t * CYPRESS_FLICKER_INV_P2) +
+        lobe * CYPRESS_FLICKER_L2));
+  float a = CYPRESS_FLICKER_MAX * h * h * w;
+  vec3 up = vec3(-n.x * n.y, 1.0 - n.y * n.y, -n.z * n.y);
+  vec3 side = vec3(n.z, 0.0, -n.x);
+  float gain = taper > 0.0 ? smoothstep(0.0, CYPRESS_FLAME_FADE, min(f, 1.0 - f)) - 1.0 : 0.0;
+  return Motion(s * up + a * side, 0.0, gain, 0.0);
+}
 // Added for every layer (P4.5): the push away from the head and controllers, and their wake.
 Motion reactiveMotion(vec3 p, vec3 n, float phase, float t) { return Motion(vec3(0.0), 0.0, 0.0, 0.0); }
 
 // Matches motionOffset in motion.ts. Only called behind motionGate. MOTION_PHASE_PIN is the e2e's
-// coherent phase (material.ts pinMotionPhase), never defined in a production build.
-Motion motionOffset(uint layer, vec3 p, vec3 n, uint phaseByte) {
+// coherent phase (material.ts pinMotionPhase), never defined in a production build. flame is the
+// instance's colour alpha, which only the cypress reads (P4.4).
+Motion motionOffset(uint layer, vec3 p, vec3 n, uint phaseByte, float flame) {
 #ifdef MOTION_PHASE_PIN
   float phase = MOTION_PHASE_PIN;
 #else
@@ -110,7 +137,7 @@ Motion motionOffset(uint layer, vec3 p, vec3 n, uint phaseByte) {
   } else if (layer == STROKE_LAYER_MOON) {
     m = moonMotion(p, t);
   } else if (layer == STROKE_LAYER_CYPRESS) {
-    m = cypressMotion(p, n, phase, t);
+    m = cypressMotion(p, n, phase, flame, t);
   }
   Motion r = reactiveMotion(p, n, phase, t);
   m.offset += r.offset;

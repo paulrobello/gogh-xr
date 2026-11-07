@@ -114,11 +114,19 @@ describe('motion clock', () => {
     expect(clock.uniforms.uCalm.value).toBe(1);
   });
 
-  test('P4.3 opens the sky, stars and moon; the app clock starts closed until a world opens it', () => {
-    const live: number[] = [STROKE_LAYER.sky, STROKE_LAYER.star, STROKE_LAYER.moon];
+  test('P4.4 opens the sky, stars, moon and cypress; the app clock starts closed until a world opens it', () => {
+    const live: number[] = [
+      STROKE_LAYER.sky,
+      STROKE_LAYER.star,
+      STROKE_LAYER.moon,
+      STROKE_LAYER.cypress,
+    ];
     expect(MOTION_LAYERS).toEqual(live);
     expect(MOTION_LAYER_MASK).toBe(
-      (1 << STROKE_LAYER.sky) | (1 << STROKE_LAYER.star) | (1 << STROKE_LAYER.moon),
+      (1 << STROKE_LAYER.sky) |
+        (1 << STROKE_LAYER.star) |
+        (1 << STROKE_LAYER.moon) |
+        (1 << STROKE_LAYER.cypress),
     );
     for (const layer of ALL_LAYERS) {
       expect(motionGate(MOTION_LAYER_MASK, layer)).toBe(live.includes(layer));
@@ -183,7 +191,9 @@ describe('uniform plumbing', () => {
     expect(gate).toBeGreaterThan(strokeGlsl.indexOf('vec3 local = iPosition'));
     expect(gate).toBeGreaterThan(strokeGlsl.indexOf('thin = skyLightThin('));
     expect(gate).toBeLessThan(strokeGlsl.indexOf('gl_Position = projectionMatrix'));
-    expect(strokeGlsl).toContain('Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z);');
+    expect(strokeGlsl).toContain(
+      'Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a);',
+    );
     expect(strokeGlsl.match(/motionOffset\(/g)).toHaveLength(1);
     // The haze thin widens by the reach only behind the gate (R-P4b).
     expect(strokeGlsl).toContain(
@@ -299,11 +309,21 @@ describe('calm scaling', () => {
     expect(seen).toEqual([0.5, 7, n]);
   });
 
-  test('the cypress, ground and buildings are still in P4.3', () => {
+  test('the ground and buildings are still in P4.4, and so is a cypress stroke with no flame byte', () => {
     for (const layer of [STROKE_LAYER.cypress, STROKE_LAYER.ground, STROKE_LAYER.building]) {
       const m = motionOffset(layer, 200, p, n, { time: 3, calm: 1, layerMask: ALL_MASK });
       expect(flat(m)).toEqual([0, 0, 0, 0, 0, 0]);
     }
+    const flame = motionOffset(
+      STROKE_LAYER.cypress,
+      200,
+      p,
+      [1, 0, 0],
+      { time: 3, calm: 1, layerMask: ALL_MASK },
+      undefined,
+      (2 << 5) | 15,
+    );
+    expect(Math.hypot(...flame.offset)).toBeGreaterThan(0);
     const sky = motionOffset(STROKE_LAYER.sky, 200, [0, 60, -100], [0, -0.5, 0.86], {
       time: 3,
       calm: 1,

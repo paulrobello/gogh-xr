@@ -33,9 +33,11 @@ export const SKY_SWIRL_PERIOD: number = 8;
 export const SKY_DRIFT_RATE: number = 0.0015;
 /**
  * The share of each loop, at either end, over which the stroke grows from nothing or shrinks to it.
- * 0.12 keeps 76% of the loop at full size, so the average stroke keeps about 85% of its area.
+ * 0.06 keeps 88% of the loop at full size, so the average stroke keeps about 92.5% of its area
+ * (the fades lose 1 − E[smoothstep²] = 0.63 of their share). Ruling R-P4m halved it from 0.12 for
+ * the pinned coverage margin; the stroke regrows over 0.48 s of its 8 s loop.
  */
-export const SKY_SWIRL_FADE: number = 0.12;
+export const SKY_SWIRL_FADE: number = 0.06;
 /**
  * Bound on the field's angular speed `|omega × d̂|` over the whole sphere, rad/s. The unit tests
  * check it against a dense sampling of the sphere with the vortex peaks included.

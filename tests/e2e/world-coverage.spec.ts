@@ -15,6 +15,7 @@
  */
 
 import type { Page } from '@playwright/test';
+import { STROKE_LAYER } from '../../src/render/strokes/instance.ts';
 import { COVERAGE_POSES, type CoveragePose } from '../world-poses';
 import { expect, glErrors, test, type Xr } from './fixtures';
 
@@ -238,6 +239,39 @@ test('with the sky swirl pinned mid-motion, the spot-ahead view stays within 0.5
       `[e2e] coverage spot ahead at motiont ${time}: bare ${(binary * 100).toFixed(3)}%, weighted ${(weighted * 100).toFixed(3)}%, drawn ${drawn}`,
     );
     expect(binary).toBeLessThanOrEqual(MAX_BARE);
+  }
+  expect(await glErrors(page)).toEqual([]);
+});
+
+test('with the cypress flame pinned, the painter view and the pose under the cypress stay within 0.5% bare', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(300_000);
+  const near = COVERAGE_POSES.find((p) => p.name === 'under the cypress');
+  if (!near) throw new Error('no "under the cypress" pose');
+  // Every motion layer open, as shipped, and no ?noanim: the cypress strokes rise and shrink at
+  // their wrap, the likeliest way to open holes in the foreground.
+  for (const time of [0.5, 3.7]) {
+    await xr.boot(`painting=starry-night&seed=1&shot&coverage&painter&motiont=${time}`);
+    expect((await world(xr)).debug).toBe('coverage');
+    const motion = (await xr.diag()).motion as { time: number; frozen: boolean; layers: number };
+    expect(motion.time).toBe(time);
+    expect(motion.frozen).toBe(false);
+    expect(motion.layers & (1 << STROKE_LAYER.cypress)).not.toBe(0);
+    await xr.waitFrames(3);
+    const painter = await bareShare(page);
+    await visit(page, xr, near);
+    const under = await bareShare(page);
+    for (const [name, share] of [
+      ['painter view', painter],
+      ['under the cypress', under],
+    ] as const) {
+      console.log(
+        `[e2e] coverage ${name} at motiont ${time}: bare ${(share.binary * 100).toFixed(3)}%, weighted ${(share.weighted * 100).toFixed(3)}%`,
+      );
+      expect(share.binary, `${name} at ${time}`).toBeLessThanOrEqual(MAX_BARE);
+    }
   }
   expect(await glErrors(page)).toEqual([]);
 });

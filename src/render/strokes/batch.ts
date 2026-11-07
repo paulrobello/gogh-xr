@@ -13,6 +13,7 @@ import {
   type Texture,
   Vector3,
 } from 'three';
+import { cypressFlameReach } from '../../motion/cypress-flame';
 import { motionGate } from '../../motion/layers';
 import { ringOf, skyRingReach } from '../../motion/sky-rings';
 import { skySwirlReach } from '../../motion/sky-swirl';
@@ -30,7 +31,13 @@ import {
 import { createBrushAtlas } from './brush-atlas';
 import { computeBounds, cullAndSortInto, DEFAULT_CELL_SIZE, partitionIndices } from './chunks';
 import { importanceOrder } from './importance';
-import { STROKE_ATTRIBUTES, STROKE_LAYER, type StrokeBuffers, selectStrokes } from './instance';
+import {
+  octDecode,
+  STROKE_ATTRIBUTES,
+  STROKE_LAYER,
+  type StrokeBuffers,
+  selectStrokes,
+} from './instance';
 import { createStrokeMaterial, HAZE_GROWTH, type StrokeMaterial } from './material';
 import { SKY_LIGHT_CULL_FLAG } from './sky-light-cull';
 
@@ -214,12 +221,14 @@ export interface MotionReaches {
   readonly sky: number;
   readonly star: number;
   readonly moon: number;
+  readonly cypress: number;
 }
 
 /**
  * Per moving layer, the farthest any stroke in `buffers` moves from rest at calm 1, metres, times
- * SKY_REACH_MARGIN: the largest exact `skySwirlReach` of its sky strokes and `skyRingReach` of its
- * star and moon strokes (each round the ring its phase byte names, as motion.glsl reads it). The
+ * SKY_REACH_MARGIN: the largest exact `skySwirlReach` of its sky strokes, `skyRingReach` of its
+ * star and moon strokes (each round the ring its phase byte names, as motion.glsl reads it) and
+ * `cypressFlameReach` of its cypress strokes (from the decoded normal and the alpha byte). The
  * cull sphere of a chunk grows by calm times the largest of these whose layer's gate is open
  * (ruling R-P4a), so a moving stroke never leaves its sphere, and by nothing while all are closed.
  */
@@ -227,6 +236,7 @@ export function motionReachesOf(buffers: StrokeBuffers): MotionReaches {
   let sky = 0;
   let star = 0;
   let moon = 0;
+  let cypress = 0;
   const p = buffers.position;
   for (let i = 0; i < buffers.count; i++) {
     const layer = buffers.meta[i * 4 + 1];
@@ -240,19 +250,26 @@ export function motionReachesOf(buffers: StrokeBuffers): MotionReaches {
       const reach = skyRingReach(ringOf(isMoon, buffers.meta[i * 4 + 2]), x, y, z);
       if (isMoon) moon = Math.max(moon, reach);
       else star = Math.max(star, reach);
+    } else if (layer === STROKE_LAYER.cypress) {
+      const ny = octDecode(
+        Math.max(-1, buffers.normal[i * 2] / 32767),
+        Math.max(-1, buffers.normal[i * 2 + 1] / 32767),
+      )[1];
+      cypress = Math.max(cypress, cypressFlameReach(ny, buffers.color[i * 4 + 3]));
     }
   }
   return {
     sky: sky * SKY_REACH_MARGIN,
     star: star * SKY_REACH_MARGIN,
     moon: moon * SKY_REACH_MARGIN,
+    cypress: cypress * SKY_REACH_MARGIN,
   };
 }
 
 /** The largest of `motionReachesOf(buffers)`: the farthest any of its strokes moves at calm 1. */
 export function motionReachOf(buffers: StrokeBuffers): number {
-  const { sky, star, moon } = motionReachesOf(buffers);
-  return Math.max(sky, star, moon);
+  const { sky, star, moon, cypress } = motionReachesOf(buffers);
+  return Math.max(sky, star, moon, cypress);
 }
 
 /** Headroom for the shader's float32 motion over the float64 reach. */
@@ -362,10 +379,14 @@ export function createStrokeBatch(
   const cullSpheres: Sphere[] = [];
   const reaches: number[] = [];
   const motionReaches: MotionReaches[] = [];
-  /** The calm and the sky, star and moon gate bits the cull spheres were last grown for. */
+  /** The calm and the sky, star, moon and cypress gate bits the cull spheres were last grown for. */
   let motionCalm = 0;
   let motionBits = 0;
-  const MOTION_BITS = (1 << STROKE_LAYER.sky) | (1 << STROKE_LAYER.star) | (1 << STROKE_LAYER.moon);
+  const MOTION_BITS =
+    (1 << STROKE_LAYER.sky) |
+    (1 << STROKE_LAYER.star) |
+    (1 << STROKE_LAYER.moon) |
+    (1 << STROKE_LAYER.cypress);
   const motionUniforms = materials.near.uniforms;
   const halfDiagonals: number[] = [];
   for (let c = 0; c + 1 < offsets.length; c++) {
@@ -422,6 +443,7 @@ export function createStrokeBatch(
     if (motionGate(motionBits, STROKE_LAYER.sky)) reach = Math.max(reach, r.sky);
     if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);
     if (motionGate(motionBits, STROKE_LAYER.moon)) reach = Math.max(reach, r.moon);
+    if (motionGate(motionBits, STROKE_LAYER.cypress)) reach = Math.max(reach, r.cypress);
     return motionCalm * reach;
   }
 

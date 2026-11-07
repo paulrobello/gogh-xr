@@ -575,7 +575,9 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     // are generated outside the scatter cache, so their pins move without a bump. The haze is
     // createBoundaryHaze's own output plus SKY_LIGHT_CULL_FLAG on every stroke: with the flag
     // cleared it hashes as it did before the moon and stars (49bf0339). The lights' phase bytes name
-    // their anchor for the P4.3 rings (1e63faa8 before, every other field unchanged).
+    // their anchor for the P4.3 rings (1e63faa8 before, every other field unchanged). The cypress
+    // strokes' colour alpha carries their flame lobe and height (P4.4): with every alpha back at
+    // 255 the scatter hashes as it did before (cf326988).
     const haze = strokeRange(buffers, assembled.hazeStart);
     let unflagged = 0;
     for (let i = 0; i < haze.count; i++) {
@@ -594,6 +596,10 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       total: scattered.count,
       layers: strokeLayerCounts(scattered),
       hash: hashStrokeBuffers(scattered),
+      opaqueHash: hashStrokeBuffers({
+        ...scattered,
+        color: scattered.color.map((c, i) => (i % 4 === 3 ? 255 : c)),
+      }),
       lights: lights.count,
       lightsHash: hashStrokeBuffers(lights),
       haze: haze.count,
@@ -610,7 +616,8 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
         ground: 129_925,
         building: 87_369,
       },
-      hash: 'cf326988',
+      hash: 'f49484bf',
+      opaqueHash: 'cf326988',
       lights: 4_935,
       lightsHash: '0ba1901f',
       haze: 30_000,

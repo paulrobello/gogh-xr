@@ -8,9 +8,13 @@
  * | `iPosition`| float32 × 3     | 12    | stroke centre in world metres                   |
  * | `iNormal`  | snorm16 × 2     | 4     | surface normal, octahedral encoded              |
  * | `iTangent` | unorm16 × 1     | 2     | long-axis angle about the normal, 0..2π (R6)    |
- * | `iColor`   | unorm8 × 4      | 4     | display-referred RGB; A reserved, unused        |
+ * | `iColor`   | unorm8 × 4      | 4     | display-referred RGB; A never draws (see below) |
  * | `iSize`    | float32 × 2     | 8     | quad length (long axis) and width in metres     |
  * | `iMeta`    | uint8 × 4 (int) | 4     | brush, layer, phase, flags; read as `uvec4`     |
+ *
+ * iColor's A byte never reaches the colour: a cypress stroke's carries its flame lobe and height
+ * (src/motion/cypress-flame.ts, P4.4), read only behind the motion gate, and every other stroke's is
+ * 255.
  *
  * 34 bytes per instance. Size stays float32: a half-float `Uint16Array` uploads as UNSIGNED_SHORT
  * in three r186 unless it is a `Float16BufferAttribute`, which has no instanced variant.
@@ -42,8 +46,8 @@ export interface StrokeInstance {
    */
   readonly tangent: number;
   /**
-   * RGBA bytes 0..255. A is packed but reserved: the shader ignores it, because alpha below 1
-   * inside a stroke dithers under alpha-to-coverage (ruling R3).
+   * RGBA bytes 0..255. A never draws, because alpha below 1 inside a stroke dithers under
+   * alpha-to-coverage (ruling R3): the cypress flame reads it as its lobe and height byte (P4.4).
    */
   readonly color: readonly [number, number, number, number];
   /** Length along the stroke and width across it, in metres. */
