@@ -171,7 +171,18 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
       material.uniforms.uHazeThickness.value = thickness;
     }
   };
-  return { batch, ground: { heightAt, normalAt }, boundaryFactor, blocked, setHaze };
+  const setHalo = (on: boolean): void => {
+    halo.mesh.visible = debug === null && on;
+  };
+  return {
+    batch,
+    ground: { heightAt, normalAt },
+    boundaryFactor,
+    blocked,
+    setHaze,
+    setHalo,
+    halo: halo.mesh,
+  };
 }
 
 /** Nothing animates yet (P4). */

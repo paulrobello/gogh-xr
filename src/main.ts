@@ -10,6 +10,7 @@ import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { bootWorld, resolveBootMode } from './boot-mode';
 import { installDesktopControls } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
+import { type AbController, createAbController, createAbGroup, resolveAb } from './diag/ab';
 import { installDiag, installPose, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
 import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
@@ -18,7 +19,7 @@ import { MOTION_TIME_WRAP_S, motionClock } from './motion/clock';
 import { MOTION_LAYER_MASK } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { livePainting, logRegistryProblems } from './paintings/registry';
-import type { PainterCamera, WorldModule } from './paintings/world-module';
+import type { PainterCamera, WorldHandle, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
@@ -254,8 +255,43 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-/** `?zdiag=<mode>`, honoured in production like `?slow` (src/render/zdiag.ts). */
-const zdiag = createZdiag(flags.zdiag, renderer);
+/**
+ * `?zdiag=<mode>`, honoured in production like `?slow` (src/render/zdiag.ts). Its precompile, for
+ * the A/B button, compiles against the desktop camera: a raw shader's program serves XR too.
+ */
+const zdiag = createZdiag(flags.zdiag, renderer, (object) =>
+  renderer.compile(object, camera, scene),
+);
+
+/** The halo pass: `?nohalo` clears it, and the `halo` A/B group switches it at runtime. */
+let haloOn = !flags.nohalo;
+let haloWorld: WorldHandle | null = null;
+function setHalo(on: boolean): void {
+  haloOn = on;
+  haloWorld?.setHalo?.(on);
+}
+
+/**
+ * The A/B button's group (src/diag/ab.ts): `?ab`, or the group an older A/B flag implies. With
+ * neither, no group is built and the frame loop does no A/B work. The bench ignores it.
+ */
+// `?ab=calm` starts at the session's effective calm, not at 1, so the boot does not change it.
+const abResolution = resolveAb({ ...flags, calm: settings.calm });
+if (abResolution.warnings.length > 0) console.warn(abResolution.warnings.join(' '));
+const abActive = abResolution.activation;
+const ab: AbController | null = abActive
+  ? createAbController(
+      createAbGroup(abActive.group, {
+        zdiag,
+        setHalo,
+        setCalm: (calm) => motionClock.setCalm(calm),
+      }),
+      abActive.start,
+    )
+  : null;
+/** The last switch's cost on the CPU: its apply, then the rest of that frame (`abSwitch` diag). */
+let abSwitch: { variant: string; applyMs: number; frameMs: number | null } | null = null;
+let abSwitchStart: number | null = null;
 
 let hud: HudToggle | null = null;
 /**
@@ -358,7 +394,11 @@ const panel = runLocomotion
 settingsStore.subscribe((effective, key) =>
   applySettingsChange(effective, key, {
     setLocomotion: (next) => locomotion.setSettings(next),
-    setCalm: (calm) => motionClock.setCalm(calm),
+    setCalm: (calm) => {
+      motionClock.setCalm(calm);
+      // The panel's calm moves the calm group's line with it when it lands on a variant.
+      if (abActive?.group === 'calm') ab?.follow(String(calm));
+    },
     hud: hud ? hudLive : null,
   }),
 );
@@ -385,6 +425,18 @@ function renderFrame(time: number): void {
     // The guide's recovery: not while a grip holds anything.
     if (actions.recenter && !actions.grip.down && !held.left && !held.right) recenter();
   }
+  // After the panel's claim, which takes back a left stick click that belongs to a panel gesture.
+  if (ab && actions.abCycle) {
+    abSwitchStart = performance.now();
+    ab.cycle();
+    abSwitch = {
+      variant: ab.diag().variant,
+      applyMs: performance.now() - abSwitchStart,
+      frameMs: null,
+    };
+    // The DOM is invisible in immersive mode, so the HUD carries the switch, hidden or not.
+    hud?.setVisible(true);
+  }
   if (flags.slow > 0) busyWait(flags.slow);
   if (pinnedMotionTime === null) motionClock.frame(time);
   strokes.frame(time);
@@ -397,6 +449,10 @@ function renderFrame(time: number): void {
   zdiag.beforeRender(camera);
   renderer.render(scene, camera);
   drawCalls = renderer.info.render.calls;
+  if (abSwitchStart !== null && abSwitch) {
+    abSwitch.frameMs = performance.now() - abSwitchStart;
+    abSwitchStart = null;
+  }
   hud?.frame(time, leftButtonPressed(sources, BUTTON_X));
 }
 renderer.setAnimationLoop(renderFrame);
@@ -429,6 +485,8 @@ if (flags.diag) {
     actions: actions && structuredClone(actions),
   }));
   registerDiag('zdiag', () => zdiag.diag());
+  registerDiag('ab', () => ab?.diag() ?? null);
+  registerDiag('abSwitch', () => abSwitch && { ...abSwitch });
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
   registerDiag('motion', () => motionClock.diag());
   registerDiag('settings', () => ({
@@ -460,10 +518,12 @@ if (flags.bench !== null) {
 }
 
 // `?hud` starts the HUD shown; left X and H toggle it. The bench keeps its own HUD and uses X,
-// so no HUD is ever built there.
+// so no HUD is ever built there. A group named by `?ab` also starts it shown, so the HUD's build,
+// font fetch and troika program land at boot, not on the first switch, and its line shows at once.
+// A group implied by `?zdiag` or `?nohalo` does not: those flags drive byte-compared captures.
 if (flags.bench === null) {
   const toggle = createHudToggle({
-    visible: settings.hud,
+    visible: settings.hud || (abActive !== null && abActive.group === flags.ab),
     build: async () => {
       const { startPerfHud } = await import('./ui/perf-hud');
       return startPerfHud({
@@ -479,6 +539,7 @@ if (flags.bench === null) {
         getGovernor: () => strokes.governorDiag(),
         getVisible: () => strokes.visibleCount(),
         getVisibleChunks: () => strokes.visibleChunkCount(),
+        getAb: () => ab?.label() ?? null,
       });
     },
     onError: (error) => console.warn('perf HUD failed to start', error),
@@ -550,9 +611,20 @@ if (worldEntry) {
         nocache: flags.nocache,
         cache: flags.cache,
         debug: flags.diag ? (flags.bare ? 'bare' : flags.coverage ? 'coverage' : null) : null,
-        halo: !flags.nohalo,
+        halo: haloOn,
         maxAnisotropy: renderer.capabilities.getMaxAnisotropy(),
       });
+      haloWorld = handle;
+      handle.setHalo?.(haloOn);
+      if (abActive?.group === 'halo') {
+        // A hidden halo has never drawn, so its program would link on the first switch to on.
+        if (handle.halo) renderer.compile(handle.halo, camera, scene);
+        if (!handle.setHalo) {
+          console.warn(
+            `A/B halo: world ${worldEntry.id} has no halo pass, so the halo group does nothing`,
+          );
+        }
+      }
       world = module;
       locomotion.setWorld(handle);
       await governStrokes(handle.batch);

@@ -87,6 +87,24 @@ describe('formatPerfHud', () => {
     ]);
   });
 
+  it('carries the active A/B line last, after the governor notice', () => {
+    expect(formatPerfHud({ ...UNGOVERNED, ab: 'A/B shimmer: noa2c (3/6)' }).split('\n')).toEqual([
+      'fps 60   mean 16.67 ms   p99 17.10 ms',
+      'gpu n/a   target 90 Hz',
+      'visible 200,000 strokes   56 chunks',
+      'governor off',
+      'A/B shimmer: noa2c (3/6)',
+    ]);
+    const governor = { ...(GOVERNED.governor as NonNullable<PerfHudValues['governor']>) };
+    const text = formatPerfHud({
+      ...GOVERNED,
+      governor: { ...governor, notice: RATE_NOTICE },
+      ab: 'A/B halo: off (2/2)',
+    });
+    expect(text.split('\n').slice(-2)).toEqual([RATE_NOTICE, 'A/B halo: off (2/2)']);
+    expect(formatPerfHud({ ...UNGOVERNED, ab: null })).toBe(formatPerfHud(UNGOVERNED));
+  });
+
   it('adds the governor notice as the last line, in plain ASCII for the local font', () => {
     const governor = { ...(GOVERNED.governor as NonNullable<PerfHudValues['governor']>) };
     const text = formatPerfHud({ ...GOVERNED, governor: { ...governor, notice: RATE_NOTICE } });

@@ -34,13 +34,14 @@ test('defaults when search is empty', () => {
     seated: null,
     turn: null,
     zdiag: null,
+    ab: null,
     scene: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20',
   );
   expect(f).toEqual({
     seed: 42,
@@ -74,6 +75,7 @@ test('parses every flag', () => {
     seated: true,
     turn: 'smooth',
     zdiag: 'nosort',
+    ab: 'shimmer',
     scene: 'bare',
   });
 });

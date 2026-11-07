@@ -623,7 +623,8 @@ test.describe('reactive strokes (P4.5)', () => {
    * Samples the reactive diag every animation frame for `ms`, optionally sweeping the right
    * controller rig-local along x from -0.4 m at 1.5 m/s for 0.8/1.5 s, `z` metres ahead of the eye.
    * Reports the largest wake weight and speed over every disturber (the swept hand alone for the
-   * sweep), the largest box stroke count and how far the rig moved.
+   * sweep), the swept hand's strongest single wake sample, the largest box stroke count and how far
+   * the rig moved.
    */
   const watch = (
     page: Page,
@@ -631,6 +632,7 @@ test.describe('reactive strokes (P4.5)', () => {
     sweepAhead: number | null,
   ): Promise<{
     weight: number;
+    peak: number;
     speed: number;
     handSpeed: number;
     boxStrokes: number;
@@ -646,7 +648,7 @@ test.describe('reactive strokes (P4.5)', () => {
           if (!right) throw new Error('no right controller');
           const rig0 = (diag().rig as { position: number[] }).position;
           const start = [rig0[0], rig0[1], rig0[2]];
-          const out = { weight: 0, speed: 0, handSpeed: 0, boxStrokes: 0, moved: 0 };
+          const out = { weight: 0, peak: 0, speed: 0, handSpeed: 0, boxStrokes: 0, moved: 0 };
           const t0 = performance.now();
           const step = (now: number): void => {
             const t = (now - t0) / 1000;
@@ -654,7 +656,12 @@ test.describe('reactive strokes (P4.5)', () => {
             const d = diag() as {
               reactive: {
                 boxStrokes: number | null;
-                disturbers: { velocity: number[]; wakeWeight: number; position: number[] }[];
+                disturbers: {
+                  velocity: number[];
+                  wakeWeight: number;
+                  wakePeak: number;
+                  position: number[];
+                }[];
               };
               rig: { position: number[] };
             };
@@ -670,6 +677,7 @@ test.describe('reactive strokes (P4.5)', () => {
                 .slice(1)
                 .reduce((a, b) => (b.position[1] > a.position[1] ? b : a));
               out.weight = Math.max(out.weight, hand.wakeWeight);
+              out.peak = Math.max(out.peak, hand.wakePeak);
               out.handSpeed = Math.max(
                 out.handSpeed,
                 Math.hypot(hand.velocity[0], hand.velocity[1], hand.velocity[2]),
@@ -745,12 +753,15 @@ test.describe('reactive strokes (P4.5)', () => {
     const walking = await watch(page, 900, inside);
     await xr.stick('left', 0, 0);
     console.log(
-      `[e2e] sweep wake weight: rig still ${still.weight.toFixed(3)} (hand ${still.handSpeed.toFixed(2)} m/s), rig walking ${walking.weight.toFixed(3)} (hand ${walking.handSpeed.toFixed(2)} m/s, rig moved ${walking.moved.toFixed(2)} m)`,
+      `[e2e] sweep wake: rig still sum ${still.weight.toFixed(3)} peak ${still.peak.toFixed(3)} (hand ${still.handSpeed.toFixed(2)} m/s), rig walking sum ${walking.weight.toFixed(3)} peak ${walking.peak.toFixed(3)} (hand ${walking.handSpeed.toFixed(2)} m/s, rig moved ${walking.moved.toFixed(2)} m)`,
     );
     expect(walking.moved).toBeGreaterThan(0.5);
     expect(still.weight).toBeGreaterThan(0.3);
-    expect(walking.weight).toBeGreaterThan(still.weight * 0.75);
-    expect(walking.weight).toBeLessThan(still.weight * 1.25);
+    // The strongest single sample, not the sum: the sum follows how many samples irregular frame
+    // timing took and how old they were on the frame it peaked.
+    expect(still.peak).toBeGreaterThan(0.5);
+    expect(walking.peak).toBeGreaterThan(still.peak * 0.75);
+    expect(walking.peak).toBeLessThan(still.peak * 1.25);
     // World velocity would add the 2 m/s walk to the 1.5 m/s sweep and clamp at 3 m/s.
     expect(walking.handSpeed).toBeLessThan(2);
     expect(await glErrors(page)).toEqual([]);

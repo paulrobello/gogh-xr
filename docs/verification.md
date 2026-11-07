@@ -816,7 +816,7 @@ Paul saw a lot of z-fight on the ground, the buildings and the sky on the Quest 
 
 ### Diagnostics added
 
-- `?zdiag=<mode>` (`src/render/zdiag.ts`, parsed in `src/diag/flags.ts`) applies one change through three's materials, atlas and render order. It is honoured in production like `?slow`. `__goghDiag().zdiag` is `{ mode, applied, frozen }`.
+- `?zdiag=<mode>` (`src/render/zdiag.ts`, parsed in `src/diag/flags.ts`) applies one change through three's materials, atlas and render order. It is honoured in production like `?slow`. `__goghDiag().zdiag` is `{ mode, applied, frozen }`, extended on 2026-11-07 with `state`, `precompiled` and `precompileMs` (CLAUDE.md, URL flags).
 - The modes:
   - `nowrite`: strokes drop depthWrite and draw after the base meshes, back to front by chunk.
   - `strokeorder`: strokes test depth ALWAYS with depthWrite on and draw before the base meshes. This is the live headset A/B.
@@ -827,7 +827,7 @@ Paul saw a lot of z-fight on the ground, the buildings and the sky on the Quest 
   - `sharp4`: `sharp` at four times the R3 gain, a quarter-pixel rim.
   - `nomip`: the brush atlas samples mip 0 only.
   - `mip`: trilinear mips plus the GPU's largest anisotropy.
-  - `freeze`: XR only. Every frame renders with the first presenting frame's eye poses and projections. Not yet run in a headset or IWER.
+  - `freeze`: XR only. Every frame renders with the first presenting frame's eye poses and projections. Run under IWER in `tests/e2e/ab.spec.ts` (2026-11-07), not yet in a headset.
 - `StrokeBatch.setOrderPolicy` (`batch.ts`) carries the render order changes.
 - `scripts/shimmer-probe.ts <base-url> [frames] [modes] [norot]` renders 8 frames per pose. Each frame jitters the eye by ±(0.1-0.3) mm per axis and up to ±0.01° of yaw and pitch, from a fixed seed. It reports per-pixel temporal flicker (`temporalFlicker` in `scripts/zfight-lib.ts`) as three numbers, all as % of the frame:
   - flicker: pixels that change by more than 24 summed RGB between any two consecutive frames;
@@ -942,13 +942,15 @@ Recommendation: compare base, `sharp`, `sharp4` and `noa2c` in one headset sessi
 
 These URLs need a deployed build, which needs an approved push.
 
+Since 2026-11-07 one boot covers the whole comparison: `?painting=starry-night&ab=shimmer` starts at base, and a single left stick click (V on the desktop) steps through base, nowrite, noa2c, sharp, sharp4 and freeze and wraps back to base, from the same pose, with no reload. Each click shows the HUD with a line such as `A/B shimmer: noa2c (3/6)`, and the HUD keeps that line while the group is active. Every variant's program is compiled when the batch binds, so a switch links nothing in XR. `?ab=zdiag-all` steps through every mode, and any `?zdiag=<mode>` URL below starts its group at that mode. A click is cancelled if the right stick was pressed during it, because both sticks held is recenter. A full cycle back to base renders the painter view byte-identical to a fresh boot (`tests/e2e/ab.spec.ts`).
+
 - `?painting=starry-night&zdiag=nowrite`: no stroke-against-stroke depth tests, with the strokes still visible. If the shimmer drops, depth ties are the cause.
 - `?painting=starry-night&zdiag=noa2c`: tests F4.
 - `?painting=starry-night&zdiag=sharp`: the half-pixel a2c rim. If it cuts the shimmer about as much as `noa2c`, a higher default R3 gain can fix it without losing anti-aliased edges.
 - `?painting=starry-night&zdiag=sharp4`: the quarter-pixel a2c rim, between `sharp` and `noa2c`.
-- `?painting=starry-night&zdiag=freeze`: the same pixels every frame. If the shimmer stays, that points to the compositor's reprojection (or the MSAA / alpha-to-coverage resolve) and not render-time jitter. Leave this mode with the Quest button, because the frozen view makes the in-app Exit VR control hard to reach.
+- `?painting=starry-night&zdiag=freeze`: the same pixels every frame. If the shimmer stays, that points to the compositor's reprojection (or the MSAA / alpha-to-coverage resolve) and not render-time jitter. Leave it with another left stick click, which goes on to base. The A/B button still reads the controllers while the view is frozen, so the Quest button is no longer needed.
 - `?painting=starry-night&zdiag=strokeorder`: reproduces the live test, with the world strokes hidden. Reference only.
-- Add `&diag&hud` to any of them to read `__goghDiag().zdiag`.
+- Add `&diag&hud` to any of them to read `__goghDiag().zdiag` and `__goghDiag().ab`.
 - Also worth reading: frame-to-frame deltas of `__goghDiag().camera` over CDP while Paul holds still. The real rotation noise decides how much of the shimmer F1 accounts for.
 
 ### Gates

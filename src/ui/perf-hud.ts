@@ -42,6 +42,8 @@ export interface PerfHudDeps {
   getGovernor(): GovernorDiag | null;
   getVisible(): number | null;
   getVisibleChunks(): number | null;
+  /** The active A/B group's line; omitted or null with no group active. */
+  getAb?(): string | null;
 }
 
 export interface PerfHud extends ToggleableHud {
@@ -129,6 +131,7 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
       targetHz: deps.targetHz,
       visible: deps.getVisible(),
       visibleChunks: deps.getVisibleChunks(),
+      ab: deps.getAb?.() ?? null,
       governor: gov && {
         judging: gov.judging,
         level: gov.level,

@@ -74,6 +74,8 @@ export interface Flags {
   readonly turn: TurnMode | null;
   /** `?zdiag=<mode>`: a stroke depth and filtering diagnostic (src/render/zdiag.ts). null is off. */
   readonly zdiag: ZdiagMode | null;
+  /** `?ab=<group>`: the A/B group the A/B button cycles (src/diag/ab.ts). Lower-cased; null when absent. */
+  readonly ab: string | null;
   /** `?scene=bare`: boots the bare scene instead of the default gallery (src/boot-mode.ts). */
   readonly scene: SceneName | null;
 }
@@ -241,6 +243,7 @@ export function parseFlags(search: string): Flags {
     seated: parseOnOff(params, 'seated'),
     turn: parseTurn(params.get('turn')),
     zdiag: parseZdiag(params.get('zdiag')),
+    ab: parseId(params.get('ab')),
     scene: parseScene(params.get('scene')),
   });
 }

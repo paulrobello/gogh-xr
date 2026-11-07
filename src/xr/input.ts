@@ -136,6 +136,12 @@ export interface Actions {
   >;
   /** Edge: once, when both stick clicks (or R) have been held for 1 s. */
   recenter: boolean;
+  /**
+   * Edge: cycles the active A/B group (src/diag/ab.ts). Fires on the release of a single left
+   * stick click, unless the right stick was pressed at any point during that hold (both sticks
+   * held is recenter), or on a V press.
+   */
+  abCycle: boolean;
 }
 
 export interface Input {
@@ -212,7 +218,8 @@ const KEY_R = 10;
 const MOUSE_L = 11;
 const MOUSE_R = 12;
 const R_A = 13;
-const SLOTS = 14;
+const KEY_V = 14;
+const SLOTS = 15;
 
 type Pad = NonNullable<InputSourceLike['gamepad']>;
 
@@ -232,6 +239,29 @@ function pressed(pad: Pad | null, index: number): boolean {
 
 function key(keyboard: KeyboardState, code: string): number {
   return keyboard.keys.has(code) ? 1 : 0;
+}
+
+/** A click that acts on release: `holding` while down, `cancelled` once the hold must not fire. */
+export interface ClickState {
+  holding: boolean;
+  cancelled: boolean;
+}
+
+/**
+ * One frame of a click that fires on release (the left stick's `abCycle`), updating `state` in
+ * place. `cancel` true on any frame of the hold, the release frame included, stops it firing.
+ */
+export function stickClickStep(state: ClickState, down: boolean, cancel: boolean): boolean {
+  if (down) {
+    if (!state.holding) state.cancelled = false;
+    state.holding = true;
+    if (cancel) state.cancelled = true;
+    return false;
+  }
+  const fired = state.holding && !state.cancelled && !cancel;
+  state.holding = false;
+  state.cancelled = false;
+  return fired;
 }
 
 export function createInput(): Input {
@@ -260,6 +290,7 @@ export function createInput(): Input {
       },
     },
     recenter: false,
+    abCycle: false,
   };
   /** `select.down` and `grip.down` as last reported, before this frame's read. */
   let selectWas = false;
@@ -283,10 +314,27 @@ export function createInput(): Input {
   let recenterHeld = 0;
   let recenterHolding = false;
   let recenterFired = false;
+  const abClick: ClickState = { holding: false, cancelled: false };
+  let abKeyDown = false;
+  /** This frame's `abCycle` parts, so a claim can take back the stick click's alone. */
+  let abClickFired = false;
+  let abKeyFired = false;
 
   /** The slot's level after suppression. */
   function level(slot: number): boolean {
     return raw[slot] === true && !suppressed[slot];
+  }
+
+  /**
+   * The settings panel holds or grabs with the left hand: a left stick click in progress, or one
+   * released this frame, belongs to the panel gesture and does not cycle the A/B group. V still does.
+   */
+  function cancelLeftClick(): void {
+    if (abClick.holding) abClick.cancelled = true;
+    if (abClickFired) {
+      abClickFired = false;
+      actions.abCycle = abKeyFired;
+    }
   }
 
   function button(out: ButtonAction, down: boolean): void {
@@ -314,6 +362,7 @@ export function createInput(): Input {
       raw[KEY_R] = keyboard.keys.has('KeyR');
       raw[MOUSE_L] = keyboard.mouseButtons.has(MOUSE_SELECT);
       raw[MOUSE_R] = keyboard.mouseButtons.has(MOUSE_GRIP);
+      raw[KEY_V] = keyboard.keys.has('KeyV');
       // A release ends a slot's suppression.
       for (let slot = 0; slot < SLOTS; slot += 1) {
         if (!raw[slot]) suppressed[slot] = false;
@@ -407,10 +456,20 @@ export function createInput(): Input {
         recenterFired = false;
       }
 
+      // Any right stick press, suppressed or not, belongs to a recenter attempt. A left pad that
+      // vanishes mid-click (session end, tracking loss) drops the level without a release.
+      const click = stickClickStep(abClick, level(L_STICK), raw[R_STICK] === true || left === null);
+      const abKey = level(KEY_V);
+      abClickFired = click;
+      abKeyFired = abKey && !abKeyDown;
+      actions.abCycle = abClickFired || abKeyFired;
+      abKeyDown = abKey;
+
       return actions;
     },
     claim(left, right) {
       if (!left && !right) return;
+      if (left) cancelLeftClick();
       const select = (!left && level(L_TRIGGER)) || (!right && level(R_TRIGGER)) || level(MOUSE_L);
       const grip = (!left && level(L_GRIP)) || (!right && level(R_GRIP)) || level(MOUSE_R);
       actions.select.down = select;
@@ -419,6 +478,7 @@ export function createInput(): Input {
       actions.grip.fired = grip && !gripWas;
     },
     holdSticks(left, right) {
+      if (left) cancelLeftClick();
       // A newly held stick also leaves this frame's actions; later frames read it as centred.
       if (left && !stickHeld.left) {
         stickHeld.left = true;
@@ -446,6 +506,8 @@ export function createInput(): Input {
         aimSuppressed = true;
         aimDown = false;
       }
+      // Suppression drops the click's level while it is still down, which must not read as a release.
+      if (abClick.holding) abClick.cancelled = true;
     },
   };
 }

@@ -12,6 +12,7 @@ import {
   RECENTER_HOLD_SECONDS,
   radialDeadzone,
   SNAP_THRESHOLD,
+  stickClickStep,
   TELEPORT_AIM_THRESHOLD,
   XR_BUTTON,
 } from '../src/xr/input';
@@ -381,6 +382,213 @@ describe('createInput: buttons', () => {
     xr.button('right', XR_BUTTON.THUMBSTICK, true);
     expect(read(5).recenter).toBe(false);
     expect(read(0.5).recenter).toBe(false);
+  });
+});
+
+describe('stickClickStep', () => {
+  const run = (frames: [boolean, boolean][]): boolean[] => {
+    const state = { holding: false, cancelled: false };
+    return frames.map(([down, cancel]) => stickClickStep(state, down, cancel));
+  };
+
+  it('fires once, on the release of a hold', () => {
+    expect(
+      run([
+        [false, false],
+        [true, false],
+        [true, false],
+        [true, false],
+        [false, false],
+        [false, false],
+      ]),
+    ).toEqual([false, false, false, false, true, false]);
+  });
+
+  it('cancels a hold when the other stick was pressed at any point during it', () => {
+    // Pressed partway through the hold and released before the click is.
+    expect(
+      run([
+        [true, false],
+        [true, true],
+        [true, false],
+        [false, false],
+      ]),
+    ).toEqual([false, false, false, false]);
+    // Already held when the click starts.
+    expect(
+      run([
+        [true, true],
+        [false, true],
+      ]),
+    ).toEqual([false, false]);
+    // Pressed on the release frame itself.
+    expect(
+      run([
+        [true, false],
+        [false, true],
+      ]),
+    ).toEqual([false, false]);
+  });
+
+  it('re-arms after a cancelled hold', () => {
+    expect(
+      run([
+        [true, true],
+        [false, false],
+        [true, false],
+        [false, false],
+      ]),
+    ).toEqual([false, false, false, true]);
+  });
+});
+
+describe('createInput: A/B cycle', () => {
+  it('fires abCycle once when a single left stick click is released', () => {
+    const { xr, read } = setup();
+    xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    expect(read().abCycle).toBe(false);
+    expect(read().abCycle).toBe(false);
+    xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    expect(read().abCycle).toBe(true);
+    expect(read().abCycle).toBe(false);
+  });
+
+  it('ignores a right stick click alone', () => {
+    const { xr, read } = setup();
+    xr.button('right', XR_BUTTON.THUMBSTICK, true);
+    expect(read().abCycle).toBe(false);
+    xr.button('right', XR_BUTTON.THUMBSTICK, false);
+    expect(read().abCycle).toBe(false);
+  });
+
+  it('does not cycle when both sticks are held to recenter', () => {
+    const { xr, read } = setup();
+    xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    read(0.1);
+    xr.button('right', XR_BUTTON.THUMBSTICK, true);
+    const fired: boolean[] = [];
+    let recentered = false;
+    for (let i = 0; i < 12; i += 1) {
+      const a = read(0.1);
+      fired.push(a.abCycle);
+      recentered ||= a.recenter;
+    }
+    expect(recentered).toBe(true);
+    xr.button('right', XR_BUTTON.THUMBSTICK, false);
+    fired.push(read(0.1).abCycle);
+    xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    fired.push(read(0.1).abCycle);
+    expect(fired.every((f) => !f)).toBe(true);
+  });
+
+  it('does not cycle when the right stick was clicked and released during the hold', () => {
+    const { xr, read } = setup();
+    xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    read();
+    xr.button('right', XR_BUTTON.THUMBSTICK, true);
+    expect(read().abCycle).toBe(false);
+    xr.button('right', XR_BUTTON.THUMBSTICK, false);
+    expect(read().abCycle).toBe(false);
+    xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    expect(read().abCycle).toBe(false);
+  });
+
+  it('does not cycle when the left pad disappears mid-click', () => {
+    // The session ends with the stick still held.
+    const ended = setup();
+    ended.xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    ended.read();
+    ended.read();
+    expect(ended.input.read(null, ended.kb.state, DT).abCycle).toBe(false);
+    // The left controller drops out (hands mode, tracking loss) while held.
+    const lost = setup();
+    lost.xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    lost.read();
+    expect(lost.input.read([lost.xr.sources[1]], lost.kb.state, DT).abCycle).toBe(false);
+    // It comes back released, and the next full click cycles.
+    lost.xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    expect(lost.read().abCycle).toBe(false);
+    lost.xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    lost.read();
+    lost.xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    expect(lost.read().abCycle).toBe(true);
+  });
+
+  it('does not cycle when the settings panel claims or holds the left hand during the click', () => {
+    // Claimed partway through the hold.
+    const claimed = setup();
+    claimed.xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    claimed.read();
+    claimed.input.claim(true, false);
+    claimed.xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    expect(claimed.read().abCycle).toBe(false);
+    // The left stick held by a grab on the release frame itself.
+    const held = setup();
+    held.xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    held.read();
+    held.xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    const released = held.read();
+    expect(released.abCycle).toBe(true);
+    held.input.holdSticks(true, false);
+    expect(released.abCycle).toBe(false);
+    // A right-hand claim leaves the click alone, and V is never taken back.
+    const right = setup();
+    right.xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    right.read();
+    right.xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    const a = right.read();
+    right.input.claim(false, true);
+    expect(a.abCycle).toBe(true);
+    right.kb.key('KeyV', true);
+    const v = right.read();
+    right.input.claim(true, false);
+    expect(v.abCycle).toBe(true);
+  });
+
+  it('takes back a click released on the frame the panel claims the left hand', () => {
+    const { input, xr, read } = setup();
+    xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    read();
+    xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    const a = read();
+    expect(a.abCycle).toBe(true);
+    input.claim(true, false);
+    expect(a.abCycle).toBe(false);
+  });
+
+  it('fires abCycle once per V press, however long it is held', () => {
+    const { kb, read } = setup();
+    kb.key('KeyV', true);
+    expect(read().abCycle).toBe(true);
+    for (let i = 0; i < 30; i += 1) expect(read().abCycle).toBe(false);
+    kb.key('KeyV', false);
+    expect(read().abCycle).toBe(false);
+    kb.key('KeyV', true);
+    expect(read().abCycle).toBe(true);
+  });
+
+  it('suppressHeld cancels a held left stick click and silences a held V', () => {
+    const { input, xr, kb, read } = setup();
+    xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    read();
+    input.suppressHeld();
+    expect(read().abCycle).toBe(false);
+    xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    expect(read().abCycle).toBe(false);
+    // The next click works again.
+    xr.button('left', XR_BUTTON.THUMBSTICK, true);
+    read();
+    xr.button('left', XR_BUTTON.THUMBSTICK, false);
+    expect(read().abCycle).toBe(true);
+
+    kb.key('KeyV', true);
+    expect(read().abCycle).toBe(true);
+    input.suppressHeld();
+    expect(read().abCycle).toBe(false);
+    kb.key('KeyV', false);
+    expect(read().abCycle).toBe(false);
+    kb.key('KeyV', true);
+    expect(read().abCycle).toBe(true);
   });
 });
 

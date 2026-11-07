@@ -2,7 +2,7 @@
  * The contract every painting world implements (PRD D14). A registry entry's `world()` resolves to
  * one; the gallery (P5) and the boot path only ever see this interface.
  */
-import type { Scene } from 'three';
+import type { Object3D, Scene } from 'three';
 import type { Raster } from '../demo/canvas/field';
 import type { WalkBounds } from '../locomotion/walk-bounds';
 import type { StrokeBatch } from '../render/strokes/batch';
@@ -77,6 +77,13 @@ export interface WorldHandle {
    * (P3.5). Omitted: a world without haze.
    */
   setHaze?(thickness: number): void;
+  /**
+   * Shows or hides the halo pass at runtime, for the `halo` A/B group. The `?bare` and `?coverage`
+   * debug paints keep it hidden. Omitted: a world without one.
+   */
+  setHalo?(on: boolean): void;
+  /** The halo pass, so a hidden one can be precompiled before its first show. */
+  readonly halo?: Object3D;
   /**
    * An indoor world's walls and ceiling: smooth movement and flight keep the head inside them
    * (src/locomotion/walk-bounds.ts). Omitted: an open world, never clamped.

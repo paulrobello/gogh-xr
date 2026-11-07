@@ -384,6 +384,7 @@ describe('reactive tracker', () => {
       tracker.uniforms.uWake.value.slice(WAKE_SAMPLES, 2 * WAKE_SAMPLES).map((w) => w.w);
     expect(Math.max(...weights())).toBeGreaterThan(0.5);
     for (const w of weights()) expect(w).toBeLessThanOrEqual(HAND_STRENGTH);
+    expect(tracker.diag().disturbers[1].wakePeak).toBe(Math.max(...weights()));
     // The hand stops: after one window every sample is still, so the wake is 0 (spring back).
     const settle = Math.ceil(WAKE_WINDOW_S * 72) + 2;
     for (let k = 0; k < settle; k++, t += 1000 / 72) tracker.frame(t, [head, [x, 1, -0.5], null]);

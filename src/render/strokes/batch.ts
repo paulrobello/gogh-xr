@@ -106,6 +106,13 @@ export interface StrokeOrderPolicy {
   readonly freeze: boolean;
 }
 
+/** The policy a batch starts with: front to back from 0. */
+export const DEFAULT_ORDER_POLICY: StrokeOrderPolicy = Object.freeze({
+  base: 0,
+  reverse: false,
+  freeze: false,
+});
+
 export interface StrokeBatch {
   readonly group: Group;
   readonly chunks: readonly StrokeChunk[];
@@ -522,7 +529,7 @@ export function createStrokeBatch(
   /** Cull output, reused every frame: kept chunk indices front to back, and their distances. */
   const cullOrder = new Uint32Array(chunks.length);
   const cullDistances = new Float64Array(chunks.length);
-  let policy: StrokeOrderPolicy = { base: 0, reverse: false, freeze: false };
+  let policy: StrokeOrderPolicy = { ...DEFAULT_ORDER_POLICY };
   /** Frozen ranks by chunk index, -1 until a chunk first passes the cull under `freeze`. */
   const frozenRank = new Int32Array(chunks.length).fill(-1);
   let frozenOnce = false;

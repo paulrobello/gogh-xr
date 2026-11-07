@@ -49,6 +49,8 @@ export interface PerfHudValues {
   visibleChunks: number | null;
   /** null for a scene without a governor, or under `?nogov`. */
   governor: PerfHudGovernor | null;
+  /** The active A/B group's line (src/diag/ab.ts); absent or null with no group active. */
+  ab?: string | null;
 }
 
 function ms(value: number | null): string {
@@ -76,6 +78,7 @@ export function formatPerfHud(values: PerfHudValues): string {
     );
     if (gov.notice) lines.push(gov.notice);
   }
+  if (values.ab) lines.push(values.ab);
   return lines.join('\n');
 }
 
