@@ -11,27 +11,42 @@
  * wait. A GPU time, where a timer exists, can only hold a restore back for lack of headroom; it
  * never sheds, so the frame-interval path stands alone.
  *
- * Shed order: far, mid, then near density, down to per-band minimums and never below the drawn
- * floor of the budget (ruling R10), skipping a band whose step would save under `MIN_SHED_YIELD`
- * (3%) of the drawn total; then framebuffer scale 1 to 0.85. Foveation is not a step: it stays at
- * the session default of 0. The P0.8 bench measured no frame-time gain from it, and the headset
- * world is CPU-bound on per-chunk draws, which foveation does not touch. After 3 s of continuous
- * overrun with nothing left to shed, it requests 72 Hz once. The 72 Hz budget and the notice take
- * effect only when the runtime reports the request applied (`rateApplied`); a failed request
- * (`rateFailed`) leaves the rate step unavailable. Restore pops the shed stack, so it runs in
- * exactly the reverse order back to the exact start levels.
+ * Shed order: foveation and fb scale first, then density. The headset frame is GPU-bound, not CPU
+ * or draw-call bound, and not by pixel count alone (Quest 3, 2026-11-06, `docs/verification.md`).
+ * Fixed foveation 0.5 measured -16% (0.84 of base) and 1 measured 0.81. But 0.49x the pixels plus
+ * foveation 1 reads 18.71 ms, barely under foveation 1 alone (17.2-18.1 ms), and the GPU profiler
+ * shows about 54% of shading time on vertices, 85M polygons/s of about 25 px each, at about 78%
+ * utilisation: geometry (many tiny stroke triangles through binning and rendering) plus fragment
+ * work. Foveation is still the one measured lever. So the steps are foveation 0 to 0.5, framebuffer
+ * scale 1 to 0.85, foveation 0.5 to 1 (the last resort P0.8 found blocky at the edges), then far,
+ * mid and near density, down to per-band minimums and never below the drawn floor of the budget
+ * (ruling R10), skipping a band whose step would save under `MIN_SHED_YIELD` (3%) of the drawn
+ * total. Density goes last: each density step grows the band's stroke size by sqrt of the density
+ * ratio to keep its coverage, so it keeps the painted area the same, it bought no measured time on
+ * the headset, and it costs the most visible quality. After 3 s of continuous overrun with nothing
+ * left to shed, it requests 72 Hz once. The 72 Hz budget and the notice take effect only when the
+ * runtime reports the request applied (`rateApplied`); a failed request (`rateFailed`) leaves the
+ * rate step unavailable. Restore pops the shed stack, so it runs in exactly the reverse order back
+ * to the exact start levels.
  *
- * No-gain rule. A shed that buys no time costs quality for nothing: a CPU-bound frame (per-chunk
- * draw overhead) gains nothing from fewer strokes or fewer pixels. So the first window after a
- * shed is compared with the window that triggered it. If it still overruns and its mean interval
- * is not at least `NO_GAIN_SHARE` lower, the step is undone at once (a 'no-gain' event, back to the
- * exact level it shed from) and that step (one band's density, or fb scale) is held: it is not
- * shed again until the reported frame rate changes, the session is interrupted or restarted (the
- * runtime then builds a new machine), or `NO_GAIN_HOLD_MS` passes, so a scene change can re-earn
- * it. A held step counts as nothing left to shed, so with every step held the 3 s count to the
- * 72 Hz request runs as before. A check window that no longer overruns keeps the step whatever its
- * gain, since undoing it would bring the overrun back. A shed-back after a failed probe is never
- * checked: the probe already showed that step pays.
+ * No-gain rule. A shed that buys no time costs quality for nothing: a density step that keeps the
+ * painted area, or a framebuffer scale the runtime ignores. So the first window after a shed is
+ * compared with the window that triggered it. If it still overruns and its mean interval is not at
+ * least `NO_GAIN_SHARE` lower, the step is undone at once (a 'no-gain' event, back to the exact
+ * level it shed from) and that step is held: it is not shed again until the reported frame rate
+ * changes, the session is interrupted or restarted (the runtime then builds a new machine), or the
+ * hold lapses, so a scene change can re-earn it. The first hold of a step lasts `NO_GAIN_HOLD_MS`
+ * (30 s), and each further hold of that step doubles, capped at `MAX_HOLD_MS` (30, 60, 120, 240,
+ * then 300 s), so a step that never pays stops flipping strokes every 30 s. A frame-rate change or
+ * a new session restarts the doubling, and a shed that pays restarts it for that step. The holds
+ * are per step, with two exceptions (`holdOf`). The two foveation steps hold apart ('foveation' to
+ * 0.5, 'foveation-max' to 1), so a 0.5 step that reads as no-gain under window noise does not block
+ * 1. The density bands share one hold ('density'): under the sqrt size law every band keeps its
+ * painted area, so one band's no-gain predicts the others' and they need not each flip wall strokes
+ * to learn it. A held step counts as nothing left to shed, so with every step held the 3 s count to
+ * the 72 Hz request runs as before. A check window that no longer overruns keeps the step whatever
+ * its gain, since undoing it would bring the overrun back. A shed-back after a failed probe is
+ * never checked: the probe already showed that step pays.
  *
  * Overrun recovery (ruling Q26). On a vsync-locked headset, half-second window means vary by 4-7%
  * at 55-68 fps, more than the bar, so a third or more of useless sheds stick by chance, and a
@@ -43,9 +58,10 @@
  * far less noisy than one window. If their mean overruns by more than `NO_GAIN_SHARE` over the
  * baseline, the restore cost time: the step is shed again ('recover-back') and held from recovery,
  * which stops recovery at that step until the hold lapses. Otherwise the restore is kept and the
- * step is held from shedding, like a no-gain hold, so it is not shed straight back. A CPU-bound
- * frame thus climbs back to the start levels about one step per 7 s, and a GPU-bound one keeps its
- * shed level, spending one 2 s check per hold lapse to re-test it.
+ * step is held from shedding, like a no-gain hold, so it is not shed straight back. Both holds
+ * double like no-gain holds. A frame no step helps thus climbs back to the start levels about one
+ * step per 7 s, and one that needs its sheds keeps its shed level, spending one 2 s check per hold
+ * lapse to re-test it, at ever longer intervals.
  *
  * The budget follows the frame rate the session reports (`setFrameRate`), not the one requested.
  * A stall over 100 ms or a hidden session (`interrupt`) restarts the window and both timers, so a
@@ -90,8 +106,13 @@ export const GPU_HEADROOM = 0.8;
  * noise is unmeasured.
  */
 export const NO_GAIN_SHARE = 0.03;
-/** How long a no-gain step stays held when the frame rate and session do not change. */
+/**
+ * How long a step stays held the first time it buys nothing, when the frame rate and session do not
+ * change. Each further no-gain hold of the same step doubles it, up to `MAX_HOLD_MS`.
+ */
 export const NO_GAIN_HOLD_MS = 30_000;
+/** Cap on the doubling no-gain and recovery holds: 30, 60, 120, 240, then 300 s. */
+export const MAX_HOLD_MS = 300_000;
 /** Overrun with nothing left to shed before each recovery restore. */
 export const RECOVER_AFTER_MS = 5000;
 /**
@@ -119,8 +140,12 @@ export const MIN_BAND_DENSITY: Readonly<Record<StrokeBand, number>> = Object.fre
 });
 export const FULL_FB_SCALE = 1;
 export const SHED_FB_SCALE = 0.85;
-/** The session default (`FOVEATION` in `xr/session.ts`), reported in the snapshot; never shed. */
+/** The session default (`FOVEATION` in `xr/session.ts`), where every session starts. */
 export const FULL_FOVEATION = 0;
+/** The first foveation step. P0.8 saw shimmer here, but far less than at 1. */
+export const SHED_FOVEATION = 0.5;
+/** The last-resort foveation step: blocky at the view edges (P0.8). */
+export const MAX_FOVEATION = 1;
 export const FALLBACK_HZ = 72;
 export const HISTORY_LIMIT = 64;
 
@@ -131,7 +156,13 @@ const DENSITY_ORDER = ['far', 'mid', 'near'] as const;
 
 export type GovernorMode = 'default' | 'beauty';
 export type DensityStep = `${StrokeBand}-density`;
-export type GovernorStep = DensityStep | 'fb-scale';
+/** 'foveation' takes foveation 0 to 0.5, 'foveation-max' up to 1; each has its own hold. */
+export type GovernorStep = DensityStep | 'fb-scale' | 'foveation' | 'foveation-max';
+/**
+ * What a hold applies to. Density bands share one: under the sqrt size law a density step keeps the
+ * painted area in any band, so one band's no-gain predicts the others'.
+ */
+export type GovernorHold = Exclude<GovernorStep, DensityStep> | 'density';
 export type GovernorAction =
   | 'shed'
   | 'restore'
@@ -150,7 +181,7 @@ export interface GovernorEvent {
   readonly t: number;
   readonly action: GovernorAction;
   readonly step: GovernorStep | 'frame-rate';
-  /** Density, framebuffer scale or Hz before and after. */
+  /** Density, framebuffer scale, foveation or Hz before and after. */
   readonly from: number;
   readonly to: number;
 }
@@ -159,6 +190,7 @@ export interface GovernorLevels {
   readonly density: Readonly<Record<StrokeBand, number>>;
   readonly size: Readonly<Record<StrokeBand, number>>;
   readonly fbScale: number;
+  readonly foveation: number;
 }
 
 export interface GovernorConfig {
@@ -195,13 +227,13 @@ export interface GovernorSnapshot {
    */
   densityMin: boolean;
   /** Steps not shed until their hold lapses: undone as no-gain, or restored by a kept recovery. */
-  noGainHeld: GovernorStep[];
+  noGainHeld: GovernorHold[];
   /** Steps whose recovery restore cost time and was shed back: held from recovery until lapsed. */
-  recoverHeld: GovernorStep[];
+  recoverHeld: GovernorHold[];
   densities: Record<StrokeBand, number>;
   sizes: Record<StrokeBand, number>;
   fbScale: number;
-  /** Always `FULL_FOVEATION`: the governor never changes foveation. */
+  /** Fixed foveation the governor asks for: 0, 0.5 or 1. */
   foveation: number;
   /** Mean interval of the last judged window, ms. */
   meanMs: number | null;
@@ -253,6 +285,11 @@ interface RecoveryCheck {
   count: number;
 }
 
+/** The hold a step's no-gain or recovery result applies to. */
+export function holdOf(step: GovernorStep): GovernorHold {
+  return step.endsWith('-density') ? 'density' : (step as GovernorHold);
+}
+
 function budgetFor(mode: GovernorMode): StrokeBudget {
   return mode === 'beauty' ? STROKE_BUDGET.maxBeauty : STROKE_BUDGET.default;
 }
@@ -270,7 +307,7 @@ export function createGovernor(config: GovernorConfig): Governor {
   const size: Record<StrokeBand, number> = {
     ...(config.mode === 'beauty' ? BEAUTY_BAND_SIZE : DEFAULT_BAND_SIZE),
   };
-  const levels = { density, size, fbScale: FULL_FB_SCALE };
+  const levels = { density, size, fbScale: FULL_FB_SCALE, foveation: FULL_FOVEATION };
   let targetHz = config.targetHz;
   let frameRate = config.targetHz;
   let rateRequest: RateRequest = 'none';
@@ -305,9 +342,11 @@ export function createGovernor(config: GovernorConfig): Governor {
   let stuckSum = 0;
   let stuckCount = 0;
   /** No-gain steps and the time each hold lapses. */
-  const heldUntil = new Map<GovernorStep, number>();
+  const heldUntil = new Map<GovernorHold, number>();
   /** Steps whose recovery restore cost time: not restored by recovery until the hold lapses. */
-  const recoverHeldUntil = new Map<GovernorStep, number>();
+  const recoverHeldUntil = new Map<GovernorHold, number>();
+  /** Holds per step since the last frame-rate change. The next one lasts 2^n times as long. */
+  const strikes = new Map<GovernorHold, number>();
 
   const budgetMs = (): number => 1000 / frameRate;
 
@@ -317,12 +356,25 @@ export function createGovernor(config: GovernorConfig): Governor {
     return event;
   }
 
-  /** A frame-rate change or an interrupt: no-gain holds and a pending check no longer apply. */
-  function clearHolds(): void {
+  /**
+   * A frame-rate change or an interrupt: no-gain holds and a pending check no longer apply. Only a
+   * frame-rate change (`resetBackoff`) also restarts the hold doubling; a new session builds a new
+   * machine, which starts it over too.
+   */
+  function clearHolds(resetBackoff: boolean): void {
     heldUntil.clear();
     recoverHeldUntil.clear();
+    if (resetBackoff) strikes.clear();
     pending = null;
     recovering = null;
+  }
+
+  /** Holds `step` in `holds` for 30 s, doubled per hold since the last reset, up to 5 min. */
+  function hold(holds: Map<GovernorHold, number>, step: GovernorStep, t: number): void {
+    const key = holdOf(step);
+    const n = strikes.get(key) ?? 0;
+    strikes.set(key, n + 1);
+    holds.set(key, t + Math.min(NO_GAIN_HOLD_MS * 2 ** n, MAX_HOLD_MS));
   }
 
   /** Starts a fresh window and hold after a change, so only post-change frames are judged. */
@@ -344,7 +396,8 @@ export function createGovernor(config: GovernorConfig): Governor {
     stuckSum += sum;
     stuckCount += count;
     const top = stack.at(-1);
-    if (!top || recoverHeldUntil.has(top.step) || t - stuckSince < RECOVER_AFTER_MS) return null;
+    if (!top || recoverHeldUntil.has(holdOf(top.step)) || t - stuckSince < RECOVER_AFTER_MS)
+      return null;
     const baselineMs = stuckSum / stuckCount;
     stack.pop();
     apply(top, true);
@@ -359,6 +412,8 @@ export function createGovernor(config: GovernorConfig): Governor {
     if (band) {
       density[band] = value;
       size[band] = toFrom ? entry.fromSize : entry.toSize;
+    } else if (entry.step === 'foveation' || entry.step === 'foveation-max') {
+      levels.foveation = value;
     } else {
       levels.fbScale = value;
     }
@@ -397,8 +452,8 @@ export function createGovernor(config: GovernorConfig): Governor {
    */
   function nextDensityShed(drawn: Readonly<Record<StrokeBand, number>>): ShedEntry | null {
     const total = drawn.near + drawn.mid + drawn.far;
+    if (heldUntil.has('density')) return null;
     for (const band of DENSITY_ORDER) {
-      if (heldUntil.has(`${band}-density`)) continue;
       const entry = densityShed(band, density[band] * DENSITY_STEP, drawn);
       if (entry && drawn[band] * (1 - entry.to / entry.from) >= MIN_SHED_YIELD * total) {
         return entry;
@@ -416,13 +471,22 @@ export function createGovernor(config: GovernorConfig): Governor {
     return band ? densityShed(band, entry.to, drawn) : entry;
   }
 
+  function foveationShed(step: 'foveation' | 'foveation-max', to: number): ShedEntry | null {
+    if (levels.foveation >= to || heldUntil.has(step)) return null;
+    return { step, from: levels.foveation, to, fromSize: 0, toSize: 0 };
+  }
+
+  /**
+   * Foveation 0.5, fb scale and foveation 1 first, then density far, mid, near. With 'foveation'
+   * held after a no-gain, 'foveation-max' sheds straight from 0 to 1.
+   */
   function nextShed(drawn: Readonly<Record<StrokeBand, number>>): ShedEntry | null {
-    const step = nextDensityShed(drawn);
-    if (step) return step;
+    const first = foveationShed('foveation', SHED_FOVEATION);
+    if (first) return first;
     if (levels.fbScale > SHED_FB_SCALE && !heldUntil.has('fb-scale')) {
       return { step: 'fb-scale', from: levels.fbScale, to: SHED_FB_SCALE, fromSize: 0, toSize: 0 };
     }
-    return null;
+    return foveationShed('foveation-max', MAX_FOVEATION) ?? nextDensityShed(drawn);
   }
 
   function judge(
@@ -443,12 +507,14 @@ export function createGovernor(config: GovernorConfig): Governor {
     if (check && overrun && mean > check.triggerMs * (1 - NO_GAIN_SHARE)) {
       stack.pop();
       apply(check.entry, true);
-      heldUntil.set(check.entry.step, t + NO_GAIN_HOLD_MS);
+      hold(heldUntil, check.entry.step, t);
       densityMin = nextDensityShed(drawn) === null;
       changed();
       const { step, from, to } = check.entry;
       return record({ t, action: 'no-gain', step, from: to, to: from });
     }
+    // The shed paid for itself: its next no-gain hold starts from 30 s again.
+    if (check) strikes.delete(holdOf(check.entry.step));
     // A recovery check spans RECOVER_CHECK_MS of windows and nothing else changes meanwhile, so
     // the restored entry goes back on top if it is shed back.
     const restored = recovering;
@@ -462,7 +528,7 @@ export function createGovernor(config: GovernorConfig): Governor {
         checkMs > budgetNow * OVERRUN_TOLERANCE &&
         checkMs > restored.baselineMs * (1 + NO_GAIN_SHARE)
       ) {
-        recoverHeldUntil.set(restored.entry.step, t + NO_GAIN_HOLD_MS);
+        hold(recoverHeldUntil, restored.entry.step, t);
         stack.push(restored.entry);
         apply(restored.entry, false);
         densityMin = nextDensityShed(drawn) === null;
@@ -471,7 +537,7 @@ export function createGovernor(config: GovernorConfig): Governor {
         return record({ t, action: 'recover-back', step, from, to });
       }
       // Kept: the step bought nothing, so it is not shed straight back.
-      heldUntil.set(restored.entry.step, t + NO_GAIN_HOLD_MS);
+      hold(heldUntil, restored.entry.step, t);
     }
     densityMin = nextDensityShed(drawn) === null;
 
@@ -560,11 +626,11 @@ export function createGovernor(config: GovernorConfig): Governor {
     setFrameRate(hz: number) {
       if (!(hz > 0) || hz === frameRate) return;
       frameRate = hz;
-      clearHolds();
+      clearHolds(true);
       changed();
     },
     interrupt() {
-      clearHolds();
+      clearHolds(false);
       changed();
     },
     rateApplied(hz: number) {
@@ -574,7 +640,7 @@ export function createGovernor(config: GovernorConfig): Governor {
       notice = RATE_NOTICE;
       if (hz !== frameRate) {
         frameRate = hz;
-        clearHolds();
+        clearHolds(true);
         changed();
       }
     },
@@ -606,7 +672,7 @@ export function createGovernor(config: GovernorConfig): Governor {
         densities: { ...density },
         sizes: { ...size },
         fbScale: levels.fbScale,
-        foveation: FULL_FOVEATION,
+        foveation: levels.foveation,
         meanMs,
         gpuMs,
         overrun,

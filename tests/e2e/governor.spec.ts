@@ -53,7 +53,7 @@ async function governor(xr: Xr): Promise<GovernorDiag> {
   return (await xr.diag()).governor as GovernorDiag;
 }
 
-test('slow=40: sheds only near density and fb scale, undoes at least one as no-gain, then asks 72 Hz', async ({
+test('slow=40: sheds only foveation, fb scale and near density, undoes one as no-gain, then asks 72 Hz', async ({
   page,
   xr,
 }) => {
@@ -84,13 +84,17 @@ test('slow=40: sheds only near density and fb scale, undoes at least one as no-g
   expect(rate).toMatchObject({ action: 'rate', from: 90, to: 72 });
   const before = gov.history.slice(0, rateAt);
   const pairs = before.map((e) => `${e.action} ${e.step}`);
-  // `?slow` busy-waits on the CPU, which no shed touches. The canvas is all near band, so near
-  // density is the only density step, and an undo holds it. IWER ignores requestViewportScale, so
-  // the fb-scale step cannot gain either. Window noise can still make a step read as a gain, so
-  // the spec needs one undo, not one per step.
-  expect(pairs[0]).toBe('shed near-density');
+  // `?slow` busy-waits on the CPU, which no shed touches. Foveation 0.5, fb scale and foveation 1
+  // ('foveation-max') go first. The canvas is all near band, so near density is the only density
+  // step, and an undo holds it. IWER renders no foveation and ignores requestViewportScale, so none
+  // of the first three steps can gain. Window noise can still make a step read as a gain, so the
+  // spec needs one undo, not one per step.
+  expect(pairs[0]).toBe('shed foveation');
   expect(pairs).toContain('shed fb-scale');
-  expect(pairs.every((p) => /^(shed|no-gain) (near-density|fb-scale)$/.test(p))).toBe(true);
+  expect(pairs).toContain('shed near-density');
+  expect(
+    pairs.every((p) => /^(shed|no-gain) (foveation|foveation-max|near-density|fb-scale)$/.test(p)),
+  ).toBe(true);
   expect(before.some((e) => e.action === 'no-gain')).toBe(true);
   // Each no-gain undoes the shed just before it, back to the level it shed from.
   before.forEach((e, i) => {
@@ -103,8 +107,8 @@ test('slow=40: sheds only near density and fb scale, undoes at least one as no-g
   expect(gov.fbScalePath).toBe('base-layer');
   // IWER's getViewport ignores requestViewportScale, so the measured scale stays 1.
   expect(gov.fbScaleApplied).toBe(1);
-  // Foveation is not a shed step: it stays at the app default.
-  expect(gov.foveation).toBe(0);
+  // Foveation is a shed step: 0, or a level a chance gain kept.
+  expect([0, 0.5, 1]).toContain(gov.foveation);
   // The 72 Hz budget and notice commit only once updateTargetFrameRate resolves.
   await expect.poll(async () => (await governor(xr)).rateRequest).toBe('applied');
   expect(gov.targetHz).toBe(72);

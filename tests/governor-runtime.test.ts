@@ -58,7 +58,13 @@ class FakeXr implements GovernorXr {
     this.session = new FakeSession(behaviour);
   }
   readonly layer = { getViewport: vi.fn(() => ({ x: 0, y: 0, width: 1, height: 1 })) };
-  readonly setFoveation = vi.fn();
+  foveation = 0;
+  readonly setFoveation = vi.fn((value: number) => {
+    this.foveation = value;
+  });
+  getFoveation() {
+    return this.isPresenting ? this.foveation : undefined;
+  }
   addEventListener(type: string, listener: () => void): void {
     if (!this.listeners.has(type)) this.listeners.set(type, new Set());
     this.listeners.get(type)?.add(listener);
@@ -206,14 +212,16 @@ async function toRateRequest(xr: FakeXr, batch = fakeBatch(200_000), cpuBound = 
   return { ...started, batch, t };
 }
 
-test('in XR an overrun drives batch density, viewport scale and the 72 Hz request, never foveation', async () => {
+test('in XR an overrun drives foveation, viewport scale, batch density and the 72 Hz request', async () => {
   const xr = new FakeXr();
   const { batch, notify } = await toRateRequest(xr);
   expect(diagOf().fbScalePath).toBe('base-layer');
   const diag = diagOf();
   expect(diag.history.map((e) => `${e.action} ${e.step}`)).toEqual([
-    'shed near-density',
+    'shed foveation',
     'shed fb-scale',
+    'shed foveation-max',
+    'shed near-density',
     'rate frame-rate',
   ]);
   expect(batch.densities.near).toBeCloseTo(0.75, 10);
@@ -222,9 +230,10 @@ test('in XR an overrun drives batch density, viewport scale and the 72 Hz reques
   const view = { requestViewportScale: vi.fn() };
   (xr.layer.getViewport as (v: unknown) => unknown)(view);
   expect(view.requestViewportScale).toHaveBeenCalledWith(0.85);
-  // Foveation stays at the session default that xr/session.ts sets; the governor never touches it.
-  expect(xr.setFoveation).not.toHaveBeenCalled();
-  expect(diag.foveation).toBe(0);
+  // Foveation goes to three's WebXRManager, which sets the projection layer's fixedFoveation.
+  expect(xr.setFoveation.mock.calls.map((c) => c[0]).slice(-2)).toEqual([0.5, 1]);
+  expect(xr.foveation).toBe(1);
+  expect(diag.foveation).toBe(1);
   expect(xr.session.updateTargetFrameRate).toHaveBeenCalledWith(72);
   expect(notify).toHaveBeenCalledWith(RATE_NOTICE);
   expect(diag).toMatchObject({
@@ -242,13 +251,18 @@ test('a CPU-bound overrun: each shed buys nothing and is undone through the adap
   const { batch } = await toRateRequest(xr, fakeBatch(200_000), true);
   const diag = diagOf();
   expect(diag.history.map((e) => `${e.action} ${e.step}`)).toEqual([
-    'shed near-density',
-    'no-gain near-density',
+    'shed foveation',
+    'no-gain foveation',
     'shed fb-scale',
     'no-gain fb-scale',
+    'shed foveation-max',
+    'no-gain foveation-max',
+    'shed near-density',
+    'no-gain near-density',
     'rate frame-rate',
   ]);
-  // Back to full quality on the batch and the viewport.
+  // Back to full quality on the batch, the foveation and the viewport.
+  expect(xr.foveation).toBe(0);
   expect(batch.densities.near).toBe(1);
   expect(batch.sizes.near).toBe(1);
   expect(diag).toMatchObject({ level: 0, fbScale: 1 });
@@ -262,25 +276,31 @@ test('a CPU-bound overrun: each shed buys nothing and is undone through the adap
 
 test('a stuck overrun: recovery restores the top shed through the adapters, and reverts it', async () => {
   const xr = new FakeXr();
-  const { runtime: rt } = await toRateRequest(xr);
-  const scaleNow = (): unknown => {
-    const view = { requestViewportScale: vi.fn() };
-    (xr.layer.getViewport as (v: unknown) => unknown)(view);
-    return view.requestViewportScale.mock.calls.at(-1)?.[0];
-  };
-  expect(scaleNow()).toBe(0.85);
+  const { runtime: rt, batch } = await toRateRequest(xr);
+  expect(batch.densities.near).toBeCloseTo(0.75, 10);
   // Still overrunning at 72 Hz with nothing left to shed: the top step comes back.
   let t = diagOf().history.at(-1)?.t ?? 0;
   const recovered = () => diagOf().history.some((e) => e.action === 'recover');
   const deadline = t + 20_000;
   while (!recovered() && t < deadline) t = frames(rt, t, 100, 20);
-  expect(diagOf().history.at(-1)).toMatchObject({ action: 'recover', step: 'fb-scale' });
-  expect(scaleNow()).toBe(1);
+  expect(diagOf().history.at(-1)).toMatchObject({ action: 'recover', step: 'near-density' });
+  expect(batch.densities.near).toBe(1);
   // The restore costs time: the check reverts it through the same adapter.
   t = frames(rt, t, 2500, 30);
-  expect(diagOf().history.at(-1)).toMatchObject({ action: 'recover-back', step: 'fb-scale' });
-  expect(scaleNow()).toBe(0.85);
-  expect(diagOf()).toMatchObject({ fbScale: 0.85, recoverHeld: ['fb-scale'] });
+  expect(diagOf().history.at(-1)).toMatchObject({ action: 'recover-back', step: 'near-density' });
+  expect(batch.densities.near).toBeCloseTo(0.75, 10);
+  expect(diagOf()).toMatchObject({ foveation: 1, fbScale: 0.85, recoverHeld: ['density'] });
+});
+
+test('a judged frame re-asserts the governor foveation over a late session default', async () => {
+  const xr = new FakeXr();
+  const { runtime: rt } = await toRateRequest(xr);
+  expect(xr.foveation).toBe(1);
+  // xr/session.ts sets foveation 0 after an awaited frame-rate request, which can land late.
+  xr.foveation = 0;
+  const t = diagOf().history.at(-1)?.t ?? 0;
+  frames(rt, t, 32, 16);
+  expect(xr.foveation).toBe(1);
 });
 
 test('fbScaleApplied reports the measured width ratio, not the requested scale', () => {
@@ -373,11 +393,13 @@ test('a new session starts from full quality again', () => {
   const { runtime: rt } = start(xr, batch);
   xr.isPresenting = true;
   xr.emit('sessionstart');
-  frames(rt, 0, 3000, shedding(rt));
+  frames(rt, 0, 6000, shedding(rt));
   expect(batch.densities.near).toBeLessThan(1);
+  expect(xr.foveation).toBe(1);
   xr.isPresenting = false;
   xr.emit('sessionend');
   expect(batch.densities.near).toBe(1);
+  expect(xr.foveation).toBe(0);
   expect(diagOf()).toMatchObject({
     level: 0,
     history: [],
@@ -608,7 +630,7 @@ describe('stroke binding (M2)', () => {
     expect(strokes.batch).toBe(a.batch);
     xr.isPresenting = true;
     xr.emit('sessionstart');
-    let t = drive(strokes, 0, 3000);
+    let t = drive(strokes, 0, 6000);
     expect(a.inner.densities.near).toBeLessThan(1);
     expect(strokes.visibleCount()).toBe(a.batch.visibleCount());
 
@@ -621,7 +643,7 @@ describe('stroke binding (M2)', () => {
     expect(b.inner.densities.near).toBe(1);
     expect(diagOf()).toMatchObject({ level: 0, history: [] });
 
-    t = drive(strokes, t, 3000);
+    t = drive(strokes, t, 6000);
     expect(b.inner.densities.near).toBeLessThan(1);
     expect(b.counts.visibleByBand).toBeGreaterThan(0);
     expect(strokes.visibleCount()).toBe(b.batch.visibleCount());

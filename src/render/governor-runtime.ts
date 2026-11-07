@@ -1,11 +1,17 @@
 /**
  * Runs the quality governor (`governor.ts`) for a stroke batch while an XR session presents, and
  * applies its changes through adapters: band density and size on the batch, framebuffer scale
- * through `XRView.requestViewportScale` (ruling R4), and the 72 Hz fallback through
- * `XRSession.updateTargetFrameRate`. A 'no-gain' undo, a 'recover' and a 'recover-back' go through
- * the same density and fb-scale adapters. Foveation is left at the session default that
- * `xr/session.ts` sets at session start. Desktop frames are not judged: the page's own refresh rate
- * says nothing about the headset budget.
+ * through `XRView.requestViewportScale` (ruling R4), fixed foveation through three's
+ * `WebXRManager.setFoveation` (which sets the projection layer's `fixedFoveation` live), and the
+ * 72 Hz fallback through `XRSession.updateTargetFrameRate`. A 'no-gain' undo, a 'recover' and a
+ * 'recover-back' go through the same adapters. `xr/session.ts` sets foveation 0 after an awaited
+ * frame-rate request at session start, which can land after a governor shed, so every judged frame
+ * re-asserts the governor's foveation when three reports another. Desktop frames are not judged:
+ * the page's own refresh rate says nothing about the headset budget.
+ *
+ * Quest Browser ignores `requestViewportScale` on the projection-layer path three 0.186 takes there
+ * (`fbScaleApplied` reads 1 at a requested 0.85), so the fb-scale step buys nothing on the headset
+ * and the no-gain rule holds it.
  *
  * The machine's budget follows the session's reported `frameRate`, read every judged frame (so it
  * picks up the rate once session settings apply) and on `frameratechange`. The requested rate is
@@ -48,6 +54,9 @@ export interface GovernorXr {
   getSession(): GovernorSession | null;
   getBaseLayer(): unknown;
   getBinding(): unknown;
+  setFoveation(value: number): void;
+  /** undefined outside a session. */
+  getFoveation(): number | undefined;
 }
 
 export interface GovernorRenderer {
@@ -112,6 +121,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       batch.setSizeMultiplier(band, size[band]);
     }
     if (scaler) scaler.scale = governor.levels.fbScale;
+    xr.setFoveation(governor.levels.foveation);
   }
 
   function readFrameRate(): void {
@@ -151,6 +161,8 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       batch.setSizeMultiplier(band, levels.size[band]);
     } else if (event.step === 'fb-scale') {
       if (scaler) scaler.scale = levels.fbScale;
+    } else if (event.step === 'foveation' || event.step === 'foveation-max') {
+      xr.setFoveation(levels.foveation);
     } else if (event.action === 'rate') {
       requestRate(event);
     }
@@ -219,6 +231,8 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       const intervalMs = time - lastTime;
       lastTime = time;
       readFrameRate();
+      const foveation = governor.levels.foveation;
+      if (xr.getFoveation() !== foveation) xr.setFoveation(foveation);
       const event = governor.sample({
         t: time,
         intervalMs,

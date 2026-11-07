@@ -97,7 +97,7 @@ function shedDensity(
       intervalMs,
       drawn: { near: bands.near.visible, mid: bands.mid.visible, far: bands.far.visible },
     });
-    if (!event) continue;
+    if (!event || event.step.startsWith('foveation') || event.step === 'fb-scale') continue;
     if (!event.step.endsWith('-density')) break;
     events.push(event);
     for (const band of STROKE_BANDS) {

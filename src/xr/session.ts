@@ -8,7 +8,11 @@ export function resolveTargetFrameRate(hz: number | null, beauty = false): numbe
   if (beauty) return BEAUTY_FRAME_RATE;
   return hz ?? TARGET_FRAME_RATE;
 }
-/** Off: P0.8 showed shimmer at 0.5 and 1.0 and no frame-time gain from either. */
+/**
+ * Off at session start: P0.8 showed shimmer at 0.5 and 1.0. P0.8's bench measured no frame-time
+ * gain from either, but the Starry Night world does gain on Quest 3 (2026-11-06: 0.84 of the base
+ * frame at 0.5 and 0.81 at 1), so the governor sheds to 0.5 and then 1 when a frame overruns.
+ */
 export const FOVEATION = 0;
 
 export const SESSION_INIT: XRSessionInit = {

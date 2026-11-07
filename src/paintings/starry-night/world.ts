@@ -37,8 +37,10 @@ import type { CanvasSource } from './canvas-histogram';
 export const DEFAULT_WORLD_SEED: number = 1;
 /**
  * Stroke chunk edge, metres. The world spans the 120 m sky dome, so the 4 m default makes thousands
- * of chunks, one draw call each per eye. The headset frame is CPU-bound on those draws (e018c2f:
- * 55 fps at the painter's spot with 339 visible chunks), so ruling Q5 takes 24 m over 16 m. Over
+ * of chunks, one draw call each per eye. Ruling Q5 took 24 m over 16 m on the e018c2f reading
+ * (55 fps at the painter's spot with 339 visible chunks), read then as CPU-bound on those draws.
+ * The 2026-11-06 headset runs showed the frame is GPU-bound instead, on stroke geometry plus
+ * fragment work, with main-thread JS at 6-7 ms of 21 ms (`docs/verification.md`). Over
  * the 24 coverage poses with a Quest-wide frustum, 16 m gives 1299 chunks and up to 597 visible
  * with at most 229k drawn, 24 m 543 and up to 267 with at most 273k drawn, inside the 325k budget.
  * At the painter's spot 24 m cuts the visible chunks from 420 to 189 for 14% more drawn strokes

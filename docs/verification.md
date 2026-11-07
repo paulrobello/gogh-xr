@@ -805,3 +805,103 @@ The light-to-dark measure is the gap colour the fix changes, so it shows the gap
 `docs/shots/building-zfight.png` shows church-face-7m and h6-face-3m at near density 0.9, before on the left and after on the right, with the building pixels that went from light to dark marked red.
 
 ![Church front at 7 m and house 6 at 3 m, before and after, light-to-dark pixels in red](shots/building-zfight.png)
+
+## Governor sheds foveation first (2026-11-06, on e0eac54)
+
+### Headset evidence
+
+Quest 3, deployed e0eac54, painter's area, 72 Hz (13.89 ms budget). The runs were driven over CDP (adb forward to `chrome_devtools_remote`), and the frame interval comes from `XRSession.requestAnimationFrame` timestamps over 3.5 s windows. The script patched `gl.viewport`, `gl.drawElementsInstanced` and `XRProjectionLayer.fixedFoveation` live.
+
+| Condition | Mean frame |
+| --- | --- |
+| As shipped (governor level 3: near 0.7, far 0.28, fb 0.85 requested) | 20.95 ms |
+| `fixedFoveation` = 1 | 16.53 ms |
+| Every draw into a viewport 1/4 wide and 1/4 high (1/16 of the pixels, same draw calls) | 13.89 ms (vsync cap) |
+| Skip every 2nd instanced draw | 14.10 ms |
+| Skip 3 in 4 instanced draws | 13.89 ms |
+| As shipped again | 21.12 ms |
+
+There are 350 to 400 draw calls per frame. Main-thread JS takes 6 to 7 ms of each 21 ms frame, and the thread then waits. The frame is therefore GPU-bound, not CPU or draw-call bound. A first draft of this section called it fill-bound. The profile below shows pixel count alone does not explain it. The e018c2f reading that called it CPU-bound on per-chunk draws was wrong for the current world. PRD D3 still holds: multiview helps only CPU-bound apps.
+
+A second headset run on 2026-11-06 (deployed build, 72 Hz, governor level 4, mean frame over 3.5 s windows, interleaved, driven over CDP) measured foveation 0.5 and broke the frame down by layer:
+
+| Condition | Mean frame |
+| --- | --- |
+| Base | 22.39, 21.55 and 21.61 ms (mean 21.85) |
+| Foveation 0.5 | 18.31 and 18.22 ms (0.84 of base) |
+| Foveation 1 | 18.08 and 17.24 ms (0.81 of base, about 3% past 0.5) |
+| Skip every alpha-to-coverage stroke draw | 13.89 ms (vsync cap) |
+| Skip the blended draws (the haze) | 20.98 ms, against 21.9 ms |
+| Skip the non-instanced base meshes | 22.81 ms (no gain) |
+
+So the cost is in the alpha-to-coverage strokes. The haze buys about 1 ms, and the base meshes nothing.
+
+A third run on 2026-11-06 (72 Hz, governor off) tested pixel count directly. A static render scale of 0.7 applied at layer creation gives an `XRProjectionLayer` texture of 2352 × 1232 side by side, 1176 × 1232 per eye against the default of about 1680 × 1760, so about 0.49x the pixels. With foveation 1 on top it reads 18.71 ms mean, barely better than foveation 1 alone at scale 1 (17.2 to 18.1 ms). `ovrgpuprofiler` on the Quest at that setting:
+
+| Metric | Value |
+| --- | --- |
+| GPU clock | 545 MHz |
+| GPU utilisation | about 78% |
+| Shading time on vertices / fragments | about 54% / 46% |
+| Pre-clipped polygons | 85M/s, about 1.6M per frame at about 53 fps |
+| Vertices shaded | 165M/s |
+| Average polygon area | about 25 px |
+| Primitives trivially rejected | 23% |
+| Bus busy | 16.5% |
+| Stalled on memory | 0.1% |
+
+So the frame is bound by geometry, many tiny stroke triangles processed in the tiler's binning and render passes, plus fragment work, with the GPU not fully saturated. It is not bound by pixel fill alone. Halving the pixels barely moves it, while skipping draws (which removes their geometry and their fragments together) and foveation both pay. Foveation 0.5 is most of foveation's gain, and step 1 adds about 3%, which sits on the no-gain bar, so it can read as no-gain against 0.5. That is one reason the two foveation steps hold apart.
+
+### What three 0.186 supports
+
+- `WebXRManager.setFoveation(v)` sets `fixedFoveation` on the projection layer (or on an `XRWebGLLayer` that has it) at any time, mid-session included. The governor uses it.
+- `WebXRManager.setFramebufferScaleFactor` refuses while presenting. three never calls `XRView.requestViewportScale`.
+- `src/xr/viewport-scale.ts` already did what the brief proposed. It calls `requestViewportScale` on three's own `XRView`, immediately before three's `XRWebGLBinding.getViewSubImage(layer, view)`, inside three's XR frame handler. A second hook through `renderer.xr.getFrame()` would call `getViewerPose` again and get different `XRView` objects, so it could change nothing.
+- On Quest Browser three takes the projection-layer path, and the measured `fbScaleApplied` is 1 at a requested 0.85. So Quest ignores `requestViewportScale` for projection layers, and dynamic viewport scaling is unavailable on the path three uses there. The fb-scale step stays in the order, because it does pay on a runtime that honours the request. On Quest the no-gain rule undoes it and holds it with the back-off below.
+- Not tried: forcing the `XRWebGLLayer` path (by hiding `createProjectionLayer`), where the WebXR core spec applies the request at `XRWebGLLayer.getViewport`. Whether Quest Browser honours it there is unverified. That changes the MSAA path, and it can only be judged on the headset.
+
+### New shed order
+
+1. Foveation 0 to 0.5 (step `foveation`).
+2. Framebuffer scale 1 to 0.85.
+3. Foveation to 1 (step `foveation-max`), the last resort, which P0.8 found blocky at the edges. It has its own hold, so a 0.5 step that window noise reads as no-gain does not block it. On Quest fb scale is always no-gain, so foveation 1 is the only measured lever.
+4. Far, mid and near density, with the existing floors and yield checks.
+5. The 72 Hz request, after 3 s of overrun with nothing left to shed.
+
+Restore and recovery run in the reverse order. `__goghDiag().governor.foveation` and the HUD now show the live foveation (0, 0.5 or 1). `xr/session.ts` still sets 0 at session start, but it does so after an awaited `updateTargetFrameRate`, which can land after a governor shed. So every judged frame re-asserts the governor's value when `renderer.xr.getFoveation()` reports another. The bench (`?bench`) never runs the governor and keeps its own foveation steps.
+
+### Why density sheds buy nothing
+
+Each density step multiplies the band's stroke size by sqrt(from / to) (`densityShed` in `src/render/governor.ts`, following the 1/sqrt(d) law in `src/render/strokes/bands.ts`). That keeps drawn × size² constant: a 30% cut in count comes with a 1/0.7 growth in quad area. The unit test "each density shed multiplies by 0.7 and raises the size by 1/sqrt of the density ratio" pins exactly these values. The painted area, and with it the fragment work and overdraw, stays the same by construction. A density shed cuts instances, and with them vertices, by 30%, yet near 0.34 with far 0.28 still reads about 21 ms. Given the geometry-heavy profile above, why that vertex saving does not show is not explained by this evidence. A first draft said fill dominates, which the profile contradicts. `MIN_SHED_YIELD` judges a step by its instance count, which the headset shows does not predict frame time here.
+
+The cheap code fix would be a weaker size law, for example size × (from / to)^0.25, under which a 0.7 step cuts painted area by about 16%. I did not make it. It trades coverage for fragment work, and the profile above suggests fragment work is only part of the cost. Also, the coverage and fidelity specs run on the desktop at the default densities, where the governor never judges, so nothing would catch gaps at shed densities. It needs a density override flag and a coverage sweep at shed levels first. The cut-the-draw-count A/B rows (skip half: 14.10 ms) remove whole strokes with no size growth, which is the upper bound such a change could reach. No desktop fragment-count measurement was taken, although the brief asked for one: the size law fixes the painted-area ratio analytically, so it could only confirm it, and it did not fit the time budget. The haze (30,000 large blended strokes), the sky dome at far density and pinned layers are not density-governed, so they were not the cause of the no-gain result. The layer breakdown above puts the cost in the alpha-to-coverage strokes: skipping them reaches the vsync cap, while skipping the haze saves about 1 ms and the base meshes nothing.
+
+### Hold back-off
+
+A no-gain undo, a recover-back and a kept recovery each hold their step. The density bands share one hold (`density`, fix round 1): under the sqrt size law every band keeps its painted area, so one band's no-gain predicts the others', and a density no-gain or recovery result holds all three. The first hold of a step lasts 30 s, and each further hold of the same step doubles: 30, 60, 120, 240, then 300 s (`MAX_HOLD_MS`). A reported frame-rate change (or an applied 72 Hz request) and a new session (a new machine) restart the doubling. A shed that pays restarts it for that step. An interrupt (a hidden session) still clears the holds but keeps the doubling. Wall flips over 10 minutes of the simulated headset frame (72 Hz, vsync-locked with a deterministic debt, fb scale ignored, density free, at the headset-measured costs: base 21.85 ms, foveation 0.5 0.84 and foveation 1 0.81 of base). A flip is any density event, shed, undo or recovery, since each one adds or removes wall strokes. The script was `bun /tmp/gx-fill-scripts/flips.ts <governor module>`.
+
+| Governor | Density events in 10 min |
+| --- | --- |
+| e0eac54 (density first, fixed 30 s holds, no foveation) | 124 (62 sheds, 60 no-gain undos, 2 recovers) |
+| 819b25a (foveation first, per-band doubling holds) | 32 (16 sheds, 15 undos, 1 recover) |
+| Fix round 1 (shared `density` hold) | 10 (5 far sheds, 5 undos, at 0, 30, 90, 210 and 450 s) |
+
+With window noise (random vsync misses at the same costs, 8 seeds, 300 s), fix round 1 makes 8 to 16 density events per seed, from useless sheds that stick by chance and their recovery.
+
+### Unit evidence
+
+`tests/governor.test.ts`, "governor foveation steps and hold back-off", drives 72 Hz vsync-locked traces in which each frame takes one or two vsyncs, with a deterministic debt so the mean tracks the frame cost from the table above.
+
+The costs are the headset-measured ones from the second run above, taken over CDP on 2026-11-06: base 21.85 ms, foveation 0.5 0.84 and foveation 1 0.81 of base. An earlier draft of this section used an assumed 0.89 for foveation 0.5, before it was measured.
+
+- With fb scale applied (cost × scale², a pixel-count model the profile above does not support on Quest): foveation 0.5 and fb 0.85 are shed first and held for more than 95% of 10 minutes. Density is never shed, and foveation never reaches 1. This trace assumes fb scale applies, which Quest does not do on the projection layer.
+- As measured on the headset, with fb scale ignored and density free: without noise, foveation 1 (3.6% under 0.5, just over the bar) holds for more than 95% of the time. Only far density is ever tried, 3 to 5 times in 10 minutes, with each gap about double the last. Near density is below full for under 1% of the time. Each recovery test of foveation 1 is reverted.
+- The same costs with window noise (8 seeds, 300 s): foveation stays at 0.5 or 1 for at least 97% of the time on every seed. Foveation 1 itself is held for anywhere from 1% to 97% of the time, seed by seed, because its 3% gain sits on the bar. Density events stay at 16 or fewer per seed.
+- Hypothetical costs with window noise (8 seeds, 300 s), where 0.5 buys 2% (under the 3% bar) and 1 buys 22%: every seed reaches foveation 1 and holds it for more than 85% of the time (worst 0.89). With the shared foveation id of 819b25a, 0.5's no-gain would have held 1 back.
+- A constant overrun shows foveation hold gaps of 30, 60, 120, 240, 300 and 300 s, and a frame-rate change restarts at 30 s.
+
+The CPU-bound recovery traces with window noise keep their original 120 s bounds after fix round 1: per-seed mean level under 3 (worst measured 2.88) and across-seed mean under 2 (worst 0.76). 819b25a had loosened them to 3.5 and 2.5. The recovery-hold doubling never resets on a CPU-bound frame, so a 600 s check was added: the across-seed mean must stay under 1 and the worst seed under 3.5. The measured values are 0.66 and 1.79 at worst, at miss rate 0.31. The shared density hold costs the GPU-bound trace, where every step pays, a little: its worst mean level is 2.46 (bound now 2.2, was 2.5), and at least one recovery restore per seed is reverted instead of half, because a recovery that noise keeps now holds every density band.
+
+### Not verified
+
+There is no headset in this session (no adb). The foveation steps, the back-off and the shed order are verified only in unit tests and in the desktop gates. The governor itself has not been run with these changes on the headset. Foveation does not reach 72 Hz in the painter's area: the measured foveation 1 frame is 17.2 to 18.1 ms. Even 0.49x the pixels with foveation 1 reads 18.71 ms. The remaining cost is the alpha-to-coverage strokes' geometry plus fragment work. Whether 0.5 shimmers acceptably in the world is Paul's check.

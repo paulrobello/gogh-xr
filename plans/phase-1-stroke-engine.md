@@ -90,11 +90,13 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
     - Budget is 11.1 ms at 90 Hz and 13.9 ms at 72 Hz.
     - Use a 0.5 s window to decide when to shed and a 3 s window to decide when to restore.
   - Shed in this order:
-    1. Far density, then mid, then near, down to the minimums in the budget table.
+    1. Foveation from the app default of 0 to 0.5.
     2. Framebuffer scale, from 1.0 down to 0.85.
-    3. Foveation is not a step. It stays at the app default of 0. P0.8 found 1.0 too blocky and saw no frame-time gain from foveation on the bench, and the headset reading of the Starry Night world at e018c2f (55 to 68 fps at governor level 9, foveation 0.5) showed the world is CPU-bound on per-chunk draws, which foveation does not touch. The step was removed after that reading.
-    4. After 3 s of continuous overrun at minimum quality, call `updateTargetFrameRate(72)` and show a HUD notice.
-  - No-gain rule (added after the e018c2f headset reading): the first window after a shed is compared with the window that triggered it. If it still overruns and is not at least 3% faster, the shed is undone at once and that step is held for 30 s, or until the reported frame rate changes or the session is interrupted. A held step counts as nothing left to shed, so the 72 Hz request still follows.
+    3. Foveation from 0.5 to 1, the last resort: P0.8 found 1.0 too blocky at the edges.
+    4. Far density, then mid, then near, down to the minimums in the budget table.
+    - Foveation and fb scale go first because they are the levers measured on the headset: foveation 0.5 -16%, while density bought nothing. The frame is GPU-bound, on stroke geometry plus fragment work, not CPU or draw-call bound and not pixel count alone. Foveation was out of the order after the e018c2f reading (55 to 68 fps at governor level 9, foveation 0.5), which was read as CPU-bound on per-chunk draws. The 2026-11-06 headset A/B at e0eac54 disproved that: foveation 1 takes the frame from 20.95 to 16.53 ms, and a sixteenth of the pixels at the same draw calls holds 72 Hz (`docs/verification.md`, "Governor sheds foveation first"). Density goes last: its size compensation keeps the painted area, it bought nothing measurable on the headset, and it costs the most visible quality.
+    5. After 3 s of continuous overrun at minimum quality, call `updateTargetFrameRate(72)` and show a HUD notice.
+  - No-gain rule (added after the e018c2f headset reading): the first window after a shed is compared with the window that triggered it. If it still overruns and is not at least 3% faster, the shed is undone at once and that step is held for 30 s, or until the reported frame rate changes or the session is interrupted. Each further hold of the same step doubles (30, 60, 120, 240, then 300 s), and a frame-rate change or a new session restarts the doubling. A held step counts as nothing left to shed, so the 72 Hz request still follows.
   - Overrun recovery (ruling Q26, after the review of the no-gain rule): once the frame has overrun for 5 s with nothing left to shed, restore the top shed step. If the next 2 s overrun more than 3% worse than that overrun stretch, shed it again and hold it from recovery for 30 s. Otherwise keep the restore and hold the step from shedding for 30 s.
   - Restore in reverse order, with hysteresis.
   - The "Max beauty" mode targets 72 Hz with the higher budget.
@@ -138,7 +140,7 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
     - Record the OVR Metrics frame times and the look.
   - **Governor behaviour on the device:** `?demo=canvas&hud&slow=N`.
     - Raise N until the frame overruns the budget.
-    - The HUD shows the shed order as it happens: band density first, then fb scale. Foveation is no longer a step and stays at 0.
+    - The HUD shows the shed order as it happens: foveation 0.5, fb scale, foveation 1, then band density.
     - The HUD shows the 72 Hz notice once the rate drops. The notice also shows the HUD if it was hidden.
     - Record the sequence and the time it took.
   - **Checklist from the Phase 1 review:**
@@ -155,6 +157,7 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
 ### P1.9: Multiview contingency (conditional)
 - **Depends on:** P1.8.
 - **Trigger:** Open this card only if P1.8 profiling shows the app is CPU-bound. Meta's test is to disable rendering and see whether frame time stays above budget. Otherwise close it as not needed, with the evidence.
+- **Evidence so far (2026-11-06, e0eac54):** not CPU-bound. Drawing every stroke into a sixteenth of the pixels, with the same 350 to 400 draw calls, holds 72 Hz, and main-thread JS is 6 to 7 ms of a 21 ms frame. The frame is GPU-bound (stroke geometry plus fragment work, at about 78% GPU utilisation), so multiview would not help (PRD D3). See `docs/verification.md`, "Governor sheds foveation first".
 - **Steps (if opened):**
   - Prototype `OCULUS_multiview` per Meta's [web-multiview doc](https://developers.meta.com/horizon/documentation/web/web-multiview/): projection layer `textureType: 'texture-array'`, `framebufferTextureMultisampleMultiviewOVR`, and `layout(num_views=2)` with `gl_ViewID_OVR` in the stroke shaders.
   - Do the prototype on a patched local copy of the three r186 `WebXRManager`.
