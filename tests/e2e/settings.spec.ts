@@ -35,18 +35,34 @@ async function boot(page: Page, query: string, stored?: string): Promise<Record<
 }
 
 function stored(settings: Record<string, unknown>): string {
-  return JSON.stringify({ version: 1, settings });
+  return JSON.stringify({ version: 2, settings });
 }
 
 test('an empty localStorage boots the defaults', async ({ page }) => {
   const diag = await boot(page, '');
   const settings = diag.settings as SettingsDiag;
   expect(settings.recovered).toBeNull();
-  expect(settings.effective).toMatchObject({ calm: 1, quality: 'adaptive-90', hud: false });
+  expect(settings.effective).toMatchObject({ calm: 1, quality: 'adaptive-72', hud: false });
   expect(diag.rig).toMatchObject({ turnMode: 'snap', seated: false });
   expect(diag.hud).toMatchObject({ built: false });
-  expect(diag.xr).toMatchObject({ targetFrameRate: 90 });
+  expect(diag.xr).toMatchObject({ targetFrameRate: 72 });
   expect(await page.evaluate((k) => localStorage.getItem(k), KEY)).toBeNull();
+});
+
+test('a v1 stored adaptive-90, the old default, boots adaptive-72; ?hz=90 still asks 90', async ({
+  page,
+}) => {
+  const v1 = JSON.stringify({ version: 1, settings: { quality: 'adaptive-90', calm: 0.4 } });
+  const diag = await boot(page, '', v1);
+  const settings = diag.settings as SettingsDiag;
+  expect(settings.recovered).toBeNull();
+  expect(settings.stored).toMatchObject({ quality: 'adaptive-72', calm: 0.4 });
+  expect(diag.xr).toMatchObject({ targetFrameRate: 72 });
+  // The migration is not written back until a setting changes.
+  expect(await page.evaluate((k) => localStorage.getItem(k), KEY)).toBe(v1);
+  const ninety = await boot(page, 'hz=90');
+  expect((ninety.settings as SettingsDiag).effective).toMatchObject({ quality: 'adaptive-90' });
+  expect(ninety.xr).toMatchObject({ targetFrameRate: 90 });
 });
 
 test('stored settings reach locomotion, the motion clock, the quality mode and the HUD', async ({

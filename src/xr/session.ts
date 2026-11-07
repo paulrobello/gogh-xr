@@ -1,12 +1,23 @@
+import type { QualityMode } from '../settings/schema';
+
+/** The bench's default target, and the adaptive-90 quality's. */
 export const TARGET_FRAME_RATE = 90;
 
-/** Max-beauty mode's target (ruling R12). */
+/** The target of max beauty (ruling R12) and of the default adaptive-72 quality. */
 export const BEAUTY_FRAME_RATE = 72;
 
-/** Max beauty forces 72 Hz over any `?hz`; otherwise the `?hz` override, or the default target. */
-export function resolveTargetFrameRate(hz: number | null, beauty = false): number {
-  if (beauty) return BEAUTY_FRAME_RATE;
-  return hz ?? TARGET_FRAME_RATE;
+/**
+ * The rate a session requests. Max beauty forces 72 Hz over any `?hz`. Otherwise `?hz` wins, then
+ * the quality: 72 for adaptive-72, 90 for adaptive-90. The bench passes no quality and defaults
+ * to 90.
+ */
+export function resolveTargetFrameRate(
+  hz: number | null,
+  quality: QualityMode | null = null,
+): number {
+  if (quality === 'beauty-72') return BEAUTY_FRAME_RATE;
+  if (hz !== null) return hz;
+  return quality === 'adaptive-72' ? BEAUTY_FRAME_RATE : TARGET_FRAME_RATE;
 }
 /**
  * Off at session start: P0.8 showed shimmer at 0.5 and 1.0. P0.8's bench measured no frame-time

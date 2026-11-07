@@ -231,11 +231,21 @@ test('the controller passes its target frame rate to the session', async () => {
   expect(update).toHaveBeenCalledWith(72);
 });
 
-test('?hz overrides the default target of 90', () => {
+test('?hz overrides the bench default target of 90', () => {
   expect(TARGET_FRAME_RATE).toBe(90);
   expect(resolveTargetFrameRate(null)).toBe(90);
   expect(resolveTargetFrameRate(72)).toBe(72);
   expect(resolveTargetFrameRate(120)).toBe(120);
-  expect(resolveTargetFrameRate(null, true)).toBe(72);
-  expect(resolveTargetFrameRate(120, true)).toBe(72);
+});
+
+test('the quality picks the rate: adaptive-72 and beauty-72 ask 72, adaptive-90 asks 90 or ?hz', () => {
+  expect(resolveTargetFrameRate(null, 'adaptive-72')).toBe(72);
+  expect(resolveTargetFrameRate(null, 'adaptive-90')).toBe(90);
+  expect(resolveTargetFrameRate(null, 'beauty-72')).toBe(72);
+  // applyUrlFlags maps ?hz=90 and ?hz=120 to adaptive-90, which keeps asking their rate.
+  expect(resolveTargetFrameRate(90, 'adaptive-90')).toBe(90);
+  expect(resolveTargetFrameRate(120, 'adaptive-90')).toBe(120);
+  expect(resolveTargetFrameRate(72, 'adaptive-72')).toBe(72);
+  // Max beauty wins over any ?hz.
+  expect(resolveTargetFrameRate(120, 'beauty-72')).toBe(72);
 });

@@ -123,14 +123,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function start(xr: FakeXr, batch: GovernedBatch, notify = vi.fn()) {
+function start(xr: FakeXr, batch: GovernedBatch, notify = vi.fn(), targetHz = 90) {
   const scene = new Scene();
   runtime = startGovernor({
     renderer: { xr, ...noTimer },
     scene,
     batch,
     mode: 'default',
-    targetHz: 90,
+    targetHz,
     notify,
   });
   return { runtime, scene, notify };
@@ -344,6 +344,26 @@ test.each(['reject', 'missing'] as const)(
     expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/72 Hz fallback unavailable/));
   },
 );
+
+test('adaptive-72: a session at 72 Hz overruns, sheds and recovers, and never requests a rate', async () => {
+  const xr = new FakeXr();
+  const { runtime: rt, notify } = start(xr, fakeBatch(200_000), vi.fn(), 72);
+  // The session controller's start request has landed: the session reports 72 Hz.
+  xr.session.frameRate = 72;
+  xr.isPresenting = true;
+  xr.emit('sessionstart');
+  expect(diagOf()).toMatchObject({ targetHz: 72, frameRate: 72, rateRequest: 'none' });
+  expect(diagOf().budgetMs).toBeCloseTo(1000 / 72, 10);
+  frames(rt, 0, 30_000, shedding(rt));
+  await Promise.resolve();
+  const diag = diagOf();
+  expect(diag.history.some((e) => e.action === 'shed')).toBe(true);
+  expect(diag.history.some((e) => e.action === 'recover')).toBe(true);
+  expect(diag.history.some((e) => e.step === 'frame-rate')).toBe(false);
+  expect(xr.session.updateTargetFrameRate).not.toHaveBeenCalled();
+  expect(notify).not.toHaveBeenCalled();
+  expect(diag).toMatchObject({ targetHz: 72, frameRate: 72, rateRequest: 'none', notice: null });
+});
 
 test('the budget follows the session frame rate, falling back to the request when unreported', () => {
   const xr = new FakeXr();

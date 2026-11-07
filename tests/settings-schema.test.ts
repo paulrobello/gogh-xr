@@ -10,8 +10,10 @@ import {
   DEFAULT_SETTINGS,
   loadSettings,
   lockedSettings,
+  MIGRATIONS,
   parseSettings,
   SETTINGS_KEY,
+  SETTINGS_VERSION,
   type Settings,
   type SettingsFlags,
   type SettingsStorage,
@@ -58,7 +60,7 @@ test('the defaults reproduce the pre-settings boot (fidelity)', () => {
     vignette: 0.6,
   });
   expect(DEFAULT_SETTINGS.calm).toBe(1);
-  expect(DEFAULT_SETTINGS.quality).toBe('adaptive-90');
+  expect(DEFAULT_SETTINGS.quality).toBe('adaptive-72');
   expect(DEFAULT_SETTINGS.hud).toBe(false);
   expect(applyUrlFlags(DEFAULT_SETTINGS, noFlags)).toEqual(DEFAULT_SETTINGS);
 });
@@ -99,8 +101,42 @@ test('round trip: a saved settings object loads back equal', () => {
   };
   const storage = memoryStorage();
   expect(saveSettings(settings, storage)).toBe(true);
-  expect(JSON.parse(storage.text ?? '').version).toBe(1);
+  expect(JSON.parse(storage.text ?? '').version).toBe(2);
   expect(loadSettings(storage)).toEqual({ settings, recovered: null });
+});
+
+test.each(['adaptive-72', 'adaptive-90', 'beauty-72'] as const)(
+  'quality %s survives a save and load',
+  (quality) => {
+    const storage = memoryStorage();
+    expect(saveSettings({ ...DEFAULT_SETTINGS, quality }, storage)).toBe(true);
+    expect(loadSettings(storage).settings.quality).toBe(quality);
+  },
+);
+
+test('v1 to v2: a stored adaptive-90, the old default, becomes adaptive-72; the rest is kept', () => {
+  expect(SETTINGS_VERSION).toBe(2);
+  const v1 = (settings: Record<string, unknown>): string =>
+    JSON.stringify({ version: 1, settings });
+  const old = parseSettings(v1({ quality: 'adaptive-90', moveSpeed: 2.5, hud: true }));
+  expect(old).toEqual({
+    settings: { ...DEFAULT_SETTINGS, quality: 'adaptive-72', moveSpeed: 2.5, hud: true },
+    recovered: null,
+  });
+  expect(parseSettings(v1({ quality: 'beauty-72' })).settings.quality).toBe('beauty-72');
+  expect(parseSettings(v1({ moveSpeed: 1.5 })).settings).toEqual({
+    ...DEFAULT_SETTINGS,
+    moveSpeed: 1.5,
+  });
+  expect(parseSettings(v1({ quality: 'ultra' })).settings.quality).toBe('adaptive-72');
+  // The step itself leaves anything but adaptive-90 alone, and does not touch its input.
+  const input = { quality: 'adaptive-90', calm: 0.5 };
+  expect(MIGRATIONS[1]?.(input)).toEqual({ quality: 'adaptive-72', calm: 0.5 });
+  expect(input.quality).toBe('adaptive-90');
+  expect(MIGRATIONS[1]?.({ quality: 'beauty-72' })).toEqual({ quality: 'beauty-72' });
+  // A v2 adaptive-90 is a choice made under v2, so it stays.
+  const v2 = JSON.stringify({ version: 2, settings: { quality: 'adaptive-90' } });
+  expect(parseSettings(v2).settings.quality).toBe('adaptive-90');
 });
 
 test('out-of-range and wrong-typed values are clamped or defaulted', () => {
@@ -130,7 +166,7 @@ test('out-of-range and wrong-typed values are clamped or defaulted', () => {
   expect(settings.seated).toBe(false);
   expect(settings.standingHeight).toBe(MIN_STANDING_HEIGHT);
   expect(settings.calm).toBe(1);
-  expect(settings.quality).toBe('adaptive-90');
+  expect(settings.quality).toBe('adaptive-72');
   expect(settings.hud).toBe(false);
   expect(settings.musicVolume).toBe(1);
   expect(settings.sfxVolume).toBe(DEFAULT_SETTINGS.sfxVolume);
@@ -158,7 +194,7 @@ test.each([
   ['{"version":1}', 'bad-shape'],
   ['{"version":"1","settings":{}}', 'bad-shape'],
   ['{"version":0,"settings":{}}', 'bad-shape'],
-  ['{"version":2,"settings":{}}', 'future-version'],
+  ['{"version":3,"settings":{}}', 'future-version'],
 ])('stored %j falls back to the defaults as %s', (text, reason) => {
   expect(parseSettings(text)).toEqual({ settings: DEFAULT_SETTINGS, recovered: reason });
   expect(loadSettings(memoryStorage(text)).recovered).toBe(reason);
@@ -231,6 +267,13 @@ test('URL flags override the stored value field by field and the stored object i
   expect(JSON.stringify(stored)).toBe(frozen);
   // ?hz beats a stored max beauty; ?beauty beats a stored adaptive mode.
   expect(applyUrlFlags(stored, { ...noFlags, hz: 120 }).quality).toBe('adaptive-90');
+  // ?hz=72 selects adaptive-72, and ?hz=90 adaptive-90, over any stored quality.
+  expect(applyUrlFlags(stored, { ...noFlags, hz: 90 }).quality).toBe('adaptive-90');
+  expect(applyUrlFlags(stored, { ...noFlags, hz: 72 }).quality).toBe('adaptive-72');
+  const ninety: Settings = { ...DEFAULT_SETTINGS, quality: 'adaptive-90' };
+  expect(applyUrlFlags(ninety, { ...noFlags, hz: 72 }).quality).toBe('adaptive-72');
+  expect(applyUrlFlags(DEFAULT_SETTINGS, { ...noFlags, hz: 90 }).quality).toBe('adaptive-90');
+  expect(applyUrlFlags(ninety, noFlags).quality).toBe('adaptive-90');
   expect(applyUrlFlags(DEFAULT_SETTINGS, { ...noFlags, beauty: true }).quality).toBe('beauty-72');
   expect(applyUrlFlags(stored, { ...noFlags, beauty: true, hz: 90 }).quality).toBe('beauty-72');
   // No flag leaves the stored value in force, including a stored true that a flag cannot clear.
@@ -268,4 +311,5 @@ test('the lock map names the flag that decides each overridden field', () => {
     calm: '?calm=0.5',
   });
   expect(lockedSettings({ ...noFlags, hz: 90 })).toEqual({ quality: '?hz=90' });
+  expect(lockedSettings({ ...noFlags, hz: 72 })).toEqual({ quality: '?hz=72' });
 });

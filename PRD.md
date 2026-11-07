@@ -14,7 +14,7 @@
 
 Gogh XR is a Meta Quest 3 WebXR experience. You start in a small gallery room and step through the frame of *The Starry Night* (1889) into a walkable 3D version of the painting. The hills, village, church and cypress are built from simple procedural forms. More than a million GPU-instanced brushstrokes cover them, with colors and directions sampled from a public-domain scan of the canvas. Shaders animate those strokes, so the sky swirls, the stars and moon pulse, the cypress flickers like a flame, and strokes part around your head and hands as you move through them.
 
-The visual target is to use as much of the Quest 3's capacity as possible, sustained at 90 Hz. An adaptive quality governor protects that frame rate, and an optional 72 Hz max-beauty mode trades refresh rate for stroke density.
+The visual target is to use as much of the Quest 3's capacity as possible, sustained at the target frame rate: 72 Hz by default (`adaptive-72`, since 2026-11-07), or 90 Hz as an option (`adaptive-90`). An adaptive quality governor protects that frame rate, and an optional 72 Hz max-beauty mode trades refresh rate for stroke density.
 
 The gallery has seven frames. *The Starry Night* is live. Six more hang as "coming soon": *Chestnut Trees in Blossom*, *Les Alyscamps*, *Café Terrace at Night*, *The Bedroom*, *Wheatfield with Crows* and *Starry Night Over the Rhône*. Each painting is a registry entry, so a later painting needs only a new world module.
 
@@ -22,14 +22,14 @@ The gallery has seven frames. *The Starry Night* is live. Six more hang as "comi
 
 1. **Presence inside the painting.** At the painter's spot on the hilltop, the headset view reads as *The Starry Night*: same composition, palette and stroke direction. Moving away from that spot reveals a coherent 3D world painted in the same strokes.
 2. **Living paint.** All four motions ship in v1: the sky swirl and wind currents, pulsing star and moon halos, the flame-like cypress, and strokes that react to the head and both controllers.
-3. **Use the headset's full capacity without dropping frames.** Hold 90 Hz on Quest 3 with the stroke density the device can sustain. The density is measured on the device, not guessed. The governor degrades quality before frames drop.
+3. **Use the headset's full capacity without dropping frames.** Hold the target frame rate on Quest 3 (72 Hz by default since 2026-11-07, 90 Hz with the `adaptive-90` option) with the stroke density the device can sustain. The density is measured on the device, not guessed. The governor degrades quality before frames drop.
 4. **Free, comfortable movement.** Room-scale walking, teleport, smooth stick movement and flight, plus snap or smooth turn, a tunnel vignette, seated mode and a calm-motion slider.
 5. **Extensible gallery.** Painting selection uses a data-driven registry and a gallery portal, so adding a painting is a world module plus a registry entry.
 6. **Agent-operable and verifiable.** A desktop preview, IWER-emulated XR tests and in-app diagnostics let agents build and check almost everything without the headset. The owner's per-phase headset check covers what emulation cannot: comfort, sustained frame rate and look.
 
 ### Success criteria (v1)
 
-- **SC1.** Starry Night holds a median of 90 fps on Quest 3 in the default mode, measured with OVR Metrics Tool. In a 5-minute session that walks the whole diorama and flies the boundary, fewer than 1% of frames exceed the 11.1 ms budget.
+- **SC1.** Starry Night holds a median of 72 fps on Quest 3 in the default mode (`adaptive-72`, since 2026-11-07), measured with OVR Metrics Tool. In a 5-minute session that walks the whole diorama and flies the boundary, fewer than 1% of frames exceed the 13.9 ms budget. The `adaptive-90` option holds 90 fps against the 11.1 ms budget under the same rule.
 - **SC2.** A screenshot from the painter's spot matches the reference canvas closely enough that the owner accepts it side by side. The phase 2 plan sets the measured check.
 - **SC3.** The owner accepts all four locomotion modes and all four comfort options on the headset, with no comfort complaints in a 15-minute session.
 - **SC4.** The owner accepts the gallery-to-painting portal and the return path on the headset.
@@ -101,7 +101,7 @@ troika 0.53.1 is the latest release. 0.52.5 is pinned because it is proven on th
   - Reactive strokes are displaced away from up to three points (head and both controllers) with a falloff radius and a time-decayed wake. The points' recent positions are passed as uniforms.
   - There is no stored GPU simulation. A ping-pong wake texture is a later polish card, used only if the headset check finds the stateless wake flat.
 - **D8. Quality governor.**
-  - At session start the app requests 90 Hz via `XRSession.updateTargetFrameRate` and records `supportedFrameRates`. three r186 does not wrap these calls.
+  - At session start the app requests the quality's target rate (72 Hz for the default `adaptive-72` and for max beauty, 90 Hz for `adaptive-90`) via `XRSession.updateTargetFrameRate` and records `supportedFrameRates`. three r186 does not wrap these calls.
   - The governor reads the frame time and the GPU time where `EXT_disjoint_timer_query_webgl2` exists.
   - Under load it sheds in this order: visible stroke density, then framebuffer scale, then fixed foveation from the default 0 up to 0.5. P0.8 found 1.0 too blocky and measured no frame-time gain from foveation on the bench.
   - After about 3 s of sustained overrun it drops to 72 Hz and shows a HUD notice.

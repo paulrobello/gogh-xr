@@ -1140,3 +1140,64 @@ describe('governor foveation steps and hold back-off (Quest 3 costs, 2026-11-06)
     expect(fov[2].t - fov[1].t).toBeLessThan(NO_GAIN_HOLD_MS + 600);
   });
 });
+
+describe('adaptive-72: the default quality starts at 72 Hz (2026-11-07)', () => {
+  /** Clean at 72 Hz (shed line 14.58 ms) but an overrun at 90 Hz (11.67 ms). */
+  const BETWEEN = 14;
+  /** Headless Chromium's vsync interval: an overrun at 72 Hz too. */
+  const VSYNC_60 = 1000 / 60;
+
+  test('the budget is 72 Hz from the first judged frame: 14 ms frames shed nothing', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: FALLBACK_HZ });
+    expect(gov.snapshot()).toMatchObject({ targetHz: 72, frameRate: 72, rateRequest: 'none' });
+    expect(gov.snapshot().budgetMs).toBeCloseTo(1000 / 72, 10);
+    const { events } = drive(gov, 0, 10_000, { interval: () => BETWEEN });
+    expect(events).toEqual([]);
+    expect(gov.snapshot().meanMs).toBeCloseTo(BETWEEN, 6);
+    // The same frames overrun the adaptive-90 budget in its first judged window.
+    const ninety = createGovernor({ mode: 'default', targetHz: 90 });
+    const first = drive(ninety, 0, 10_000, { interval: () => BETWEEN, until: () => true });
+    expect(first.events[0]).toMatchObject({ action: 'shed', step: 'foveation' });
+    expect(first.events[0].t).toBeLessThan(WARMUP_MS + 600);
+  });
+
+  test('a sustained overrun at 72 Hz never asks for another rate: it sheds, then recovers', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: FALLBACK_HZ });
+    // Each shed helps but the frame still overruns at every level: recovery follows.
+    const { events } = drive(gov, 0, 60_000, { interval: shedding(gov) });
+    expect(events.some((e) => e.action === 'shed')).toBe(true);
+    expect(events.some((e) => e.action === 'recover')).toBe(true);
+    expect(events.some((e) => e.step === 'frame-rate')).toBe(false);
+    // No shed helps: each is undone as no-gain, and nothing is left to shed or ask for.
+    const flat = createGovernor({ mode: 'default', targetHz: FALLBACK_HZ });
+    const stuck = drive(flat, 0, 60_000, { interval: () => VSYNC_60 });
+    expect(stuck.events.some((e) => e.action === 'no-gain')).toBe(true);
+    expect(stuck.events.some((e) => e.step === 'frame-rate')).toBe(false);
+    expect(flat.snapshot()).toMatchObject({
+      targetHz: 72,
+      frameRate: 72,
+      rateRequest: 'none',
+      notice: null,
+      exhausted: true,
+    });
+  });
+
+  test('a start request that failed leaves the reported rate in charge, and no fallback request', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: FALLBACK_HZ });
+    // The session stayed at 90 Hz: the budget follows it.
+    gov.setFrameRate(90);
+    expect(gov.snapshot().budgetMs).toBeCloseTo(1000 / 90, 10);
+    const { events } = drive(gov, 0, 60_000, { interval: shedding(gov) });
+    expect(events.some((e) => e.step === 'frame-rate')).toBe(false);
+    expect(events.some((e) => e.action === 'recover')).toBe(true);
+    expect(gov.snapshot()).toMatchObject({ targetHz: 72, frameRate: 90, rateRequest: 'none' });
+  });
+
+  test('adaptive-90 is unchanged: the same overrun asks for 72 Hz once, from 90', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const { events } = drive(gov, 0, 60_000, { interval: () => VSYNC_60 });
+    const rates = events.filter((e) => e.step === 'frame-rate');
+    expect(rates).toEqual([expect.objectContaining({ action: 'rate', from: 90, to: 72 })]);
+    expect(gov.snapshot()).toMatchObject({ targetHz: 72, frameRate: 72, rateRequest: 'applied' });
+  });
+});

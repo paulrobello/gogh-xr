@@ -12,10 +12,15 @@ import {
 import { clampCalm } from '../motion/clock';
 
 export const SETTINGS_KEY = 'gogh-xr.settings.v1';
-export const SETTINGS_VERSION = 1;
+export const SETTINGS_VERSION = 2;
 
-/** 90 Hz with the adaptive governor, or 72 Hz with the max-beauty budget (`?beauty`). */
-export type QualityMode = 'adaptive-90' | 'beauty-72';
+/**
+ * 72 Hz (the default) or 90 Hz with the adaptive governor, or 72 Hz with the max-beauty budget
+ * (`?beauty`).
+ */
+export type QualityMode = 'adaptive-72' | 'adaptive-90' | 'beauty-72';
+
+const QUALITY_MODES: readonly QualityMode[] = ['adaptive-72', 'adaptive-90', 'beauty-72'];
 
 export interface Settings {
   /** Smooth movement speed, m/s. */
@@ -47,7 +52,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   seated: DEFAULT_LOCOMOTION_SETTINGS.seated,
   standingHeight: DEFAULT_LOCOMOTION_SETTINGS.standingHeight,
   calm: 1,
-  quality: 'adaptive-90',
+  quality: 'adaptive-72',
   hud: false,
   musicVolume: 0.7,
   sfxVolume: 0.7,
@@ -70,8 +75,13 @@ export type Migrations = Readonly<
   Record<number, (settings: Record<string, unknown>) => Record<string, unknown>>
 >;
 
-/** The migrations from each old version to the next. Empty while the schema is at v1. */
-export const MIGRATIONS: Migrations = Object.freeze({});
+/** The migrations from each old version to the next. */
+export const MIGRATIONS: Migrations = Object.freeze({
+  // v2 adds adaptive-72 as the default. v1 saved the whole object on any change, so a stored
+  // adaptive-90 is almost always the old default rather than a choice.
+  1: (settings) =>
+    settings.quality === 'adaptive-90' ? { ...settings, quality: 'adaptive-72' } : settings,
+});
 
 export type SettingsStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
@@ -116,7 +126,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     seated: loco.seated,
     standingHeight: loco.standingHeight,
     calm: clampCalm(num(r.calm, d.calm)),
-    quality: r.quality === 'beauty-72' ? 'beauty-72' : 'adaptive-90',
+    quality: QUALITY_MODES.includes(r.quality as QualityMode)
+      ? (r.quality as QualityMode)
+      : d.quality,
     hud: bool(r.hud, d.hud),
     musicVolume: unit(r.musicVolume, d.musicVolume),
     sfxVolume: unit(r.sfxVolume, d.sfxVolume),
@@ -210,16 +222,19 @@ export interface SettingsFlags {
 
 /**
  * The settings this session runs with: the stored ones with each URL flag laid over its field.
- * Never written back. `?beauty` selects max beauty and `?hz` selects the adaptive mode (the
- * stored max beauty yields to an explicit rate). `?seated` and `?hud` set their field either way:
- * bare is on, `=0` is off, and absent leaves the stored value.
+ * Never written back. `?beauty` selects max beauty, `?hz=72` selects adaptive-72, and `?hz=90`
+ * or `?hz=120` selects adaptive-90, which then requests that rate (a stored quality yields to an
+ * explicit rate). `?seated` and `?hud` set their field either way: bare is on, `=0` is off, and
+ * absent leaves the stored value.
  */
 export function applyUrlFlags(stored: Settings, f: SettingsFlags): Settings {
   const quality: QualityMode = f.beauty
     ? 'beauty-72'
-    : f.hz !== null
-      ? 'adaptive-90'
-      : stored.quality;
+    : f.hz === 72
+      ? 'adaptive-72'
+      : f.hz !== null
+        ? 'adaptive-90'
+        : stored.quality;
   return Object.freeze({
     ...stored,
     quality,

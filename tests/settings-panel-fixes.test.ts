@@ -127,6 +127,21 @@ test('every hit target is at least 2.5 cm in both directions, and rows leave 6 m
   expect(ROW_PITCH - 0.056 - 0.002).toBeGreaterThanOrEqual(0.004);
 });
 
+test('quality shows three segments, adaptive-72 first, each label inside its segment', () => {
+  const quality = controlLayout('quality');
+  expect(quality?.def.options?.map((o) => o.value)).toEqual([
+    'adaptive-72',
+    'adaptive-90',
+    'beauty-72',
+  ]);
+  for (const [i, s] of (quality?.segments ?? []).entries()) {
+    expect(s.w).toBeGreaterThanOrEqual(MIN_TARGET);
+    // Noto Sans averages about 0.6 em a character: a 0.016 m label must leave a margin.
+    const label = quality?.def.options?.[i]?.label ?? '';
+    expect(label.length * 0.6 * 0.016).toBeLessThan(s.w - 0.01);
+  }
+});
+
 test('a pose pushed past the load bounds saves inside them, along the same direction', () => {
   const head = { position: new Vector3(0, 1.6, 0), yaw: 0 };
   const far = createPanelPose();

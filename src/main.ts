@@ -230,13 +230,17 @@ function buildArc(atlas: Texture): void {
 }
 /** `?painter` (fidelity capture): the world's painter camera, applied before the world builds. */
 let painterView: PainterCamera | null = null;
-// Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls. The quality
-// setting applies at the next XR entry: the session request and the governor's reset at session
-// start read it then (P5.3).
-const isBeauty = (quality: QualityMode): boolean => quality === 'beauty-72' && flags.bench === null;
+// The quality picks the rate (72 Hz for adaptive-72 and max beauty, 90 for adaptive-90, `?hz`
+// over an adaptive one); the bench ignores the quality and keeps its own frame-rate controls. The
+// quality setting applies at the next XR entry: the session request and the governor's reset at
+// session start read it then (P5.3).
+const benchless = (quality: QualityMode): QualityMode | null =>
+  flags.bench === null ? quality : null;
+const isBeauty = (quality: QualityMode): boolean => benchless(quality) === 'beauty-72';
+const targetFrameRateFor = (quality: QualityMode): number =>
+  resolveTargetFrameRate(flags.hz, benchless(quality));
 /** The rate the next XR entry requests. */
-const nextTargetFrameRate = (): number =>
-  resolveTargetFrameRate(flags.hz, isBeauty(settingsStore.effective.quality));
+const nextTargetFrameRate = (): number => targetFrameRateFor(settingsStore.effective.quality);
 /** The quality the current or last XR session started with; the boot's until then. */
 let sessionQuality: QualityMode = settings.quality;
 const session = createSessionController({
@@ -531,9 +535,8 @@ if (flags.bench === null) {
         scene,
         xr: renderer.xr,
         get targetHz() {
-          return resolveTargetFrameRate(
-            flags.hz,
-            isBeauty(renderer.xr.isPresenting ? sessionQuality : settingsStore.effective.quality),
+          return targetFrameRateFor(
+            renderer.xr.isPresenting ? sessionQuality : settingsStore.effective.quality,
           );
         },
         getGovernor: () => strokes.governorDiag(),

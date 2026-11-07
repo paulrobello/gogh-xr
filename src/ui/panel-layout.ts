@@ -57,9 +57,11 @@ export const MIN_TARGET = 0.025;
 export const TITLE_Y = PANEL_H / 2 - MARGIN - 0.012;
 export const HEADER_Y = PANEL_H / 2 - 0.072;
 
+/** Short labels: three segments share one column, about 9 cm each; the help text spells them out. */
 const QUALITY_OPTIONS: readonly SegmentOption[] = [
-  { value: 'adaptive-90', label: '90 Hz adaptive' },
-  { value: 'beauty-72', label: '72 Hz beauty' },
+  { value: 'adaptive-72', label: '72 Hz' },
+  { value: 'adaptive-90', label: '90 Hz' },
+  { value: 'beauty-72', label: 'Beauty' },
 ];
 
 export const CONTROLS: readonly ControlDef[] = [
@@ -152,7 +154,7 @@ export const CONTROLS: readonly ControlDef[] = [
     label: 'Quality',
     field: 'quality',
     options: QUALITY_OPTIONS,
-    help: '90 Hz with the adaptive governor, or 72 Hz at the highest stroke count',
+    help: '72 or 90 Hz with the adaptive governor, or beauty: 72 Hz at the highest stroke count',
     column: 1,
     row: 1,
   },

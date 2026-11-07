@@ -13,7 +13,7 @@ Strokes fill a full sphere around the viewer, uniform per solid angle, so any vi
 | blend | 325,000 holds. 425,000 is marginal. 450,000 fails. | 375,000 holds. 400,000 fails. | 325,000 holds. 350,000 fails. | 225,000 holds. 250,000 fails. |
 | a2c | 500,000 holds. 525,000 fails. | 450,000 holds. 475,000 fails. | 350,000 holds. 375,000 fails. | 225,000 holds. 250,000 fails. |
 
-At the default 90 Hz the budget is about 325,000 strokes blended or 350,000 with alpha-to-coverage, with roughly half of them on screen. At 72 Hz it is 325,000 blended or 500,000 with alpha-to-coverage.
+At 90 Hz (the `adaptive-90` quality, or `?hz=90`) the budget is about 325,000 strokes blended or 350,000 with alpha-to-coverage, with roughly half of them on screen. At 72 Hz it is 325,000 blended or 500,000 with alpha-to-coverage. Since 2026-11-07 the app's default quality is `adaptive-72`, which requests 72 Hz at session start. The bench (`?bench`) still defaults to 90 Hz.
 
 Blend at 425,000 and 72 Hz reads 73 fps, but its mean of 14.52 ms is over the 13.9 ms budget and its p99 is 24.5 ms, so it is counted as marginal rather than holding.
 

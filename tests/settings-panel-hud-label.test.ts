@@ -42,7 +42,7 @@ test('the HUD toggle label follows left X or H while the panel is open, within 1
     atlas: new Texture(),
     recenter: () => undefined,
     gallery: () => null,
-    sessionQuality: () => 'adaptive-90',
+    sessionQuality: () => 'adaptive-72',
     hud: {
       visible: () => hudVisible,
       setVisible: (visible) => {

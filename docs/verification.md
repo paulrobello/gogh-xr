@@ -1017,7 +1017,7 @@ So the frame is bound by geometry, many tiny stroke triangles processed in the t
 2. Framebuffer scale 1 to 0.85.
 3. Foveation to 1 (step `foveation-max`), the last resort, which P0.8 found blocky at the edges. It has its own hold, so a 0.5 step that window noise reads as no-gain does not block it. On Quest fb scale is always no-gain, so foveation 1 is the only measured lever.
 4. Far, mid and near density, with the existing floors and yield checks.
-5. The 72 Hz request, after 3 s of overrun with nothing left to shed.
+5. The 72 Hz request, after 3 s of overrun with nothing left to shed. Since 2026-11-07 only `adaptive-90` (`?hz=90` or `?hz=120`) makes it: the default quality, `adaptive-72`, asks for 72 Hz at session start, and a 72 Hz target never requests a rate.
 
 Restore and recovery run in the reverse order. `__goghDiag().governor.foveation` and the HUD now show the live foveation (0, 0.5 or 1). `xr/session.ts` still sets 0 at session start, but it does so after an awaited `updateTargetFrameRate`, which can land after a governor shed. So every judged frame re-asserts the governor's value when `renderer.xr.getFoveation()` reports another. The bench (`?bench`) never runs the governor and keeps its own foveation steps.
 

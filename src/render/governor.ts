@@ -24,10 +24,11 @@
  * total. Density goes last: each density step grows the band's stroke size by sqrt of the density
  * ratio to keep its coverage, so it keeps the painted area the same, it bought no measured time on
  * the headset, and it costs the most visible quality. After 3 s of continuous overrun with nothing
- * left to shed, it requests 72 Hz once. The 72 Hz budget and the notice take effect only when the
- * runtime reports the request applied (`rateApplied`); a failed request (`rateFailed`) leaves the
- * rate step unavailable. Restore pops the shed stack, so it runs in exactly the reverse order back
- * to the exact start levels.
+ * left to shed, a target above 72 Hz requests 72 Hz once. A 72 Hz target (the default adaptive-72,
+ * and max beauty) never requests a rate: the session asked for 72 at its start. The 72 Hz budget
+ * and the notice take effect only when the runtime reports the request applied (`rateApplied`); a
+ * failed request (`rateFailed`) leaves the rate step unavailable. Restore pops the shed stack, so
+ * it runs in exactly the reverse order back to the exact start levels.
  *
  * No-gain rule. A shed that buys no time costs quality for nothing: a density step that keeps the
  * painted area, or a framebuffer scale the runtime ignores. So the first window after a shed is
@@ -566,7 +567,9 @@ export function createGovernor(config: GovernorConfig): Governor {
       }
       overrunSince ??= start;
       if (rateRequest === 'pending') return null;
-      if (rateRequest === 'none' && frameRate > FALLBACK_HZ) {
+      // A 72 Hz target (adaptive-72, max beauty) already asked for 72 at session start: a
+      // session that reports more refused it, and the budget follows the reported rate.
+      if (rateRequest === 'none' && frameRate > FALLBACK_HZ && config.targetHz > FALLBACK_HZ) {
         if (t - overrunSince < RATE_DROP_AFTER_MS) return null;
         rateRequest = 'pending';
         changed();

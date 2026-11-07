@@ -148,7 +148,8 @@ test('the HUD matches diag within one update while the governor sheds, notice in
 }) => {
   const requests: string[] = [];
   page.on('request', (request) => requests.push(request.url()));
-  await bootHud(page, xr, '');
+  // ?hz=90 selects adaptive-90, whose 72 Hz fallback brings the notice this test needs.
+  await bootHud(page, xr, '&hz=90');
   await xr.enterXR();
 
   // Headless Chromium's 60 Hz vsync overruns the 90 Hz budget, so the governor moves. Vsync fixes
