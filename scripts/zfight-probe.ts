@@ -30,6 +30,9 @@ const POSES: readonly (readonly [string, number, number, number, number, number]
   ['painter-down', 0, 1.6, 0, 0, -0.25],
   ['village-look', 0, 1.6, 0, 0.6, -0.1],
   ['back', 0, 1.6, 0, Math.PI, -0.1],
+  ['sky-up-0.5', 0, 1.6, 0, 0, 0.5],
+  ['sky-up-1.0', 0, 1.6, 0, 0, 1],
+  ['ridge-horizon', 0, 1.6, 0, -0.7, 0.05],
 ];
 
 const browser = await chromium.launch({ channel: 'chromium', headless: true, args: gpuArgs });

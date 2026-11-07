@@ -80,8 +80,17 @@ void main() {
       lowbias32(floatBitsToUint(iPosition.y) ^ lowbias32(floatBitsToUint(iPosition.z)))
   );
   float u = float(h >> 8u) * (1.0 / 16777216.0);
-  // Lit windows sit just proud of their wall: the whole range keeps almost every wall stroke behind.
-  gl_Position.z -= range * ((iMeta.w & DEPTH_TIE_BREAK_FRONT_FLAG) != 0u ? 1.0 : u);
+  if ((iMeta.w & DEPTH_BACKDROP_FLAG) != 0u) {
+    // Sky dome (src/render/strokes/backdrop-depth.ts): a constant NDC z just in front of the far
+    // plane, nearer by BACKDROP_RANK_NDC per rank, so dome strokes keep one order by hash rank and
+    // sit behind the whole world. Clip z = w × ndc keeps perspective-correct varyings.
+    float rank = float(h >> BACKDROP_RANK_SHIFT);
+    gl_Position.z = gl_Position.w * (BACKDROP_FAR_NDC - rank * BACKDROP_RANK_NDC);
+  } else {
+    // Lit windows sit just proud of their wall: the whole range keeps almost every wall stroke
+    // behind.
+    gl_Position.z -= range * ((iMeta.w & DEPTH_TIE_BREAK_FRONT_FLAG) != 0u ? 1.0 : u);
+  }
 
   mat3 toWorld = mat3(modelMatrix);
   vNormal = normalize(toWorld * n);

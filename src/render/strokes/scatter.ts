@@ -27,13 +27,14 @@ import {
 } from '../../paintings/starry-night/canvas-camera';
 import { type CanvasSource, sampleCanvas } from '../../paintings/starry-night/canvas-histogram';
 import { mulberry32 } from '../../util/prng';
+import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import { BRUSHES } from './brush-atlas-data';
 import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
 import type { Vec3 } from './frame';
 import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
 
 /** Bump when the scatter's output changes for the same inputs; part of the cache key. */
-export const SCATTER_VERSION: number = 3;
+export const SCATTER_VERSION: number = 4;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -339,7 +340,9 @@ interface Surface extends Ordered {
  * meshes within a layer changes it.
  *
  * Per stroke: colour and flow from `sampleCanvas` (emissive meshes keep `userData.color`, linear
- * RGB, sRGB encoded), the colour divided by `strokeShade`; the interpolated vertex normal (the face
+ * RGB, sRGB encoded), the colour divided by `strokeShade`; the flags (`DEPTH_TIE_BREAK_FRONT_FLAG` on
+ * emissive meshes, `DEPTH_BACKDROP_FLAG` on meshes with `userData.backdrop`, the sky dome); the
+ * interpolated vertex normal (the face
  * normal without one); the tangent laid into the surface plane through the painter's camera in
  * frame, or against `stableFrame` where the sample was extrapolated; brush and stroke layer from
  * the region style of `LAYER_REGION[layer]`; length from the graded size at the stroke's distance.
@@ -381,6 +384,7 @@ export function scatterSurfaces(
     const rand = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 1));
     const style = REGION_STYLES[LAYER_REGION[layer]];
     const emissive = emissiveColor(geometry);
+    const backdrop = geometry.userData.backdrop === true;
     const position = geometry.getAttribute('position');
     const normalAttr = geometry.getAttribute('normal') as Attribute | undefined;
     for (let t = 0; t < counts.length; t++) {
@@ -450,7 +454,7 @@ export function scatterSurfaces(
           brush,
           layer: style.layer,
           phase,
-          flags: emissive ? DEPTH_TIE_BREAK_FRONT_FLAG : 0,
+          flags: (emissive ? DEPTH_TIE_BREAK_FRONT_FLAG : 0) | (backdrop ? DEPTH_BACKDROP_FLAG : 0),
         });
       }
     }

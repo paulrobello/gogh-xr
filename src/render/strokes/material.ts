@@ -1,4 +1,10 @@
 import { GLSL3, RawShaderMaterial, type Texture, Vector3, Vector4 } from 'three';
+import {
+  BACKDROP_RANK_SHIFT,
+  BACKDROP_RANK_SPACING,
+  backdropNdc,
+  DEPTH_BACKDROP_FLAG,
+} from './backdrop-depth';
 import { ATLAS_SIZE, BRUSH_COUNT, brushTexelRect, brushUvRect } from './brush-atlas-data';
 import {
   DEPTH_TIE_BREAK_FRONT_FLAG,
@@ -62,6 +68,10 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       DEPTH_TIE_BREAK_NDC: glslFloat(DEPTH_TIE_BREAK_STEPS * NDC_DEPTH_STEP),
       DEPTH_TIE_BREAK_MAX_M: glslFloat(DEPTH_TIE_BREAK_MAX_M),
       DEPTH_TIE_BREAK_FRONT_FLAG: `${DEPTH_TIE_BREAK_FRONT_FLAG}u`,
+      DEPTH_BACKDROP_FLAG: `${DEPTH_BACKDROP_FLAG}u`,
+      BACKDROP_FAR_NDC: glslFloat(backdropNdc(0, 'dome')),
+      BACKDROP_RANK_NDC: glslFloat(BACKDROP_RANK_SPACING * NDC_DEPTH_STEP),
+      BACKDROP_RANK_SHIFT: `${BACKDROP_RANK_SHIFT}u`,
     },
     transparent: false,
     depthWrite: true,

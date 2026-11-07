@@ -20,6 +20,7 @@ import {
   buildCanvasHistogram,
   type CanvasSource,
 } from '../src/paintings/starry-night/canvas-histogram.ts';
+import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import { BRUSHES } from '../src/render/strokes/brush-atlas-data.ts';
 import { DEPTH_TIE_BREAK_FRONT_FLAG } from '../src/render/strokes/depth-tie-break.ts';
 import { strokeAxes, type Vec3 } from '../src/render/strokes/frame.ts';
@@ -409,6 +410,27 @@ test('only emissive (window) strokes carry the depth tie-break front flag', () =
   }
   expect(front).toBeGreaterThan(400);
   expect(buffers.count - front).toBeGreaterThan(400);
+});
+
+test('only strokes on a backdrop surface carry the backdrop flag', () => {
+  const dome = createSkyDome();
+  // A plain sky-layer wall, as `?strokesTest` and the haze are: sky colours, normal depth.
+  const skyWall = wall(3, 2, [0, 2, -15], 'sky');
+  skyWall.userData.scatter = { density: 50 };
+  const buffers = scatterSurfaces([dome, skyWall], MIXED, {
+    seed: 7,
+    density: { sky: 0.02 },
+    size: flat(2, 'sky'),
+  });
+  let backdrop = 0;
+  for (let i = 0; i < buffers.count; i++) {
+    const s = unpackInstance(buffers, i);
+    const onDome = eyeDistance(s.position) > 100;
+    expect(s.flags).toBe(onDome ? DEPTH_BACKDROP_FLAG : 0);
+    if (onDome) backdrop++;
+  }
+  expect(backdrop).toBeGreaterThan(1000);
+  expect(buffers.count - backdrop).toBeGreaterThan(0);
 });
 
 test('sky dome strokes face the eye', () => {

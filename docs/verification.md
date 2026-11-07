@@ -121,3 +121,63 @@ The coverage and fidelity gates stayed green with their thresholds unchanged. Be
 
 The lit windows stay intact in the painter view and up close at the cypress base. In the painter view the church reads slightly paler and more defined, because its overlapping strokes now resolve in a fixed order.
 
+
+### Sky dome strokes
+
+Paul still saw the outermost sky strokes strobe in the headset on build e018c2f. At the dome's 120 m one window-depth step is about 8.6 mm, so the 0.25 m cap spans only about 29 steps. Dome strokes are about 7 m long, lie tangent to a curved dome and overlap heavily, so they still traded places.
+
+The fix (`src/render/strokes/backdrop-depth.ts`) orders dome strokes by a stable per-instance rank instead of by geometric depth:
+- The scatter sets `DEPTH_BACKDROP_FLAG` (bit 2 of the spare meta byte) on strokes from a surface with `userData.backdrop`, which only the sky dome carries (`src/world/sky.ts`). The boundary haze, the ridge, `?demo=canvas` and `?strokesTest` also use stroke layer 0, so the flag selects the dome, not the layer. Haze keeps its normal depth and the tie-break.
+- The vertex shader writes clip z = w × (1 − (16 + 4·rank) · 2^-23) for a flagged stroke. The rank is the top 10 bits of the stroke's position hash, so 1024 ranks 4 steps apart sit between 16 and 4108 steps in front of the far plane. Each quad is flat in depth, so two overlapping dome strokes keep one order whatever the eye does. The 4-step spacing exceeds the GPU's rounding of z / w near 1.
+- Stars and moon (layers 1 and 2) get a reserved front tier: the next 256 ranks, nearer than every dome rank. Today the shader puts every flagged stroke in the dome tier. When those layers land, their scatter sets the flag and the shader offsets their rank by 1024.
+- The nearest reserved rank is at 246 m of view depth at near 0.1 and far 1000. The farthest non-dome surface, seen from anywhere inside the boundary, is 169 m away, so every backdrop stroke draws behind the whole world. `tests/strokes-backdrop-depth.test.ts` checks this budget. A change to the camera's far plane in `src/main.ts` needs that test rerun.
+- The dome has no base mesh any more (`base-meshes.ts`). At its true depth it would cover the far-end strokes, and the clear colour is already the dome's under-paint, or magenta in the debug paint.
+- SCATTER_VERSION 4. Only the scatter hash changed (`bb6f674f`); every count is the same.
+
+The probe gained three sky-heavy poses at the painter's eye: pitch +0.5, pitch +1.0, and a horizon pose toward the ridge (yaw −0.7, pitch +0.05). Before is e018c2f and after is the backdrop rank, both production builds served by `vite preview` and probed back to back on the same host. The first four poses match the earlier "After" row exactly, so the render is deterministic.
+
+Share of pixels changed after a 0.1 mm shift, top / mid / bottom third (%):
+
+| Pose | Before (e018c2f) | After (backdrop rank) |
+| --- | --- | --- |
+| painter-level | 0.039 / 0.100 / 0.258 | 0.037 / 0.098 / 0.258 |
+| painter-down | 0.054 / 0.194 / 0.582 | 0.051 / 0.194 / 0.582 |
+| village-look | 0.247 / 0.406 / 0.661 | 0.050 / 0.337 / 0.661 |
+| back | 0.058 / 0.209 / 0.444 | 0.046 / 0.209 / 0.444 |
+| sky-up-0.5 (pitch +0.5) | 0.030 / 0.039 / 0.093 | 0.028 / 0.037 / 0.091 |
+| sky-up-1.0 (pitch +1.0) | 0.145 / 0.048 / 0.039 | 0.028 / 0.030 / 0.037 |
+| ridge-horizon (yaw −0.7, pitch +0.05) | 0.235 / 0.346 / 0.383 | 0.044 / 0.345 / 0.383 |
+
+Share after a 1 mm shift, same layout (%):
+
+| Pose | Before (e018c2f) | After (backdrop rank) |
+| --- | --- | --- |
+| painter-level | 0.396 / 0.711 / 2.070 | 0.365 / 0.710 / 2.070 |
+| painter-down | 0.450 / 1.377 / 5.050 | 0.449 / 1.377 / 5.050 |
+| village-look | 0.574 / 0.976 / 4.187 | 0.367 / 0.911 / 4.187 |
+| back | 0.373 / 0.750 / 3.292 | 0.297 / 0.750 / 3.292 |
+| sky-up-0.5 | 0.316 / 0.370 / 0.676 | 0.288 / 0.343 / 0.662 |
+| sky-up-1.0 | 0.429 / 0.332 / 0.354 | 0.226 / 0.281 / 0.345 |
+| ridge-horizon | 0.429 / 0.653 / 1.279 | 0.207 / 0.653 / 1.279 |
+
+The sky thirds drop to the parallax floor: village-look top reads 0.050%, against the 0.048% floor measured above, and ridge-horizon top drops 5.3×. The sky's flips now grow linearly with the shift (sky-up-1.0: 0.032% at 0.1 mm, 0.284% at 1 mm over the frame), the signature of edge parallax.
+
+A second measure separates depth fights from edge flips: the share of the frame whose flipped pixel has at least 4 of its 8 neighbours flipped too. A depth fight flips a patch, and a parallax flip a 1 px line. After a 0.1 mm shift (% of the frame):
+
+| Pose | Before | After |
+| --- | --- | --- |
+| sky-up-1.0 | 0.0206 | 0.0016 |
+| ridge-horizon | 0.1059 | 0.0651 |
+| village-look | 0.1011 | 0.0450 |
+| sky-up-0.5 | 0.0052 | 0.0052 |
+| painter-level | 0.0026 | 0.0026 |
+
+In the after build, a diagnostic build that hid the haze measured 0.0000 clustered at sky-up-1.0, so the dome itself no longer fights and the 0.0016 left there is haze. The patches left at ridge-horizon and village-look sit on the horizon band. They are the boundary haze (45-55 m) and the ridge's 3-5 m strokes at 70-110 m, both at normal depth with the 0.25 m cap. With the haze hidden, the ridge alone flickers in large patches (0.63% clustered at ridge-horizon), which the haze mostly covers in the normal view. This is not fixed here.
+
+The coverage and fidelity gates stayed green with their thresholds unchanged:
+
+| Gate | Before (0.25 m cap) | After (backdrop rank) |
+| --- | --- | --- |
+| `world-coverage.spec.ts` max bare share (limit 0.5%) | 0.440% at hill west (weighted 0.590%) | 0.440% at hill west (weighted 0.590%) |
+| `fidelity.spec.ts` SSIM (limit ≥ 0.2643) | 0.2967 | 0.2970 |
+| `fidelity.spec.ts` mean ΔE2000 (limit ≤ 7.1961) | 5.7021 | 5.7006 |

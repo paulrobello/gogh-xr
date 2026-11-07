@@ -63,7 +63,10 @@ function baseColor(geometry: BufferGeometry, histogram: CanvasHistogram): Color 
  * strokes lying on the surface always win the depth test. Strokes are back-face culled, so a back
  * face is where no stroke can show: drawing it would only paint a gap. The world stays closed (the
  * dome faces inward all round, the terrain up), and the cypress's open base sits at or under the
- * ground.
+ * ground. A backdrop surface (`userData.backdrop`, the sky dome) gets no mesh: its strokes draw by
+ * rank just in front of the far plane (src/render/strokes/backdrop-depth.ts), where a base mesh at
+ * its true depth would cover them, and the scene's clear colour is its under-paint (magenta in the
+ * debug paint, index.ts), so a gap between them shows the same colour.
  */
 export function createBaseMeshes(
   surfaces: readonly BufferGeometry[],
@@ -73,6 +76,7 @@ export function createBaseMeshes(
   const group = new Group();
   group.name = 'base-meshes';
   for (const geometry of surfaces) {
+    if (geometry.userData.backdrop === true) continue;
     const material = new MeshBasicMaterial({
       color: paint === 'magenta' ? new Color(BARE_COLOR) : baseColor(geometry, histogram),
       side: FrontSide,

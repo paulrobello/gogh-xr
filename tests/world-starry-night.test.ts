@@ -42,10 +42,12 @@ import {
   worldScatterKeyInputs,
   worldSeeds,
 } from '../src/paintings/starry-night/world.ts';
+import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import { STROKE_BUDGET } from '../src/render/strokes/bands.ts';
 import { createStrokeBatch, type StrokeBatch } from '../src/render/strokes/batch.ts';
 import {
   STROKE_ATTRIBUTES,
+  STROKE_LAYER,
   type StrokeBuffers,
   unpackInstance,
 } from '../src/render/strokes/instance.ts';
@@ -304,7 +306,9 @@ describe('base meshes', () => {
 
   test('each surface draws flat in its layer under-paint, windows in their warm colour', () => {
     const meshes = materials('underpaint');
-    expect(meshes).toHaveLength(WORLD.surfaces.length);
+    // The dome is a backdrop: no base mesh, the clear colour is its under-paint.
+    expect(meshes).toHaveLength(WORLD.surfaces.length - 1);
+    expect(meshes.map(([geometry]) => geometry)).not.toContain(WORLD.dome);
     for (const [geometry, material] of meshes) {
       // Front faces only: a back face is where every stroke on it is culled too.
       expect(material.side).toBe(FrontSide);
@@ -389,10 +393,23 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
         ground: 129_925,
         building: 84_264,
       },
-      hash: '480f43d7',
+      hash: 'bb6f674f',
       haze: 30_000,
       hazeHash: '49bf0339',
     });
+  });
+
+  test('every dome stroke, and nothing else, carries the backdrop flag', () => {
+    let dome = 0;
+    for (let i = 0; i < buffers.count; i++) {
+      const flags = buffers.meta[i * 4 + 3];
+      const layer = buffers.meta[i * 4 + 1];
+      const backdrop = (flags & DEPTH_BACKDROP_FLAG) !== 0;
+      // Haze is appended after the scattered strokes and keeps its normal depth.
+      expect(backdrop, `stroke ${i}`).toBe(i < scattered.count && layer === STROKE_LAYER.sky);
+      if (backdrop) dome++;
+    }
+    expect(dome).toBe(strokeLayerCounts(scattered).sky);
   });
 
   test('ground strokes lie in their triangle with its face normal, not the smooth one', () => {

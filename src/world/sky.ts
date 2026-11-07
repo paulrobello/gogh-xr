@@ -27,7 +27,7 @@ export const SKY_LAYER: WorldLayer = 'sky';
 /**
  * Inward-facing UV-sphere of radius SKY_DOME_RADIUS centred on PAINTER_EYE. Normals point at the
  * centre and the counter-clockwise face normal points inward. The pole rows are single points, so
- * the polar quads collapse to one triangle each.
+ * the polar quads collapse to one triangle each. `userData.backdrop` is true.
  */
 export function createSkyDome(): BufferGeometry {
   const w = SKY_DOME_WIDTH_SEGMENTS;
@@ -69,6 +69,9 @@ export function createSkyDome(): BufferGeometry {
   geometry.setAttribute('normal', new BufferAttribute(normal, 3));
   geometry.setIndex(index);
   geometry.userData.layer = SKY_LAYER;
+  // Strokes on it draw by rank behind the world (src/render/strokes/backdrop-depth.ts), and it has
+  // no base mesh.
+  geometry.userData.backdrop = true;
   return geometry;
 }
 

@@ -8,8 +8,6 @@ import {
   depthTieBreakRange,
   NDC_DEPTH_STEP,
 } from '../src/render/strokes/depth-tie-break.ts';
-import { SKY_DOME_RADIUS } from '../src/world/sky.ts';
-import { RIDGE_RADIUS } from '../src/world/terrain.ts';
 import { OUTLINE_GAP, ROOF_OVERHANG } from '../src/world/village.ts';
 
 const NEAR = 0.1;
@@ -51,10 +49,8 @@ describe('depthTieBreakRange', () => {
     // cap within both leaves only thin swaps where those surfaces meet (ruling Q21).
     expect(DEPTH_TIE_BREAK_MAX_M).toBeLessThanOrEqual(ROOF_OVERHANG);
     expect(DEPTH_TIE_BREAK_MAX_M).toBeLessThanOrEqual(OUTLINE_GAP);
-    // A sky stroke must stay behind the ridge's farthest reach.
-    expect(depthTieBreakRange(SKY_DOME_RADIUS, NEAR, FAR)).toBeLessThan(
-      SKY_DOME_RADIUS - RIDGE_RADIUS.max,
-    );
+    // Sky dome strokes skip the tie-break: they draw by backdrop rank behind the whole world,
+    // which tests/strokes-backdrop-depth.test.ts checks.
   });
 });
 
