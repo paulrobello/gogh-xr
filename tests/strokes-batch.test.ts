@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { motionClock } from '../src/motion/clock.ts';
 import { MOTION_LAYER_MASK } from '../src/motion/layers.ts';
+import { SKY_RINGS, skyRingReach } from '../src/motion/sky-rings.ts';
 import { skySwirlReach } from '../src/motion/sky-swirl.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import {
@@ -22,6 +23,7 @@ import {
   createStrokeBatch,
   holdsHaze,
   isPinnedStroke,
+  SKY_REACH_MARGIN,
   type StrokeBatch,
 } from '../src/render/strokes/batch.ts';
 import { cullAndSortInto } from '../src/render/strokes/chunks.ts';
@@ -368,6 +370,67 @@ describe('bands', () => {
     expect(chunk.mesh.visible).toBe(true);
     expect(() => batch.setSizeMultiplier('mid', 0)).toThrow(RangeError);
     expect(() => batch.setSizeMultiplier('mid', Number.POSITIVE_INFINITY)).toThrow(RangeError);
+    batch.dispose();
+  });
+
+  test('a star chunk grows by calm times its ring reach while the star gate is open (P4.3)', () => {
+    // A star stroke halfway out its ring, where it moves farthest, and a sky stroke far from it.
+    const ring = SKY_RINGS[10];
+    const star: [number, number, number] = [
+      ring.centre[0] + 0.5 * ring.outer,
+      ring.centre[1],
+      ring.centre[2],
+    ];
+    const buffers = createStrokeBuffers(2);
+    for (const [i, position, layer, phase] of [
+      [0, star, STROKE_LAYER.star, 10],
+      [1, [60, 40, -60], STROKE_LAYER.sky, 0],
+    ] as const) {
+      packInstance(buffers, i, {
+        position,
+        normal: [0, 0, 1],
+        tangent: 0,
+        color: [255, 255, 255, 255],
+        size: [2, 1],
+        brush: 0,
+        layer,
+        phase,
+      });
+    }
+    const batch = createStrokeBatch(buffers, { cellSize: 24, createAtlas: tinyAtlas });
+    expect(batch.chunks).toHaveLength(2);
+    const cull = vi.mocked(cullAndSortInto);
+    const radii = (): number[] => {
+      batch.update(originCamera());
+      return (cull.mock.calls.at(-1)?.[0] ?? []).map((sphere) => sphere.radius);
+    };
+    const starChunk = batch.chunks.findIndex((c) => c.bounds.center.x < 30);
+    const skyChunk = 1 - starChunk;
+    const starReach = SKY_REACH_MARGIN * skyRingReach(ring, ...star);
+    const skyReach = SKY_REACH_MARGIN * skySwirlReach(60, 40, -60);
+    expect(starReach).toBeCloseTo(0.25 * ring.swell * ring.outer * SKY_REACH_MARGIN, 4);
+    const rest = radii();
+    try {
+      motionClock.setLayerMask(1 << STROKE_LAYER.star);
+      motionClock.setCalm(0.5);
+      const star = radii();
+      expect(star[starChunk]).toBeCloseTo(rest[starChunk] + 0.5 * starReach, 4);
+      expect(star[skyChunk]).toBe(rest[skyChunk]);
+      motionClock.setLayerMask(1 << STROKE_LAYER.sky);
+      const sky = radii();
+      expect(sky[starChunk]).toBe(rest[starChunk]);
+      expect(sky[skyChunk]).toBeCloseTo(rest[skyChunk] + 0.5 * skyReach, 9);
+      motionClock.setLayerMask(MOTION_LAYER_MASK);
+      motionClock.setCalm(1);
+      const all = radii();
+      expect(all[starChunk]).toBeCloseTo(rest[starChunk] + starReach, 4);
+      motionClock.setFrozen(true);
+      expect(radii()).toEqual(rest);
+    } finally {
+      motionClock.setFrozen(false);
+      motionClock.setCalm(1);
+      motionClock.setLayerMask(0);
+    }
     batch.dispose();
   });
 

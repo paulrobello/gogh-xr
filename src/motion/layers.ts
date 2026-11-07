@@ -5,11 +5,16 @@
 import { STROKE_LAYER, type StrokeLayer } from '../render/strokes/instance';
 
 /**
- * The layers whose motion is live: the sky (P4.2). A stroke on a closed layer pays one AND, compare
- * and branch per vertex, and no motion maths. The app's clock opens these only for a world
- * (main.ts), so the P1 canvas demo, the stroke test scene and the bench stay static.
+ * The layers whose motion is live: the sky (P4.2), the stars and the moon (P4.3). A stroke on a
+ * closed layer pays one AND, compare and branch per vertex, and no motion maths. The app's clock
+ * opens these only for a world (main.ts), so the P1 canvas demo, the stroke test scene and the
+ * bench stay static.
  */
-export const MOTION_LAYERS: readonly StrokeLayer[] = Object.freeze([STROKE_LAYER.sky]);
+export const MOTION_LAYERS: readonly StrokeLayer[] = Object.freeze([
+  STROKE_LAYER.sky,
+  STROKE_LAYER.star,
+  STROKE_LAYER.moon,
+]);
 
 /** Bit `layer` set for each layer in `layers`. Layers are 0-5, inside one uint. */
 export function motionLayerMask(layers: readonly StrokeLayer[]): number {

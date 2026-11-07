@@ -376,7 +376,7 @@ describe('sky swirl wiring', () => {
     // R-P4h: the moving path has one inverse square root and no other special function.
     const sky = motionGlsl.slice(
       motionGlsl.indexOf('Motion skyMotion('),
-      motionGlsl.indexOf('Motion starMotion('),
+      motionGlsl.indexOf('Motion ringMotion('),
     );
     expect(
       sky.match(/\b(sin|cos|tan|asin|acos|atan|exp|log|pow|sqrt|length|normalize)\(/g),

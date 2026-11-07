@@ -37,6 +37,7 @@ flat out vec3 vNormal;
 flat out vec3 vLong;
 flat out vec3 vShort;
 
+// #include sky-rings.glsl (src/motion/sky-rings.glsl, spliced in by material.ts)
 // #include motion.glsl (src/motion/motion.glsl, spliced in by material.ts)
 
 // Matches octDecode in instance.ts.
@@ -138,6 +139,8 @@ void main() {
     size *= sqrt(thin);
   }
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
+  // iColor.a is reserved: under alpha-to-coverage, alpha below 1 inside a stroke dithers (R3).
+  vec3 color = iColor.rgb;
   // Motion (P4.1): one AND, compare and branch for a stroke whose layer is still, or for every
   // stroke while frozen or at calm 0, and none for a thinned-out haze stroke. The motion is the
   // centre's, the same at every corner; the corner work is the turn of the axes. The depth hashes
@@ -155,6 +158,8 @@ void main() {
     size *= 1.0 + m.gain;
     local = iPosition + m.offset + longAxis * (position.x * size.x) +
       shortAxis * (position.y * size.y);
+    // The star and moon rings' crest (P4.3); 0 for every other layer.
+    color *= 1.0 + m.bright;
   }
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));
   // Depth tie-break (src/render/strokes/depth-tie-break.ts): each stroke moves towards the eye by
@@ -200,8 +205,7 @@ void main() {
   vec4 rect = uBrushRects[min(iMeta.x, uint(BRUSH_COUNT - 1))];
   vUv = rect.xy + rect.zw * (position.xy + 0.5);
   vRect = vec4(rect.xy, rect.xy + rect.zw);
-  // iColor.a is reserved: under alpha-to-coverage, alpha below 1 inside a stroke dithers (R3).
-  vColor = iColor.rgb;
+  vColor = color;
 
   // Last, after every other output.
   if (thin <= 0.0) {

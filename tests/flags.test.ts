@@ -8,6 +8,8 @@ test('defaults when search is empty', () => {
     calm: null,
     motiont: null,
     motionphase: null,
+    motionlayers: null,
+    nohalo: false,
     shot: false,
     diag: false,
     hud: false,
@@ -37,7 +39,7 @@ test('defaults when search is empty', () => {
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo',
   );
   expect(f).toEqual({
     seed: 42,
@@ -45,6 +47,8 @@ test('parses every flag', () => {
     calm: 0.25,
     motiont: 12.5,
     motionphase: 0.25,
+    motionlayers: 0b101,
+    nohalo: true,
     shot: true,
     diag: true,
     hud: true,
@@ -277,6 +281,22 @@ test('?motiont pins a time in seconds, wrapped at 3600; negative or malformed is
   expect(parseFlags('?motiont=-1').motiont).toBeNull();
   expect(parseFlags('?motiont=abc').motiont).toBeNull();
   expect(parseFlags('?motiont').motiont).toBeNull();
+});
+
+test('?motionlayers is a stroke layer mask, null when absent; unknown names add nothing', () => {
+  expect(parseFlags('?motionlayers=sky').motionlayers).toBe(1);
+  expect(parseFlags('?motionlayers=star,moon').motionlayers).toBe(0b110);
+  expect(parseFlags('?motionlayers=%20SKY%20,bogus').motionlayers).toBe(1);
+  expect(parseFlags('?motionlayers=bogus').motionlayers).toBe(0);
+  expect(parseFlags('?motionlayers').motionlayers).toBe(0);
+  expect(parseFlags('').motionlayers).toBeNull();
+});
+
+test('nohalo is a boolean flag, off for 0 and false', () => {
+  expect(parseFlags('?nohalo').nohalo).toBe(true);
+  expect(parseFlags('?nohalo=0').nohalo).toBe(false);
+  expect(parseFlags('?nohalo=false').nohalo).toBe(false);
+  expect(parseFlags('').nohalo).toBe(false);
 });
 
 test('?motionphase pins a phase fraction, wrapped to [0, 1); negative or malformed is null', () => {

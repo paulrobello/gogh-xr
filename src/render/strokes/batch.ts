@@ -14,6 +14,7 @@ import {
   Vector3,
 } from 'three';
 import { motionGate } from '../../motion/layers';
+import { ringOf, skyRingReach } from '../../motion/sky-rings';
 import { skySwirlReach } from '../../motion/sky-swirl';
 import { addBeforeRender } from '../scene-hooks';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
@@ -208,20 +209,50 @@ export function holdsHaze(buffers: StrokeBuffers): boolean {
   return false;
 }
 
+/** The farthest a chunk's strokes of each moving layer move from rest at calm 1, metres. */
+export interface MotionReaches {
+  readonly sky: number;
+  readonly star: number;
+  readonly moon: number;
+}
+
 /**
- * The farthest any stroke in `buffers` moves from rest at calm 1, metres: the largest exact
- * `skySwirlReach` of its sky strokes, times SKY_REACH_MARGIN. The cull sphere of a chunk grows by it
- * times calm while the sky's gate is open (ruling R-P4a), so a moving stroke never leaves its
- * sphere, and by nothing while it is closed.
+ * Per moving layer, the farthest any stroke in `buffers` moves from rest at calm 1, metres, times
+ * SKY_REACH_MARGIN: the largest exact `skySwirlReach` of its sky strokes and `skyRingReach` of its
+ * star and moon strokes (each round the ring its phase byte names, as motion.glsl reads it). The
+ * cull sphere of a chunk grows by calm times the largest of these whose layer's gate is open
+ * (ruling R-P4a), so a moving stroke never leaves its sphere, and by nothing while all are closed.
  */
-export function motionReachOf(buffers: StrokeBuffers): number {
-  let reach = 0;
+export function motionReachesOf(buffers: StrokeBuffers): MotionReaches {
+  let sky = 0;
+  let star = 0;
+  let moon = 0;
   const p = buffers.position;
   for (let i = 0; i < buffers.count; i++) {
-    if (buffers.meta[i * 4 + 1] !== STROKE_LAYER.sky) continue;
-    reach = Math.max(reach, skySwirlReach(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]));
+    const layer = buffers.meta[i * 4 + 1];
+    const x = p[i * 3];
+    const y = p[i * 3 + 1];
+    const z = p[i * 3 + 2];
+    if (layer === STROKE_LAYER.sky) {
+      sky = Math.max(sky, skySwirlReach(x, y, z));
+    } else if (layer === STROKE_LAYER.star || layer === STROKE_LAYER.moon) {
+      const isMoon = layer === STROKE_LAYER.moon;
+      const reach = skyRingReach(ringOf(isMoon, buffers.meta[i * 4 + 2]), x, y, z);
+      if (isMoon) moon = Math.max(moon, reach);
+      else star = Math.max(star, reach);
+    }
   }
-  return reach * SKY_REACH_MARGIN;
+  return {
+    sky: sky * SKY_REACH_MARGIN,
+    star: star * SKY_REACH_MARGIN,
+    moon: moon * SKY_REACH_MARGIN,
+  };
+}
+
+/** The largest of `motionReachesOf(buffers)`: the farthest any of its strokes moves at calm 1. */
+export function motionReachOf(buffers: StrokeBuffers): number {
+  const { sky, star, moon } = motionReachesOf(buffers);
+  return Math.max(sky, star, moon);
 }
 
 /** Headroom for the shader's float32 motion over the float64 reach. */
@@ -324,14 +355,17 @@ export function createStrokeBatch(
   /**
    * Cull spheres: the bounds with the half-diagonal scaled by the band's size multiplier, and for
    * a chunk holding boundary haze also by the haze's full growth (`HAZE_GROWTH`), so a thickened
-   * haze stroke never reaches past its sphere. A chunk holding sky strokes also grows by its motion
-   * reach (`motionReachOf`) times `motionScale`, unscaled by the band.
+   * haze stroke never reaches past its sphere. A chunk holding moving strokes also grows by calm
+   * times the largest motion reach (`motionReachesOf`) of the layers whose gate is open, unscaled by
+   * the band.
    */
   const cullSpheres: Sphere[] = [];
   const reaches: number[] = [];
-  const motionReaches: number[] = [];
-  /** Calm while the sky's motion gate is open, else 0: the share of the motion reach applied. */
-  let motionScale = 0;
+  const motionReaches: MotionReaches[] = [];
+  /** The calm and the sky, star and moon gate bits the cull spheres were last grown for. */
+  let motionCalm = 0;
+  let motionBits = 0;
+  const MOTION_BITS = (1 << STROKE_LAYER.sky) | (1 << STROKE_LAYER.star) | (1 << STROKE_LAYER.moon);
   const motionUniforms = materials.near.uniforms;
   const halfDiagonals: number[] = [];
   for (let c = 0; c + 1 < offsets.length; c++) {
@@ -354,7 +388,7 @@ export function createStrokeBatch(
     bandOf.push(null);
     cullSpheres.push(bounds.clone());
     reaches.push(box.reach);
-    motionReaches.push(motionReachOf(data));
+    motionReaches.push(motionReachesOf(data));
     halfDiagonals.push(box.halfDiagonal * (holdsHaze(data) ? 1 + HAZE_GROWTH : 1));
     chunks.push({
       mesh,
@@ -380,9 +414,19 @@ export function createStrokeBatch(
     chunks[i].setDrawCount(pinned + bandDrawCount(densities[band], count - pinned));
   }
 
+  /** Calm times the largest reach of chunk `i`'s layers whose gate is open, metres. */
+  function motionGrowth(i: number): number {
+    if (motionBits === 0) return 0;
+    const r = motionReaches[i];
+    let reach = 0;
+    if (motionGate(motionBits, STROKE_LAYER.sky)) reach = Math.max(reach, r.sky);
+    if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);
+    if (motionGate(motionBits, STROKE_LAYER.moon)) reach = Math.max(reach, r.moon);
+    return motionCalm * reach;
+  }
+
   function applySize(i: number, band: StrokeBand): void {
-    cullSpheres[i].radius =
-      reaches[i] + motionScale * motionReaches[i] + halfDiagonals[i] * sizes[band];
+    cullSpheres[i].radius = reaches[i] + motionGrowth(i) + halfDiagonals[i] * sizes[band];
   }
 
   const frustum = new Frustum();
@@ -410,11 +454,11 @@ export function createStrokeBatch(
     },
     update(camera: Camera) {
       eye.setFromMatrixPosition(camera.matrixWorld);
-      const scale = motionGate(motionUniforms.uMotionLayers.value, STROKE_LAYER.sky)
-        ? motionUniforms.uCalm.value
-        : 0;
-      const rescale = scale !== motionScale;
-      motionScale = scale;
+      const bits = (motionUniforms.uMotionLayers.value >>> 0) & MOTION_BITS;
+      const calm = bits === 0 ? 0 : motionUniforms.uCalm.value;
+      const rescale = bits !== motionBits || calm !== motionCalm;
+      motionBits = bits;
+      motionCalm = calm;
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         const band = nextBand(

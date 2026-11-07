@@ -8,6 +8,7 @@
 import { BufferAttribute, BufferGeometry } from 'three';
 import regionsJson from '../../assets/bake/starry-night/regions.json';
 import {
+  CANVAS_ASPECT,
   canvasRay,
   PAINTER_EYE,
   type Vec2,
@@ -135,4 +136,43 @@ export function skyAnchors(
     }
   }
   return Object.freeze(anchors);
+}
+
+/**
+ * A light's strokes reach out to this many anchor radii (src/world/sky-lights.ts). Inside one
+ * radius they are at full density; from there to this radius their density eases to 0
+ * (smoothstep), so the dome's own strokes show between them more and more and the disc has no
+ * circular edge. The scan's halo rings around the moon and the stars lie in that band.
+ */
+export const SKY_LIGHT_RIM: number = 1.5;
+
+/** Samples round the circle `anchorReach` measures. */
+const REACH_SAMPLES = 32;
+
+/**
+ * The farthest dome point from `anchor.position`, metres, on the canvas circle `rho` anchor radii
+ * round the anchor (v units CANVAS_ASPECT longer, as the moon and star strokes are placed), over
+ * REACH_SAMPLES points: perspective stretches the circle most there. Every moon or star stroke
+ * centred inside `rho` radii lies within it, up to the sampling. The haze cones (sky-lights.ts)
+ * and the star and moon rings (src/motion/sky-rings.ts) read it.
+ */
+export function anchorReach(anchor: SkyAnchor, rho: number): number {
+  const reach = rho * anchor.radius;
+  let radius = 0;
+  for (let k = 0; k < REACH_SAMPLES; k++) {
+    const t = (k / REACH_SAMPLES) * 2 * Math.PI;
+    const ray = canvasRay(
+      anchor.uv[0] + reach * Math.cos(t),
+      anchor.uv[1] + reach * Math.sin(t) * CANVAS_ASPECT,
+    );
+    radius = Math.max(
+      radius,
+      Math.hypot(
+        PAINTER_EYE[0] + ray[0] * SKY_DOME_RADIUS - anchor.position[0],
+        PAINTER_EYE[1] + ray[1] * SKY_DOME_RADIUS - anchor.position[1],
+        PAINTER_EYE[2] + ray[2] * SKY_DOME_RADIUS - anchor.position[2],
+      ),
+    );
+  }
+  return radius;
 }

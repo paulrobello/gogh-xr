@@ -9,6 +9,7 @@ import sharp from 'sharp';
 import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
 import { MAX_MOTION_DT_S } from '../../src/motion/clock.ts';
 import { MOTION_LAYER_MASK } from '../../src/motion/layers.ts';
+import { STROKE_LAYER } from '../../src/render/strokes/instance.ts';
 import { expect, glErrors, test, type Xr } from './fixtures';
 
 interface MotionDiag {
@@ -122,9 +123,12 @@ test.describe('sky swirl (P4.2)', () => {
   /**
    * Patch centres, canvas (u, v down): the points of a 0.1 grid over the sky (u 0.35-0.85, v
    * 0.1-0.4) that are clear of the star and moon discs and that the prediction moves 4 px or more.
-   * The star and moon layers stay still in P4.2, so a patch they fill reads no shift: (0.35, 0.1),
-   * (0.35, 0.3), (0.55, 0.1), (0.65, 0.1), (0.65, 0.2), (0.75, 0.2), (0.75, 0.3) and (0.85, 0.2)
-   * read under 1 px, and the moon at (0.85, 0.1) matches nowhere. (0.55, 0.4) moves under 4 px.
+   * Every shot opens the sky layer alone (`?motionlayers=sky`) and hides the halo (`?nohalo`), so
+   * the P4.3 rings neither move nor brighten the light strokes and the block match reads the sky
+   * swirl alone; the rings have their own test below. The star and moon layers stay still, so a
+   * patch they fill reads no shift: (0.35, 0.1), (0.35, 0.3), (0.55, 0.1), (0.65, 0.1), (0.65,
+   * 0.2), (0.75, 0.2), (0.75, 0.3) and (0.85, 0.2) read under 1 px, and the moon at (0.85, 0.1)
+   * matches nowhere. (0.55, 0.4) moves under 4 px.
    */
   const PATCHES: readonly (readonly [number, number])[] = [
     [0.35, 0.2],
@@ -142,9 +146,13 @@ test.describe('sky swirl (P4.2)', () => {
     [0.85, 0.3],
     [0.85, 0.4],
   ];
+  /** The motion layers `?motionlayers=sky` leaves open. */
+  const SKY_ONLY = 1 << STROKE_LAYER.sky;
 
   async function painterShot(page: Page, xr: Xr, extra: string): Promise<Buffer> {
-    await xr.boot(`painting=starry-night&seed=1&shot&painter&nogov&motionphase=0&${extra}`);
+    await xr.boot(
+      `painting=starry-night&seed=1&shot&painter&nogov&motionphase=0&motionlayers=sky&nohalo&${extra}`,
+    );
     await expect
       .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
       .toBe(true);
@@ -223,20 +231,11 @@ test.describe('sky swirl (P4.2)', () => {
     const { width, height } = CAPTURE_SIZE;
     const rest = await painterShot(page, xr, 'noanim');
     const still = await painterShot(page, xr, `calm=0&motiont=${PINNED}`);
-    expect(await motion(xr)).toEqual({
-      time: PINNED,
-      calm: 0,
-      frozen: false,
-      layers: MOTION_LAYER_MASK,
-    });
+    expect(await motion(xr)).toEqual({ time: PINNED, calm: 0, frozen: false, layers: SKY_ONLY });
     const half = await painterShot(page, xr, `calm=0.5&motiont=${PINNED}`);
     const full = await painterShot(page, xr, `calm=1&motiont=${PINNED}`);
-    expect(await motion(xr)).toEqual({
-      time: PINNED,
-      calm: 1,
-      frozen: false,
-      layers: MOTION_LAYER_MASK,
-    });
+    expect(await motion(xr)).toEqual({ time: PINNED, calm: 1, frozen: false, layers: SKY_ONLY });
+    expect(((await xr.diag()).halo as { visible: boolean }).visible).toBe(false);
     // Pinned: the time holds while frames run.
     await xr.waitFrames(10);
     expect((await motion(xr)).time).toBe(PINNED);
@@ -293,6 +292,324 @@ test.describe('sky swirl (P4.2)', () => {
       // The GPU moves each patch the way the TS mirror predicts (M4).
       expect(r.angle, name).toBeLessThan(30);
     }
+    expect(await glErrors(page)).toEqual([]);
+  });
+});
+
+test.describe('star and moon rings (P4.3)', () => {
+  test.use({ viewport: { width: CAPTURE_SIZE.width, height: CAPTURE_SIZE.height } });
+
+  interface HaloDiag {
+    visible: boolean;
+    halos: { size: number; phase: number; ring: number }[];
+  }
+
+  async function lightsShot(page: Page, xr: Xr, extra: string): Promise<Buffer> {
+    await xr.boot(`painting=starry-night&seed=1&shot&painter&nogov&motionphase=0&${extra}`);
+    await expect
+      .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+      .toBe(true);
+    await xr.waitFrames(5);
+    const url = await page.evaluate(() => {
+      if (!window.__goghShot) throw new Error('__goghShot is not installed; boot with ?diag&shot');
+      return window.__goghShot();
+    });
+    return rawPixels(url);
+  }
+
+  /** Mean absolute channel difference over the canvas box (u0, v0)-(u1, v1), v down. */
+  function boxDiff(
+    a: Buffer,
+    b: Buffer,
+    [u0, v0, u1, v1]: readonly [number, number, number, number],
+  ): number {
+    const { width, height } = CAPTURE_SIZE;
+    const channels = a.length / (width * height);
+    let sum = 0;
+    let n = 0;
+    for (let y = Math.round(v0 * height); y < Math.round(v1 * height); y++) {
+      for (let x = Math.round(u0 * width); x < Math.round(u1 * width); x++) {
+        const k = (y * width + x) * channels;
+        for (let c = 0; c < 3; c++) sum += Math.abs(a[k + c] - b[k + c]);
+        n += 3;
+      }
+    }
+    return sum / n;
+  }
+
+  /** Rec. 709 luma per pixel of a raw RGB(A) capture. */
+  function lumaOf(raw: Buffer): Float32Array {
+    const { width, height } = CAPTURE_SIZE;
+    const channels = raw.length / (width * height);
+    const out = new Float32Array(width * height);
+    for (let i = 0; i < out.length; i++) {
+      const k = i * channels;
+      out[i] = 0.2126 * raw[k] + 0.7152 * raw[k + 1] + 0.0722 * raw[k + 2];
+    }
+    return out;
+  }
+
+  /** Bilinear luma at pixel-centre coordinates (x, y). */
+  function sampleLuma(img: Float32Array, x: number, y: number): number {
+    const { width } = CAPTURE_SIZE;
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const fx = x - x0;
+    const fy = y - y0;
+    const at = (xx: number, yy: number): number => img[yy * width + xx];
+    return (
+      (1 - fy) * ((1 - fx) * at(x0, y0) + fx * at(x0 + 1, y0)) +
+      fy * ((1 - fx) * at(x0, y0 + 1) + fx * at(x0 + 1, y0 + 1))
+    );
+  }
+
+  /** The star whose ring the test reads: star 10, the large lower-left one, rim about 124 px. */
+  const STAR = 10;
+
+  test('a star ring pushes its strokes outward and brightens them, as the TS mirror predicts (I2)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(300_000);
+    // The halo is hidden (`?nohalo`) and the sky layer closed (`?motionlayers=star,moon`), so
+    // only the ring strokes can differ between the two shots: a ringMotion that returned zero
+    // leaves them equal.
+    const flags = 'motionlayers=star,moon&nohalo';
+    const rest = await lightsShot(page, xr, `noanim&${flags}`);
+    expect(((await xr.diag()).halo as HaloDiag).visible).toBe(false);
+    await expect.poll(() => page.evaluate(() => window.__goghRingShift !== undefined)).toBe(true);
+    // The crest: the pinned time, on a 0.05 s grid over two periods, at which the TS mirror
+    // pushes the annulus's mid-line (0.875 of the rim) outward the most, mean over 24 angles.
+    const plan = await page.evaluate(
+      ([k, width, height]) => {
+        const probe = window.__goghRingShift;
+        if (!probe) throw new Error('__goghRingShift is e2e-only');
+        const base = probe(k, 0.5, 0.3, 0);
+        if (!base) throw new Error(`ring ${k} is off the painter view`);
+        const rim = base.rim * width;
+        const mean = (t: number): { radial: number; bright: number } => {
+          let radial = 0;
+          let bright = 0;
+          for (let a = 0; a < 24; a++) {
+            const th = (a / 24) * 2 * Math.PI;
+            const u = base.centre[0] + (0.875 * rim * Math.cos(th)) / width;
+            const v = base.centre[1] + (0.875 * rim * Math.sin(th)) / height;
+            const m = probe(k, u, v, t);
+            if (!m) throw new Error(`no prediction at (${u}, ${v})`);
+            radial += m.shift[0] * width * Math.cos(th) + m.shift[1] * height * Math.sin(th);
+            bright += m.bright;
+          }
+          return { radial: radial / 24, bright: bright / 24 };
+        };
+        let best = { t: 0, radial: -Infinity, bright: 0 };
+        for (let i = 0; i < 400; i++) {
+          const t = i * 0.05;
+          const m = mean(t);
+          if (m.radial > best.radial) best = { t, ...m };
+        }
+        return { centre: [base.centre[0] * width, base.centre[1] * height], rim, ...best };
+      },
+      [STAR, CAPTURE_SIZE.width, CAPTURE_SIZE.height] as const,
+    );
+    const crest = await lightsShot(page, xr, `motiont=${plan.t.toFixed(2)}&${flags}`);
+
+    const { width, height } = CAPTURE_SIZE;
+    const [cx, cy] = plan.centre;
+    const channels = rest.length / (width * height);
+    const restL = lumaOf(rest);
+    const crestL = lumaOf(crest);
+    // The annulus at 0.75-1.0 of the rim, where the ring's hat is still well above 0.
+    const annulus: number[] = [];
+    for (let y = Math.floor(cy - plan.rim); y <= Math.ceil(cy + plan.rim); y++) {
+      for (let x = Math.floor(cx - plan.rim); x <= Math.ceil(cx + plan.rim); x++) {
+        if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1) continue;
+        const r = Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / plan.rim;
+        if (r >= 0.75 && r <= 1) annulus.push(y * width + x);
+      }
+    }
+    let change = 0;
+    let lift = 0;
+    for (const i of annulus) {
+      for (let c = 0; c < 3; c++)
+        change += Math.abs(crest[i * channels + c] - rest[i * channels + c]);
+      lift += crestL[i] - restL[i];
+    }
+    change /= 3 * annulus.length;
+    lift /= annulus.length;
+    // The radial shift: the crest's changed pixels against the rest shot scaled about the ring
+    // centre by s, normalised cross-correlation, so the brightening's gain does not bias it.
+    // The static sky behind the strokes is left out: it would pin the fit at s = 1.
+    const moved = annulus.filter((i) => Math.abs(crestL[i] - restL[i]) > 8);
+    const scaleNcc = (s: number): number => {
+      let sa = 0;
+      let sb = 0;
+      let saa = 0;
+      let sbb = 0;
+      let sab = 0;
+      for (const i of moved) {
+        const x = i % width;
+        const y = Math.floor(i / width);
+        const a = sampleLuma(restL, cx - 0.5 + (x + 0.5 - cx) / s, cy - 0.5 + (y + 0.5 - cy) / s);
+        const b = crestL[i];
+        sa += a;
+        sb += b;
+        saa += a * a;
+        sbb += b * b;
+        sab += a * b;
+      }
+      const m = moved.length;
+      return (sab - (sa * sb) / m) / Math.sqrt((saa - (sa * sa) / m) * (sbb - (sb * sb) / m));
+    };
+    // The scale that moves the mid-line by the predicted mean radial shift.
+    const e = plan.radial / (0.875 * plan.rim);
+    const [inward, still, outward] = [scaleNcc(1 - e), scaleNcc(1), scaleNcc(1 + e)];
+    console.log(
+      `ring ${STAR}: crest at ${plan.t.toFixed(2)} s, centre (${cx.toFixed(1)}, ${cy.toFixed(1)}) ` +
+        `px, rim ${plan.rim.toFixed(1)} px; predicted mid-line push ${plan.radial.toFixed(2)} px, ` +
+        `bright ${plan.bright.toFixed(3)}; annulus ${annulus.length} px, mean |crest - rest| ` +
+        `${change.toFixed(3)}, mean luma lift ${lift.toFixed(3)}; ${moved.length} changed px, ` +
+        `ncc inward ${inward.toFixed(4)}, still ${still.toFixed(4)}, outward ${outward.toFixed(4)}`,
+    );
+    // The mirror pushes outward and brightens on a crest.
+    expect(plan.radial).toBeGreaterThan(3);
+    expect(plan.bright).toBeGreaterThan(0.2);
+    // A zero ringMotion leaves the annulus unchanged.
+    expect(change).toBeGreaterThan(2);
+    expect(moved.length).toBeGreaterThan(annulus.length / 10);
+    // The GPU brightens it, and moves it the way the mirror does: outward, not inward or not at all.
+    expect(lift).toBeGreaterThan(0);
+    expect(outward).toBeGreaterThan(still);
+    expect(still).toBeGreaterThan(inward);
+    // Nothing outside the rings moves: the village and hills match byte for byte.
+    expect(boxDiff(rest, crest, [0.0, 0.8, 1.0, 1.0])).toBe(0);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
+  test('the halo is the one additive pass: 1 draw per desktop frame, 2 per XR frame', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(240_000);
+    // Counts draws made while blending is on, from the GL state three sets, one bucket per
+    // animation frame: every window rAF callback of one frame gets the same timestamp. IWER runs
+    // its XR frames from the window's rAF, so the bucket holds the whole XR frame too. A draw is
+    // additive when its destination factor is ONE.
+    await page.addInitScript(() => {
+      const proto = WebGL2RenderingContext.prototype;
+      interface Bucket {
+        t: number;
+        draws: number;
+        blended: number;
+        additive: number;
+      }
+      const stats = { frames: [] as Bucket[], current: null as Bucket | null };
+      (window as unknown as { __blendStats: typeof stats }).__blendStats = stats;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (callback: FrameRequestCallback): number =>
+        raf((t) => {
+          if (stats.current?.t !== t) {
+            if (stats.current) stats.frames.push(stats.current);
+            if (stats.frames.length > 240) stats.frames.shift();
+            stats.current = { t, draws: 0, blended: 0, additive: 0 };
+          }
+          callback(t);
+        });
+      let blend = false;
+      let dst = 0;
+      const BLEND = 0x0be2;
+      const ONE = 1;
+      const { enable, disable, blendFunc, blendFuncSeparate } = proto;
+      proto.enable = function (this: WebGL2RenderingContext, cap: GLenum) {
+        if (cap === BLEND) blend = true;
+        return enable.call(this, cap);
+      };
+      proto.disable = function (this: WebGL2RenderingContext, cap: GLenum) {
+        if (cap === BLEND) blend = false;
+        return disable.call(this, cap);
+      };
+      proto.blendFunc = function (this: WebGL2RenderingContext, s: GLenum, d: GLenum) {
+        dst = d;
+        return blendFunc.call(this, s, d);
+      };
+      proto.blendFuncSeparate = function (
+        this: WebGL2RenderingContext,
+        s: GLenum,
+        d: GLenum,
+        sa: GLenum,
+        da: GLenum,
+      ) {
+        dst = d;
+        return blendFuncSeparate.call(this, s, d, sa, da);
+      };
+      const draws = ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced'];
+      const table = proto as unknown as Record<string, (...args: unknown[]) => unknown>;
+      for (const name of draws) {
+        const draw = table[name];
+        table[name] = function (this: WebGL2RenderingContext, ...args: unknown[]) {
+          const bucket = stats.current;
+          if (bucket) {
+            bucket.draws++;
+            if (blend) {
+              bucket.blended++;
+              if (dst === ONE) bucket.additive++;
+            }
+          }
+          return draw.apply(this, args);
+        };
+      }
+    });
+    await xr.boot('painting=starry-night&seed=1&nogov&motiont=3');
+    await expect
+      .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+      .toBe(true);
+    await xr.waitFrames(5);
+    // The diag's halo state is the TS mirror on the CPU (SkyHalo.state), not read back from the GPU.
+    const halo = (await xr.diag()).halo as HaloDiag;
+    expect(halo.visible).toBe(true);
+    expect(halo.halos.every((h) => h.ring > 0)).toBe(true);
+
+    /** Every animation frame that drew over the next dozen frames, fewest and most draws. */
+    const sample = async (): Promise<{
+      frames: number;
+      additive: [number, number];
+      blended: [number, number];
+    }> => {
+      await page.evaluate(() => {
+        (window as unknown as { __blendStats: { frames: unknown[] } }).__blendStats.frames = [];
+      });
+      await xr.waitFrames(12);
+      return page.evaluate(() => {
+        const { frames } = (
+          window as unknown as {
+            __blendStats: { frames: { draws: number; blended: number; additive: number }[] };
+          }
+        ).__blendStats;
+        const drawn = frames.filter((f) => f.draws > 0);
+        const range = (values: number[]): [number, number] => [
+          Math.min(...values),
+          Math.max(...values),
+        ];
+        return {
+          frames: drawn.length,
+          additive: range(drawn.map((f) => f.additive)),
+          blended: range(drawn.map((f) => f.blended)),
+        };
+      });
+    };
+    const desktop = await sample();
+    console.log(`halo pass: desktop ${JSON.stringify(desktop)}`);
+    expect(desktop.frames).toBeGreaterThan(5);
+    expect(desktop.additive).toEqual([1, 1]);
+    expect(desktop.blended).toEqual(desktop.additive);
+
+    await xr.enterXR();
+    await xr.waitFrames(5);
+    const immersive = await sample();
+    console.log(`halo pass: XR ${JSON.stringify(immersive)}`);
+    expect(immersive.frames).toBeGreaterThan(5);
+    // IWER has no multiview, so three draws the halo once per eye.
+    expect(immersive.additive).toEqual([2, 2]);
+    expect(immersive.blended).toEqual(immersive.additive);
     expect(await glErrors(page)).toEqual([]);
   });
 });

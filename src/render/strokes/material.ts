@@ -1,6 +1,8 @@
 import { GLSL3, RawShaderMaterial, type Texture, Vector3, Vector4 } from 'three';
 import { type MotionUniforms, motionClock } from '../../motion/clock';
 import motionShader from '../../motion/motion.glsl?raw';
+import { skyRingGlslDefines } from '../../motion/sky-rings';
+import skyRingsShader from '../../motion/sky-rings.glsl?raw';
 import { skySwirlGlslDefines } from '../../motion/sky-swirl';
 import {
   BACKDROP_DOME_RANKS,
@@ -32,6 +34,8 @@ import strokeVertexShader from './stroke.vert.glsl?raw';
 
 /** The line in stroke.vert.glsl that motion.glsl replaces. */
 export const MOTION_INCLUDE = '// #include motion.glsl';
+/** The line in stroke.vert.glsl and the halo shaders that sky-rings.glsl replaces (P4.3). */
+export const SKY_RINGS_INCLUDE = '// #include sky-rings.glsl';
 
 /**
  * Splices `chunk` in place of the line starting `marker` in `source`. Throws unless exactly one
@@ -46,9 +50,15 @@ export function spliceGlsl(source: string, marker: string, chunk: string): strin
   return lines.join('\n');
 }
 
-const vertexShader = spliceGlsl(strokeVertexShader, MOTION_INCLUDE, motionShader);
+const vertexShader = spliceGlsl(
+  spliceGlsl(strokeVertexShader, SKY_RINGS_INCLUDE, skyRingsShader),
+  MOTION_INCLUDE,
+  motionShader,
+);
 /** The sky swirl's vortex tables and loop constants, which motion.glsl reads (P4.2). */
 const SKY_SWIRL_DEFINES = skySwirlGlslDefines();
+/** The star and moon rings' per-anchor tables, which sky-rings.glsl reads (P4.3). */
+const SKY_RING_DEFINES = skyRingGlslDefines();
 
 /** Towards the moon: from the upper right, in front of a viewer looking down -z. */
 export const MOON_DIRECTION: Readonly<Vector3> = new Vector3(0.45, 0.6, 0.66).normalize();
@@ -156,6 +166,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       SKY_LIGHT_MIN_FEATHER_COS: glslFloat(Math.cos(SKY_LIGHT_MIN_FEATHER)),
       SKY_LIGHT_MIN_FEATHER_SIN: glslFloat(Math.sin(SKY_LIGHT_MIN_FEATHER)),
       ...SKY_SWIRL_DEFINES,
+      ...SKY_RING_DEFINES,
       ...(pinnedMotionPhase === null ? {} : { MOTION_PHASE_PIN: glslFloat(pinnedMotionPhase) }),
     },
     transparent: false,

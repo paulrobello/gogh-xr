@@ -1,16 +1,19 @@
 /**
  * The motion layer table and a TypeScript mirror of motion.glsl's gate and dispatch (P4.1). A
- * layer's motion returns a `Motion`: an offset of the stroke centre, a turn about the stroke normal
- * and a size gain, each zero at rest. `motionOffset` multiplies the offset and turn by calm once.
- * The gain is a loop's wrap envelope, which must shrink the stroke to nothing as it jumps back at
- * every calm, so it runs at full depth whenever the gate is open (amended R-P4e).
- * P4.2 fills in the sky (src/motion/sky-swirl.ts); P4.3 (stars and moon), P4.4 (cypress) and P4.5
- * (reactive, every layer) fill in the rest. Each one also sets its layer's bit in `MOTION_LAYERS`,
- * and its GLSL in motion.glsl and its mirror here change together.
+ * layer's motion returns a `Motion`: an offset of the stroke centre, a turn about the stroke
+ * normal, a size gain and a brightness, each zero at rest. `motionOffset` multiplies the offset,
+ * turn and brightness, the amplitudes, by calm once. The gain is a loop's wrap envelope, which must
+ * shrink the stroke to nothing as it jumps back at every calm, so it runs at full depth whenever the
+ * gate is open (amended R-P4e).
+ * P4.2 fills in the sky (src/motion/sky-swirl.ts) and P4.3 the stars and moon
+ * (src/motion/sky-rings.ts); P4.4 (cypress) and P4.5 (reactive, every layer) fill in the rest. Each
+ * one also sets its layer's bit in `MOTION_LAYERS`, and its GLSL in motion.glsl and its mirror here
+ * change together.
  */
 import { PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import { STROKE_LAYER } from '../render/strokes/instance';
 import { motionGate } from './layers';
+import { ringOf, skyRing } from './sky-rings';
 import { SKY_SWIRL_MAX_ANGLE, skySwirl } from './sky-swirl';
 
 export { MOTION_LAYER_MASK, MOTION_LAYERS, motionGate, motionLayerMask } from './layers';
@@ -25,12 +28,15 @@ export interface Motion {
   readonly turn: number;
   /** Size delta: the stroke draws at `1 + gain` times its size. */
   readonly gain: number;
+  /** Brightness delta: the stroke draws at `1 + bright` times its colour. */
+  readonly bright: number;
 }
 
 export const REST: Motion = Object.freeze({
   offset: Object.freeze([0, 0, 0]) as Vec3,
   turn: 0,
   gain: 0,
+  bright: 0,
 });
 
 export interface MotionInput {
@@ -40,6 +46,8 @@ export interface MotionInput {
   readonly normal: Vec3;
   /** The instance's phase byte as a fraction, `iMeta.z / 256`, in [0, 1). */
   readonly phase: number;
+  /** The phase byte itself, `iMeta.z`: a star stroke's names its star (P4.3). */
+  readonly phaseByte: number;
   /** `uTime`, seconds. */
   readonly time: number;
 }
@@ -67,10 +75,20 @@ export const STUB_MOTION: MotionFunctions = Object.freeze({
   reactive: still,
 });
 
-/** The motions motion.glsl runs: the sky swirl (P4.2), the rest still until their cards land. */
+/**
+ * The motions motion.glsl runs: the sky swirl (P4.2) and the star and moon rings (P4.3), the rest
+ * still until their cards land.
+ */
 export const LIVE_MOTION: MotionFunctions = Object.freeze({
   ...STUB_MOTION,
-  sky: ({ position, normal, phase, time }: MotionInput) => skySwirl(position, normal, phase, time),
+  sky: ({ position, normal, phase, time }: MotionInput) => ({
+    ...skySwirl(position, normal, phase, time),
+    bright: 0,
+  }),
+  star: ({ position, phaseByte, time }: MotionInput) =>
+    skyRing(ringOf(false, phaseByte), position, time),
+  moon: ({ position, phaseByte, time }: MotionInput) =>
+    skyRing(ringOf(true, phaseByte), position, time),
 });
 
 function layerMotion(layer: number, fns: MotionFunctions): LayerMotion {
@@ -96,7 +114,8 @@ export interface MotionUniformValues {
 
 /**
  * Matches `motionOffset` in motion.glsl: at rest unless the layer's gate bit is set, otherwise the
- * layer's motion plus the reactive term, with the offset and turn times calm and the gain unscaled.
+ * layer's motion plus the reactive term, with the offset, turn and brightness times calm and the
+ * gain unscaled.
  * stroke.vert.glsl's gated block also skips a haze stroke its sky-light thin has collapsed
  * (`thin` 0), which draws nothing either way, so this mirror leaves that skip out.
  */
@@ -109,7 +128,13 @@ export function motionOffset(
   fns: MotionFunctions = LIVE_MOTION,
 ): Motion {
   if (!motionGate(uniforms.layerMask, layer)) return REST;
-  const input: MotionInput = { position, normal, phase: phaseByte / 256, time: uniforms.time };
+  const input: MotionInput = {
+    position,
+    normal,
+    phase: phaseByte / 256,
+    phaseByte,
+    time: uniforms.time,
+  };
   const a = layerMotion(layer, fns)(input);
   const r = fns.reactive(input);
   const c = uniforms.calm;
@@ -121,15 +146,17 @@ export function motionOffset(
     ],
     turn: c * (a.turn + r.turn),
     gain: a.gain + r.gain,
+    bright: c * (a.bright + r.bright),
   };
 }
 
 /**
- * Matches motionReach in motion.glsl: how far, metres, the open gate at `calm` can move a stroke
- * centred at `position` from rest. The haze's sky-light thin widens its stroke by it (R-P4b). On
- * the dome it is at most SKY_SWIRL_REACH; nearer the eye, as on the P1 canvas, it is a few
- * centimetres. The stroke batch's cull uses each stroke's exact `skySwirlReach` instead, which this
- * bounds.
+ * Matches motionReach in motion.glsl: how far, metres, the open gate at `calm` can move a sky
+ * stroke centred at `position` from rest. The haze's sky-light thin widens its stroke by it
+ * (R-P4b). On the dome it is at most SKY_SWIRL_REACH; nearer the eye, as on the P1 canvas, it is a
+ * few centimetres. The stroke batch's cull uses each stroke's exact `skySwirlReach` instead, which
+ * this bounds. Only the haze, on the sky layer, reads it, so every other layer reads 0 here: the
+ * star and moon rings' reach is `skyRingReach` (sky-rings.ts).
  */
 export function motionReach(layer: number, position: Vec3, calm: number): number {
   if (layer !== STROKE_LAYER.sky) return 0;

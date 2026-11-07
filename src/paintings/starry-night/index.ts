@@ -7,6 +7,7 @@
 import { Color, type Group, type Scene, SRGBColorSpace } from 'three';
 import { buildFlowField } from '../../demo/canvas/field';
 import { registerDiag, unregisterDiag } from '../../diag/diag';
+import { createSkyHalo, type SkyHalo } from '../../render/sky-halo';
 import { createStrokeBatch, type StrokeBatch } from '../../render/strokes/batch';
 import {
   BUILD_SHA,
@@ -58,6 +59,7 @@ export interface WorldBuildTimes {
 interface Built {
   readonly scene: Scene;
   readonly batch: StrokeBatch;
+  readonly halo: SkyHalo;
   readonly base: Group;
   readonly background: Scene['background'];
 }
@@ -139,7 +141,13 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   scene.add(base);
   batch.attach(scene);
   if (debug === 'bare') batch.group.visible = false;
-  built = { scene, batch, base, background };
+  // The star and moon halos (P4.3), the world's one blended pass. The `?bare` and `?coverage`
+  // sweeps count magenta pixels, which additive light would hide, so they draw without it, and
+  // `?nohalo` turns it off for a cost A/B.
+  const halo = createSkyHalo();
+  halo.mesh.visible = debug === null && deps.halo !== false;
+  scene.add(halo.mesh);
+  built = { scene, batch, halo, base, background };
 
   const cache = bypass ? 'bypass' : load.hit ? 'hit' : 'miss';
   // Read out here so the closure does not hold the stroke buffers (about 19 MB) past the upload.
@@ -155,6 +163,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     cache,
     strokes: batch.stats(),
   }));
+  registerDiag('halo', () => ({ visible: halo.mesh.visible, halos: halo.state() }));
   const { heightAt, normalAt } = world.terrain;
   const blocked = createFootprintTest(world.village);
   const setHaze = (thickness: number): void => {
@@ -171,6 +180,8 @@ export function update(_time: number, _dt: number): void {}
 export function dispose(): void {
   if (!built) return;
   unregisterDiag('world');
+  unregisterDiag('halo');
+  built.halo.dispose();
   built.batch.dispose();
   disposeBaseMeshes(built.base);
   built.scene.background = built.background;

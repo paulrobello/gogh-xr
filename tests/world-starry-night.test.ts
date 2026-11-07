@@ -574,7 +574,8 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     // src/render/strokes/scatter.ts (see GENERATOR_PINS above). The moon and stars and the haze
     // are generated outside the scatter cache, so their pins move without a bump. The haze is
     // createBoundaryHaze's own output plus SKY_LIGHT_CULL_FLAG on every stroke: with the flag
-    // cleared it hashes as it did before the moon and stars (49bf0339).
+    // cleared it hashes as it did before the moon and stars (49bf0339). The lights' phase bytes name
+    // their anchor for the P4.3 rings (1e63faa8 before, every other field unchanged).
     const haze = strokeRange(buffers, assembled.hazeStart);
     let unflagged = 0;
     for (let i = 0; i < haze.count; i++) {
@@ -611,7 +612,7 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       },
       hash: 'cf326988',
       lights: 4_935,
-      lightsHash: '1e63faa8',
+      lightsHash: '0ba1901f',
       haze: 30_000,
       hazeUnflagged: 0,
       hazeHash: '49bf0339',

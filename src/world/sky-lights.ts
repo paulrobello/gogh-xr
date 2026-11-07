@@ -19,9 +19,11 @@
  * haze in front of each disc per view, in the cones `skyLightCones` returns, and thins it over a
  * feather around them (src/render/strokes/sky-light-cull.ts).
  */
+
 import type { Raster } from '../demo/canvas/field';
 import { REGION, type RegionId, sampleColor, sampleFlow } from '../demo/canvas/field';
 import { COLOR_INSET, decodedNormal, REGION_STYLES, strokeShade } from '../demo/canvas/placement';
+import { ringOf, SKY_RING_REACH, skyRingReach } from '../motion/sky-rings';
 import { CANVAS_ASPECT, canvasRay, PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import type { CanvasSource } from '../paintings/starry-night/canvas-histogram';
 import {
@@ -33,7 +35,7 @@ import { DEFAULT_BAND_SIZE } from '../render/strokes/bands';
 import { BRUSHES } from '../render/strokes/brush-atlas-data';
 import { float32Bits, lowbias32 } from '../render/strokes/depth-tie-break';
 import { surfaceBasis, type Vec3 } from '../render/strokes/frame';
-import type { StrokeInstance } from '../render/strokes/instance';
+import { STROKE_LAYER, type StrokeInstance } from '../render/strokes/instance';
 import {
   cameraDirection,
   type GradedSize,
@@ -43,16 +45,10 @@ import {
 import type { SkyLightCone } from '../render/strokes/sky-light-cull';
 import { deltaE2000, type Lab, srgb8ToLab } from '../util/cielab';
 import { mulberry32 } from '../util/prng';
-import { SKY_DOME_RADIUS, type SkyAnchor, skyAnchors } from './sky';
+import { anchorReach, SKY_DOME_RADIUS, SKY_LIGHT_RIM, type SkyAnchor, skyAnchors } from './sky';
 import { type SkyScanCrop, sampleSkyScan, skyScanCrops } from './sky-scan';
 
-/**
- * A light's strokes reach out to this many anchor radii. Inside one radius they are at full
- * density; from there to this radius their density eases to 0 (smoothstep), so the dome's own
- * strokes show between them more and more and the disc has no circular edge. The scan's halo rings
- * around the moon and the stars lie in that band.
- */
-export const SKY_LIGHT_RIM: number = 1.5;
+export { SKY_LIGHT_RIM };
 /**
  * The boundary haze thins toward each light over this many anchor radii past its cone, plus one
  * haze stroke's half diagonal (sky-light-cull.ts), so the haze has no rim in front of the disc. At
@@ -184,17 +180,25 @@ function anchorSeed(seed: number, anchor: number): number {
  * closer than the sum of their half diagonals, all in metres on the dome, as drawn. When every rank
  * is held by such a neighbour, the stroke takes its start rank anyway and `ties` counts it; the
  * world diag reports the total (`lightRankTies`). `maxHalf` bounds every half diagonal the picker
- * sees.
+ * sees. Each stroke also carries the reach its ring can move it (P4.3, at most `maxReach`), added
+ * to the pair's overlap distance, so two strokes that share a rank never come to overlap as the
+ * rings move them.
  */
 export class RankPicker {
-  private readonly cells = new Map<number, Array<{ p: Vec3; half: number; rank: number }>>();
+  private readonly cells = new Map<
+    number,
+    Array<{ p: Vec3; half: number; reach: number; rank: number }>
+  >();
   private readonly used = new Uint8Array(BACKDROP_FRONT_RANKS);
   private readonly cell: number;
   /** Strokes that found no free rank and share one with a stroke they can overlap. */
   ties = 0;
 
-  constructor(private readonly maxHalf: number) {
-    this.cell = 2 * maxHalf;
+  constructor(
+    private readonly maxHalf: number,
+    private readonly maxReach = 0,
+  ) {
+    this.cell = 2 * (maxHalf + maxReach);
   }
 
   private key(cx: number, cy: number, cz: number): number {
@@ -205,9 +209,12 @@ export class RankPicker {
    * The rank for a stroke at `p` of half diagonal `half`: the first free one from `start` in
    * `step` steps, so step -1 from the top rank puts a stroke over every neighbour it can.
    */
-  pick(p: Vec3, half: number, start: number, step: 1 | -1 = 1): number {
+  pick(p: Vec3, half: number, start: number, step: 1 | -1 = 1, reach = 0): number {
     if (half > this.maxHalf) {
       throw new Error(`half diagonal ${half} over the picker's ${this.maxHalf}`);
+    }
+    if (reach > this.maxReach) {
+      throw new Error(`ring reach ${reach} over the picker's ${this.maxReach}`);
     }
     this.used.fill(0);
     const [cx, cy, cz] = p.map((c) => Math.floor(c / this.cell));
@@ -215,9 +222,9 @@ export class RankPicker {
       for (let j = cy - 1; j <= cy + 1; j++) {
         for (let k = cz - 1; k <= cz + 1; k++) {
           for (const s of this.cells.get(this.key(i, j, k)) ?? []) {
-            const reach = s.half + half;
+            const near = s.half + half + s.reach + reach;
             const d = sub(s.p, p);
-            if (dot(d, d) < reach * reach) this.used[s.rank] = 1;
+            if (dot(d, d) < near * near) this.used[s.rank] = 1;
           }
         }
       }
@@ -237,21 +244,25 @@ export class RankPicker {
     }
     const cell = this.key(cx, cy, cz);
     const list = this.cells.get(cell);
-    const entry = { p, half, rank };
+    const entry = { p, half, reach, rank };
     if (list) list.push(entry);
     else this.cells.set(cell, [entry]);
     return rank;
   }
 }
 
+/** Each anchor's index in `skyAnchors()`, or -1 for an anchor it does not hold. */
+function anchorIndices(anchors: readonly SkyAnchor[]): number[] {
+  const all = skyAnchors();
+  return anchors.map((anchor) =>
+    all.findIndex((a) => a.uv[0] === anchor.uv[0] && a.uv[1] === anchor.uv[1]),
+  );
+}
+
 /** Each anchor's crop in lights.webp, or null for an anchor `skyAnchors()` does not hold. */
 function cropsFor(anchors: readonly SkyAnchor[]): Array<SkyScanCrop | null> {
-  const all = skyAnchors();
-  const crops = skyScanCrops(all);
-  return anchors.map((anchor) => {
-    const i = all.findIndex((a) => a.uv[0] === anchor.uv[0] && a.uv[1] === anchor.uv[1]);
-    return i < 0 ? null : (crops[i] ?? null);
-  });
+  const crops = skyScanCrops(skyAnchors());
+  return anchorIndices(anchors).map((i) => (i < 0 ? null : (crops[i] ?? null)));
 }
 
 export interface SkyLights {
@@ -336,19 +347,28 @@ export function createSkyLights(
     readonly finish: (rank: number) => StrokeInstance;
     readonly p: Vec3;
     readonly half: number;
+    /** How far the stroke's ring can move it (skyRingReach), metres. */
+    readonly reach: number;
     readonly start: number;
     readonly top: boolean;
   }> = [];
   const crops = cropsFor(anchors);
+  const indices = anchorIndices(anchors);
   const { brushes, meanAspect, maxAspect } = domeBrushes();
   const stored = strokeSizeAt(domeSize, SKY_DOME_RADIUS);
   // One picker for every anchor, in metres on the dome: neighbouring stars' rims overlap, and a
   // painting width spans a different length on the dome in each direction.
-  const ranks = new RankPicker(skyLightHalfDiagonal(stored * (1 + SCATTER_SIZE_JITTER), maxAspect));
+  const ranks = new RankPicker(
+    skyLightHalfDiagonal(stored * (1 + SCATTER_SIZE_JITTER), maxAspect),
+    SKY_RING_REACH,
+  );
   anchors.forEach((anchor, a) => {
     const region = REGION_OF[anchor.kind];
     const layer = REGION_STYLES[region].layer;
     const crop = crops[a] ?? null;
+    // The phase byte names the anchor the stroke rings round (src/motion/sky-rings.ts), not a
+    // per-stroke phase: the rings' phase is per anchor.
+    const ring = indices[a] < 0 ? a : indices[a];
     const perWidth = metresPerWidth(anchor);
     const drawn = (stored * DEFAULT_BAND_SIZE.far) / perWidth;
     const cell = Math.sqrt((drawn * drawn * meanAspect) / SKY_LIGHT_OVERDRAW);
@@ -430,7 +450,9 @@ export function createSkyLights(
       const aspect = BRUSHES[brush].aspect;
       const length = stored * scale * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
       const flip = rand() < 0.5 ? Math.PI : 0;
-      const phase = Math.floor(rand() * 256);
+      // Still drawn, so every later draw, ranks included, is unchanged.
+      rand();
+      const phase = ring;
       // The lower half, so a moon edge stroke, which takes the highest free rank, lands on top.
       const start = Math.floor((rand() * BACKDROP_FRONT_RANKS) / 2);
       const finish = (rank: number): StrokeInstance => {
@@ -465,11 +487,13 @@ export function createSkyLights(
           flags: DEPTH_BACKDROP_FLAG,
         };
       };
+      const p = domePoint(u, v);
       pending.push({
         level,
         finish,
-        p: domePoint(u, v),
+        p,
         half: skyLightHalfDiagonal(length, aspect),
+        reach: skyRingReach(ringOf(layer === STROKE_LAYER.moon, phase), p[0], p[1], p[2]),
         start,
         top,
       });
@@ -534,8 +558,8 @@ export function createSkyLights(
     const p = pending[i];
     return p.finish(
       p.top
-        ? ranks.pick(p.p, p.half, BACKDROP_FRONT_RANKS - 1, -1)
-        : ranks.pick(p.p, p.half, p.start),
+        ? ranks.pick(p.p, p.half, BACKDROP_FRONT_RANKS - 1, -1, p.reach)
+        : ranks.pick(p.p, p.half, p.start, 1, p.reach),
     );
   });
   return { strokes, rankTies: ranks.ties };
@@ -554,14 +578,10 @@ export function skyLightCones(
   const longest = strokeSizeAt(domeSize, SKY_DOME_RADIUS) * (1 + SCATTER_SIZE_JITTER);
   const half = skyLightHalfDiagonal(longest, maxAspect);
   return anchors.map((anchor) => {
-    const reach = SKY_LIGHT_RIM * anchor.radius;
-    // The farthest dome point on the rim, where perspective stretches it most, plus a stroke.
-    let radius = 0;
-    for (let k = 0; k < 32; k++) {
-      const t = (k / 32) * 2 * Math.PI;
-      const rim = domePoint(...offsetUv(anchor.uv, reach * Math.cos(t), reach * Math.sin(t)));
-      radius = Math.max(radius, Math.hypot(...sub(rim, anchor.position)));
-    }
+    // The farthest dome point on the rim, where perspective stretches it most, plus a stroke. The
+    // star and moon rings (src/motion/sky-rings.ts) keep every stroke centre inside the same rim,
+    // so the cones need no growth for them (R-P4b).
+    const radius = anchorReach(anchor, SKY_LIGHT_RIM);
     return {
       centre: anchor.position,
       radius: radius + half,

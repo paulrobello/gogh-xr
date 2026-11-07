@@ -1,4 +1,5 @@
 import type { TurnMode } from '../locomotion/settings';
+import { STROKE_LAYER, type StrokeLayerName } from '../render/strokes/instance';
 
 export interface Flags {
   readonly seed: number | null;
@@ -17,6 +18,14 @@ export interface Flags {
    * null when absent, negative or not a number.
    */
   readonly motionphase: number | null;
+  /**
+   * `?motionlayers=<list>`: a comma-separated list of stroke layer names (`STROKE_LAYER`), as a bit
+   * mask that main.ts ANDs with the world's motion layers, so it can only close layers. Only
+   * honoured in `--mode e2e` builds. Unknown names are ignored. null when absent.
+   */
+  readonly motionlayers: number | null;
+  /** `?nohalo`: hides the star and moon halo pass, for a headset A/B of its cost. */
+  readonly nohalo: boolean;
   /** Enables `__goghShot()` in diag mode; carries no value. */
   readonly shot: boolean;
   readonly diag: boolean;
@@ -136,6 +145,16 @@ function parseMotionPhase(raw: string | null): number | null {
   return value === null || value < 0 ? null : value % 1;
 }
 
+function parseMotionLayers(raw: string | null): number | null {
+  if (raw === null) return null;
+  let mask = 0;
+  for (const name of raw.split(',')) {
+    const layer = STROKE_LAYER[name.trim().toLowerCase() as StrokeLayerName];
+    if (layer !== undefined) mask |= 1 << layer;
+  }
+  return mask;
+}
+
 function parseCount(raw: string | null): number | null {
   const value = parseNumber(raw);
   return value === null
@@ -173,6 +192,8 @@ export function parseFlags(search: string): Flags {
     calm: parseCalm(params.get('calm')),
     motiont: parseMotionT(params.get('motiont')),
     motionphase: parseMotionPhase(params.get('motionphase')),
+    motionlayers: parseMotionLayers(params.get('motionlayers')),
+    nohalo: parseBool(params, 'nohalo'),
     shot: parseBool(params, 'shot'),
     diag: parseBool(params, 'diag'),
     hud: parseBool(params, 'hud'),

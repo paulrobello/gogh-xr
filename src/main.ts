@@ -61,8 +61,9 @@ if (pinnedMotionTime !== null) motionClock.uniforms.uTime.value = pinnedMotionTi
 // `?motionphase` pins every stroke's phase and installs the swirl's TS prediction, e2e builds only.
 if (import.meta.env.MODE === 'e2e') {
   pinMotionPhase(flags.motionphase);
-  void import('./diag/swirl-probe').then(({ predictSkyShift }) => {
+  void import('./diag/swirl-probe').then(({ predictRingShift, predictSkyShift }) => {
     window.__goghSkyShift = predictSkyShift;
+    window.__goghRingShift = predictRingShift;
   });
 }
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -294,7 +295,9 @@ if (flags.demo === 'canvas' && !painting) {
 
 if (painting?.world) {
   // Only a world moves: the canvas demo, test scene and bench share its stroke layers (R-P4f).
-  motionClock.setLayerMask(MOTION_LAYER_MASK);
+  // `?motionlayers` (e2e builds only) can close layers, never open one.
+  const only = import.meta.env.MODE === 'e2e' ? flags.motionlayers : null;
+  motionClock.setLayerMask(only === null ? MOTION_LAYER_MASK : MOTION_LAYER_MASK & only);
   locomotion.awaitGround();
   const load = painting.world;
   Promise.all([load(), import('./demo/canvas/demo')])
@@ -314,6 +317,7 @@ if (painting?.world) {
         nocache: flags.nocache,
         cache: flags.cache,
         debug: flags.diag ? (flags.bare ? 'bare' : flags.coverage ? 'coverage' : null) : null,
+        halo: !flags.nohalo,
       });
       world = module;
       locomotion.setWorld(handle);

@@ -114,11 +114,14 @@ describe('motion clock', () => {
     expect(clock.uniforms.uCalm.value).toBe(1);
   });
 
-  test('P4.2 opens the sky alone; the app clock starts closed until a world opens it', () => {
-    expect(MOTION_LAYERS).toEqual([STROKE_LAYER.sky]);
-    expect(MOTION_LAYER_MASK).toBe(1 << STROKE_LAYER.sky);
+  test('P4.3 opens the sky, stars and moon; the app clock starts closed until a world opens it', () => {
+    const live: number[] = [STROKE_LAYER.sky, STROKE_LAYER.star, STROKE_LAYER.moon];
+    expect(MOTION_LAYERS).toEqual(live);
+    expect(MOTION_LAYER_MASK).toBe(
+      (1 << STROKE_LAYER.sky) | (1 << STROKE_LAYER.star) | (1 << STROKE_LAYER.moon),
+    );
     for (const layer of ALL_LAYERS) {
-      expect(motionGate(MOTION_LAYER_MASK, layer)).toBe(layer === STROKE_LAYER.sky);
+      expect(motionGate(MOTION_LAYER_MASK, layer)).toBe(live.includes(layer));
     }
     expect(motionClock.uniforms.uMotionLayers.value).toBe(0);
     expect(motionClock.diag().layers).toBe(0);
@@ -201,8 +204,10 @@ describe('uniform plumbing', () => {
     expect(body.indexOf('return scaleMotion(m, uCalm);')).toBeGreaterThan(
       body.indexOf('Motion r = reactiveMotion('),
     );
-    // The gain is the wrap envelope: full depth whenever the gate is open (amended R-P4e).
-    expect(motionGlsl).toContain('return Motion(k * m.offset, k * m.turn, m.gain);');
+    expect(body).toContain('m.bright += r.bright;');
+    // The gain is the wrap envelope: full depth whenever the gate is open (amended R-P4e). The
+    // brightness is an amplitude, so it fades with calm like the offset and turn (P4.3).
+    expect(motionGlsl).toContain('return Motion(k * m.offset, k * m.turn, m.gain, k * m.bright);');
     expect(motionGlsl).toContain('return (uMotionLayers & (1u << layer)) != 0u;');
   });
 
@@ -225,32 +230,31 @@ describe('calm scaling', () => {
     ({ phase, time }) => {
       const v: [number, number, number] = [0, 0, 0];
       v[axis] = 1 + phase + time;
-      return { offset: v, turn: 0.1 + phase, gain: -0.25 };
+      return { offset: v, turn: 0.1 + phase, gain: -0.25, bright: 0.2 + phase };
     };
   const live: MotionFunctions = {
     sky: unit(0),
     star: unit(1),
     moon: unit(2),
     cypress: unit(0),
-    reactive: () => ({ offset: [0, 0, 0.5], turn: 0.05, gain: -0.1 }),
+    reactive: () => ({ offset: [0, 0, 0.5], turn: 0.05, gain: -0.1, bright: 0.05 }),
   };
   const p = [1, 2, 3] as const;
   const n = [0, 0, 1] as const;
-  const flat = (m: Motion): number[] => [...m.offset, m.turn, m.gain];
+  const flat = (m: Motion): number[] => [...m.offset, m.turn, m.gain, m.bright];
+  /** Indices into `flat` of the fields calm scales: the offset, the turn and the brightness. */
+  const SCALED = [0, 1, 2, 3, 5];
 
-  test('reaches every layer and every field: offset and turn are linear in calm, the gain is not', () => {
+  test('reaches every layer and every field: offset, turn and brightness are linear in calm, the gain is not', () => {
     for (const layer of ALL_LAYERS) {
       const full = motionOffset(layer, 64, p, n, { time: 2, calm: 1, layerMask: ALL_MASK }, live);
       expect(Math.hypot(...full.offset)).toBeGreaterThan(0);
       expect(full.turn).not.toBe(0);
       expect(full.gain).not.toBe(0);
+      expect(full.bright).not.toBe(0);
       for (const calm of [0, 0.25, 0.5]) {
         const scaled = motionOffset(layer, 64, p, n, { time: 2, calm, layerMask: ALL_MASK }, live);
-        flat(scaled)
-          .slice(0, 4)
-          .forEach((value, k) => {
-            expect(value).toBeCloseTo(calm * flat(full)[k], 12);
-          });
+        for (const k of SCALED) expect(flat(scaled)[k]).toBeCloseTo(calm * flat(full)[k], 12);
         // At calm 0 the clock closes the gate, so the unscaled gain never draws there.
         expect(scaled.gain).toBeCloseTo(full.gain, 12);
       }
@@ -295,11 +299,10 @@ describe('calm scaling', () => {
     expect(seen).toEqual([0.5, 7, n]);
   });
 
-  test('every layer but the sky is still in P4.2', () => {
-    for (const layer of ALL_LAYERS) {
-      if (layer === STROKE_LAYER.sky) continue;
+  test('the cypress, ground and buildings are still in P4.3', () => {
+    for (const layer of [STROKE_LAYER.cypress, STROKE_LAYER.ground, STROKE_LAYER.building]) {
       const m = motionOffset(layer, 200, p, n, { time: 3, calm: 1, layerMask: ALL_MASK });
-      expect(flat(m)).toEqual([0, 0, 0, 0, 0]);
+      expect(flat(m)).toEqual([0, 0, 0, 0, 0, 0]);
     }
     const sky = motionOffset(STROKE_LAYER.sky, 200, [0, 60, -100], [0, -0.5, 0.86], {
       time: 3,

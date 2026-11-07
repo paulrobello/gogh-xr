@@ -1,4 +1,5 @@
 import type { XrState } from '../xr/session';
+import type { RingShift } from './swirl-probe';
 
 export type DiagProvider = () => unknown;
 
@@ -42,6 +43,8 @@ declare global {
       time: number,
       phase: number,
     ) => [number, number] | null;
+    /** e2e builds only: `predictRingShift` (src/diag/swirl-probe.ts). */
+    __goghRingShift?: (k: number, u: number, vDown: number, time: number) => RingShift | null;
   }
 }
 

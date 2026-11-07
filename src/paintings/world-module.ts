@@ -45,6 +45,8 @@ export interface WorldDeps {
   /** `?cache`: use the build cache in a non-production build. `nocache` wins over it. */
   readonly cache?: boolean;
   readonly debug?: WorldDebug | null;
+  /** `?nohalo` clears it: the world draws no halo pass. Default true. */
+  readonly halo?: boolean;
 }
 
 /** The walkable ground: the surface a viewer stands on. */

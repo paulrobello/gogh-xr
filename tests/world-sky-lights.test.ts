@@ -9,6 +9,7 @@ import {
   REGION_STYLES,
   strokeShade,
 } from '../src/demo/canvas/placement.ts';
+import { ringOf, SKY_RING_REACH, SKY_RINGS, skyRing } from '../src/motion/sky-rings.ts';
 import {
   CANVAS_ASPECT,
   PAINTER_EYE,
@@ -96,6 +97,9 @@ function byAnchor(): number[][] {
   });
   return groups;
 }
+
+const dist = (a: readonly number[], b: readonly number[]): number =>
+  Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
 /** Drawn half diagonal in metres of a stored stroke, without the picker's margin. */
 function halfDiagonal(s: { readonly size: readonly number[] }): number {
@@ -269,6 +273,58 @@ test('strokes that can overlap never share a front-tier rank, across every ancho
   }
 });
 
+test('no two same-rank strokes ever overlap as the rings move them (I3)', () => {
+  // The rings move each stroke by up to its own reach, so two strokes apart at rest can meet at a
+  // crest. The census runs the TS mirror over every same-rank pair within reach of each other, at
+  // 64 samples per period of the shortest ring over 60 s.
+  const minPeriod = Math.min(...SKY_RINGS.map((r) => r.period));
+  const times = Array.from(
+    { length: Math.ceil((60 * 64) / minPeriod) },
+    (_, i) => (i * minPeriod) / 64,
+  );
+  for (const [seed, result] of [
+    [1, RESULT],
+    [2, createSkyLights(SOURCE, SCAN, 2, WORLD_DOME_SIZE)],
+  ] as const) {
+    const lights = result.strokes;
+    const half = lights.map(halfDiagonal);
+    const rank = lights.map((s) => backdropRank(s.position, s.layer));
+    const ring = lights.map((s) => ringOf(s.layer === STROKE_LAYER.moon, s.phase));
+    const cell = 2 * (Math.max(...half) + SKY_RING_REACH);
+    const cellOf = (p: readonly number[]): number[] => p.map((c) => Math.floor(c / cell));
+    const cells = new Map<string, number[]>();
+    lights.forEach((s, i) => {
+      const key = cellOf(s.position).join(',');
+      cells.set(key, [...(cells.get(key) ?? []), i]);
+    });
+    const moved = (i: number, t: number): number[] => {
+      const p = lights[i].position;
+      const o = skyRing(ring[i], p, t).offset;
+      return [p[0] + o[0], p[1] + o[1], p[2] + o[2]];
+    };
+    let candidates = 0;
+    let overlaps = 0;
+    lights.forEach((s, i) => {
+      const [cx, cy, cz] = cellOf(s.position);
+      for (let x = cx - 1; x <= cx + 1; x++) {
+        for (let y = cy - 1; y <= cy + 1; y++) {
+          for (let z = cz - 1; z <= cz + 1; z++) {
+            for (const j of cells.get(`${x},${y},${z}`) ?? []) {
+              if (j <= i || rank[i] !== rank[j]) continue;
+              const reach = half[i] + half[j];
+              if (dist(s.position, lights[j].position) >= reach + 2 * SKY_RING_REACH) continue;
+              candidates++;
+              if (times.some((t) => dist(moved(i, t), moved(j, t)) < reach)) overlaps++;
+            }
+          }
+        }
+      }
+    });
+    expect(candidates, `seed ${seed}`).toBeGreaterThan(1_000);
+    expect(overlaps, `seed ${seed}`).toBe(0);
+  }
+}, 120_000);
+
 test('the rank picker counts a tie once all 256 ranks are held within reach', () => {
   const picker = new RankPicker(0.5);
   const ranks = new Set<number>();
@@ -290,6 +346,13 @@ test('the rank picker counts a tie once all 256 ranks are held within reach', ()
   top.pick([0, 0, 0], 0.5, 255);
   top.pick([0, 0, 0], 0.5, 254);
   expect(top.pick([0, 0, 0], 0.5, 255, -1)).toBe(253);
+  // Ring reach widens the overlap test by both strokes' reach (P4.3): 1.5 apart, two 0.5 strokes
+  // cannot overlap at rest, but can once each may move 0.3 towards the other.
+  const ringed = new RankPicker(0.5, 0.3);
+  expect(ringed.pick([0, 0, 0], 0.5, 9, 1, 0.3)).toBe(9);
+  expect(ringed.pick([1.5, 0, 0], 0.5, 9, 1, 0)).toBe(9);
+  expect(ringed.pick([1.5, 0, 0], 0.5, 9, 1, 0.3)).toBe(10);
+  expect(() => ringed.pick([0, 0, 0], 0.5, 0, 1, 0.31)).toThrow();
 });
 
 test('the moon keeps dome-size strokes, with finer edge strokes on top along the crescent', () => {
