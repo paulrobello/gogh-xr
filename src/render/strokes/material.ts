@@ -27,6 +27,11 @@ export const MOON_DIRECTION: Readonly<Vector3> = new Vector3(0.45, 0.6, 0.66).no
 export const RELIEF_STRENGTH = 0.08;
 /** Smallest relief finite-difference step, in mip-0 atlas texels. */
 export const RELIEF_MIN_TEXELS = 2;
+/**
+ * Boundary haze strokes grow by up to this share of their size at `uHazeThickness` 1 (P3.5). The
+ * cull sphere of a chunk holding haze always includes the full growth (batch.ts).
+ */
+export const HAZE_GROWTH = 0.5;
 
 export interface StrokeMaterialUniforms {
   [name: string]: { value: unknown };
@@ -38,6 +43,12 @@ export interface StrokeMaterialUniforms {
   uSizeScale: { value: number };
   /** Moon and star discs whose cones cull SKY_LIGHT_CULL_FLAG strokes (sky-light-cull.ts). */
   uSkyLightCones: { value: Vector4[] };
+  /**
+   * Boundary haze thickening, 0-1 (P3.5): haze strokes grow by `HAZE_GROWTH` times it. The haze is
+   * the only sky-layer stroke carrying SKY_LIGHT_CULL_FLAG (src/paintings/starry-night/world.ts),
+   * as the flags byte has no spare bit for a haze flag of its own. 0 draws the world as built.
+   */
+  uHazeThickness: { value: number };
 }
 
 export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUniforms };
@@ -62,6 +73,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
     uRelief: { value: RELIEF_STRENGTH },
     uSizeScale: { value: sizeScale },
     uSkyLightCones: { value: skyLightConeUniforms([]) },
+    uHazeThickness: { value: 0 },
   };
   const material = new RawShaderMaterial({
     glslVersion: GLSL3,
@@ -84,6 +96,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       BACKDROP_RANK_SHIFT: `${BACKDROP_RANK_SHIFT}u`,
       BACKDROP_DOME_RANKS: `${BACKDROP_DOME_RANKS}u`,
       BACKDROP_FRONT_RANK_SHIFT: `${BACKDROP_FRONT_RANK_SHIFT}u`,
+      STROKE_LAYER_SKY: `${STROKE_LAYER.sky}u`,
       STROKE_LAYER_STAR: `${STROKE_LAYER.star}u`,
       STROKE_LAYER_MOON: `${STROKE_LAYER.moon}u`,
       FIT_SCALE_SHIFT: `${FIT_SCALE_SHIFT}u`,
@@ -91,6 +104,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       FIT_SCALE_STEP: glslFloat(FIT_SCALE_STEP),
       SKY_LIGHT_CONES,
       SKY_LIGHT_CULL_FLAG: `${SKY_LIGHT_CULL_FLAG}u`,
+      HAZE_GROWTH: glslFloat(HAZE_GROWTH),
     },
     transparent: false,
     depthWrite: true,

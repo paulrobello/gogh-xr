@@ -21,6 +21,8 @@ const IDLE: FrameActions = {
   turn: { x: 0, snap: 0 },
   teleportAim: false,
   teleportCommit: false,
+  flightToggle: false,
+  vertical: 0,
 };
 const FORWARD: FrameActions = { ...IDLE, move: { x: 0, y: 1 } };
 /** A right-stick push past the snap threshold, on its first frame. */
@@ -347,6 +349,8 @@ describe('diag', () => {
       position: first.position,
       yaw: 0.25,
       mode: 'walk',
+      altitude: 1.6,
+      haze: 0,
       seated: false,
       grounded: true,
       speed: 2,
@@ -582,5 +586,157 @@ describe('teleport', () => {
     expect(t.locomotion.diag().aim.reason).toBe('ok');
     for (let i = 0; i < 40; i += 1) t.desktopFrame(IDLE);
     expect(t.locomotion.diag().position[1]).toBeCloseTo(0, 6);
+  });
+});
+
+describe('flight', () => {
+  const TOGGLE: FrameActions = { ...IDLE, flightToggle: true };
+  const RISE: FrameActions = { ...IDLE, vertical: 1 };
+  const AIM: FrameActions = { ...IDLE, teleportAim: true };
+  const RELEASE: FrameActions = { ...IDLE, teleportCommit: true };
+  const LEVEL: Vec3 = [0, 1, 0];
+
+  it('toggles walk and fly, rises on vertical, and drops back onto the ground over 0.5 s', () => {
+    const { locomotion, desktopFrame } = setup();
+    locomotion.setGround(SLOPE);
+    desktopFrame(IDLE);
+    expect(locomotion.diag().mode).toBe('walk');
+    desktopFrame(TOGGLE);
+    expect(locomotion.diag().mode).toBe('fly');
+    for (let i = 0; i < 20; i += 1) desktopFrame(RISE);
+    const flying = locomotion.diag();
+    expect(flying.grounded).toBe(false);
+    expect(flying.position[1]).toBeCloseTo(0.05 * 20 * 2, 9);
+    expect(flying.altitude).toBeCloseTo(flying.position[1] + EYE_HEIGHT, 9);
+    desktopFrame(TOGGLE);
+    expect(locomotion.diag().mode).toBe('walk');
+    for (let i = 0; i < 9; i += 1) desktopFrame(IDLE);
+    expect(locomotion.diag().position[1]).toBeGreaterThan(0);
+    // The toggle frame plus nine more: 0.5 s at 0.05 s a frame.
+    desktopFrame(IDLE);
+    expect(locomotion.diag().position[1]).toBe(0);
+    expect(locomotion.diag().grounded).toBe(true);
+  });
+
+  it('ignores teleport while flying and during the exit drop, and turns as usual', () => {
+    const { locomotion, desktopFrame } = setup();
+    locomotion.spawn(0, 0, 0, 0);
+    desktopFrame(TOGGLE);
+    for (let i = 0; i < 10; i += 1) desktopFrame(RISE);
+    desktopFrame(AIM);
+    expect(locomotion.diag().aim.active).toBe(false);
+    desktopFrame(RELEASE);
+    expect(locomotion.diag().lastTeleport).toBeNull();
+    desktopFrame(SNAP_RIGHT);
+    expect(locomotion.diag().yaw).toBeCloseTo(-Math.PI / 6, 12);
+    desktopFrame(TOGGLE);
+    desktopFrame(AIM);
+    expect(locomotion.diag().aim.active).toBe(false);
+    desktopFrame(RELEASE);
+    expect(locomotion.diag().lastTeleport).toBeNull();
+    for (let i = 0; i < 10; i += 1) desktopFrame(IDLE);
+    desktopFrame(AIM);
+    expect(locomotion.diag().aim.active).toBe(true);
+  });
+
+  it('leaves an aim held into flight without a jump on its release', () => {
+    const { locomotion, desktopFrame } = setup();
+    desktopFrame(AIM);
+    expect(locomotion.diag().aim.active).toBe(true);
+    desktopFrame({ ...AIM, flightToggle: true });
+    expect(locomotion.diag().aim.active).toBe(false);
+    desktopFrame(RELEASE);
+    expect(locomotion.diag().lastTeleport).toBeNull();
+  });
+
+  it('needs a fresh aim after a flight toggle: an aim held through leaving flight never jumps', () => {
+    const { locomotion, desktopFrame } = setup();
+    desktopFrame(AIM);
+    expect(locomotion.diag().aim.active).toBe(true);
+    desktopFrame({ ...AIM, flightToggle: true });
+    for (let i = 0; i < 5; i += 1) desktopFrame({ ...AIM, vertical: 1 });
+    desktopFrame({ ...AIM, flightToggle: true });
+    // Well past the 0.5 s drop, T still held.
+    for (let i = 0; i < 20; i += 1) {
+      desktopFrame(AIM);
+      expect(locomotion.diag().aim.active).toBe(false);
+    }
+    desktopFrame(RELEASE);
+    expect(locomotion.diag().lastTeleport).toBeNull();
+    // A fresh press aims again.
+    desktopFrame(AIM);
+    expect(locomotion.diag().aim.active).toBe(true);
+  });
+
+  it('shows the vignette for the boundary push in XR, with no stick input', () => {
+    const { locomotion, xrFrame } = setup();
+    locomotion.setWorld({
+      ground: { heightAt: () => 0, normalAt: () => LEVEL },
+      boundaryFactor: () => 1,
+    });
+    locomotion.spawn(0, 5, -30, 0);
+    xrFrame(TOGGLE, new Vector3(0, 1.6, 0));
+    for (let i = 0; i < 10; i += 1) xrFrame(IDLE, new Vector3(0, 1.6, 0));
+    expect(locomotion.diag().speed).toBe(0);
+    expect(locomotion.diag().vignette).toBeGreaterThan(0.3);
+  });
+
+  it('ignores the toggle while a world loads, and a spawn returns to walk', () => {
+    const { locomotion, desktopFrame } = setup();
+    locomotion.awaitGround();
+    desktopFrame(TOGGLE);
+    expect(locomotion.diag().mode).toBe('walk');
+    locomotion.setGround(null);
+    desktopFrame(TOGGLE);
+    expect(locomotion.diag().mode).toBe('fly');
+    locomotion.spawn(1, 0, 1, 0);
+    expect(locomotion.diag().mode).toBe('walk');
+  });
+
+  it('thickens the haze only in flight near the edge, and eases it back to exactly 0', () => {
+    const { locomotion, desktopFrame } = setup();
+    const hazes: number[] = [];
+    const world = {
+      ground: { heightAt: () => 0, normalAt: () => LEVEL },
+      boundaryFactor: (p: Vec3) => Math.min(1, Math.hypot(p[0], p[2]) / 20),
+      setHaze: (thickness: number) => void hazes.push(thickness),
+    };
+    locomotion.setWorld(world);
+    locomotion.spawn(25, 0, 0, 0);
+    // Walking at factor 1 leaves the painting as built.
+    for (let i = 0; i < 20; i += 1) desktopFrame(IDLE);
+    expect(hazes).toEqual([]);
+    expect(locomotion.diag().haze).toBe(0);
+    desktopFrame(TOGGLE);
+    for (let i = 0; i < 4; i += 1) desktopFrame(IDLE);
+    const thick = locomotion.diag().haze;
+    expect(thick).toBeGreaterThan(0);
+    expect(thick).toBeLessThanOrEqual(1);
+    expect(hazes.at(-1)).toBe(thick);
+    // The push moves the flight inward, toward factor 0.8.
+    expect(locomotion.diag().position[0]).toBeLessThan(25);
+    desktopFrame(TOGGLE);
+    for (let i = 0; i < 100; i += 1) desktopFrame(IDLE);
+    expect(locomotion.diag().haze).toBe(0);
+    expect(hazes.at(-1)).toBe(0);
+    for (let i = 1; i < hazes.length; i += 1) {
+      expect(Math.abs(hazes[i] - hazes[i - 1])).toBeLessThan(0.5);
+    }
+  });
+
+  it('hands the haze back as built when the world is unbound mid-flight', () => {
+    const { locomotion, desktopFrame } = setup();
+    const hazes: number[] = [];
+    locomotion.setWorld({
+      ground: { heightAt: () => 0, normalAt: () => LEVEL },
+      boundaryFactor: () => 1,
+      setHaze: (thickness: number) => void hazes.push(thickness),
+    });
+    desktopFrame(TOGGLE);
+    desktopFrame(IDLE);
+    expect(hazes.at(-1)).toBeGreaterThan(0);
+    locomotion.setWorld(null);
+    expect(hazes.at(-1)).toBe(0);
+    expect(locomotion.diag().haze).toBe(0);
   });
 });

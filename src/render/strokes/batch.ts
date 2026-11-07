@@ -28,7 +28,8 @@ import { createBrushAtlas } from './brush-atlas';
 import { computeBounds, cullAndSortInto, DEFAULT_CELL_SIZE, partitionIndices } from './chunks';
 import { importanceOrder } from './importance';
 import { STROKE_ATTRIBUTES, STROKE_LAYER, type StrokeBuffers, selectStrokes } from './instance';
-import { createStrokeMaterial, type StrokeMaterial } from './material';
+import { createStrokeMaterial, HAZE_GROWTH, type StrokeMaterial } from './material';
+import { SKY_LIGHT_CULL_FLAG } from './sky-light-cull';
 
 /** Default seed of the per-chunk importance order. */
 export const STROKE_ORDER_SEED = 1889;
@@ -189,6 +190,23 @@ function createChunkGeometry(
 }
 
 /**
+ * True when `buffers` holds boundary haze: a sky-layer stroke with SKY_LIGHT_CULL_FLAG, the one
+ * stroke.vert.glsl grows by `uHazeThickness` (material.ts).
+ */
+export function holdsHaze(buffers: StrokeBuffers): boolean {
+  for (let i = 0; i < buffers.count; i++) {
+    const meta = i * 4;
+    if (
+      buffers.meta[meta + 1] === STROKE_LAYER.sky &&
+      (buffers.meta[meta + 3] & SKY_LIGHT_CULL_FLAG) !== 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The sky's moon and star strokes (src/world/sky-lights.ts) are pinned: a density draws all of
  * them, so a disc stays solid at every governor level. They fill a small part of their dome
  * chunk, so the chunk's stratified order thins them like the dome, and no prefix short of most of
@@ -282,7 +300,11 @@ export function createStrokeBatch(
   const bandVisible: Record<StrokeBand, number> = { near: 0, mid: 0, far: 0 };
   /** Set when a draw count changes outside `update`, which recounts `bandVisible` itself. */
   let bandVisibleStale = false;
-  /** Cull spheres: the bounds with the half-diagonal scaled by the band's size multiplier. */
+  /**
+   * Cull spheres: the bounds with the half-diagonal scaled by the band's size multiplier, and for
+   * a chunk holding boundary haze also by the haze's full growth (`HAZE_GROWTH`), so a thickened
+   * haze stroke never reaches past its sphere.
+   */
   const cullSpheres: Sphere[] = [];
   const reaches: number[] = [];
   const halfDiagonals: number[] = [];
@@ -306,7 +328,7 @@ export function createStrokeBatch(
     bandOf.push(null);
     cullSpheres.push(bounds.clone());
     reaches.push(box.reach);
-    halfDiagonals.push(box.halfDiagonal);
+    halfDiagonals.push(box.halfDiagonal * (holdsHaze(data) ? 1 + HAZE_GROWTH : 1));
     chunks.push({
       mesh,
       geometry,

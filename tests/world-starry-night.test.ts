@@ -554,6 +554,21 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     expect(lights.star + lights.moon).toBe(hazeStart - lightsStart);
   });
 
+  test('the haze is exactly the sky-layer strokes with SKY_LIGHT_CULL_FLAG, the shader haze marker', () => {
+    // stroke.vert.glsl grows these by uHazeThickness (P3.5); the flags byte has no spare bit.
+    let marked = 0;
+    let first = buffers.count;
+    for (let i = 0; i < buffers.count; i++) {
+      const sky = buffers.meta[i * 4 + 1] === STROKE_LAYER.sky;
+      if (sky && (buffers.meta[i * 4 + 3] & SKY_LIGHT_CULL_FLAG) !== 0) {
+        marked++;
+        first = Math.min(first, i);
+      }
+    }
+    expect(marked).toBe(assembled.counts.haze);
+    expect(first).toBe(assembled.hazeStart);
+  });
+
   test('P2-A1: the seed-1 scatter and haze match their pinned counts and hashes', () => {
     // A change to the scatter pins requires bumping SCATTER_VERSION in
     // src/render/strokes/scatter.ts (see GENERATOR_PINS above). The moon and stars and the haze

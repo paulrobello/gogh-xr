@@ -1,6 +1,7 @@
 /**
  * Locomotion wiring (P3.2): the rig, a three.js Group in the scene with the camera as its child,
- * driven every frame by the pure core in turn.ts and step.ts. XR and desktop share this one path.
+ * driven every frame by the pure core in turn.ts and step.ts, or flight.ts while flying (P3.5). XR
+ * and desktop share this one path.
  *
  * The head pose is read from the camera's local transform, which is rig-relative in both modes.
  * In XR, three's XR camera writes it at each render, so a frame reads the pose of the last render.
@@ -11,13 +12,15 @@ import { Euler, Group, type Object3D, Vector3 } from 'three';
 import { EYE_HEIGHT } from '../desktop/walk';
 import type { Vec3 } from '../render/strokes/frame';
 import { comfortFactor, easeVignette } from '../ui/vignette-alpha';
+import { MAX_DT } from '../xr/input';
+import { boundaryExcess, enterFlight, exitFlight, type FlightInput, fly } from './flight';
 import type { LocomotionSettings, TurnMode } from './settings';
 import {
   calibrateSeated,
   createLocomotionState,
   FLAT_GROUND,
   type Ground,
-  type MoveInput,
+  type LocomotionMode,
   placeRig,
   spawnAt,
   step,
@@ -37,13 +40,15 @@ import {
 import { type TurnInput, turn } from './turn';
 
 /** The part of a P3.1 `Actions` frame locomotion reads. */
-export interface FrameActions extends MoveInput, TurnInput {
+export interface FrameActions extends FlightInput, TurnInput {
   /** Seconds, already clamped by the input layer. */
   readonly dt: number;
   /** Level: a teleport aim is held. */
   readonly teleportAim: boolean;
   /** Edge: the aim ended this frame. */
   readonly teleportCommit: boolean;
+  /** Edge: toggle flight (P3.5). */
+  readonly flightToggle: boolean;
 }
 
 /** The desktop look (src/desktop/controls.ts). */
@@ -102,11 +107,15 @@ export interface TeleportRecord {
   readonly t: number;
 }
 
-/** `__goghDiag().rig`. P3.5 extends it. */
+/** `__goghDiag().rig`. */
 export interface RigDiag {
   readonly position: [number, number, number];
   yaw: number;
-  mode: 'walk';
+  mode: LocomotionMode;
+  /** The head's height above the ground under it, metres. */
+  altitude: number;
+  /** The boundary haze thickening, 0-1: 0 in walk mode once eased out. */
+  haze: number;
   seated: boolean;
   grounded: boolean;
   speed: number;
@@ -128,10 +137,10 @@ export interface Locomotion {
    */
   setGround(ground: Ground | null): void;
   /**
-   * Binds a world's ground, boundary and footprints (a `WorldHandle`) for ground follow and
-   * teleport landings, or null for the flat y = 0 floor with neither.
+   * Binds a world's ground, boundary, footprints and haze hook (a `WorldHandle`) for ground
+   * follow, teleport landings and flight, or null for the flat y = 0 floor with none of them.
    */
-  setWorld(world: LandingWorld | null): void;
+  setWorld(world: LocomotionWorld | null): void;
   /**
    * A world is loading: hold the rig's y (not grounded) until `setGround` binds its ground, so a
    * spawn above y = 0 does not sink toward the flat floor during the build.
@@ -150,6 +159,17 @@ export interface Locomotion {
   /** The rig, in one object reused across calls. */
   diag(): RigDiag;
 }
+
+/** What `setWorld` binds: a teleport landing world, plus the boundary haze's thickening hook. */
+export interface LocomotionWorld extends LandingWorld {
+  /** Thickens the boundary haze, 0-1, 0 being the painting as built. Omitted: no haze. */
+  setHaze?(thickness: number): void;
+}
+
+/** The haze thickening's easing time constant, seconds, so leaving flight at the edge never pops. */
+export const HAZE_TAU = 0.25;
+/** Below this, with nothing pushing it up, the haze thickening is exactly 0. */
+const HAZE_REST = 1e-3;
 
 /**
  * A head this low is no pose yet: a frame without a viewer pose leaves three's XR camera at the
@@ -170,11 +190,18 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
 
   const state = createLocomotionState();
   let ground: Ground | null = FLAT_GROUND;
-  /** Where teleport lands: the bound world, kept in step with `ground`. */
-  let landing: LandingWorld = FLAT_WORLD;
+  /** Where teleport lands and flight is bounded: the bound world, kept in step with `ground`. */
+  let landing: LocomotionWorld = FLAT_WORLD;
+  /** The haze thickening last given to `landing.setHaze`. */
+  let haze = 0;
   const aim = createArcResult();
   /** True while `aim` holds this frame's trace. */
   let aimActive = false;
+  /**
+   * Set by a flight toggle: an aim held across it counts for nothing until it is released, so
+   * holding T (or the stick) through leaving flight neither draws the arc nor teleports.
+   */
+  let aimBlocked = false;
   const blink = createBlink();
   /** The landing a running blink jumps to at full black. */
   const pending: [number, number, number] = [0, 0, 0];
@@ -184,6 +211,8 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
   const eye: [number, number, number] = [0, 0, 0];
   const scratch = new Vector3();
   const head = { x: 0, y: 0, z: 0, yaw: 0 };
+  /** The head's pitch, radians, positive up: flight flies along it. */
+  let headPitch = 0;
   const euler = new Euler(0, 0, 0, 'YXZ');
   let presenting = false;
   /** Presenting frames this session. The first still shows the pose from before the session. */
@@ -193,6 +222,8 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     position: [0, 0, 0],
     yaw: 0,
     mode: 'walk',
+    altitude: 0,
+    haze: 0,
     seated: settings.seated,
     grounded: true,
     speed: 0,
@@ -208,7 +239,9 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     head.x = camera.position.x;
     head.y = camera.position.y;
     head.z = camera.position.z;
-    head.yaw = euler.setFromQuaternion(camera.quaternion, 'YXZ').y;
+    euler.setFromQuaternion(camera.quaternion, 'YXZ');
+    head.yaw = euler.y;
+    headPitch = euler.x;
   }
 
   function writeRig(): void {
@@ -250,14 +283,20 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
   /**
    * One frame of teleport: a running blink jumps at full black, a release jumps to a valid aim
    * (in XR through the blink, on the desktop at once), and a held aim traces the arc. Without a
-   * ground (a world loading) there is no aim.
+   * ground (a world loading) there is no aim. `allowed` is false in flight and during the exit
+   * drop: no aim and no commit then.
    */
-  function teleport(actions: FrameActions, aiming: boolean, isPresenting: boolean): void {
+  function teleport(
+    actions: FrameActions,
+    aiming: boolean,
+    allowed: boolean,
+    isPresenting: boolean,
+  ): void {
     const aimed = aimActive;
     aimActive = false;
     if (blink.active) {
       if (stepBlink(blink, actions.dt)) jump(pending);
-    } else if (actions.teleportCommit) {
+    } else if (actions.teleportCommit && allowed) {
       const hit = aimed && aim.valid ? aim.hit : null;
       if (hit) {
         if (isPresenting) {
@@ -290,6 +329,41 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     aimActive = false;
   }
 
+  /**
+   * The flight toggle. Ignored while a world loads (no ground to fly over or drop onto) and while
+   * a teleport blink runs, so the jump it is fading toward still lands on a walking rig.
+   */
+  function toggleFlight(): void {
+    if (ground === null || blink.active) return;
+    aimBlocked = true;
+    if (state.mode === 'walk') {
+      enterFlight(state);
+      aimActive = false;
+      arc?.hide();
+    } else {
+      exitFlight(state);
+    }
+  }
+
+  /** Binds `next`, handing the outgoing world's haze back as built. */
+  function bindLanding(next: LocomotionWorld): void {
+    if (haze !== 0) landing.setHaze?.(0);
+    haze = 0;
+    landing = next;
+  }
+
+  /** Eases the haze thickening toward its target and hands it to the world when it changes. */
+  function easeHaze(dt: number): void {
+    const target = state.mode === 'fly' ? boundaryExcess(state.boundary) : 0;
+    const t = dt > 0 ? Math.min(dt, MAX_DT) : 0;
+    let next = haze + (target - haze) * (1 - Math.exp(-t / HAZE_TAU));
+    if (next < HAZE_REST && target < HAZE_REST) next = 0;
+    if (next !== haze) {
+      haze = next;
+      landing.setHaze?.(haze);
+    }
+  }
+
   return {
     rig,
     frame(actions, isPresenting) {
@@ -306,18 +380,29 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
         state.seatedOffset = 0;
       }
       presenting = isPresenting;
-      // Teleport is a walk-mode action: this is the one check that flight (P3.5) gates it at.
-      const aiming = actions.teleportAim && rigDiag.mode === 'walk';
+      if (!actions.teleportAim) aimBlocked = false;
+      // Teleport is a walk-mode action: this is the one check flight, its exit drop and an aim held
+      // across a flight toggle gate it at.
+      const allowed = state.mode === 'walk' && !state.dropping && !aimBlocked;
+      const aiming = actions.teleportAim && allowed;
       // A held aim never turns the rig, even pushed diagonally across the snap threshold.
       turn(state, aiming ? NO_TURN : actions, settings, actions.dt, head);
-      step(state, actions, ground, settings, actions.dt, head);
-      teleport(actions, aiming, isPresenting);
+      if (state.mode === 'fly' && ground !== null) {
+        fly(state, actions, ground, landing, settings, actions.dt, head, headPitch);
+      } else {
+        step(state, actions, ground, settings, actions.dt, head);
+      }
+      teleport(actions, aiming, allowed, isPresenting);
+      // The toggle takes effect from the next frame: the exit drop's 0.5 s starts at this one.
+      if (actions.flightToggle) toggleFlight();
       writeRig();
+      easeHaze(actions.dt);
       // XR only: the desktop preview and its captures never show the vignette, even fading out.
       vignetteAlpha = isPresenting
         ? easeVignette(
             vignetteAlpha,
-            settings.vignette * comfortFactor(state.speed, state.turnRate, settings),
+            settings.vignette *
+              comfortFactor(Math.max(state.speed, state.pushSpeed), state.turnRate, settings),
             actions.dt,
           )
         : 0;
@@ -327,13 +412,15 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     },
     setGround(next) {
       ground = next ?? FLAT_GROUND;
-      landing = next
-        ? { ground: { heightAt: (x, z) => next.heightAt(x, z), normalAt: () => LEVEL } }
-        : FLAT_WORLD;
+      bindLanding(
+        next
+          ? { ground: { heightAt: (x, z) => next.heightAt(x, z), normalAt: () => LEVEL } }
+          : FLAT_WORLD,
+      );
     },
     setWorld(world) {
       ground = world?.ground ?? FLAT_GROUND;
-      landing = world ?? FLAT_WORLD;
+      bindLanding(world ?? FLAT_WORLD);
     },
     awaitGround() {
       ground = null;
@@ -363,6 +450,9 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       rigDiag.position[1] = state.position[1];
       rigDiag.position[2] = state.position[2];
       rigDiag.yaw = state.yaw;
+      rigDiag.mode = state.mode;
+      rigDiag.altitude = state.altitude;
+      rigDiag.haze = haze;
       rigDiag.seated = settings.seated;
       rigDiag.grounded = state.grounded;
       rigDiag.speed = state.speed;

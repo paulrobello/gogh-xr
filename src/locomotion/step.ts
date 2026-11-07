@@ -13,6 +13,13 @@ import { type LocomotionSettings, MAX_MOVE_SPEED, MIN_MOVE_SPEED } from './setti
 export const GROUND_FOLLOW_TAU = 0.08;
 /** The desktop Shift multiplier. The result is still capped at `MAX_MOVE_SPEED`. */
 export const SPRINT_MULTIPLIER = 2;
+/** Leaving flight (P3.5) eases the rig down onto the ground over exactly this long, seconds. */
+export const EXIT_DROP_DURATION = 0.5;
+/** Absorbs float error when summing frame dts toward the drop's end. */
+const DROP_EPSILON = 1e-9;
+
+/** Walking on the ground, or flying (src/locomotion/flight.ts). */
+export type LocomotionMode = 'walk' | 'fly';
 
 /** The head relative to the rig: local position, and yaw about the rig's up axis. */
 export interface HeadPose {
@@ -54,6 +61,19 @@ export interface LocomotionState {
   turnRate: number;
   /** Seconds since the last snap turn (src/locomotion/turn.ts). Infinity: none yet. */
   sinceSnap: number;
+  mode: LocomotionMode;
+  /** True while the exit drop eases a walking rig from its flight height onto the ground. */
+  dropping: boolean;
+  /** The rig's y when the drop started. */
+  dropFrom: number;
+  /** Seconds into the drop. */
+  dropElapsed: number;
+  /** The head's height above the ground under it, metres, as of the last step. */
+  altitude: number;
+  /** The radial boundary factor at the head of the last flight step, 0 in walk mode. */
+  boundary: number;
+  /** Speed of the last flight step's boundary push, m/s, 0 in walk mode. */
+  pushSpeed: number;
 }
 
 export function createLocomotionState(): LocomotionState {
@@ -67,10 +87,20 @@ export function createLocomotionState(): LocomotionState {
     speed: 0,
     turnRate: 0,
     sinceSnap: Number.POSITIVE_INFINITY,
+    mode: 'walk',
+    dropping: false,
+    dropFrom: 0,
+    dropElapsed: 0,
+    altitude: 0,
+    boundary: 0,
+    pushSpeed: 0,
   };
 }
 
-/** Stands the rig on (x, y, z) facing `yaw`, with ground follow on and no smoothing from before. */
+/**
+ * Stands the rig on (x, y, z) facing `yaw` in walk mode, with ground follow on, no exit drop and
+ * no smoothing from before.
+ */
 export function spawnAt(
   state: LocomotionState,
   x: number,
@@ -88,6 +118,10 @@ export function spawnAt(
   state.speed = 0;
   state.turnRate = 0;
   state.sinceSnap = Number.POSITIVE_INFINITY;
+  state.mode = 'walk';
+  state.dropping = false;
+  state.boundary = 0;
+  state.pushSpeed = 0;
 }
 
 /**
@@ -115,10 +149,19 @@ export function calibrateSeated(
   state.seatedOffset = Math.max(0, settings.standingHeight - headY);
 }
 
+/** Smoothstep on [0, 1]. */
+export function smoothstep01(x: number): number {
+  const t = Math.min(1, Math.max(0, x));
+  return t * t * (3 - 2 * t);
+}
+
 /**
- * One frame. Moves the rig along the head's ground-projected yaw (rig yaw plus head yaw), then
- * eases its y toward the ground under the head's world XZ, plus the seated offset. The offset only
- * translates the rig, so physical head movement maps one to one into the world.
+ * One walk frame. Moves the rig along the head's ground-projected yaw (rig yaw plus head yaw),
+ * then eases its y toward the ground under the head's world XZ, plus the seated offset. The offset
+ * only translates the rig, so physical head movement maps one to one into the world.
+ *
+ * During the exit drop the y instead follows a smoothstep from the flight height to that target,
+ * re-sampled every frame, and lands on it exactly `EXIT_DROP_DURATION` after the drop began.
  */
 export function step(
   state: LocomotionState,
@@ -136,6 +179,7 @@ export function step(
   const length = Math.hypot(mx, my);
 
   state.speed = 0;
+  state.pushSpeed = 0;
   if (length > 0) {
     state.held = false;
     const moveSpeed = Math.min(MAX_MOVE_SPEED, Math.max(MIN_MOVE_SPEED, settings.moveSpeed));
@@ -150,17 +194,34 @@ export function step(
     position[2] += (-sin * mx - cos * my) * k;
   }
 
-  if (state.held || ground === null) {
-    state.grounded = false;
-    return;
-  }
-  state.grounded = true;
   // The head's world XZ: the rig position plus the head offset turned by the rig yaw.
   const sin = Math.sin(state.yaw);
   const cos = Math.cos(state.yaw);
   const hx = position[0] + cos * head.x + sin * head.z;
   const hz = position[2] - sin * head.x + cos * head.z;
+  if (state.held || ground === null) {
+    state.grounded = false;
+    if (ground !== null) state.altitude = position[1] + head.y - ground.heightAt(hx, hz);
+    return;
+  }
+  state.grounded = true;
   const target = ground.heightAt(hx, hz);
+  const offset = settings.seated ? state.seatedOffset : 0;
+  if (state.dropping) {
+    state.dropElapsed += t;
+    state.groundY = target;
+    if (state.dropElapsed >= EXIT_DROP_DURATION - DROP_EPSILON) {
+      state.dropping = false;
+      position[1] = target + offset;
+    } else {
+      const s = smoothstep01(state.dropElapsed / EXIT_DROP_DURATION);
+      position[1] = state.dropFrom + (target + offset - state.dropFrom) * s;
+      state.grounded = false;
+    }
+    state.altitude = position[1] + head.y - target;
+    return;
+  }
   state.groundY += (target - state.groundY) * (1 - Math.exp(-t / GROUND_FOLLOW_TAU));
-  position[1] = state.groundY + (settings.seated ? state.seatedOffset : 0);
+  position[1] = state.groundY + offset;
+  state.altitude = position[1] + head.y - target;
 }

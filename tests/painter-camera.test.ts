@@ -38,6 +38,8 @@ function painterCamera(): PerspectiveCamera {
         turn: { x: 0, snap: 0 },
         teleportAim: false,
         teleportCommit: false,
+        flightToggle: false,
+        vertical: 0,
       },
       false,
     );

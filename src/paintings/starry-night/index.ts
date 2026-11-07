@@ -155,7 +155,12 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   }));
   const { heightAt, normalAt } = world.terrain;
   const blocked = createFootprintTest(world.village);
-  return { batch, ground: { heightAt, normalAt }, boundaryFactor, blocked };
+  const setHaze = (thickness: number): void => {
+    for (const material of Object.values(batch.materials)) {
+      material.uniforms.uHazeThickness.value = thickness;
+    }
+  };
+  return { batch, ground: { heightAt, normalAt }, boundaryFactor, blocked, setHaze };
 }
 
 /** Nothing animates yet (P4). */

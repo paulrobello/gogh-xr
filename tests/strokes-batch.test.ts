@@ -17,6 +17,7 @@ import {
 } from '../src/render/strokes/bands.ts';
 import {
   createStrokeBatch,
+  holdsHaze,
   isPinnedStroke,
   type StrokeBatch,
 } from '../src/render/strokes/batch.ts';
@@ -29,6 +30,8 @@ import {
   type StrokeBuffers,
   selectStrokes,
 } from '../src/render/strokes/instance.ts';
+import { HAZE_GROWTH } from '../src/render/strokes/material.ts';
+import { SKY_LIGHT_CULL_FLAG } from '../src/render/strokes/sky-light-cull.ts';
 import { mulberry32 } from '../src/util/prng.ts';
 
 vi.mock('../src/render/strokes/chunks.ts', async (importOriginal) => {
@@ -359,6 +362,59 @@ describe('bands', () => {
     expect(chunk.mesh.visible).toBe(true);
     expect(() => batch.setSizeMultiplier('mid', 0)).toThrow(RangeError);
     expect(() => batch.setSizeMultiplier('mid', Number.POSITIVE_INFINITY)).toThrow(RangeError);
+    batch.dispose();
+  });
+
+  test('a haze chunk culls with its strokes grown by the full haze growth (P3.5)', () => {
+    // A 3 x 1.2 m haze stroke at x = -7 and a plain sky stroke of the same size at x = +7.
+    const buffers = createStrokeBuffers(2);
+    for (const [i, x, flags] of [
+      [0, -7, SKY_LIGHT_CULL_FLAG],
+      [1, 7, 0],
+    ] as const) {
+      packInstance(buffers, i, {
+        position: [x, 0.5, -5],
+        normal: [0, 0, 1],
+        tangent: 0,
+        color: [255, 255, 255, 255],
+        size: [3, 1.2],
+        brush: 0,
+        layer: STROKE_LAYER.sky,
+        phase: 0,
+        flags,
+      });
+    }
+    expect(holdsHaze(selectStrokes(buffers, [0]))).toBe(true);
+    expect(holdsHaze(selectStrokes(buffers, [1]))).toBe(false);
+    const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    for (const band of STROKE_BANDS) batch.setSizeMultiplier(band, 1.7);
+    const cull = vi.mocked(cullAndSortInto);
+    batch.update(originCamera());
+    const spheres = cull.mock.calls.at(-1)?.[0] ?? [];
+    expect(spheres).toHaveLength(2);
+    const halfDiagonal = 0.5 * Math.hypot(3, 1.2);
+    batch.chunks.forEach((chunk, i) => {
+      const sphere = spheres[i];
+      const haze = chunk.bounds.center.x < 0;
+      const grown = halfDiagonal * 1.7 * (haze ? 1 + HAZE_GROWTH : 1);
+      expect(sphere.radius).toBeCloseTo(grown, 6);
+      // Every corner of the fully grown stroke, at any tangent angle in its plane, is inside.
+      const position = haze ? [-7, 0.5, -5] : [7, 0.5, -5];
+      const theta0 = Math.atan2(1.2, 3);
+      for (let k = 0; k < 64; k += 1) {
+        const a = (k / 64) * 2 * Math.PI;
+        for (const corner of [a + theta0, a - theta0, a + Math.PI + theta0, a + Math.PI - theta0]) {
+          const x = position[0] + Math.cos(corner) * grown;
+          const y = position[1] + Math.sin(corner) * grown;
+          const d = Math.hypot(
+            x - sphere.center.x,
+            y - sphere.center.y,
+            position[2] - sphere.center.z,
+          );
+          expect(d).toBeLessThanOrEqual(sphere.radius + 1e-9);
+        }
+      }
+    });
     batch.dispose();
   });
 

@@ -67,6 +67,11 @@ export interface WorldHandle {
    * no teleport lands there (P3.4). Omitted: a world without buildings.
    */
   blocked?(x: number, z: number): boolean;
+  /**
+   * Thickens the boundary haze, 0-1, 0 being the world as built. Flight drives it near the edge
+   * (P3.5). Omitted: a world without haze.
+   */
+  setHaze?(thickness: number): void;
 }
 
 export interface WorldModule {

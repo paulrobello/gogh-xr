@@ -15,6 +15,9 @@ uniform float uSizeScale;
 // Moon and star discs (src/render/strokes/sky-light-cull.ts): world centre xyz, radius w in
 // metres; w = 0 is an unused slot.
 uniform vec4 uSkyLightCones[SKY_LIGHT_CONES];
+// Boundary haze thickening, 0-1 (material.ts uHazeThickness): the haze is the sky layer's only
+// SKY_LIGHT_CULL_FLAG strokes.
+uniform float uHazeThickness;
 
 // Unit quad corner in [-0.5, 0.5]²: x along the stroke, y across it.
 in vec3 position;
@@ -96,6 +99,9 @@ void main() {
   float sizeScale = fitLevel == 0u
     ? uSizeScale
     : min(uSizeScale, 1.0 + float(fitLevel - 1u) * FIT_SCALE_STEP);
+  if (iMeta.y == STROKE_LAYER_SKY && (iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {
+    sizeScale *= 1.0 + HAZE_GROWTH * uHazeThickness;
+  }
   vec2 size = iSize * sizeScale;
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));

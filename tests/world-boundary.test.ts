@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { Texture } from 'three';
 import { expect, test } from 'vitest';
 import { type FlowField, type Raster, REGION } from '../src/demo/canvas/field.ts';
 import {
@@ -11,6 +13,7 @@ import {
   STROKE_LAYER,
   unpackInstance,
 } from '../src/render/strokes/instance.ts';
+import { createStrokeMaterial, HAZE_GROWTH } from '../src/render/strokes/material.ts';
 import {
   BOUNDARY_ALTITUDE,
   BOUNDARY_RADIUS,
@@ -161,4 +164,23 @@ test('haze avoids the ground by the margin and still meets the count', () => {
 test('haze stops at the draw guard when the ground starves it', () => {
   const haze = createBoundaryHaze(SOURCE, { seed: 2, count: 20, groundHeight: () => 1000 });
   expect(haze.length).toBeLessThan(20);
+});
+
+test('the stroke material thickens only the haze, and draws it as built by default (P3.5)', () => {
+  const material = createStrokeMaterial(new Texture());
+  expect(material.uniforms.uHazeThickness.value).toBe(0);
+  expect(material.defines.STROKE_LAYER_SKY).toBe(`${STROKE_LAYER.sky}u`);
+  expect(Number(material.defines.HAZE_GROWTH)).toBe(HAZE_GROWTH);
+  const glsl = readFileSync('src/render/strokes/stroke.vert.glsl', 'utf8');
+  for (const line of [
+    'uniform float uHazeThickness;',
+    'if (iMeta.y == STROKE_LAYER_SKY && (iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {',
+    'sizeScale *= 1.0 + HAZE_GROWTH * uHazeThickness;',
+  ]) {
+    expect(glsl).toContain(line);
+  }
+  // The growth lands before the quad is built from `size`.
+  expect(glsl.indexOf('sizeScale *= 1.0 + HAZE_GROWTH')).toBeLessThan(
+    glsl.indexOf('vec2 size = iSize * sizeScale;'),
+  );
 });

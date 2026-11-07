@@ -1,7 +1,7 @@
 /**
- * Locomotion smoke checks (P3.2 to P3.4): the left stick and WASD move the rig through the Starry
+ * Locomotion smoke checks (P3.2 to P3.5): the left stick and WASD move the rig through the Starry
  * Night world, its y follows the terrain, and the rendered eye moves with it; the right stick and
- * T aim and commit a teleport. The full locomotion suite is P3.6.
+ * T aim and commit a teleport; F flies and Space climbs. The full locomotion suite is P3.6.
  *
  * `__goghDiag().camera` is the camera that rendered the last frame in world space: three's XR
  * camera while presenting, whose matrices include the rig.
@@ -17,6 +17,8 @@ interface RigDiag {
   position: [number, number, number];
   yaw: number;
   mode: string;
+  altitude: number;
+  haze: number;
   seated: boolean;
   grounded: boolean;
   speed: number;
@@ -331,4 +333,50 @@ test('the bare scene builds the arc and its brush atlas on the first aim, not at
   expect(aimed.renderer.textures).toBe(boot.renderer.textures + 1);
   expect(aimed.renderer.programs).toBe(boot.renderer.programs + 1);
   expect((aimed.draw as { calls: number }).calls).toBe((boot.draw as { calls: number }).calls + 1);
+});
+
+test('desktop F flies near the edge under thicker haze, Space climbs, and F drops back onto the terrain', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(180_000);
+  await bootWorld(xr, WORLD);
+  // Eye 49 m out toward -Z, well above the terrain: the radial boundary factor is about 0.9 there.
+  await page.evaluate(() => window.__goghPose?.(0, 20, -49, 0, 0));
+  await xr.waitFrames(2);
+  expect((await rig(xr)).mode).toBe('walk');
+  await page.keyboard.down('KeyF');
+  await expect.poll(async () => (await rig(xr)).mode).toBe('fly');
+  await page.keyboard.up('KeyF');
+  // The push drifts the flight inward and the haze thickens.
+  await expect.poll(async () => (await rig(xr)).haze, { timeout: 10_000 }).toBeGreaterThan(0);
+  await expect
+    .poll(async () => (await rig(xr)).position[2], { timeout: 10_000 })
+    .toBeGreaterThan(-48.9);
+  const before = await rig(xr);
+  expect(before.grounded).toBe(false);
+  // T aims nothing in flight.
+  await page.keyboard.down('KeyT');
+  await xr.waitFrames(3);
+  expect((await rig(xr)).aim.active).toBe(false);
+  await page.keyboard.up('KeyT');
+  await xr.waitFrames(2);
+  expect((await rig(xr)).lastTeleport).toBeNull();
+
+  await page.keyboard.down('Space');
+  await expect
+    .poll(async () => (await rig(xr)).altitude, { timeout: 10_000 })
+    .toBeGreaterThan(before.altitude + 1);
+  await page.keyboard.up('Space');
+  const high = await rig(xr);
+  console.log(`[e2e] flight desktop rig ${JSON.stringify(high)}`);
+  expect(high.altitude).toBeLessThanOrEqual(40 + 1e-6);
+  expect(Math.hypot(high.position[0], high.position[2])).toBeLessThanOrEqual(55);
+
+  await page.keyboard.down('KeyF');
+  await expect.poll(async () => (await rig(xr)).mode).toBe('walk');
+  await page.keyboard.up('KeyF');
+  await expect.poll(async () => (await rig(xr)).grounded, { timeout: 5_000 }).toBe(true);
+  expect(await groundGap(xr)).toBeLessThan(0.005);
+  await expect.poll(async () => (await rig(xr)).haze, { timeout: 5_000 }).toBe(0);
 });
