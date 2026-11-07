@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 import {
   DataTexture,
+  Matrix4,
   Object3D,
   PerspectiveCamera,
+  Quaternion,
   RGBAFormat,
   Scene,
   Texture,
@@ -324,7 +326,7 @@ describe('reactive tracker', () => {
     expect(insideReactiveBox(tracker.uniforms, [0, 0, 0])).toBe(false);
   });
 
-  test('velocities are world m/s from the last frame, clamped; a jump resets the wake', () => {
+  test('velocities are m/s from the last frame, clamped; a jump resets the wake', () => {
     const tracker = createReactiveTracker();
     const hand = (x: number): V3 => [x, 1, -0.5];
     tracker.frame(1000, [head, hand(0), null]);
@@ -621,7 +623,10 @@ describe('a snap turn leaves no wake (M1)', () => {
    * taken. `epoch` maps locomotion's count to what the tracker is told. Returns the hand's wake
    * weights after the turn and the discontinuities locomotion counted.
    */
-  function snapWithHand(epoch: (count: number) => number): { weights: number[]; count: number } {
+  function snapWithHand(
+    epoch: (count: number) => number,
+    rigRelative = false,
+  ): { weights: number[]; count: number } {
     const { camera, desktop, locomotion } = rigWithControls();
     const hand = new Object3D();
     hand.position.set(0.15, 1.5, -0.15);
@@ -635,7 +640,13 @@ describe('a snap turn leaves no wake (M1)', () => {
       desktop.update();
       locomotion.frame(actions, false);
       const count = epoch(locomotion.discontinuities());
-      tracker.frame((k * 1000) / 72, [world(camera), world(hand), null], count);
+      locomotion.rig.updateWorldMatrix(true, false);
+      tracker.frame(
+        (k * 1000) / 72,
+        [world(camera), world(hand), null],
+        count,
+        rigRelative ? locomotion.rig.matrixWorld.elements : null,
+      );
     };
     const start = locomotion.discontinuities();
     // Frame 11 (152.8 ms) is the first 150 ms after the sample at frame 0, so it takes a sample.
@@ -655,9 +666,12 @@ describe('a snap turn leaves no wake (M1)', () => {
     const signalled = snapWithHand((count) => count);
     expect(signalled.count).toBe(1);
     for (const w of signalled.weights) expect(w).toBe(0);
-    // Without the signal the same snap draws a wake: the speed backstop alone misses it.
+    // Without the signal and in world velocity the same snap draws a wake: the speed backstop alone
+    // misses it. Rig-relative velocity (Q41) needs neither: the hand does not move in the rig.
     const unsignalled = snapWithHand(() => 0);
     expect(Math.max(...unsignalled.weights)).toBeGreaterThan(0.5);
+    const rigRelative = snapWithHand(() => 0, true);
+    for (const w of rigRelative.weights) expect(w).toBeCloseTo(0, 6);
   });
 
   test('spawn, a placed pose and an explicit mark count as discontinuities too', () => {
@@ -667,5 +681,109 @@ describe('a snap turn leaves no wake (M1)', () => {
     locomotion.setPose(3, 2, -4, 0.5, 0);
     locomotion.markDiscontinuity();
     expect(locomotion.discontinuities()).toBe(start + 3);
+  });
+});
+
+describe('velocity is relative to the rig (Q41)', () => {
+  const head: V3 = [0, 1.6, 0];
+  const DT = 1000 / 72;
+  const rigMatrix = (x: number, y: number, z: number, yaw: number): number[] =>
+    new Matrix4()
+      .compose(
+        new Vector3(x, y, z),
+        new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), yaw),
+        new Vector3(1, 1, 1),
+      )
+      .toArray();
+  const toWorld = (m: number[], local: V3): V3 => {
+    const v = new Vector3(...local).applyMatrix4(new Matrix4().fromArray(m));
+    return [v.x, v.y, v.z];
+  };
+
+  test('rig translation alone gives every disturber velocity 0 and no wake', () => {
+    const tracker = createReactiveTracker();
+    const hand: V3 = [0.3, 1.2, -0.4];
+    for (let k = 0; k < 60; k++) {
+      const m = rigMatrix(k * (2 / 72), k * (1 / 72), -k * (2 / 72), 0);
+      tracker.frame(
+        k * DT,
+        [toWorld(m, head), toWorld(m, hand), toWorld(m, [-0.3, 1.2, -0.4])],
+        0,
+        m,
+      );
+    }
+    for (const d of tracker.diag().disturbers) {
+      expect(Math.hypot(...d.velocity)).toBeCloseTo(0, 9);
+      expect(d.wakeWeight).toBeCloseTo(0, 9);
+    }
+    expect(tracker.diag().disturbers[1].position[0]).toBeGreaterThan(1);
+  });
+
+  test('rig yaw alone, smooth or snapped, gives velocity 0 with no discontinuity signal', () => {
+    const tracker = createReactiveTracker();
+    const hand: V3 = [0.3, 1.2, -0.4];
+    for (let k = 0; k < 60; k++) {
+      const yaw = k < 30 ? k * 0.02 : 0.6 + 0.5;
+      const m = rigMatrix(1, 0, 2, yaw);
+      tracker.frame(k * DT, [toWorld(m, head), toWorld(m, hand), null], 0, m);
+    }
+    for (const d of tracker.diag().disturbers) {
+      expect(Math.hypot(...d.velocity)).toBeCloseTo(0, 9);
+      expect(d.wakeWeight).toBeCloseTo(0, 9);
+      expect(d.jumps).toBe(0);
+    }
+  });
+
+  test('a physical hand sweep gives the same velocity and wake with or without rig motion', () => {
+    const run = (moving: boolean) => {
+      const tracker = createReactiveTracker();
+      for (let k = 0; k < 40; k++) {
+        const m = moving
+          ? rigMatrix(k * (2 / 72), 0.1, -k * (1.5 / 72), 0.01 * k)
+          : rigMatrix(0, 0, 0, 0);
+        const hand: V3 = [k * (1.2 / 72), 1.2, -0.4];
+        tracker.frame(k * DT, [toWorld(m, head), toWorld(m, hand), null], 0, m);
+      }
+      const m = moving
+        ? rigMatrix(39 * (2 / 72), 0.1, -39 * (1.5 / 72), 0.39)
+        : rigMatrix(0, 0, 0, 0);
+      const d = tracker.diag().disturbers[1];
+      const rigLocal = new Vector3(...d.velocity).applyMatrix4(
+        new Matrix4().extractRotation(new Matrix4().fromArray(m)).transpose(),
+      );
+      return { local: rigLocal.toArray(), weight: d.wakeWeight, speed: Math.hypot(...d.velocity) };
+    };
+    const still = run(false);
+    const walking = run(true);
+    expect(still.speed).toBeCloseTo(1.2, 9);
+    expect(walking.speed).toBeCloseTo(1.2, 9);
+    expect(walking.weight).toBeCloseTo(still.weight, 9);
+    for (let a = 0; a < 3; a++) expect(walking.local[a]).toBeCloseTo(still.local[a], 9);
+    expect(still.weight).toBeGreaterThan(0.5);
+  });
+
+  test('a teleport or a snap turn gives no velocity spike even without the discontinuity signal', () => {
+    const tracker = createReactiveTracker();
+    const hand: V3 = [0.15, 1.5, -0.15];
+    let m = rigMatrix(0, 0, 0, 0);
+    for (let k = 0; k < 20; k++) {
+      if (k === 10) m = rigMatrix(8, 0, -6, 0);
+      if (k === 15) m = rigMatrix(8, 0, -6, Math.PI / 6);
+      tracker.frame(k * DT, [toWorld(m, head), toWorld(m, hand), null], 0, m);
+      for (const d of tracker.diag().disturbers) {
+        expect(Math.hypot(...d.velocity)).toBeCloseTo(0, 9);
+        expect(d.jumps).toBe(0);
+      }
+    }
+    expect(tracker.diag().resets).toBe(0);
+  });
+
+  test('the static push follows world positions: the disturber reports its world position', () => {
+    const tracker = createReactiveTracker();
+    const m = rigMatrix(5, 0, -3, 1);
+    tracker.frame(0, [toWorld(m, head), null, null], 0, m);
+    const expected = toWorld(m, head);
+    const got = tracker.diag().disturbers[0].position;
+    for (let a = 0; a < 3; a++) expect(got[a]).toBeCloseTo(expected[a], 9);
   });
 });

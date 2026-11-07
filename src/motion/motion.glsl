@@ -12,7 +12,7 @@ uniform float uCalm;
 // the reactive motion runs on every layer (P4.5). 0 when frozen or at calm 0.
 uniform uint uMotionLayers;
 // The reactive motion's field (src/motion/reactive.ts): per disturber (head, controller 0,
-// controller 1) its world position and strength (w, 0 when untracked) and its velocity, m/s; its
+// controller 1) its world position and strength (w, 0 when untracked) and its rig-relative velocity, m/s; its
 // wake samples, newest first, at j * WAKE_SAMPLES + i, with their weight in w; and the box round
 // every weighted disturber and sample, grown by the radius (negative half extents when empty).
 uniform vec4 uDisturbers[REACTIVE_DISTURBERS];

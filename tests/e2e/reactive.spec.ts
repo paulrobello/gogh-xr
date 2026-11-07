@@ -619,4 +619,140 @@ test.describe('reactive strokes (P4.5)', () => {
     expect(sweptStill.equals(parkedStill)).toBe(true);
     expect(await glErrors(page)).toEqual([]);
   });
+  /**
+   * Samples the reactive diag every animation frame for `ms`, optionally sweeping the right
+   * controller rig-local along x from -0.4 m at 1.5 m/s for 0.8/1.5 s, `z` metres ahead of the eye.
+   * Reports the largest wake weight and speed over every disturber (the swept hand alone for the
+   * sweep), the largest box stroke count and how far the rig moved.
+   */
+  const watch = (
+    page: Page,
+    ms: number,
+    sweepAhead: number | null,
+  ): Promise<{
+    weight: number;
+    speed: number;
+    handSpeed: number;
+    boxStrokes: number;
+    moved: number;
+  }> =>
+    page.evaluate(
+      ([duration, z, eyeHeight]) =>
+        new Promise((done) => {
+          const device = window.__goghIwer;
+          const diag = window.__goghDiag;
+          if (!device || !diag) throw new Error('boot with ?iwer&diag');
+          const right = device.controllers.right;
+          if (!right) throw new Error('no right controller');
+          const rig0 = (diag().rig as { position: number[] }).position;
+          const start = [rig0[0], rig0[1], rig0[2]];
+          const out = { weight: 0, speed: 0, handSpeed: 0, boxStrokes: 0, moved: 0 };
+          const t0 = performance.now();
+          const step = (now: number): void => {
+            const t = (now - t0) / 1000;
+            if (z !== null) right.position.set(-0.4 + 1.5 * Math.min(t, 0.8 / 1.5), eyeHeight, -z);
+            const d = diag() as {
+              reactive: {
+                boxStrokes: number | null;
+                disturbers: { velocity: number[]; wakeWeight: number; position: number[] }[];
+              };
+              rig: { position: number[] };
+            };
+            for (const dist of d.reactive.disturbers) {
+              out.speed = Math.max(
+                out.speed,
+                Math.hypot(dist.velocity[0], dist.velocity[1], dist.velocity[2]),
+              );
+              if (z === null) out.weight = Math.max(out.weight, dist.wakeWeight);
+            }
+            if (z !== null) {
+              const hand = d.reactive.disturbers
+                .slice(1)
+                .reduce((a, b) => (b.position[1] > a.position[1] ? b : a));
+              out.weight = Math.max(out.weight, hand.wakeWeight);
+              out.handSpeed = Math.max(
+                out.handSpeed,
+                Math.hypot(hand.velocity[0], hand.velocity[1], hand.velocity[2]),
+              );
+            }
+            out.boxStrokes = Math.max(out.boxStrokes, d.reactive.boxStrokes ?? 0);
+            out.moved = Math.hypot(
+              d.rig.position[0] - start[0],
+              d.rig.position[1] - start[1],
+              d.rig.position[2] - start[2],
+            );
+            if (t * 1000 < duration) requestAnimationFrame(step);
+            else done(out);
+          };
+          requestAnimationFrame(step);
+        }),
+      [ms, sweepAhead, EYE_HEIGHT] as const,
+    );
+
+  test('stick-walking past strokes with a hand held still leaves no wake, and the static push still moves them (Q41)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(240_000);
+    await bootXr(page, xr, 'motionlayers=reactive');
+    const view = cypressView(2.4);
+    // The controller 0.8 m short of the hull, still in the rig while the stick walks the rig up to
+    // it: the walk brings the hull into the hand's reach, not the hand's motion.
+    const inside = ahead(view, 1.6);
+    await place(page, xr, view, PARKED, inside);
+    await settle(page, xr);
+    const held = await watch(page, 300, null);
+    expect(held.speed).toBe(0);
+    await xr.stick('left', 0, -1);
+    const walking = await watch(page, 350, null);
+    await xr.stick('left', 0, 0);
+    console.log(
+      `[e2e] walking past a held hand: rig moved ${walking.moved.toFixed(2)} m, wake weight ${walking.weight.toExponential(2)}, speed ${walking.speed.toExponential(2)}, box strokes up to ${walking.boxStrokes}`,
+    );
+    expect(walking.moved).toBeGreaterThan(0.3);
+    expect(walking.weight).toBeLessThan(1e-3);
+    expect(walking.speed).toBeLessThan(1e-3);
+    // The proximity push is tied to world positions: strokes were within the hand's box.
+    expect(walking.boxStrokes).toBeGreaterThan(0);
+    await settle(page, xr);
+    const hand = await canvasPixels(page);
+    // The same rig pose with the hand parked 60 m down: the held hand's push is what differs.
+    await xr.setPose({ right: { position: PARKED }, left: { position: PARKED } });
+    await settle(page, xr);
+    const parked = await canvasPixels(page);
+    const diff = radialDiff(hand, parked, await canvasSize(page), 1e9, 1e9);
+    console.log(
+      `[e2e] static push after the walk: ${diff.changed} pixels differ from the parked hand`,
+    );
+    expect(diff.changed).toBeGreaterThan(100);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
+  test('a controller swept physically leaves the same wake weight whether the rig is still or walking at 2 m/s (Q41)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(240_000);
+    await bootXr(page, xr, 'motionlayers=reactive');
+    const view = cypressView(2.4);
+    const inside = 2.5;
+    await place(page, xr, view, PARKED, [-0.4, EYE_HEIGHT, -inside]);
+    await settle(page, xr);
+    const still = await watch(page, 900, inside);
+    await place(page, xr, view, PARKED, [-0.4, EYE_HEIGHT, -inside]);
+    await settle(page, xr);
+    await xr.stick('left', 0, -1);
+    const walking = await watch(page, 900, inside);
+    await xr.stick('left', 0, 0);
+    console.log(
+      `[e2e] sweep wake weight: rig still ${still.weight.toFixed(3)} (hand ${still.handSpeed.toFixed(2)} m/s), rig walking ${walking.weight.toFixed(3)} (hand ${walking.handSpeed.toFixed(2)} m/s, rig moved ${walking.moved.toFixed(2)} m)`,
+    );
+    expect(walking.moved).toBeGreaterThan(0.5);
+    expect(still.weight).toBeGreaterThan(0.3);
+    expect(walking.weight).toBeGreaterThan(still.weight * 0.75);
+    expect(walking.weight).toBeLessThan(still.weight * 1.25);
+    // World velocity would add the 2 m/s walk to the 1.5 m/s sweep and clamp at 3 m/s.
+    expect(walking.handSpeed).toBeLessThan(2);
+    expect(await glErrors(page)).toEqual([]);
+  });
 });

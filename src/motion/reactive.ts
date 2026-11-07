@@ -6,6 +6,16 @@
  * controller slots carry strength 0 there. The head pushes at `HEAD_STRENGTH`, under half the
  * hands' `HAND_STRENGTH`, so strokes round the viewer's own face move gently (comfort).
  *
+ * Velocity is relative to the locomotion rig (ruling Q41: walking or flying must not push
+ * strokes, only physical motion does). `frame` is given the rig's world matrix, and a disturber's
+ * velocity is the rate of change of its rig-local position, rotated back into world space by the
+ * current rig rotation. Stick walking, flight, smooth and snap turns and teleport move the rig, not
+ * the rig-local position, so they add nothing. The rig is a rotation and translation (scale 1).
+ * Positions stay world: the static push, the wake sample positions and the box use them, so
+ * strokes still part round a hand held near a wall as the rig glides past, and a hand waved while
+ * walking leaves its wake where it was waved. On the desktop the eye is fixed in the rig, so its
+ * velocity is always 0 and WASD leaves no wake.
+ *
  * Wake. Each disturber keeps a CPU history of `WAKE_SAMPLES` positions about `WAKE_INTERVAL_S`
  * (150 ms) apart, so the window, WAKE_SAMPLES × WAKE_INTERVAL_S = 1.2 s, spans the plan's 1.2 s
  * decay. A sample's weight is its disturber's strength times its speed when it was taken over
@@ -17,9 +27,11 @@
  *
  * Discontinuities. `frame` takes locomotion's discontinuity count (a teleport jump, a snap turn, a
  * spawn, a placed pose, an XR reference-space reset): when it changes, every disturber's history
- * and velocity restart from the new pose, so no wake or drag is drawn across the jump. A step
- * faster than `REACTIVE_JUMP_SPEED` (15 m/s) does the same for that disturber alone: a backstop
- * for a re-tracked controller, never reached by a hand.
+ * and velocity restart from the new pose, so no wake or drag is drawn across the jump. Rig-relative
+ * velocity already gives a teleport or a snap turn none, so this is the backstop for them and the
+ * only guard for a reference-space reset, which moves the disturbers inside the rig. A rig-relative
+ * step faster than `REACTIVE_JUMP_SPEED` (15 m/s) does the same for that disturber alone: a
+ * backstop for a re-tracked controller, never reached by a hand.
  *
  * Displacement (the GLSL is `reactiveMotion` in motion.glsl; change the two together). With the
  * falloff f(x²) = (1 − x²)², x = distance / REACTIVE_RADIUS, zero beyond the radius:
@@ -76,7 +88,7 @@ export const WAKE_DECAY_S: number = 1.2;
 export const WAKE_TAPER_START: number = 0.75;
 /** m/s: a wake sample taken at this speed or faster has full weight. */
 export const WAKE_REF_SPEED: number = 1.5;
-/** m/s: the velocity a disturber reports is clamped to this. */
+/** m/s: the (rig-relative) velocity a disturber reports is clamped to this. */
 export const REACTIVE_MAX_SPEED: number = 3;
 /**
  * m/s: a frame-to-frame step faster than this is a jump, never a hand: the disturber's wake is
@@ -250,7 +262,7 @@ export interface ReactiveUniforms {
   [name: string]: { value: unknown };
   /** Per disturber: world position xyz, strength w (0 when untracked). */
   uDisturbers: { value: Vector4[] };
-  /** Per disturber: world velocity xyz, m/s, clamped; w unused. */
+  /** Per disturber: rig-relative velocity xyz in world axes, m/s, clamped; w unused. */
   uDisturberVelocities: { value: Vector4[] };
   /** Disturber j's wake samples at j × WAKE_SAMPLES + i, newest first: xyz, weight w. */
   uWake: { value: Vector4[] };
@@ -290,8 +302,15 @@ export interface ReactiveTracker {
    * Updates the uniforms at animation-frame time `timeMs` from the disturbers' world positions in
    * slot order (head, controller 0, controller 1), null for an untracked one. `discontinuity` is
    * locomotion's count of discontinuous rig moves: a change restarts every history at this pose.
+   * `rig` is the rig's world matrix elements (column-major, rotation and translation only), null
+   * or omitted for the identity: velocities are taken relative to it.
    */
-  frame(timeMs: number, positions: readonly (Vec3 | null)[], discontinuity?: number): void;
+  frame(
+    timeMs: number,
+    positions: readonly (Vec3 | null)[],
+    discontinuity?: number,
+    rig?: ArrayLike<number> | null,
+  ): void;
   /** The field the uniforms hold, as `reactiveMotion` reads it. */
   field(): ReactiveField;
   diag(): ReactiveDiag;
@@ -308,12 +327,16 @@ interface Sample {
 interface Track {
   tracked: boolean;
   position: [number, number, number];
+  /** Rig-local position at the last frame. */
+  local: [number, number, number];
   velocity: [number, number, number];
   lastMs: number | null;
   history: Sample[];
   lastPushMs: number;
   jumps: number;
 }
+
+const IDENTITY: readonly number[] = Object.freeze([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 export function createReactiveTracker(): ReactiveTracker {
   const uniforms: ReactiveUniforms = {
@@ -330,6 +353,7 @@ export function createReactiveTracker(): ReactiveTracker {
   const tracks: Track[] = Array.from({ length: REACTIVE_DISTURBERS }, () => ({
     tracked: false,
     position: [0, 0, 0],
+    local: [0, 0, 0],
     velocity: [0, 0, 0],
     lastMs: null,
     history: [],
@@ -360,7 +384,7 @@ export function createReactiveTracker(): ReactiveTracker {
     max[2] = Math.max(max[2], z);
   };
 
-  function step(track: Track, timeMs: number, pose: Vec3 | null): void {
+  function step(track: Track, timeMs: number, pose: Vec3 | null, rig: ArrayLike<number>): void {
     if (pose === null) {
       track.tracked = false;
       track.velocity = [0, 0, 0];
@@ -369,11 +393,22 @@ export function createReactiveTracker(): ReactiveTracker {
       return;
     }
     const [x, y, z] = pose;
+    // Rig-local position: Rᵀ (p − t) for the rig's rotation R and translation t.
+    const rx = x - rig[12];
+    const ry = y - rig[13];
+    const rz = z - rig[14];
+    const lx = rig[0] * rx + rig[1] * ry + rig[2] * rz;
+    const ly = rig[4] * rx + rig[5] * ry + rig[6] * rz;
+    const lz = rig[8] * rx + rig[9] * ry + rig[10] * rz;
     if (track.tracked && track.lastMs !== null && timeMs > track.lastMs) {
       const dt = (timeMs - track.lastMs) / 1000;
-      const vx = (x - track.position[0]) / dt;
-      const vy = (y - track.position[1]) / dt;
-      const vz = (z - track.position[2]) / dt;
+      const dx = (lx - track.local[0]) / dt;
+      const dy = (ly - track.local[1]) / dt;
+      const dz = (lz - track.local[2]) / dt;
+      // Back into world axes with the current rig rotation.
+      const vx = rig[0] * dx + rig[4] * dy + rig[8] * dz;
+      const vy = rig[1] * dx + rig[5] * dy + rig[9] * dz;
+      const vz = rig[2] * dx + rig[6] * dy + rig[10] * dz;
       const speed = Math.hypot(vx, vy, vz);
       if (speed > REACTIVE_JUMP_SPEED) {
         track.velocity = [0, 0, 0];
@@ -389,6 +424,7 @@ export function createReactiveTracker(): ReactiveTracker {
     }
     track.tracked = true;
     track.position = [x, y, z];
+    track.local = [lx, ly, lz];
     track.lastMs = timeMs;
     if (track.history.length === 0 || timeMs - track.lastPushMs >= WAKE_INTERVAL_S * 1000) {
       const [vx, vy, vz] = track.velocity;
@@ -400,7 +436,8 @@ export function createReactiveTracker(): ReactiveTracker {
 
   const tracker: ReactiveTracker = {
     uniforms,
-    frame(timeMs, positions, epoch = discontinuity) {
+    frame(timeMs, positions, epoch = discontinuity, rig) {
+      const frameRig = rig ?? IDENTITY;
       frames += 1;
       cachedField = null;
       boxed = false;
@@ -415,7 +452,7 @@ export function createReactiveTracker(): ReactiveTracker {
       }
       for (let j = 0; j < REACTIVE_DISTURBERS; j++) {
         const track = tracks[j];
-        step(track, timeMs, positions[j] ?? null);
+        step(track, timeMs, positions[j] ?? null, frameRig);
         const strength = track.tracked ? (DISTURBER_STRENGTHS[j] ?? 0) : 0;
         const [x, y, z] = track.position;
         uniforms.uDisturbers.value[j].set(x, y, z, strength);

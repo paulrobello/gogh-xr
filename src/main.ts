@@ -183,7 +183,13 @@ function trackDisturbers(time: number, presenting: boolean): void {
     const space = controllerSpaces[i];
     disturberPositions[i + 1] = presenting && space?.visible ? disturberAt(space, i + 1) : null;
   }
-  reactiveTracker.frame(time, disturberPositions, locomotion.discontinuities());
+  locomotion.rig.updateWorldMatrix(true, false);
+  reactiveTracker.frame(
+    time,
+    disturberPositions,
+    locomotion.discontinuities(),
+    locomotion.rig.matrixWorld.elements,
+  );
 }
 // The system recenter resets the reference space, so the head and the controllers jump.
 renderer.xr.addEventListener('sessionstart', () => {
