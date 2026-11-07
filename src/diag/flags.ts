@@ -91,6 +91,7 @@ export type TargetHz = 72 | 90 | 120;
 export type DemoName = 'canvas';
 export type SceneName = 'bare';
 export const ZDIAG_MODES = [
+  'write',
   'nowrite',
   'nosort',
   'noa2c',

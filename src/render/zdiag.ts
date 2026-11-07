@@ -4,16 +4,23 @@
  * textures and render order, never through raw GL state. It is honoured in production builds on
  * purpose, like `?slow` and `?nogov`: it is URL-only and affects only the page that asks for it.
  *
- * - `nowrite`: stroke materials drop depthWrite, and the chunks draw after the base meshes, back to
- *   front, so the base meshes stay underneath and nearer chunks paint over farther ones.
- * - `strokeorder`: stroke materials test depth ALWAYS with depthWrite on, drawn before the base
- *   meshes as usual, so draw order alone decides between strokes and the base meshes still test
- *   against the strokes' depth. This is the headset A/B that removed the shimmer. The chunks draw
- *   front to back, so the sky dome's chunks draw last and leave the far-plane depth almost
- *   everywhere, and the base meshes then cover every world stroke.
+ * Since 2026-11-07 the batch default is the policy `nowrite` introduced (Paul's headset A/B,
+ * docs/verification.md): no stroke depth writes, the chunks after the base meshes, class by class
+ * and back to front (DEFAULT_ORDER_POLICY in batch.ts). Every mode below changes that default.
+ *
+ * - `write`: the depth-writing policy the batch shipped with before: depthWrite on, the chunks
+ *   front to back from 0, before the base meshes, with no class layering (WRITE_ORDER_POLICY).
+ * - `nowrite`: the default itself, kept so older URLs still parse. It changes nothing.
+ * - `strokeorder`: stroke materials test depth ALWAYS with depthWrite on, drawn front to back
+ *   before the base meshes, so draw order alone decides between strokes and the base meshes still
+ *   test against the strokes' depth. This is the headset A/B that removed the shimmer. The sky
+ *   dome's chunks draw last and leave the far-plane depth almost everywhere, and the base meshes
+ *   then cover every world stroke.
  * - `paintorder`: `strokeorder` with the chunks drawn back to front, so the nearest chunk's strokes
  *   draw last and the world strokes stay visible, ordered by draw order instead of depth.
- * - `nosort`: each chunk keeps the render order of the first frame it was drawn in.
+ * - `nosort`: each chunk keeps the render order of the first frame it was drawn in. A chunk first
+ *   seen after the freeze frame draws on top of its class, so without stroke depth writes it
+ *   paints over nearer strokes of that class where they overlap.
  * - `noa2c`: stroke materials drop alphaToCoverage and cut the shape out at alpha 0.5 instead.
  * - `sharp`: alphaToCoverage stays on, and the coverage sharpening (ruling R3, already Golus's
  *   sharpened alpha-to-coverage) runs at twice its gain, so each edge's rim is half a pixel wide.
@@ -41,11 +48,16 @@ import {
   type WebGLRenderer,
 } from 'three';
 import type { ZdiagMode } from '../diag/flags';
-import { DEFAULT_ORDER_POLICY, type StrokeBatch, type StrokeOrderPolicy } from './strokes/batch';
+import {
+  STROKES_AFTER_BASE,
+  type StrokeBatch,
+  type StrokeOrderPolicy,
+  WRITE_ORDER_POLICY,
+} from './strokes/batch';
 import type { StrokeMaterial } from './strokes/material';
 
-/** Render order base of the strokes under `nowrite`: above BASE_MESH_RENDER_ORDER (1e6). */
-export const ZDIAG_STROKES_AFTER_BASE = 2_000_000;
+/** Render order base of the strokes under the default policy and `nowrite` (batch.ts). */
+export const ZDIAG_STROKES_AFTER_BASE = STROKES_AFTER_BASE;
 
 /** The defines a mode adds; every other mode shares the default program. */
 const ZDIAG_DEFINES = ['ZDIAG_ALPHA_TEST', 'ZDIAG_SHARP_GAIN'] as const;
@@ -153,15 +165,23 @@ function setDefines(material: StrokeMaterial, mode: ZdiagMode | null): void {
   if (changed) material.needsUpdate = true;
 }
 
-function orderFor(mode: ZdiagMode | null): StrokeOrderPolicy {
-  if (mode === 'nowrite') return { base: ZDIAG_STROKES_AFTER_BASE, reverse: true, freeze: false };
-  if (mode === 'paintorder') return { base: 0, reverse: true, freeze: false };
-  if (mode === 'nosort') return { base: 0, reverse: false, freeze: true };
-  return DEFAULT_ORDER_POLICY;
+/** A mode's order policy over the batch's own default (`StrokeBatch.defaultOrder`). */
+function orderFor(mode: ZdiagMode | null, base: StrokeOrderPolicy): StrokeOrderPolicy {
+  if (mode === 'write' || mode === 'strokeorder') return WRITE_ORDER_POLICY;
+  if (mode === 'paintorder') return { ...WRITE_ORDER_POLICY, reverse: true };
+  if (mode === 'nosort') return { ...base, freeze: true };
+  return base;
+}
+
+/** Modes that put stroke depth writes back on. */
+function writesDepth(mode: ZdiagMode | null): boolean {
+  return mode === 'write' || mode === 'strokeorder' || mode === 'paintorder';
 }
 
 function samePolicy(a: StrokeOrderPolicy, b: StrokeOrderPolicy): boolean {
-  return a.base === b.base && a.reverse === b.reverse && a.freeze === b.freeze;
+  return (
+    a.base === b.base && a.reverse === b.reverse && a.freeze === b.freeze && a.layered === b.layered
+  );
 }
 
 /**
@@ -186,7 +206,7 @@ export function createZdiag(
   function apply(entry: Bound): void {
     for (const defaults of entry.materials) {
       const { material } = defaults;
-      const depthWrite = mode === 'nowrite' ? false : defaults.depthWrite;
+      const depthWrite = writesDepth(mode) ? true : defaults.depthWrite;
       const depthFunc =
         mode === 'strokeorder' || mode === 'paintorder' ? AlwaysDepth : defaults.depthFunc;
       const alphaToCoverage = mode === 'noa2c' ? false : defaults.alphaToCoverage;
@@ -198,7 +218,7 @@ export function createZdiag(
       }
       setDefines(material, mode);
     }
-    const order = orderFor(mode);
+    const order = orderFor(mode, entry.batch.defaultOrder);
     if (!samePolicy(order, entry.order)) {
       entry.batch.setOrderPolicy(order);
       entry.order = order;
@@ -258,7 +278,7 @@ export function createZdiag(
         minFilter: atlas.minFilter,
         generateMipmaps: atlas.generateMipmaps,
         anisotropy: atlas.anisotropy,
-        order: DEFAULT_ORDER_POLICY,
+        order: batch.defaultOrder,
       };
       bound = entry;
       apply(entry);

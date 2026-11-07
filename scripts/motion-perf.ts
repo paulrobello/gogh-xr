@@ -5,7 +5,7 @@
  * box with a controller inside the cypress.
  *
  *   bun scripts/motion-perf.ts [--base http://localhost:4253] [--seconds 4] [--repeats 1]
- *     [--out perf.json] [--only <config name part>]
+ *     [--out perf.json] [--only <config name part>] [--extra <query>] [--max-load 15]
  *
  * It needs a running `--mode e2e` build (`make preview`): `?iwer`, `?motionlayers` and the IWER
  * controller only exist there. GPU time comes from EXT_disjoint_timer_query_webgl2 TIME_ELAPSED
@@ -15,7 +15,10 @@
  * desktop configurations N times, interleaved (every configuration once per pass); the IWER rows
  * run on the first pass only, because their timings are not a cost. Every run follows the host
  * load rule: the 1-minute load average must be at most 15 before (waited for, bounded) and after,
- * else it is discarded and re-run.
+ * else it is discarded and re-run. `--max-load` raises that limit for a host that stays loaded, and
+ * every row records its load. `--extra` appends a query to every boot (`zdiag=write`). CPU time is
+ * the summed duration of the page's rAF callbacks per frame, so desktop rows only: three drives XR
+ * frames from the session's own rAF.
  */
 
 import { writeFileSync } from 'node:fs';
@@ -34,7 +37,8 @@ const seconds = Number(option('seconds', '4'));
 const repeats = Math.max(1, Math.round(Number(option('repeats', '1'))));
 const out = option('out', '');
 const only = option('only', '');
-const MAX_LOAD = 15;
+const extra = option('extra', '');
+const MAX_LOAD = Number(option('max-load', '15'));
 const LOAD_WAIT_MS = 300_000;
 const EYE_HEIGHT = 1.6;
 
@@ -178,6 +182,8 @@ function installFrameTimer(): void {
     on: false,
     gpu: [] as number[],
     intervals: [] as number[],
+    cpu: [] as number[],
+    cpuFrame: 0,
     disjoint: 0,
   };
   (window as unknown as { __perf: typeof state }).__perf = state;
@@ -199,7 +205,11 @@ function installFrameTimer(): void {
     }
   };
   const boundary = (t: number): void => {
-    if (state.on && lastT >= 0) state.intervals.push(t - lastT);
+    if (state.on && lastT >= 0) {
+      state.intervals.push(t - lastT);
+      state.cpu.push(state.cpuFrame);
+    }
+    state.cpuFrame = 0;
     lastT = t;
     if (!gl) {
       const canvas = document.querySelector('canvas');
@@ -225,7 +235,9 @@ function installFrameTimer(): void {
   window.requestAnimationFrame = (callback: FrameRequestCallback): number =>
     raf((t) => {
       if (t !== lastT) boundary(t);
+      const start = performance.now();
       callback(t);
+      state.cpuFrame += performance.now() - start;
     });
 }
 
@@ -233,7 +245,7 @@ interface Diag {
   renderer: { frame: number; unmaskedRenderer: string | null };
   xr: { presenting: boolean };
   draw: { calls: number; visibleChunks: number };
-  world?: { strokes: { visible: number } };
+  world?: { strokes: { visible: number; classes?: Record<string, { chunks: number }> } };
   motion: { layers: number; time: number };
   reactive?: {
     boxStrokes: number | null;
@@ -271,7 +283,11 @@ interface Row {
   gpuP95Ms: number | null;
   gpuFrames: number;
   frameMeanMs: number;
+  cpuMeanMs: number | null;
+  cpuP95Ms: number | null;
   drawCalls: number;
+  /** Visible chunks per draw class. */
+  classes: Record<string, number> | null;
   drawn: number;
   visibleChunks: number;
   boxStrokes: number | null;
@@ -342,10 +358,13 @@ async function measure(
   await waitFrames(page, 30);
   await page.evaluate(() => {
     const perf = (
-      window as unknown as { __perf: { on: boolean; gpu: number[]; intervals: number[] } }
+      window as unknown as {
+        __perf: { on: boolean; gpu: number[]; intervals: number[]; cpu: number[] };
+      }
     ).__perf;
     perf.gpu = [];
     perf.intervals = [];
+    perf.cpu = [];
     perf.on = true;
   });
   let boxStrokesMax: number | null = null;
@@ -358,13 +377,18 @@ async function measure(
     await page.waitForTimeout(250);
   }
   const perf = await page.evaluate(() => {
-    const p = (window as unknown as { __perf: { on: boolean; gpu: number[]; intervals: number[] } })
-      .__perf;
+    const p = (
+      window as unknown as {
+        __perf: { on: boolean; gpu: number[]; intervals: number[]; cpu: number[] };
+      }
+    ).__perf;
     p.on = false;
-    return { gpu: [...p.gpu], intervals: [...p.intervals] };
+    return { gpu: [...p.gpu], intervals: [...p.intervals], cpu: [...p.cpu] };
   });
   const d = await diag(page);
   const gpu = perf.gpu.length > 0 ? stats(perf.gpu) : null;
+  const cpu = !config.xr && perf.cpu.length > 0 ? stats(perf.cpu) : null;
+  const classes = d.world?.strokes.classes;
   return {
     config: config.name,
     view: view.name,
@@ -372,7 +396,12 @@ async function measure(
     gpuP95Ms: gpu?.p95 ?? null,
     gpuFrames: perf.gpu.length,
     frameMeanMs: stats(perf.intervals).mean,
+    cpuMeanMs: cpu?.mean ?? null,
+    cpuP95Ms: cpu?.p95 ?? null,
     drawCalls: d.draw.calls,
+    classes: classes
+      ? Object.fromEntries(Object.entries(classes).map(([k, v]) => [k, v.chunks]))
+      : null,
     drawn: d.world?.strokes.visible ?? 0,
     visibleChunks: d.draw.visibleChunks,
     boxStrokes: d.reactive?.boxStrokes ?? null,
@@ -407,6 +436,7 @@ try {
             'nogov',
             !config.xr && view.painterCamera ? 'painter' : '',
             config.query,
+            extra,
           ]
             .filter(Boolean)
             .join('&');

@@ -54,6 +54,8 @@ Scan, capture and ΔE heat map (black 0, red 10, yellow 20 and above), each at 2
 
 Full capture: ![Painter-spot capture, seed 1](shots/p2-painter-spot.png)
 
+The P2-A2 row above records bf9d9a9: its measured values, worst blocks and SHA-256, and the thresholds set from them. These two images were regenerated on 2026-11-07 under the nowrite default (Nowrite stroke policy is the default, fix round 2): SSIM 0.3482, mean ΔE2000 5.2914, SHA-256 `bb9252fd…00ce`.
+
 SSIM is low because the comparison is luma structure at 256 px, where the scan's fine brushwork and the world's 1.8× strokes differ in texture everywhere. The threshold therefore catches gross breakage, such as lost framing, a missing cypress or a blank region, not subtle drift. The block ΔE carries the colour match. Visible gaps in this render, none of them tuned for P2.8:
 - The stars and the moon are absent. Their rings are P4.3, so `world.counts` shows `star` and `moon` at 0, and the metric can only improve when they land.
 - The distant ridge band on the right (v_down 0.50–0.72) reads as sky strokes, so blocks (15, 6) and (15, 7) are hot.
@@ -942,7 +944,7 @@ Recommendation: compare base, `sharp`, `sharp4` and `noa2c` in one headset sessi
 
 These URLs need a deployed build, which needs an approved push.
 
-Since 2026-11-07 one boot covers the whole comparison: `?painting=starry-night&ab=shimmer` starts at base, and a single left stick click (V on the desktop) steps through base, nowrite, noa2c, sharp, sharp4 and freeze and wraps back to base, from the same pose, with no reload. Each click shows the HUD with a line such as `A/B shimmer: noa2c (3/6)`, and the HUD keeps that line while the group is active. Every variant's program is compiled when the batch binds, so a switch links nothing in XR. `?ab=zdiag-all` steps through every mode, and any `?zdiag=<mode>` URL below starts its group at that mode. A click is cancelled if the right stick was pressed during it, because both sticks held is recenter. A full cycle back to base renders the painter view byte-identical to a fresh boot (`tests/e2e/ab.spec.ts`).
+Since 2026-11-07 one boot covers the whole comparison: `?painting=starry-night&ab=shimmer` starts at base, and a single left stick click (V on the desktop) steps through base, nowrite, noa2c, sharp, sharp4 and freeze and wraps back to base (since the nowrite default the cycle is base, write, noa2c, sharp, sharp4 and freeze; see Nowrite stroke policy is the default, below), from the same pose, with no reload. Each click shows the HUD with a line such as `A/B shimmer: noa2c (3/6)`, and the HUD keeps that line while the group is active. Every variant's program is compiled when the batch binds, so a switch links nothing in XR. `?ab=zdiag-all` steps through every mode, and any `?zdiag=<mode>` URL below starts its group at that mode. A click is cancelled if the right stick was pressed during it, because both sticks held is recenter. A full cycle back to base renders the painter view byte-identical to a fresh boot (`tests/e2e/ab.spec.ts`).
 
 - `?painting=starry-night&zdiag=nowrite`: no stroke-against-stroke depth tests, with the strokes still visible. If the shimmer drops, depth ties are the cause.
 - `?painting=starry-night&zdiag=noa2c`: tests F4.
@@ -956,6 +958,261 @@ Since 2026-11-07 one boot covers the whole comparison: `?painting=starry-night&a
 ### Gates
 
 `make checkall` exited 0. `E2E_PORT=4321 make e2e` exited 0, 37 of 37 passed. The scatter did not change and the default shader output is unchanged (`stroke.frag.glsl` gained an `#ifdef ZDIAG_ALPHA_TEST` block that is off by default), so SCATTER_VERSION stays 11. Fidelity and coverage run inside the e2e suite.
+
+## Nowrite stroke policy is the default (2026-11-07, on 31fc538)
+
+### Decision
+
+In the `?ab=shimmer` headset A/B, Paul picked `nowrite` as the shimmer winner. The stroke batch now draws that way by default, for every scene with a stroke batch except the P1 canvas: the world, `?strokesTest` and the gallery. `?demo=canvas` keeps `write` (fix round 2, below). It is set in the batch, not by forcing `?zdiag` on:
+
+- `BATCH_DEPTH_WRITE` is false in `src/render/strokes/batch.ts`, which passes it to `createStrokeMaterial` (`src/render/strokes/material.ts`).
+- A lone stroke mesh, such as the teleport arc or the settings panel, keeps depth writes, because it draws before the world and must occlude it.
+- `DEFAULT_ORDER_POLICY` draws the chunks after the base meshes (render order 2e6 on), back to front.
+- The strokes still test against the base meshes' depth, so a stroke behind a house wall stays hidden.
+
+The `?zdiag` modes now work like this:
+
+- `?zdiag=write` restores the old depth-writing policy (`WRITE_ORDER_POLICY`: depth writes on, the chunks front to back from 0, before the base meshes).
+- `?zdiag=nowrite` still parses and now changes nothing.
+- `strokeorder` and `paintorder` turn depth writes on themselves.
+- `nosort` freezes the batch's default order: back to front under the nowrite default (fix round 2, below), and front to back for a depth-writing batch.
+
+The `shimmer` A/B group is now base, write, noa2c, sharp, sharp4 and freeze. Base is the new default, and `write` takes `nowrite`'s place, so the headset can still compare the two policies. `write` shares the base program, so the group still precompiles four programs.
+
+### The occlusion fix: draw classes
+
+Without stroke depth writes, draw order alone decides between strokes. Inside a chunk that order is the importance order. Between chunks it is distance.
+
+The old `nowrite` mode got four things wrong in the painter view (the earlier capture in the shimmer diagnosis above, and the middle row below):
+
+1. Dome strokes painted over the strokes that overhang the far hills' silhouette and over the church spire, because a dome chunk's centre can be nearer than a hill chunk's.
+2. Dome strokes in the same chunk as the moon and stars painted over most of them.
+3. Wall strokes painted over the lit windows they share a chunk with. The 0.25 m depth tie-break pulls them forward past the window quad's 2 cm offset.
+4. The moon's own strokes lost their rank order. `RankPicker` (`src/world/sky-lights.ts`) chose that order so the crescent's edge strokes sit on top.
+
+The fix splits each grid cell's strokes by draw class (`STROKE_DRAW_CLASSES`, `drawClassOf`), one chunk per class present. The default policy (`layered`) draws the classes in blocks:
+
+- `dome`: the sky dome strokes (DEPTH_BACKDROP_FLAG). They sit behind everything, so they draw first.
+- `lights`: the moon and stars (the pinned strokes). They draw over the dome, and their chunks write depth while they draw (`writeDepthWhileDrawn`). Their front-tier ranks never tie between strokes that can overlap (`lightRankTies` is 0 at seed 1). Depth writes therefore cost them no shimmer and keep their rank order.
+- `cypress`: in the Starry Night world, the cypress (`isCypressStroke`) is one chunk of its own, `strokes-<cell>-cypress`, whatever cells it spans. It writes depth while it draws (fix round 1, below), and draws before the world (fix round 2, below).
+- `world`: every other stroke, back to front by chunk.
+- `overlay`: the lit windows (DEPTH_TIE_BREAK_FRONT_FLAG). They draw last, over their walls.
+
+Why this and not the alternatives:
+
+- Per-layer depth writes would bring back the stroke-against-stroke ties wherever a layer's own strokes overlap, which is what F2 measured on the ground, the buildings, the ridge and the dome. Only the lights are tie-free by construction. They keep depth writes, and so does the cypress, at the cost of its self-ties (fix round 1, below).
+- Drawing the windows last adds no per-vertex work and no new program. Its cost: a nearer occluder's stroke overhang can show a farther window through it. Its base mesh cannot, because the base meshes still hide windows behind a house.
+- The shader is unchanged. The classes cost chunks, not vertex work.
+
+Chunks and draw calls at the e2e world spot (`__goghDiag().draw`):
+
+| | old | new |
+| --- | --- | --- |
+| desktop calls / visible chunks | 163 / 157 | 195 / 189 |
+| XR calls / visible chunks | 414 / 201 | 480 / 234 |
+
+The sweep captured nine poses in three versions each: the old default, the old `nowrite` mode and the new default. The poses were village street, village west, village church, hill west, boundary north, high over the valley, under the cypress, spot left raised, and the wall pose (house 11, 6 m).
+
+- The old `nowrite` errors recur away from the painter view. Wall strokes chew the village windows, and the moon and stars are gone at the church and street poses. The new default fixes them.
+- No new class of error showed up.
+- One thing differs from the old default everywhere: which overlapping stroke of one surface lies on top. Before, the tie-break and the lift decided it. Now the importance order inside a chunk decides it, and chunk distance decides between chunks. Near ground and wall strokes therefore stack differently. In the painter view, 45% of pixels differ by more than 24 summed RGB from the old default, against 59% for the old `nowrite` mode.
+- Under motion, the cypress lost its texture where its strokes moved past a chunk boundary. Fix round 1 (below) fixes it.
+
+Painter view: the old default on top, the old `nowrite` mode in the middle and the new default below.
+
+![Old default, old nowrite and new default, painter view](shots/nowrite-default-painter.jpg)
+
+### Measurements
+
+All runs used headless Chromium on ANGLE Metal (Apple M4 Max). "Old" is 31fc538, before this change. "New" is the final build, 8170d50 merged with b48b931 (the 72 Hz default), with the fix round 1 below. The probes ran against production builds served by `vite preview`. The suite and the perf script ran against `--mode e2e` builds.
+
+Coverage, bare / weighted % (limit 0.5% bare), at every pose of `tests/e2e/world-coverage.spec.ts`, from the final full suite run:
+
+| Pose | old | new |
+| --- | --- | --- |
+| spot ahead | 0.389 / 0.527 | 0.388 / 0.526 |
+| spot behind | 0.114 / 0.179 | 0.114 / 0.176 |
+| spot left, raised | 0.013 / 0.026 | 0.013 / 0.023 |
+| spot right, lowered | 0.297 / 0.370 | 0.297 / 0.370 |
+| spot straight down | 0.077 / 0.103 | 0.077 / 0.101 |
+| spot straight up | 0.032 / 0.044 | 0.032 / 0.045 |
+| hill west | 0.451 / 0.606 | 0.451 / 0.601 |
+| hill east | 0.032 / 0.053 | 0.032 / 0.055 |
+| hill slope | 0.210 / 0.308 | 0.210 / 0.295 |
+| under the cypress | 0.077 / 0.145 | 0.077 / 0.152 |
+| hill bowl behind | 0.271 / 0.343 | 0.271 / 0.346 |
+| village street | 0.166 / 0.221 | 0.166 / 0.221 |
+| village west | 0.236 / 0.291 | 0.236 / 0.287 |
+| village church | 0.136 / 0.172 | 0.136 / 0.170 |
+| village uphill | 0.449 / 0.555 | 0.447 / 0.551 |
+| village down | 0.000 / 0.000 | 0.000 / 0.001 |
+| boundary north | 0.063 / 0.069 | 0.069 / 0.079 |
+| boundary north-west | 0.020 / 0.026 | 0.016 / 0.024 |
+| boundary north-east | 0.013 / 0.022 | 0.013 / 0.020 |
+| boundary east | 0.050 / 0.125 | 0.050 / 0.057 |
+| boundary west | 0.069 / 0.075 | 0.069 / 0.075 |
+| boundary south | 0.010 / 0.011 | 0.010 / 0.011 |
+| boundary 47 m inward | 0.086 / 0.121 | 0.086 / 0.119 |
+| high over the valley | 0.164 / 0.314 | 0.162 / 0.311 |
+
+The other coverage checks moved by at most 0.007% bare:
+
+- the pinned-motion rows, at the painter view and under the cypress, at motiont 0.5 and 3.7;
+- the spot-ahead phase sweep;
+- the reactive coverage rows, cypress and village, parked and held, at every controller pose.
+
+The largest move is the painter view at motiont 0.5, 0.334% to 0.341%.
+
+Fidelity (`tests/e2e/fidelity.spec.ts`, limits SSIM ≥ 0.2643 and mean ΔE2000 ≤ 7.1961):
+
+| Build | SSIM | mean ΔE2000 |
+| --- | --- | --- |
+| old | 0.3494 | 5.4967 |
+| new | 0.3482 | 5.2911 |
+
+Coverage and fidelity are pixel content at fixed poses, not timing, so load does not change them. Load (1-minute average) around each suite run:
+
+| Run | before | after |
+| --- | --- | --- |
+| old | 13.7 | 48 |
+| new | 13.8 | 22.1 |
+
+**Flicker probes, `base` against `write`.** Both modes ran on the same final production build: `write` is the old depth policy on the new chunk layout (see C5, below). The first runs of `scripts/shimmer-probe.ts` and `scripts/zfight-probe.ts` this session were invalid, because neither probe passed `noanim`: since the P4 motion layers landed after 6d82235, the moving sky, cypress and stars read as flicker, and an unmoved repeat changed 10-49% of the frame. Both probes now add `&noanim` (committed in 133b4e0). Each table below states the largest unmoved-repeat change, which must read 0.
+
+With rotation and translation jitter, 8 frames: flicker / per frame / clustered (% of frame).
+
+| Mode | ground | paul-strobe1 | village | wall | ridge | sky |
+| --- | --- | --- | --- | --- | --- | --- |
+| `write` (old) | 10.471 / 4.476 / 3.063 | 11.254 / 4.727 / 3.030 | 10.828 / 4.397 / 3.156 | 3.723 / 1.432 / 0.724 | 9.989 / 3.927 / 2.372 | 7.974 / 2.952 / 1.499 |
+| base (new) | 9.790 / 4.185 / 2.380 | 10.264 / 4.288 / 2.305 | 9.729 / 3.928 / 2.301 | 2.984 / 1.130 / 0.353 | 9.097 / 3.530 / 1.762 | 7.711 / 2.827 / 1.160 |
+
+Largest unmoved-repeat change: 0.000% (the probe prints it only when above 0).
+
+Translation jitter only (`norot`):
+
+| Mode | ground | paul-strobe1 | village | wall | ridge | sky |
+| --- | --- | --- | --- | --- | --- | --- |
+| `write` (old) | 5.107 / 2.210 / 1.125 | 4.059 / 1.705 / 0.843 | 2.973 / 1.352 / 0.734 | 0.775 / 0.344 / 0.166 | 1.301 / 0.560 / 0.198 | 0.745 / 0.340 / 0.282 |
+| base (new) | 4.430 / 1.923 / 0.623 | 3.387 / 1.425 / 0.496 | 2.214 / 1.026 / 0.259 | 0.423 / 0.186 / 0.002 | 0.868 / 0.370 / 0.042 | 0.411 / 0.195 / 0.013 |
+
+Largest unmoved-repeat change: 0.000% (the probe prints it only when above 0).
+
+Base flickers less than `write` at every pose: 3-20% less total flicker with rotation and 13-45% less without it. The clustered share falls most, by 22-51% with rotation and 41-99% without.
+
+The zfight probe, eight painter's-spot poses plus the new `cypress` pose, % of the frame that changes on an unmoved repeat, a 0.1 mm shift and a 1 mm shift:
+
+| Pose | `write` (old) same / 0.1 mm / 1 mm | base (new) same / 0.1 mm / 1 mm |
+| --- | --- | --- |
+| painter-level | 0.000 / 0.090 / 0.709 | 0.000 / 0.076 / 0.674 |
+| painter-down | 0.000 / 0.254 / 2.101 | 0.000 / 0.210 / 1.940 |
+| village-look | 0.000 / 0.398 / 1.741 | 0.000 / 0.164 / 1.443 |
+| back | 0.000 / 0.249 / 1.468 | 0.000 / 0.138 / 1.246 |
+| sky-up-0.5 | 0.000 / 0.054 / 0.377 | 0.000 / 0.039 / 0.354 |
+| sky-up-1.0 | 0.000 / 0.033 / 0.261 | 0.000 / 0.028 / 0.261 |
+| ridge-horizon | 0.000 / 0.310 / 0.753 | 0.000 / 0.062 / 0.458 |
+| paul-strobe1 | 0.000 / 0.481 / 2.261 | 0.000 / 0.214 / 1.937 |
+| cypress | 0.000 / 0.185 / 1.302 | 0.000 / 0.153 / 1.270 |
+
+Load (1-minute average) before and after each probe run: shimmer with rotation 13.7 and 59.1, without rotation 14.9 and 14.7, zfight base 14.6 and 14.8, zfight `write` 14.8 and 21.3, zfight on the nowrite-cypress build 15.0 and 14.1. Two runs ended above 15. The probes compare pixels, not timing, and every unmoved repeat read 0, so the load does not change their numbers.
+
+**Frame cost.** `scripts/motion-perf.ts --only '(a) noanim'`, the painter view and the spot-ahead view, desktop and XR (IWER). Base boots with `&zdiag=nowrite` and write with `&zdiag=write`, so both carry an A/B group. GPU time comes from EXT_disjoint_timer_query_webgl2 (it worked). CPU time is the summed rAF callback time per frame, desktop only.
+
+| Config, view | `write` GPU mean ms | base GPU mean ms | `write` CPU mean ms | base CPU mean ms | draw calls |
+| --- | --- | --- | --- | --- | --- |
+| desktop, painter | 3.58 (3.44-3.79) | 4.38 (2.93-4.39) | 0.49 (0.46-0.57) | 0.47 (0.46-0.48) | 156 |
+| desktop, spot ahead | 4.22 (3.39-4.74) | 3.64 (3.22-4.94) | 0.50 (0.48-0.80) | 0.49 (0.48-0.51) | 172 |
+| XR (IWER), painter | 6.22 (5.53-6.91) | 6.38 (5.90-6.85) | n/a | n/a | 444 |
+| XR (IWER), spot ahead | 7.33 (6.83-7.82) | 6.53 (5.91-7.15) | n/a | n/a | 432 |
+
+Each cell is the median of 3 desktop or 2 XR samples, with the range in brackets. Every sample had a 1-minute load of 11.2-14.5 before and after, so none is load-affected, and no other `motion-perf.ts` ran during them. The spread between repeats of one mode, up to 1.5 ms, is larger than the difference between the modes, so on desktop Metal neither policy is measurably faster on the GPU, and the CPU cost is the same within 0.05 ms.
+
+The Quest overdraw cost is pending a headset reading. Desktop Metal GPU time cannot show it: on the Quest's tiler, losing early-Z between strokes shows up as fragment overdraw. Only the HUD's GPU ms, or the governor's level, on the headset settles it.
+
+The stroke benchmark (`?bench`) does not exercise this change. `src/bench/field.ts` builds its own material and never calls `createStrokeBatch`, so base and `write` are the same there by construction.
+
+**Draw calls per class.** Visible chunks per class (each one draw call per view), the same for both modes: desktop painter: dome 66, lights 21, world 57, overlay 4; desktop spot ahead: dome 80, lights 20, world 62, overlay 4; XR painter: dome 120, lights 21, world 71, overlay 4; XR spot ahead: dome 116, lights 21, world 69, overlay 4. Against the old build (painter view: 127 calls, 119 chunks), the class split adds 29 chunks there: 21 lights chunks, 4 window chunks, and 4 more from the class split and the cypress chunk. The lights chunks are the near-empty ones: each holds only the moon or star strokes of one dome cell. They are not merged this round. A chunk takes its band from its own distance, and the band sets its stroke size scale and density: one lights chunk for the whole sky would take its band from a sphere round the whole dome, which changes the moon and star stroke sizes, and merged windows would take another band's size and density. A merge must keep every stroke in the band it has today, for example one lights chunk per band. That is a follow-up.
+
+### C5: `write` is not the old default byte for byte
+
+`?zdiag=write` restores the old depth policy (stroke depth writes on, chunks front to back before the base meshes), but on the new chunk layout. In the painter view it differs from 31fc538 in 2.0% of pixels. The class split and the cypress chunk change which strokes share a chunk. That changes each chunk's importance order and the order between chunks. Where two strokes tie in depth, which one wins depends on that order, so the tied pixels change. The A/B therefore compares the two depth policies on one layout, which is the comparison Paul makes in the headset.
+
+### Fix round 1: the cypress under motion
+
+`motion.spec.ts:1089` (I3, cypress flame trunk patches) failed on the first nowrite default. The cypress straddles the y = 0 cell seam: at seed 1, 20,335 of its strokes fall in cell (-1, -1, -1) and 16,629 in (-1, 0, -1). Projected through the painter camera, the seam crosses the canvas at image v 0.87-0.90, which is the patch at (0.3, 0.9).
+
+Three variants, each run against the two cypress specs, settled the cause:
+
+| Variant | sway (0.3, 0.9) dx | rise (0.2, 0.64) dy | sway (0.25, 0.6) dx | reactive push sharpness |
+| --- | --- | --- | --- | --- |
+| predicted (limit) | −3.63 (±2.9) | −22.09 (±7.5) | −4.83 (±3.2) | > 3 |
+| old (31fc538) | −6.09 | −18.84 | −4.81 | 6.6 |
+| nowrite, cypress in two chunks | 32.0 | −14.20 | −9.43 | 3.4 |
+| nowrite, one chunk, one importance order | −0.89 | −20.84 | −5.85 | 2.1 |
+| nowrite, one chunk, each cell's order kept | −0.03 | −14.20 | −9.43 | 3.4 |
+| one chunk, each cell's order kept, depth writes (shipped) | −5.92 | −18.84 | −4.81 | 6.6 |
+
+- The seam explains only the (0.3, 0.9) check. In two chunks the lower chunk's rising strokes slide under the upper chunk's strokes, and the measured sway is 36 px off. One chunk brings it to 3.6 px off, still just outside the 2.9 px tolerance.
+- The other two checks sit 2.4-2.9 m above the seam, inside one cell. Keeping each cell's importance order reproduces their failing values exactly, so no chunk boundary causes them. Without depth writes, the instance order decides which overlapping flame stroke shows, and the visible texture no longer moves with the facing strokes the prediction follows. One global importance order passed I3 only as a different permutation, with one check at 2.74 against 2.9, and it dropped the reactive push sharpness below its limit of 3.
+- The shipped fix: the cypress is one `world` chunk, each cell's importance order is kept and the cells' cypress strokes interleave by their fraction through that order, and the chunk writes depth while it draws (`writeDepthWhileDrawn`, as the lights do). The two cypress specs then read the old build's values exactly.
+
+The cost is the cypress's own stroke-against-stroke depth ties, which nowrite removed. The `cypress` zfight pose (2.5 m from the hull, facing the trunk) measures it against the production build with a nowrite cypress (one chunk, one importance order):
+
+| Pose | nowrite cypress same / 0.1 mm / 1 mm | shipped (depth-writing cypress) same / 0.1 mm / 1 mm |
+| --- | --- | --- |
+| cypress | 0.000 / 0.098 / 1.036 | 0.000 / 0.153 / 1.270 |
+
+Depth writes raise the cypress pose's flip share by 56% at a 0.1 mm shift and 23% at 1 mm, against the nowrite cypress. They stay below the full `write` policy at that pose (0.185 / 1.302). That build is the one-chunk, one-order variant, the nowrite cypress that passed I3 but failed the reactive sharpness check. If the headset shows the cypress strobing, the alternative is to keep the cypress nowrite and re-derive I3's prediction for the strokes that instance order makes visible. That choice is the coordinator's.
+
+The same seam mechanism exists for the dome under the sky swirl and for reactive ground strokes that cross a cell seam. No test fails on either, and this round does not change them.
+
+### Fix round 2
+
+**Draw classes (N5).** The cypress is its own draw class, `cypress`, between `lights` and `world`, so the order is dome, lights, cypress, world, overlay. Before, it sorted inside the `world` block by its chunk centre, several metres up the tree, and a ground chunk whose centre was farther drew first and was painted over by the cypress foot. Now the cypress always draws before the world and writes depth, so a ground stroke drawn after it tests against it: ground in front of the foot stays visible, and ground behind it is hidden. The cypress specs read the same values as fix round 1 (rise (0.2, 0.64) −18.84, sway (0.3, 0.9) −5.92, sway (0.25, 0.6) −4.81, reactive push 22.3 px at sharpness 6.6). At "under the cypress" the foot and the ground before it look the same as in fix round 1. Desktop painter view, chunks per class: dome 66, lights 21, cypress 1, world 56, overlay 4.
+
+**Scope (N3).** The P1 canvas (`?demo=canvas`) is layered on purpose: `LAYER_STEP` steps each layer along the normal, so depth decides between them. It now creates its batch with `depthWrite: true`, which makes `WRITE_ORDER_POLICY` its default, and zdiag's `base` and `nosort` follow each batch's own default (`StrokeBatch.defaultOrder`). The single cypress chunk is now opt-in, `cypressChunk: true`, which only the Starry Night world sets. Another painting's cypress-layer strokes, the canvas's included, stay in their grid cells.
+
+**Freeze order (N1).** `nosort` freezes the current order. Under the default policy, which draws back to front (`reverse`), the freeze now stores back-to-front ranks, so the chunks visible in the freeze frame draw like the unfrozen order. Before, it stored front-to-back ranks. A chunk first seen after the freeze frame, for example after a head turn, takes `chunks.length` plus its rank, so it draws on top of every chunk of its class that was frozen earlier. Without stroke depth writes it then paints over nearer strokes of that class wherever they overlap on screen. That is inherent to a diagnostic that never re-sorts, and under the old depth-writing `nosort` it was harmless. `tests/strokes-batch.test.ts` checks both policies.
+
+**The halo (N2).** The star and moon halo is transparent, so three drew it after every opaque stroke. Without stroke depth writes, it then painted over the world strokes that overhang it. It now draws in the opaque queue at `batch.orderBeforeClass('cypress')`, between the lights and cypress blocks, so world strokes paint over it. three keeps its additive custom blending there. Under `?zdiag=write` that order is still above every chunk and base mesh, so the halo draws last among them, as before. `scripts/halo-overhang.ts` captures each view with and without the halo (`?nohalo`), on base and on `write`, and counts the pixels where the halo shows on base but not on `write`, which means over a world stroke:
+
+| View | halo on base, % | halo on `write`, % | base only, before | base only, after |
+| --- | --- | --- | --- | --- |
+| painter | 5.941 → 5.933 | 5.932 | 0.009% (119 px) | 0.001% (13 px) |
+| hill west | 0 | 0 | 0 | 0 |
+| under the cypress | 2.204 → 2.161 | 2.161 | 0.043% (559 px) | 0.000% |
+
+Before the fix, the base-only pixels under the cypress were a thin rim at the bottom of a star's glow, over the dark hill strokes. At hill west no halo is in view. Load was 14.5 before and 14.0 after the first run, and 13.7 before and 12.7 after the second.
+
+**Cypress chunk tests (N7).** `tests/strokes-batch.test.ts` checks the interleave invariant (each stroke keeps its order among its own cell's strokes), and the merged chunk's bounds, band and cull across both cells.
+
+**Accepted (N4, N6).**
+
+- N4: the merged cypress chunk takes its band from its nearest point, like every chunk (`chunkDistance` is the distance to the centre minus the radius). The whole tree therefore changes band at once, and its top takes near-band size and density as soon as its foot is near. That follows the band contract, and it removes the density mismatch at the seam. It costs a little more near-band work, and a near-density shed thins the whole tree.
+- N6, a known limit: draw order also decides overlaps on other surfaces whose strokes can cross a chunk seam or overlap inside one chunk. These are the dome under the sky swirl, reactive ground and village strokes, and the static overhang at any `world` seam, where chunk centre distance decides the overlap and can flip with head translation. The moon and stars are immune, because they write depth with tie-free ranks. No test covers this yet.
+
+**Captures.** The default changes the Starry Night world and the gallery, so their reference captures are regenerated on this change:
+
+- `docs/shots/p2-painter-spot.png` and `docs/shots/p2-fidelity.png`, with `bun scripts/fidelity.ts --url "<url>/?painting=starry-night&diag&shot&noanim&seed=1&painter" --capture docs/shots/p2-painter-spot.png` on a production build. SSIM 0.3482 and mean ΔE2000 5.2914, against 0.3494 and 5.4967 for origin/main (240f498) captured the same way. A second capture was byte-identical (SHA-256 `bb9252fd…00ce`). Against main, only the dome, ground and wall strokes change, where overlapping strokes now stack in a different order. The cypress, moon and stars are pixel-identical.
+- `docs/shots/p54-gallery-wide.jpg`, `p54-gallery-starry.jpg`, `p54-gallery-west.jpg` and `p54-plaque.jpg`, with `GALLERY_SHOTS=1 E2E_PORT=4285 bunx playwright test tests/e2e/gallery.spec.ts -g "docs/shots captures"`. The scans, frames, plaques and benches read as before. Only the stroke stacking on the walls, floor and ceiling differs.
+- `docs/shots/p1-canvas.png` is not regenerated, because the canvas keeps `write`. This branch's capture is byte-identical to origin/main's (SHA-256 `93f0e1de…b6f`). Both differ from the committed file, which dates from bd3bb84 (P1-A2) and predates later changes on main, so that drift is not this change's.
+- `docs/shots/p53-panel.jpg` runs in the bare scene, which has no stroke batch, so it does not change.
+- The captures for earlier investigations (moon, village, cypress, shimmer and others) record the build they were taken on, and stay as they are.
+
+### Gates
+
+Fix round 2 (merged with 240f498, the wrap and flame A/B groups):
+
+- Unit suite: 1145 of 1145 passed.
+- `make checkall-ci` exited 0.
+- `E2E_PORT=4285 make e2e` exited 0: 105 passed and 2 skipped. The 1-minute load was 14.2 before the run and 45.0 after it, so the load rose past 15 during the run, which this records.
+
+Fix round 1:
+
+- Unit suite: 1120 of 1120 passed.
+- `make checkall-ci` exited 0 on 8170d50.
+- `E2E_PORT=4285 make e2e` exited 0 on 8170d50: 101 passed and 2 skipped (load 13.8 before, 22.1 after).
+
+SCATTER_VERSION stays 11. The scatter output does not change, only the chunk partition and the draw order.
 
 ## Governor sheds foveation first (2026-11-06, on e0eac54)
 

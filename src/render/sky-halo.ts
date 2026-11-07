@@ -2,7 +2,9 @@
  * The star and moon halos (P4.3, PRD "Living paint"): one instanced mesh of 12 soft additive glows, one per sky
  * anchor (src/motion/sky-rings.ts), the world's only blended pass. Each glow lies on the dome's
  * tangent plane at its anchor and draws over the dome and the anchor's own strokes and behind the
- * rest of the world (`SKY_HALO_NDC`), depth-tested and not depth-written. A star's glow is a disc
+ * rest of the world (`SKY_HALO_NDC`), depth-tested and not depth-written. The world strokes write
+ * no depth under the default policy, so the world draws it in the opaque queue between the lights
+ * and the cypress class (`StrokeBatch.orderBeforeClass`), and the world strokes paint over it. A star's glow is a disc
  * round its centre; the moon's is a band round its crescent, drawn as a ring whose hole covers the
  * crescent. Its size and the rings in its brightness follow the anchor's wave, from the motion
  * clock's own uniforms, so they pulse with the ring strokes. A closed gate (`?noanim`, calm 0) draws
@@ -37,7 +39,10 @@ import vertexShader from './sky-halo.vert.glsl?raw';
 import { STROKE_LAYER } from './strokes/instance';
 import { SKY_RINGS_INCLUDE, spliceGlsl } from './strokes/material';
 
-/** Transparent, so three draws it after every opaque stroke, and before the vignette and HUD. */
+/**
+ * With no render order given, transparent, so three draws it after every opaque stroke, and before
+ * the vignette and HUD.
+ */
 export const SKY_HALO_RENDER_ORDER = 0;
 /** Sides of each halo's polygons: an octagon round the unit disc fills 17% less than a square. */
 export const SKY_HALO_SIDES = 8;
@@ -98,7 +103,12 @@ export function createSkyHaloMaterial(): SkyHaloMaterial {
   return material as SkyHaloMaterial;
 }
 
-export function createSkyHalo(): SkyHalo {
+/**
+ * `renderOrder`, when given, puts the halo in the opaque queue at that order: it still blends
+ * additively (three keeps a custom blending on an opaque material), and opaque objects drawn after
+ * it paint over it.
+ */
+export function createSkyHalo(renderOrder?: number): SkyHalo {
   const geometry = new InstancedBufferGeometry();
   const ring = skyHaloRing();
   geometry.setAttribute('position', new BufferAttribute(ring.position, 3));
@@ -109,7 +119,8 @@ export function createSkyHalo(): SkyHalo {
   mesh.name = 'sky-halo';
   mesh.frustumCulled = false;
   mesh.matrixAutoUpdate = false;
-  mesh.renderOrder = SKY_HALO_RENDER_ORDER;
+  mesh.renderOrder = renderOrder ?? SKY_HALO_RENDER_ORDER;
+  if (renderOrder !== undefined) material.transparent = false;
   const uniforms = motionClock.uniforms;
   return {
     mesh,

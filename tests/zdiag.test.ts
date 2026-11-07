@@ -7,7 +7,12 @@ import {
 } from 'three';
 import { expect, test } from 'vitest';
 import { ZDIAG_MODES } from '../src/diag/flags.ts';
-import { DEFAULT_ORDER_POLICY, type StrokeBatch } from '../src/render/strokes/batch.ts';
+import {
+  DEFAULT_ORDER_POLICY,
+  STROKES_AFTER_BASE,
+  type StrokeBatch,
+  WRITE_ORDER_POLICY,
+} from '../src/render/strokes/batch.ts';
 import { createZdiag, ZDIAG_STROKES_AFTER_BASE } from '../src/render/zdiag.ts';
 
 test('freeze drops its frozen poses when the XR session ends', () => {
@@ -44,6 +49,7 @@ test('sharp and sharp4 keep alpha-to-coverage and only set their gain, and with 
       a: { alphaToCoverage: true, defines: {} as Record<string, unknown>, needsUpdate: false },
     },
     atlas: {},
+    defaultOrder: DEFAULT_ORDER_POLICY,
     setOrderPolicy: () => {},
   });
 
@@ -70,10 +76,10 @@ const ALWAYS = 1;
 const LINEAR = 1006;
 const TRILINEAR = 1008;
 
-/** A batch whose materials and atlas start at the stroke defaults. */
-function realishBatch() {
+/** A batch whose materials and atlas start at the stroke batch defaults (no depth write). */
+function realishBatch(depthWrite = false) {
   const material = () => ({
-    depthWrite: true,
+    depthWrite,
     depthFunc: LESS_EQUAL,
     alphaToCoverage: true,
     defines: { BRUSH_COUNT: 8 } as Record<string, unknown>,
@@ -85,9 +91,26 @@ function realishBatch() {
     atlas: { minFilter: TRILINEAR, generateMipmaps: true, anisotropy: 1, needsUpdate: false },
     chunks: [{ geometry: new BufferGeometry() }],
     policies,
+    defaultOrder: depthWrite ? WRITE_ORDER_POLICY : DEFAULT_ORDER_POLICY,
     setOrderPolicy: (policy: unknown) => policies.push(policy),
   };
 }
+
+test('a depth-writing batch (the P1 canvas) keeps its own default under base and nosort', () => {
+  const zdiag = createZdiag(null, fakeRenderer());
+  const batch = realishBatch(true);
+  zdiag.applyToBatch(batch as unknown as StrokeBatch);
+  expect(batch.policies).toEqual([]);
+  expect(batch.materials.near.depthWrite).toBe(true);
+  zdiag.setMode('nowrite');
+  expect(batch.policies).toEqual([]);
+  expect(batch.materials.near.depthWrite).toBe(true);
+  zdiag.setMode('nosort');
+  expect(batch.policies.at(-1)).toEqual({ ...WRITE_ORDER_POLICY, freeze: true });
+  zdiag.setMode(null);
+  expect(batch.policies.at(-1)).toEqual(WRITE_ORDER_POLICY);
+  expect(batch.materials.near.depthWrite).toBe(true);
+});
 
 function snapshot(batch: ReturnType<typeof realishBatch>) {
   return structuredClone({
@@ -138,18 +161,37 @@ test('setMode applies each mode on top of the defaults, never on top of the last
   expect(batch.materials.far.alphaToCoverage).toBe(true);
   expect(batch.materials.far.defines).toEqual({ BRUSH_COUNT: 8, ZDIAG_SHARP_GAIN: 2 });
 
+  // nowrite is the default since 2026-11-07: it changes nothing.
   zdiag.setMode('nowrite');
   expect(batch.materials.near).toMatchObject({ depthWrite: false, depthFunc: LESS_EQUAL });
   expect(batch.materials.near.defines).toEqual({ BRUSH_COUNT: 8 });
-  expect(batch.policies.at(-1)).toEqual({
-    base: ZDIAG_STROKES_AFTER_BASE,
+  expect(batch.policies).toEqual([]);
+  expect(ZDIAG_STROKES_AFTER_BASE).toBe(STROKES_AFTER_BASE);
+  expect(DEFAULT_ORDER_POLICY).toEqual({
+    base: STROKES_AFTER_BASE,
     reverse: true,
     freeze: false,
+    layered: true,
   });
+
+  // write is the old depth-writing default.
+  zdiag.setMode('write');
+  expect(batch.materials.near).toMatchObject({ depthWrite: true, depthFunc: LESS_EQUAL });
+  expect(batch.materials.near.defines).toEqual({ BRUSH_COUNT: 8 });
+  expect(batch.policies.at(-1)).toEqual(WRITE_ORDER_POLICY);
+  expect(WRITE_ORDER_POLICY).toEqual({ base: 0, reverse: false, freeze: false, layered: false });
 
   zdiag.setMode('strokeorder');
   expect(batch.materials.mid).toMatchObject({ depthWrite: true, depthFunc: ALWAYS });
-  expect(batch.policies.at(-1)).toEqual(DEFAULT_ORDER_POLICY);
+  expect(batch.policies.at(-1)).toEqual(WRITE_ORDER_POLICY);
+
+  zdiag.setMode('paintorder');
+  expect(batch.materials.mid).toMatchObject({ depthWrite: true, depthFunc: ALWAYS });
+  expect(batch.policies.at(-1)).toEqual({ ...WRITE_ORDER_POLICY, reverse: true });
+
+  zdiag.setMode('nosort');
+  expect(batch.materials.mid).toMatchObject({ depthWrite: false, depthFunc: LESS_EQUAL });
+  expect(batch.policies.at(-1)).toEqual({ ...DEFAULT_ORDER_POLICY, freeze: true });
 
   zdiag.setMode('nomip');
   expect(batch.materials.mid.depthFunc).toBe(LESS_EQUAL);
@@ -230,7 +272,7 @@ test('prepare compiles each distinct program once per batch, then restores the c
     });
     compiled.push(defines);
   });
-  zdiag.prepare([null, 'nowrite', 'noa2c', 'sharp', 'sharp4', 'freeze']);
+  zdiag.prepare([null, 'write', 'noa2c', 'sharp', 'sharp4', 'freeze']);
   expect(compiled).toEqual([]);
 
   const batch = realishBatch();

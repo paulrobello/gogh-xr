@@ -12,7 +12,11 @@
 import { FLAME_SWAYS, type FlameSway, SKY_WRAPS, type SkyWrap } from '../motion/variants';
 import { ZDIAG_MODES, type ZdiagMode } from './flags';
 
-const SHIMMER = ['base', 'nowrite', 'noa2c', 'sharp', 'sharp4', 'freeze'] as const;
+/**
+ * `base` is the batch default, which since 2026-11-07 is the old `nowrite` policy, so `nowrite`
+ * left the cycle and `write`, the old depth-writing default, took its place.
+ */
+const SHIMMER = ['base', 'write', 'noa2c', 'sharp', 'sharp4', 'freeze'] as const;
 
 /** Every group's variants, in cycle order. The first is the default the group starts at. */
 export const AB_GROUPS = {

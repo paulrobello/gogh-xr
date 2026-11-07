@@ -10,10 +10,17 @@ import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
 import { expect, glErrors, test, type Xr } from './fixtures';
 
 // src/render/strokes/batch.ts and zdiag.ts import the bake outputs, which Playwright cannot load.
-/** DEFAULT_ORDER_POLICY. */
-const DEFAULT_ORDER_POLICY = { base: 0, reverse: false, freeze: false };
-/** ZDIAG_STROKES_AFTER_BASE. */
-const ZDIAG_STROKES_AFTER_BASE = 2_000_000;
+/** STROKES_AFTER_BASE. */
+const STROKES_AFTER_BASE = 2_000_000;
+/** DEFAULT_ORDER_POLICY: the nowrite policy, the default since 2026-11-07. */
+const DEFAULT_ORDER_POLICY = {
+  base: STROKES_AFTER_BASE,
+  reverse: true,
+  freeze: false,
+  layered: true,
+};
+/** WRITE_ORDER_POLICY: the old depth-writing default. */
+const WRITE_ORDER_POLICY = { base: 0, reverse: false, freeze: false, layered: false };
 
 interface AbDiag {
   group: string;
@@ -34,17 +41,17 @@ interface ZdiagDiag {
     alphaToCoverage: boolean;
     alphaTest: boolean;
     sharpGain: number | null;
-    order: { base: number; reverse: boolean; freeze: boolean };
+    order: { base: number; reverse: boolean; freeze: boolean; layered: boolean };
     atlas: { minFilter: number; generateMipmaps: boolean; anisotropy: number };
   } | null;
 }
 
 type StrokeState = NonNullable<ZdiagDiag['state']>;
 
-const SHIMMER = ['base', 'nowrite', 'noa2c', 'sharp', 'sharp4', 'freeze'];
+const SHIMMER = ['base', 'write', 'noa2c', 'sharp', 'sharp4', 'freeze'];
 const LESS_EQUAL = 3;
 const BASE_STATE: StrokeState = {
-  depthWrite: true,
+  depthWrite: false,
   depthFunc: LESS_EQUAL,
   alphaToCoverage: true,
   alphaTest: false,
@@ -56,11 +63,8 @@ const BASE_STATE: StrokeState = {
 /** Each shimmer variant's stroke state, as zdiag reports it. */
 const EXPECTED: Record<string, StrokeState> = {
   base: BASE_STATE,
-  nowrite: {
-    ...BASE_STATE,
-    depthWrite: false,
-    order: { base: ZDIAG_STROKES_AFTER_BASE, reverse: true, freeze: false },
-  },
+  write: { ...BASE_STATE, depthWrite: true, order: WRITE_ORDER_POLICY },
+  nowrite: BASE_STATE,
   noa2c: { ...BASE_STATE, alphaToCoverage: false, alphaTest: true },
   sharp: { ...BASE_STATE, sharpGain: 2 },
   sharp4: { ...BASE_STATE, sharpGain: 4 },
@@ -226,7 +230,7 @@ test('in XR both sticks held recenters without cycling', async ({ page, xr }) =>
 
   // A single click afterwards still cycles.
   await xr.press('left', 'thumbstick');
-  expect(await ab(xr)).toMatchObject({ index: 1, variant: 'nowrite' });
+  expect(await ab(xr)).toMatchObject({ index: 1, variant: 'write' });
   expect(await glErrors(page)).toEqual([]);
 });
 

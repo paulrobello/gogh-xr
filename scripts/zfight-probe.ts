@@ -7,7 +7,7 @@
  * e2e suite's launch flags (`PW_GPU=swiftshader` for software GL). Results: docs/verification.md,
  * stroke flicker.
  *
- *   bun scripts/zfight-probe.ts <base-url>
+ *   bun scripts/zfight-probe.ts <base-url> [extra query, for example zdiag=write]
  *
  * The base url is a running build, for example http://localhost:4252/ under `make dev`.
  */
@@ -22,7 +22,8 @@ if (!base) {
   process.exit(2);
 }
 const url = new URL(base);
-url.search = '?painting=starry-night&diag&shot&nogov&nocache';
+// noanim: since the P4 motion layers, a moving sky would read as flips.
+url.search = `?painting=starry-night&diag&shot&nogov&nocache&noanim${process.argv[3] ? `&${process.argv[3]}` : ''}`;
 
 /** Name, eye position and heading (yaw 0 faces -Z, pitch up positive), as `__goghPose` takes. */
 const POSES: readonly (readonly [string, number, number, number, number, number])[] = [
@@ -35,6 +36,8 @@ const POSES: readonly (readonly [string, number, number, number, number, number]
   ['ridge-horizon', 0, 1.6, 0, -0.7, 0.05],
   // Read over CDP from the headset on build 616f0c9, where Paul saw buildings and ground strobe.
   ['paul-strobe1', 0.067, 1.551, 0, -0.571, -0.26],
+  // 2.5 m out from the cypress hull at axis ring 9 (seed 1), facing the axis.
+  ['cypress', -2.079, -1.55, -5.784, 0.345, 0],
 ];
 
 const browser = await chromium.launch({ channel: 'chromium', headless: true, args: gpuArgs });

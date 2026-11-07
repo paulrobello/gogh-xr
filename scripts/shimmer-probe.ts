@@ -67,7 +67,8 @@ const browser = await chromium.launch({ channel: 'chromium', headless: true, arg
 try {
   for (const mode of MODES) {
     const url = new URL(base);
-    url.search = `?painting=starry-night&diag&shot&nogov&nocache${mode === 'base' ? '' : `&zdiag=${mode}`}`;
+    // noanim: since the P4 motion layers, a moving sky would read as flicker.
+    url.search = `?painting=starry-night&diag&shot&nogov&nocache&noanim${mode === 'base' ? '' : `&zdiag=${mode}`}`;
     const page = await browser.newPage({
       viewport: { width: 1280, height: 1014 },
       deviceScaleFactor: 1,

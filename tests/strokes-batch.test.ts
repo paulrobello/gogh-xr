@@ -1,11 +1,13 @@
 import {
   DataTexture,
   type InstancedBufferAttribute,
+  type InstancedBufferGeometry,
   IntType,
   type Mesh,
   PerspectiveCamera,
   RGBAFormat,
   Scene,
+  Vector3,
 } from 'three';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { motionClock } from '../src/motion/clock.ts';
@@ -18,6 +20,8 @@ import {
 } from '../src/motion/reactive.ts';
 import { SKY_RINGS, skyRingReach } from '../src/motion/sky-rings.ts';
 import { skySwirlReach } from '../src/motion/sky-swirl.ts';
+import { BASE_MESH_RENDER_ORDER } from '../src/paintings/starry-night/base-meshes.ts';
+import { createSkyHalo } from '../src/render/sky-halo.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import {
   bandDrawCount,
@@ -26,13 +30,21 @@ import {
   STROKE_BANDS,
 } from '../src/render/strokes/bands.ts';
 import {
+  BATCH_DEPTH_WRITE,
   createStrokeBatch,
+  DEFAULT_ORDER_POLICY,
+  drawClassOf,
   holdsHaze,
+  isCypressStroke,
   isPinnedStroke,
   SKY_REACH_MARGIN,
+  STROKE_DRAW_CLASSES,
+  STROKES_AFTER_BASE,
   type StrokeBatch,
+  WRITE_ORDER_POLICY,
 } from '../src/render/strokes/batch.ts';
 import { cullAndSortInto } from '../src/render/strokes/chunks.ts';
+import { DEPTH_TIE_BREAK_FRONT_FLAG } from '../src/render/strokes/depth-tie-break.ts';
 import { importanceOrder } from '../src/render/strokes/importance.ts';
 import {
   createStrokeBuffers,
@@ -181,7 +193,8 @@ describe('createStrokeBatch', () => {
       expect(material.uniforms.uSizeScale.value).toBe(DEFAULT_BAND_SIZE[band]);
       expect(material.alphaToCoverage).toBe(true);
       expect(material.transparent).toBe(false);
-      expect(material.depthWrite).toBe(true);
+      expect(material.depthWrite).toBe(BATCH_DEPTH_WRITE);
+      expect(material.depthWrite).toBe(false);
       // Same source and defines: three compiles one program for all three bands.
       expect(material.vertexShader).toBe(batch.materials.near.vertexShader);
       expect(material.fragmentShader).toBe(batch.materials.near.fragmentShader);
@@ -722,7 +735,7 @@ describe('bands', () => {
 });
 
 describe('update', () => {
-  test('culls chunks behind the camera and orders the rest front to back', () => {
+  test('culls chunks behind the camera and orders the rest back to front after the base meshes', () => {
     // Strokes from z = +7 to z = -8: four chunks, two behind a camera at the origin looking -z.
     const batch = createStrokeBatch(row(16, 7.5), { cellSize: 4, createAtlas: tinyAtlas });
     const camera = new PerspectiveCamera(70, 1, 0.05, 100);
@@ -736,7 +749,22 @@ describe('update', () => {
     for (const chunk of hidden) expect(chunk.bounds.center.z).toBeGreaterThan(0);
     const byOrder = [...visible].sort((a, b) => a.mesh.renderOrder - b.mesh.renderOrder);
     const distances = byOrder.map((c) => c.bounds.center.distanceTo(camera.position));
-    expect(distances).toEqual([...distances].sort((a, b) => a - b));
+    expect(distances).toEqual([...distances].sort((a, b) => b - a));
+    // Every chunk here is `world`, the third class block.
+    const block = STROKE_DRAW_CLASSES.indexOf('world') * 2 * batch.chunks.length;
+    expect(byOrder.map((c) => c.mesh.renderOrder)).toEqual(
+      byOrder.map((_, rank) => STROKES_AFTER_BASE + block + rank),
+    );
+
+    // The old depth-writing policy: front to back from 0.
+    batch.setOrderPolicy(WRITE_ORDER_POLICY);
+    render(batch, camera);
+    const written = [...visible].sort((a, b) => a.mesh.renderOrder - b.mesh.renderOrder);
+    expect(written.map((c) => c.mesh.renderOrder)).toEqual(written.map((_, rank) => rank));
+    const near = written.map((c) => c.bounds.center.distanceTo(camera.position));
+    expect(near).toEqual([...near].sort((a, b) => a - b));
+    batch.setOrderPolicy(DEFAULT_ORDER_POLICY);
+    render(batch, camera);
 
     const stats = batch.stats();
     expect(stats.chunks).toBe(4);
@@ -852,8 +880,13 @@ describe('pinned strokes', () => {
       createAtlas: tinyAtlas,
     });
     const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
-    // Pinning adds no chunk, so no draw call.
-    expect(batch.chunks).toHaveLength(plain.chunks.length);
+    // The lights take a chunk of their own per cell (draw class `lights`), every stroke pinned.
+    const lightChunks = batch.chunks.filter((c) => c.drawClass === 'lights');
+    expect(lightChunks.length).toBeGreaterThan(0);
+    expect(batch.chunks).toHaveLength(plain.chunks.length + lightChunks.length);
+    for (const chunk of batch.chunks) {
+      expect(chunk.pinned).toBe(chunk.drawClass === 'lights' ? chunk.count : 0);
+    }
     expect(batch.chunks.reduce((sum, c) => sum + c.pinned, 0)).toBe(lights);
     batch.update(originCamera());
     for (const chunk of batch.chunks) {
@@ -898,5 +931,375 @@ describe('dispose', () => {
     for (const mesh of meshes) expect(mesh.parent).toBeNull();
     expect(batch.chunks).toHaveLength(0);
     expect(batch.stats()).toMatchObject({ chunks: 0, visibleChunks: 0, total: 0, visible: 0 });
+  });
+});
+
+describe('draw classes', () => {
+  /** Strokes in one 4 m cell: dome, star, window and plain strokes, in that repeating order. */
+  function mixed(count: number): StrokeBuffers {
+    const buffers = cluster(count, [1, 1, -2], 4);
+    for (let i = 0; i < count; i++) {
+      const kind = i % 4;
+      if (kind === 0) buffers.meta[i * 4 + 3] = DEPTH_BACKDROP_FLAG;
+      if (kind === 1) {
+        buffers.meta[i * 4 + 1] = STROKE_LAYER.star;
+        buffers.meta[i * 4 + 3] = DEPTH_BACKDROP_FLAG;
+      }
+      if (kind === 2) buffers.meta[i * 4 + 3] = DEPTH_TIE_BREAK_FRONT_FLAG;
+    }
+    return buffers;
+  }
+
+  test('drawClassOf reads the backdrop, pinned and front flags', () => {
+    const buffers = mixed(8);
+    expect(Array.from({ length: 4 }, (_, i) => drawClassOf(buffers, i))).toEqual([
+      'dome',
+      'lights',
+      'overlay',
+      'world',
+    ]);
+  });
+
+  test('a cell holding every class becomes one chunk per class, each class in its own block', () => {
+    const buffers = mixed(80);
+    const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    // No cypressChunk option, so no cypress class.
+    expect(batch.chunks.map((c) => c.drawClass)).toEqual(
+      STROKE_DRAW_CLASSES.filter((c) => c !== 'cypress'),
+    );
+    expect(batch.chunks.map((c) => c.count)).toEqual([20, 20, 20, 20]);
+    expect(batch.chunks.map((c) => c.mesh.name)).toEqual([
+      'strokes-0_0_-1-dome',
+      'strokes-0_0_-1-lights',
+      'strokes-0_0_-1',
+      'strokes-0_0_-1-overlay',
+    ]);
+    for (const chunk of batch.chunks) {
+      const meta = chunk.geometry.getAttribute('iMeta').array as Uint8Array;
+      const data = { meta, count: chunk.count } as unknown as StrokeBuffers;
+      for (let k = 0; k < chunk.count; k++) expect(drawClassOf(data, k)).toBe(chunk.drawClass);
+    }
+    render(batch, new PerspectiveCamera(90, 1, 0.05, 100));
+    const orders = batch.chunks.map((c) => c.mesh.renderOrder);
+    // Dome, then the lights, then the world, then the windows, whatever the distances.
+    expect(orders).toEqual([...orders].sort((a, b) => a - b));
+    expect(orders[0]).toBeGreaterThanOrEqual(STROKES_AFTER_BASE);
+    for (let k = 1; k < orders.length; k++) {
+      expect(orders[k] - orders[k - 1]).toBeGreaterThanOrEqual(2 * batch.chunks.length - 3);
+    }
+    batch.dispose();
+  });
+
+  test('a lights chunk writes depth for its own draw only, and puts the material back', () => {
+    const batch = createStrokeBatch(mixed(80), { cellSize: 4, createAtlas: tinyAtlas });
+    for (const chunk of batch.chunks) {
+      const { mesh } = chunk;
+      const material = mesh.material;
+      material.depthWrite = false;
+      const args = [null, null, null, mesh.geometry, material, null] as unknown as Parameters<
+        typeof mesh.onBeforeRender
+      >;
+      mesh.onBeforeRender(...args);
+      expect(material.depthWrite, chunk.drawClass).toBe(chunk.drawClass === 'lights');
+      mesh.onAfterRender(...args);
+      expect(material.depthWrite).toBe(false);
+    }
+    batch.dispose();
+  });
+
+  test('a nearer dome chunk still draws before a farther world chunk', () => {
+    const near = cluster(10, [1, 1, -2], 5);
+    const far = cluster(10, [1, 1, -10], 6);
+    for (let i = 0; i < near.count; i++) near.meta[i * 4 + 3] = DEPTH_BACKDROP_FLAG;
+    // Back to front alone would draw the nearer chunk last.
+    const batch = createStrokeBatch(concat(near, far), { cellSize: 4, createAtlas: tinyAtlas });
+    render(batch, new PerspectiveCamera(90, 1, 0.05, 100));
+    const dome = batch.chunks.find((c) => c.drawClass === 'dome');
+    const world = batch.chunks.find((c) => c.drawClass === 'world');
+    expect(dome?.mesh.visible).toBe(true);
+    expect(world?.mesh.visible).toBe(true);
+    expect(dome?.mesh.renderOrder ?? 0).toBeLessThan(world?.mesh.renderOrder ?? 0);
+    batch.dispose();
+  });
+
+  /** A cypress straddling y = 0 and ground strokes in both of its cells. */
+  function seamCypress(): StrokeBuffers {
+    const low = cluster(12, [1, -1, -2], 7);
+    const high = cluster(12, [1, 1, -2], 8);
+    const groundLow = cluster(10, [1, -1, -3], 9);
+    const groundHigh = cluster(6, [1, 1, -3], 10);
+    for (const part of [low, high]) {
+      for (let i = 0; i < part.count; i++) part.meta[i * 4 + 1] = STROKE_LAYER.cypress;
+    }
+    return concat(low, high, groundLow, groundHigh);
+  }
+  const positionsOf = (chunk: { geometry: InstancedBufferGeometry; count: number }): string[] => {
+    const p = chunk.geometry.getAttribute('iPosition').array as Float32Array;
+    return Array.from({ length: chunk.count }, (_, k) =>
+      [p[k * 3], p[k * 3 + 1], p[k * 3 + 2]].join(','),
+    );
+  };
+
+  test('with cypressChunk the cypress is one depth-writing chunk across a cell seam', () => {
+    const batch = createStrokeBatch(seamCypress(), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      cypressChunk: true,
+    });
+    expect(batch.chunks.map((c) => c.mesh.name)).toEqual([
+      'strokes-0_-1_-1',
+      'strokes-0_0_-1',
+      'strokes-0_-1_-1-cypress',
+    ]);
+    const cypress = batch.chunks[2];
+    expect(cypress.drawClass).toBe('cypress');
+    expect(cypress.count).toBe(24);
+    expect(batch.chunks.map((c) => c.count)).toEqual([10, 6, 24]);
+    const meta = cypress.geometry.getAttribute('iMeta').array as Uint8Array;
+    const data = { meta, count: cypress.count } as unknown as StrokeBuffers;
+    for (let k = 0; k < cypress.count; k++) expect(isCypressStroke(data, k)).toBe(true);
+    // The cypress chunk writes depth for its own draw; the rest of its cells do not.
+    for (const chunk of batch.chunks) {
+      const { mesh } = chunk;
+      const material = mesh.material;
+      material.depthWrite = false;
+      const args = [null, null, null, mesh.geometry, material, null] as unknown as Parameters<
+        typeof mesh.onBeforeRender
+      >;
+      mesh.onBeforeRender(...args);
+      expect(material.depthWrite, mesh.name).toBe(chunk === cypress);
+      mesh.onAfterRender(...args);
+      expect(material.depthWrite).toBe(false);
+    }
+    // Its class draws after the lights and before the world, whatever the distances.
+    render(batch, new PerspectiveCamera(90, 1, 0.05, 100));
+    expect(cypress.mesh.visible).toBe(true);
+    for (const chunk of batch.chunks.slice(0, 2)) {
+      expect(chunk.mesh.visible).toBe(true);
+      expect(cypress.mesh.renderOrder).toBeLessThan(chunk.mesh.renderOrder);
+    }
+    batch.dispose();
+  });
+
+  test('the cypress chunk keeps each stroke in its order among its own cell, and the rest too', () => {
+    const buffers = seamCypress();
+    const plain = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    const merged = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      cypressChunk: true,
+    });
+    // Without the option each cell is one world chunk, cypress and ground in importance order.
+    expect(plain.chunks.map((c) => c.mesh.name)).toEqual(['strokes-0_-1_-1', 'strokes-0_0_-1']);
+    const cypressSet = new Set(positionsOf(merged.chunks[2]));
+    const mergedOrder = positionsOf(merged.chunks[2]);
+    for (const [k, cell] of plain.chunks.entries()) {
+      const order = positionsOf(cell);
+      const ofCypress = order.filter((p) => cypressSet.has(p));
+      const rest = order.filter((p) => !cypressSet.has(p));
+      expect(ofCypress.length).toBe(12);
+      // The cell's cypress strokes appear in the merged chunk in the cell's own order.
+      expect(mergedOrder.filter((p) => ofCypress.includes(p))).toEqual(ofCypress);
+      // The rest of the cell keeps its order exactly.
+      expect(positionsOf(merged.chunks[k])).toEqual(rest);
+    }
+    // Interleaved by fraction: every prefix holds the two cells' strokes within one of even.
+    for (let n = 1; n <= mergedOrder.length; n++) {
+      const prefix = mergedOrder.slice(0, n);
+      const low = prefix.filter((p) => positionsOf(plain.chunks[0]).includes(p)).length;
+      expect(Math.abs(low - (n - low))).toBeLessThanOrEqual(1);
+    }
+    plain.dispose();
+    merged.dispose();
+  });
+
+  test('the cypress chunk bounds, band and cull span both cells', () => {
+    const batch = createStrokeBatch(seamCypress(), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      cypressChunk: true,
+    });
+    const cypress = batch.chunks[2];
+    // The sphere holds every cypress stroke, below and above the seam.
+    const p = cypress.geometry.getAttribute('iPosition').array as Float32Array;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let k = 0; k < cypress.count; k++) {
+      const at = new Vector3(p[k * 3], p[k * 3 + 1], p[k * 3 + 2]);
+      expect(cypress.bounds.distanceToPoint(at)).toBeLessThanOrEqual(1e-6);
+      minY = Math.min(minY, at.y);
+      maxY = Math.max(maxY, at.y);
+    }
+    expect(minY).toBeLessThan(0);
+    expect(maxY).toBeGreaterThan(0);
+    // One band for the whole tree.
+    render(batch, new PerspectiveCamera(90, 1, 0.05, 100));
+    expect(cypress.band).toBe('near');
+    // Looking at the upper half only still draws the whole chunk; looking away culls it.
+    const up = new PerspectiveCamera(20, 1, 0.05, 100);
+    up.position.set(1, 1, 2);
+    up.lookAt(1, 1.2, -2);
+    render(batch, up);
+    expect(cypress.mesh.visible).toBe(true);
+    expect(cypress.drawCount).toBe(24);
+    const away = new PerspectiveCamera(20, 1, 0.05, 100);
+    away.lookAt(0, 0, 10);
+    render(batch, away);
+    expect(cypress.mesh.visible).toBe(false);
+    batch.dispose();
+  });
+
+  test('without cypressChunk cypress-layer strokes stay in their cells (the P1 canvas)', () => {
+    const batch = createStrokeBatch(seamCypress(), { cellSize: 4, createAtlas: tinyAtlas });
+    expect(batch.chunks.every((c) => c.drawClass === 'world')).toBe(true);
+    expect(batch.chunks.map((c) => c.count)).toEqual([22, 18]);
+    batch.dispose();
+  });
+
+  test('depthWrite: true writes depth and starts on the write order', () => {
+    const batch = createStrokeBatch(seamCypress(), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      depthWrite: true,
+    });
+    expect(batch.defaultOrder).toEqual(WRITE_ORDER_POLICY);
+    for (const m of Object.values(batch.materials)) expect(m.depthWrite).toBe(true);
+    render(batch, new PerspectiveCamera(90, 1, 0.05, 100));
+    // Front to back from 0: the nearer chunk first.
+    const [low, high] = batch.chunks;
+    expect(Math.min(low.mesh.renderOrder, high.mesh.renderOrder)).toBe(0);
+    batch.dispose();
+  });
+});
+
+describe('the halo slot between the lights and the cypress', () => {
+  /** Light strokes in four cells ahead and behind the eye, a cypress on both sides, and ground. */
+  function sky(): StrokeBuffers {
+    const lights = [
+      cluster(6, [1, 1, -2], 21),
+      cluster(6, [1, 1, -6], 22),
+      cluster(6, [1, 1, 2], 23),
+      cluster(6, [1, 1, 6], 24),
+    ];
+    for (const part of lights) {
+      for (let i = 0; i < part.count; i++) {
+        part.meta[i * 4 + 1] = STROKE_LAYER.star;
+        part.meta[i * 4 + 3] = DEPTH_BACKDROP_FLAG;
+      }
+    }
+    const cypress = [cluster(8, [1, -1, -2], 25), cluster(8, [1, -1, 2], 26)];
+    for (const part of cypress) {
+      for (let i = 0; i < part.count; i++) part.meta[i * 4 + 1] = STROKE_LAYER.cypress;
+    }
+    const ground = [cluster(8, [1, -1, -6], 27), cluster(8, [1, -1, 6], 28)];
+    return concat(...lights, ...cypress, ...ground);
+  }
+  const ordersOf = (batch: StrokeBatch, drawClass: string): number[] =>
+    batch.chunks
+      .filter((c) => c.drawClass === drawClass && c.mesh.visible)
+      .map((c) => c.mesh.renderOrder);
+
+  test('orderBeforeClass sits above every lights rank, frozen ones too, and below the cypress', () => {
+    const batch = createStrokeBatch(sky(), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      cypressChunk: true,
+    });
+    const n = batch.chunks.length;
+    const halo = batch.orderBeforeClass('cypress');
+    // Above the whole dome block.
+    expect(halo).toBeGreaterThan(STROKES_AFTER_BASE + 2 * n);
+    const camera = new PerspectiveCamera(60, 1, 0.05, 100);
+    camera.position.set(1, 0, 0);
+    const lights: number[] = [];
+    const cypress: number[] = [];
+    for (const policy of [DEFAULT_ORDER_POLICY, { ...DEFAULT_ORDER_POLICY, freeze: true }]) {
+      batch.setOrderPolicy(policy);
+      // Facing -Z, then turned round, so under the freeze the chunks behind are first seen late.
+      for (const yaw of [0, Math.PI]) {
+        camera.rotation.set(0, yaw, 0);
+        render(batch, camera);
+        lights.push(...ordersOf(batch, 'lights'));
+        cypress.push(...ordersOf(batch, 'cypress'));
+      }
+    }
+    // A late-frozen lights chunk takes the top of its block (chunks.length + rank).
+    expect(Math.max(...lights)).toBeGreaterThanOrEqual(STROKES_AFTER_BASE + 2 * n + n);
+    expect(cypress.length).toBeGreaterThan(0);
+    expect(halo).toBeGreaterThan(Math.max(...lights));
+    expect(halo).toBeLessThan(Math.min(...cypress));
+    batch.dispose();
+  });
+
+  test('under the write policy it lands after every chunk and the base meshes', () => {
+    const batch = createStrokeBatch(sky(), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      cypressChunk: true,
+    });
+    batch.setOrderPolicy(WRITE_ORDER_POLICY);
+    const halo = batch.orderBeforeClass('cypress');
+    const camera = new PerspectiveCamera(60, 1, 0.05, 100);
+    camera.position.set(1, 0, 0);
+    for (const yaw of [0, Math.PI]) {
+      camera.rotation.set(0, yaw, 0);
+      render(batch, camera);
+      for (const chunk of batch.chunks) {
+        if (chunk.mesh.visible) expect(halo).toBeGreaterThan(chunk.mesh.renderOrder);
+      }
+    }
+    expect(halo).toBeGreaterThan(BASE_MESH_RENDER_ORDER);
+    batch.dispose();
+  });
+
+  test('createSkyHalo(order) puts the halo in the opaque queue at that order', () => {
+    const halo = createSkyHalo(1234.5);
+    expect(halo.mesh.renderOrder).toBe(1234.5);
+    expect(halo.mesh.material.transparent).toBe(false);
+    const plain = createSkyHalo();
+    expect(plain.mesh.material.transparent).toBe(true);
+  });
+});
+
+describe('nosort freeze', () => {
+  /** Visible chunks' render orders, nearest chunk first. */
+  function ordersNearFirst(batch: StrokeBatch, eye: Vector3): number[] {
+    return batch.chunks
+      .filter((c) => c.mesh.visible)
+      .sort((a, b) => a.bounds.center.distanceTo(eye) - b.bounds.center.distanceTo(eye))
+      .map((c) => c.mesh.renderOrder);
+  }
+
+  test('under the default policy the frozen order is back to front', () => {
+    const batch = createStrokeBatch(row(12), { cellSize: 4, createAtlas: tinyAtlas });
+    batch.setOrderPolicy({ ...DEFAULT_ORDER_POLICY, freeze: true });
+    const camera = new PerspectiveCamera(60, 1, 0.05, 100);
+    camera.position.set(0.5, 1.6, 0);
+    render(batch, camera);
+    const orders = ordersNearFirst(batch, camera.position);
+    expect(orders.length).toBe(3);
+    // The nearest chunk draws last, as the unfrozen default does.
+    expect(orders).toEqual([...orders].sort((a, b) => b - a));
+    // Frozen: from the far end, looking back, the ranks hold.
+    const byName = new Map(batch.chunks.map((c) => [c.mesh.name, c.mesh.renderOrder]));
+    camera.position.set(0.5, 1.6, -20);
+    camera.rotation.set(0, Math.PI, 0);
+    render(batch, camera);
+    for (const c of batch.chunks) {
+      if (c.mesh.visible) expect(c.mesh.renderOrder).toBe(byName.get(c.mesh.name));
+    }
+    batch.dispose();
+  });
+
+  test('under the write policy the frozen order stays front to back', () => {
+    const batch = createStrokeBatch(row(12), { cellSize: 4, createAtlas: tinyAtlas });
+    batch.setOrderPolicy({ ...WRITE_ORDER_POLICY, freeze: true });
+    const camera = new PerspectiveCamera(60, 1, 0.05, 100);
+    camera.position.set(0.5, 1.6, 0);
+    render(batch, camera);
+    const orders = ordersNearFirst(batch, camera.position);
+    expect(orders.length).toBe(3);
+    expect(orders).toEqual([...orders].sort((a, b) => a - b));
+    batch.dispose();
   });
 });

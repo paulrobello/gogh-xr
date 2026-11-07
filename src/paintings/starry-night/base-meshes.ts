@@ -38,8 +38,10 @@ export const UNDERPAINT_SHADE: number = 0.6;
  */
 export const TINT_UNDERPAINT_SHADE: number = 0.85;
 /**
- * Base meshes draw after every stroke chunk (whose render orders are the cull ranks), so early
- * depth rejects their hidden fragments.
+ * Base meshes draw before the stroke chunks under the default policy, whose render orders start at
+ * STROKES_AFTER_BASE (src/render/strokes/batch.ts), so the strokes test against the depth they
+ * write. Under `?zdiag=write` the chunks draw first, from 0, and early depth rejects the base
+ * meshes' hidden fragments instead.
  */
 export const BASE_MESH_RENDER_ORDER: number = 1_000_000;
 

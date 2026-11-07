@@ -261,6 +261,7 @@ test('turn is snap or smooth, trimmed and lower-cased, null when absent or unkno
 
 test('zdiag is one of the diagnostic modes, trimmed and lower-cased, null otherwise', () => {
   for (const mode of [
+    'write',
     'nowrite',
     'nosort',
     'noa2c',

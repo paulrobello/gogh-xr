@@ -109,7 +109,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   );
   const scattered = performance.now();
 
-  const batch = createStrokeBatch(buffers, { cellSize: WORLD_CELL_SIZE });
+  const batch = createStrokeBatch(buffers, { cellSize: WORLD_CELL_SIZE, cypressChunk: true });
   const coneUniforms = skyLightConeUniforms(cones);
   const featherUniforms = skyLightFeatherUniforms(cones);
   for (const material of Object.values(batch.materials)) {
@@ -143,8 +143,9 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   if (debug === 'bare') batch.group.visible = false;
   // The star and moon halos (P4.3), the world's one blended pass. The `?bare` and `?coverage`
   // sweeps count magenta pixels, which additive light would hide, so they draw without it, and
-  // `?nohalo` turns it off for a cost A/B.
-  const halo = createSkyHalo();
+  // `?nohalo` turns it off for a cost A/B. It draws after the lights and before the cypress and
+  // the world, which write no depth, so their overhang paints over it (docs/verification.md, N2).
+  const halo = createSkyHalo(batch.orderBeforeClass('cypress'));
   halo.mesh.visible = debug === null && deps.halo !== false;
   scene.add(halo.mesh);
   built = { scene, batch, halo, base, background };

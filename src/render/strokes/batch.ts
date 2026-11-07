@@ -31,6 +31,7 @@ import {
 } from './bands';
 import { createBrushAtlas } from './brush-atlas';
 import { computeBounds, cullAndSortInto, DEFAULT_CELL_SIZE, partitionIndices } from './chunks';
+import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
 import { importanceOrder } from './importance';
 import {
   octDecode,
@@ -60,6 +61,8 @@ export interface StrokeChunk {
   readonly drawCount: number;
   /** World-space bounds at size multiplier 1; chunk meshes stay at the identity transform. */
   readonly bounds: Sphere;
+  /** Every stroke in the chunk has this draw class. */
+  readonly drawClass: StrokeDrawClass;
   /** Distance band, `null` until the first `update`; the mesh stays hidden until then. */
   readonly band: StrokeBand | null;
   /**
@@ -92,26 +95,106 @@ export interface StrokeBatchStats {
   atlasMs: number;
   /** Per band; the `chunks` and `visible` fields sum to `visibleChunks` and `visible`. */
   bands: Record<StrokeBand, StrokeBandStats>;
+  /** Per draw class, chunks that passed the last cull and the instances they draw. */
+  classes: Record<StrokeDrawClass, { chunks: number; visible: number }>;
 }
 
 /**
- * How `update` sets the visible chunks' `renderOrder`. The default draws them front to back from
- * 0. `base` offsets every rank, `reverse` draws back to front, and `freeze` keeps each chunk's
- * first rank for good (a chunk first seen later takes `chunks.length` plus its rank then). The
- * `?zdiag` modes use it (src/render/zdiag.ts).
+ * How `update` sets the visible chunks' `renderOrder`. `base` offsets every rank, `reverse` draws
+ * back to front instead of front to back, and `freeze` keeps each chunk's first rank for good (a
+ * chunk first seen later takes `chunks.length` plus its rank then). `layered` draws the chunks
+ * class by class in STROKE_DRAW_CLASSES order, each class in its own block of ranks. The `?zdiag`
+ * modes change it (src/render/zdiag.ts).
  */
 export interface StrokeOrderPolicy {
   readonly base: number;
   readonly reverse: boolean;
   readonly freeze: boolean;
+  readonly layered: boolean;
 }
 
-/** The policy a batch starts with: front to back from 0. */
+/**
+ * Render order base of the strokes under the default policy: above the base meshes'
+ * BASE_MESH_RENDER_ORDER (1e6), so the strokes draw over the depth the base meshes wrote.
+ */
+export const STROKES_AFTER_BASE = 2_000_000;
+
+/**
+ * Whether batch strokes write depth. They do not (Paul's headset A/B, 2026-11-07,
+ * docs/verification.md, nowrite default): overlapping strokes of one surface then never tie in
+ * depth, and draw order decides between them. They still test against the base meshes' depth.
+ */
+export const BATCH_DEPTH_WRITE = false;
+
+/**
+ * The policy a batch starts with: after the base meshes, class by class, back to front within
+ * each class, so with no stroke depth writes a nearer chunk paints over a farther one.
+ */
 export const DEFAULT_ORDER_POLICY: StrokeOrderPolicy = Object.freeze({
+  base: STROKES_AFTER_BASE,
+  reverse: true,
+  freeze: false,
+  layered: true,
+});
+
+/**
+ * The depth-writing policy the batch shipped with before the nowrite default: front to back from
+ * 0, before the base meshes, so early depth rejects hidden strokes. `?zdiag=write` restores it.
+ */
+export const WRITE_ORDER_POLICY: StrokeOrderPolicy = Object.freeze({
   base: 0,
   reverse: false,
   freeze: false,
+  layered: false,
 });
+
+/**
+ * A chunk's draw class, in draw order. Without stroke depth writes a chunk's strokes draw in
+ * instance order, and the chunks by distance, so a stroke that must stay under or over its
+ * neighbours whatever the distance order gets a class of its own:
+ * - `dome`: sky dome strokes (DEPTH_BACKDROP_FLAG), which sit behind everything, first;
+ * - `lights`: the moon and stars (`isPinnedStroke`), over the dome, with depth writes on
+ *   (`writeDepthWhileDrawn`), so their own rank order holds among them;
+ * - `cypress`: with `cypressChunk`, the cypress as one chunk, with depth writes on, because its
+ *   moving strokes must keep the stacking the I3 flame check measures. It draws before the world,
+ *   so the ground strokes drawn after it test against its depth: ground in front of its foot
+ *   stays visible, and ground behind it is hidden;
+ * - `world`: every other stroke;
+ * - `overlay`: lit windows (DEPTH_TIE_BREAK_FRONT_FLAG), over their walls, last.
+ * A grid cell holding strokes of several classes becomes one chunk per class.
+ */
+export const STROKE_DRAW_CLASSES = ['dome', 'lights', 'cypress', 'world', 'overlay'] as const;
+export type StrokeDrawClass = (typeof STROKE_DRAW_CLASSES)[number];
+
+/**
+ * The moon and stars keep depth writes, whatever the band material says: their front-tier ranks
+ * never tie between strokes that can overlap (`RankPicker`, src/world/sky-lights.ts, ties 0 at
+ * seed 1), and the moon's crescent edges rely on that rank order to sit on top. The band
+ * materials are shared, so the mesh sets depthWrite for its own draw and puts it back after;
+ * depthWrite is render state, not part of the program, so nothing recompiles. The cypress chunk
+ * keeps depth writes too: without them its instance order, not depth, decides which overlapping
+ * flame stroke shows, and the visible texture no longer moves with the facing strokes
+ * (docs/verification.md, nowrite default, fix round 1).
+ */
+function writeDepthWhileDrawn(mesh: Mesh<InstancedBufferGeometry, StrokeMaterial>): void {
+  let saved = false;
+  mesh.onBeforeRender = (_renderer, _scene, _camera, _geometry, material) => {
+    saved = material.depthWrite;
+    material.depthWrite = true;
+  };
+  mesh.onAfterRender = (_renderer, _scene, _camera, _geometry, material) => {
+    material.depthWrite = saved;
+  };
+}
+
+/** Stroke `i`'s draw class (STROKE_DRAW_CLASSES), apart from `cypress`, which the batch option sets. */
+export function drawClassOf(buffers: StrokeBuffers, i: number): StrokeDrawClass {
+  const flags = buffers.meta[i * 4 + 3];
+  if (isPinnedStroke(buffers, i)) return 'lights';
+  if ((flags & DEPTH_BACKDROP_FLAG) !== 0) return 'dome';
+  if ((flags & DEPTH_TIE_BREAK_FRONT_FLAG) !== 0) return 'overlay';
+  return 'world';
+}
 
 export interface StrokeBatch {
   readonly group: Group;
@@ -134,7 +217,7 @@ export interface StrokeBatch {
   /**
    * Moves every chunk, culled or not, between bands by the distance from `camera` to its 1x
    * bounds (with hysteresis). Then culls chunks against the frustum with their bounds widened for
-   * the band's size multiplier, and orders the survivors front to back.
+   * the band's size multiplier, and sets the survivors' render order by the order policy.
    */
   update(camera: Camera): void;
   /**
@@ -160,6 +243,14 @@ export interface StrokeBatch {
   stats(): StrokeBatchStats;
   /** Replaces the order policy from the next `update` on. */
   setOrderPolicy(policy: StrokeOrderPolicy): void;
+  /** The policy the batch starts with: DEFAULT_ORDER_POLICY, or WRITE_ORDER_POLICY with `depthWrite`. */
+  readonly defaultOrder: StrokeOrderPolicy;
+  /**
+   * A render order just below `drawClass`'s block under DEFAULT_ORDER_POLICY, and above every
+   * class before it. It is also above every chunk and base mesh under WRITE_ORDER_POLICY, whose
+   * ranks run from 0 below 2 × the chunk count.
+   */
+  orderBeforeClass(drawClass: StrokeDrawClass): number;
   /**
    * Releases every chunk geometry, the band materials and the atlas texture, and removes the
    * batch's own render hook, leaving any other hook on the scene in place.
@@ -174,6 +265,18 @@ export interface StrokeBatchOptions {
   readonly createAtlas?: () => Texture;
   /** Seed of the per-chunk importance order; defaults to `STROKE_ORDER_SEED`. */
   readonly seed?: number;
+  /**
+   * Whether the strokes write depth; defaults to BATCH_DEPTH_WRITE. A batch whose strokes are
+   * offset in depth so that they never tie, as the P1 canvas lays its regions LAYER_STEP apart
+   * (src/demo/canvas/placement.ts), passes true: it then starts on WRITE_ORDER_POLICY, so depth,
+   * not instance order, keeps its layers in order.
+   */
+  readonly depthWrite?: boolean;
+  /**
+   * Keeps every cypress-layer stroke (`isCypressStroke`) in one depth-writing `cypress` chunk,
+   * whatever cells it spans. The Starry Night world, which has one cypress tree, sets it.
+   */
+  readonly cypressChunk?: boolean;
 }
 
 /** Unit quad corners in [-0.5, 0.5]², counter-clockwise seen from +z (the instance normal). */
@@ -326,6 +429,11 @@ export function isPinnedStroke(buffers: StrokeBuffers, i: number): boolean {
   return backdrop && (layer === STROKE_LAYER.star || layer === STROKE_LAYER.moon);
 }
 
+/** A stroke on the cypress layer, which a `cypressChunk` batch keeps in one chunk. */
+export function isCypressStroke(buffers: StrokeBuffers, i: number): boolean {
+  return buffers.meta[i * 4 + 1] === STROKE_LAYER.cypress;
+}
+
 /** Salt of the pinned group's importance-order seed, so it differs from the rest's. */
 const PINNED_SEED_SALT = 0x5bd1e995;
 
@@ -371,8 +479,8 @@ function checkBand(band: StrokeBand): void {
 }
 
 /**
- * Partitions `buffers` into spatial chunks, one `Mesh` + `InstancedBufferGeometry` per chunk, with
- * each chunk's instances in importance order (`importanceOrder`) so a density draws an even
+ * Partitions `buffers` into spatial chunks, one `Mesh` + `InstancedBufferGeometry` per grid cell
+ * and draw class (STROKE_DRAW_CLASSES), with each chunk's instances in importance order (`importanceOrder`) so a density draws an even
  * prefix. Pinned strokes (`isPinnedStroke`) come first and are always drawn. Chunks share the
  * per-band materials and one atlas. Three's own frustum culling is off; call `update(camera)`
  * once per frame with the camera three renders with, which `attach(scene)` arranges.
@@ -384,11 +492,13 @@ export function createStrokeBatch(
   const start = performance.now();
   const atlas = (options.createAtlas ?? createBrushAtlas)();
   const atlasMs = performance.now() - start;
+  const depthWrite = options.depthWrite ?? BATCH_DEPTH_WRITE;
+  const defaultOrder = depthWrite ? WRITE_ORDER_POLICY : DEFAULT_ORDER_POLICY;
   const densities: Record<StrokeBand, number> = { ...DEFAULT_BAND_DENSITY };
   const sizes: Record<StrokeBand, number> = { ...DEFAULT_BAND_SIZE };
   const materials = {} as Record<StrokeBand, StrokeMaterial>;
   for (const band of STROKE_BANDS) {
-    materials[band] = createStrokeMaterial(atlas, sizes[band]);
+    materials[band] = createStrokeMaterial(atlas, sizes[band], depthWrite);
     materials[band].name = `stroke-a2c-${band}`;
   }
   Object.freeze(materials);
@@ -438,23 +548,84 @@ export function createStrokeBatch(
   const halfDiagonals: number[] = [];
   /** Per chunk, the box round its strokes' rest centres: min xyz then max xyz, six per chunk. */
   const centreBoxes: number[] = [];
-  /** Per chunk, 1 while its cull sphere carries the reactive growth. */
-  const reactiveNear = new Uint8Array(offsets.length - 1);
+  /**
+   * Each cell's strokes split by draw class, each part in ascending source order, or with its
+   * instance order already set (`order`). With `cypressChunk`, the cypress (`isCypressStroke`) is
+   * one `cypress` chunk whatever cells it spans: two chunks of one surface stack as whole blocks without stroke depth
+   * writes, so a flame stroke moving across a cell seam would slide under the other chunk's
+   * strokes (docs/verification.md, nowrite default). A cell holding cypress strokes orders its
+   * whole `world` part as before, then splits it: the rest keeps its order, and the cypress chunk
+   * interleaves each cell's cypress strokes by their fraction through that cell's order, so every
+   * stroke keeps its order among its own cell's strokes and a density prefix stays even.
+   */
+  const parts: {
+    cell: number;
+    drawClass: StrokeDrawClass;
+    indices: Uint32Array;
+    order?: Uint32Array;
+  }[] = [];
+  const cypress: { stroke: number; key: number; cell: number }[] = [];
+  let cypressCell = -1;
   for (let c = 0; c + 1 < offsets.length; c++) {
     const indices = order.subarray(offsets[c], offsets[c + 1]);
-    const { order: chunkIndices, pinned } = chunkOrder(buffers, indices, chunkSeed(seed, cells, c));
+    const classOf = Array.from(indices, (i) => drawClassOf(buffers, i));
+    for (const drawClass of STROKE_DRAW_CLASSES) {
+      const picked = indices.filter((_, k) => classOf[k] === drawClass);
+      if (picked.length === 0) continue;
+      if (
+        !options.cypressChunk ||
+        drawClass !== 'world' ||
+        !picked.some((i) => isCypressStroke(buffers, i))
+      ) {
+        parts.push({ cell: c, drawClass, indices: picked });
+        continue;
+      }
+      if (cypressCell < 0) cypressCell = c;
+      const cellOrder = chunkOrder(buffers, picked, chunkSeed(seed, cells, c)).order;
+      const ofCypress = cellOrder.filter((i) => isCypressStroke(buffers, i));
+      ofCypress.forEach((stroke, r) => {
+        cypress.push({ stroke, key: (r + 0.5) / ofCypress.length, cell: c });
+      });
+      const rest = cellOrder.filter((i) => !isCypressStroke(buffers, i));
+      if (rest.length > 0) {
+        parts.push({ cell: c, drawClass, indices: rest.slice().sort(), order: rest });
+      }
+    }
+  }
+  if (cypress.length > 0) {
+    cypress.sort((a, b) => a.key - b.key || a.cell - b.cell);
+    const merged = Uint32Array.from(cypress, (s) => s.stroke);
+    parts.push({
+      cell: cypressCell,
+      drawClass: 'cypress',
+      indices: merged.slice().sort(),
+      order: merged,
+    });
+  }
+  /** Per chunk, 1 while its cull sphere carries the reactive growth. */
+  const reactiveNear = new Uint8Array(parts.length);
+  const classRank = new Uint8Array(parts.length);
+  for (const { cell: c, drawClass, indices, order: preset } of parts) {
+    const { order: chunkIndices, pinned } = preset
+      ? { order: preset, pinned: 0 }
+      : chunkOrder(buffers, indices, chunkSeed(seed, cells, c));
     const data = selectStrokes(buffers, chunkIndices);
     const box = computeBounds(data);
     const geometry = createChunkGeometry(data, quad);
     const bounds = new Sphere(new Vector3(...box.center), box.radius);
     geometry.boundingSphere = bounds.clone();
     const mesh = new Mesh(geometry, materials.near);
-    mesh.name = `strokes-${cells[c * 3]}_${cells[c * 3 + 1]}_${cells[c * 3 + 2]}`;
+    const suffix = drawClass === 'world' ? '' : `-${drawClass}`;
+    mesh.name = `strokes-${cells[c * 3]}_${cells[c * 3 + 1]}_${cells[c * 3 + 2]}${suffix}`;
     mesh.frustumCulled = false;
     // Hidden until the first update has banded and culled it, so stats agree from construction.
     mesh.visible = false;
     mesh.matrixAutoUpdate = false;
-    mesh.renderOrder = c;
+    // The chunk index, set before the push below.
+    const index = chunks.length;
+    mesh.renderOrder = index;
+    classRank[index] = STROKE_DRAW_CLASSES.indexOf(drawClass);
+    if (drawClass === 'lights' || drawClass === 'cypress') writeDepthWhileDrawn(mesh);
     group.add(mesh);
     const count = data.count;
     bandOf.push(null);
@@ -469,11 +640,12 @@ export function createStrokeBatch(
       count,
       pinned,
       bounds,
+      drawClass,
       get drawCount() {
         return geometry.instanceCount;
       },
       get band() {
-        return bandOf[c];
+        return bandOf[index];
       },
       setDrawCount(n: number) {
         geometry.instanceCount = Math.min(count, Math.max(0, Math.floor(n)));
@@ -538,7 +710,7 @@ export function createStrokeBatch(
   /** Cull output, reused every frame: kept chunk indices front to back, and their distances. */
   const cullOrder = new Uint32Array(chunks.length);
   const cullDistances = new Float64Array(chunks.length);
-  let policy: StrokeOrderPolicy = { ...DEFAULT_ORDER_POLICY };
+  let policy: StrokeOrderPolicy = { ...defaultOrder };
   /** Frozen ranks by chunk index, -1 until a chunk first passes the cull under `freeze`. */
   const frozenRank = new Int32Array(chunks.length).fill(-1);
   let frozenOnce = false;
@@ -550,6 +722,11 @@ export function createStrokeBatch(
     chunks,
     materials,
     atlas,
+    defaultOrder,
+    orderBeforeClass(drawClass: StrokeDrawClass) {
+      const rank = STROKE_DRAW_CLASSES.indexOf(drawClass);
+      return STROKES_AFTER_BASE + rank * 2 * chunks.length - 0.5;
+    },
     attach(scene: Scene) {
       if (detach) throw new Error('stroke batch is already attached to a scene');
       scene.add(group);
@@ -597,11 +774,17 @@ export function createStrokeBatch(
         const index = cullOrder[rank];
         const { mesh } = chunks[index];
         mesh.visible = true;
+        // A frozen rank is below 2 * chunks.length, so each class block spans that many ranks.
+        const block = policy.layered ? classRank[index] * 2 * chunks.length : 0;
         if (policy.freeze) {
-          if (frozenRank[index] < 0) frozenRank[index] = frozenOnce ? chunks.length + rank : rank;
-          mesh.renderOrder = policy.base + frozenRank[index];
+          if (frozenRank[index] < 0) {
+            // Back to front under `reverse`, as the unfrozen order; a later chunk goes on top.
+            const r = policy.reverse ? kept - 1 - rank : rank;
+            frozenRank[index] = frozenOnce ? chunks.length + r : r;
+          }
+          mesh.renderOrder = policy.base + block + frozenRank[index];
         } else {
-          mesh.renderOrder = policy.base + (policy.reverse ? kept - 1 - rank : rank);
+          mesh.renderOrder = policy.base + block + (policy.reverse ? kept - 1 - rank : rank);
         }
         const band = bandOf[index];
         if (band) bandVisible[band] += chunks[index].drawCount;
@@ -667,6 +850,8 @@ export function createStrokeBatch(
       for (const band of STROKE_BANDS) {
         bands[band] = { d: densities[band], size: sizes[band], chunks: 0, visible: 0 };
       }
+      const classes = {} as Record<StrokeDrawClass, { chunks: number; visible: number }>;
+      for (const drawClass of STROKE_DRAW_CLASSES) classes[drawClass] = { chunks: 0, visible: 0 };
       let visibleChunks = 0;
       let total = 0;
       let visible = 0;
@@ -675,13 +860,15 @@ export function createStrokeBatch(
         if (!chunk.mesh.visible) return;
         visibleChunks++;
         visible += chunk.drawCount;
+        classes[chunk.drawClass].chunks++;
+        classes[chunk.drawClass].visible += chunk.drawCount;
         const band = bandOf[i];
         if (band) {
           bands[band].chunks++;
           bands[band].visible += chunk.drawCount;
         }
       });
-      return { chunks: chunks.length, visibleChunks, total, visible, atlasMs, bands };
+      return { chunks: chunks.length, visibleChunks, total, visible, atlasMs, bands, classes };
     },
     dispose() {
       detach?.();

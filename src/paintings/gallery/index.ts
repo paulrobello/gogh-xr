@@ -50,7 +50,10 @@ export const PAINTING_ID = 'gallery';
 /** Chunk grid edge, metres: a room's surfaces fall into a few dozen chunks. */
 export const GALLERY_CELL_SIZE = 2.5;
 const BARE_COLOR = 0xff00ff;
-/** Same as the Starry Night base meshes: drawn after the strokes, pushed back in depth. */
+/**
+ * Same as the Starry Night base meshes: drawn before the strokes under the default policy, pushed
+ * back in depth.
+ */
 const BASE_MESH_RENDER_ORDER = 1_000_000;
 /**
  * Depth priority of a scan over the wall strokes behind it: the stroke tie-break moves a stroke up

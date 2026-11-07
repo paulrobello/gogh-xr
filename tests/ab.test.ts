@@ -24,7 +24,7 @@ const flags = (over: Partial<AbFlags>): AbFlags => ({ ...NONE, ...over });
 
 describe('AB_GROUPS', () => {
   it('ships shimmer, zdiag-all, halo, calm, wrap and flame with base or the default first', () => {
-    expect(AB_GROUPS.shimmer).toEqual(['base', 'nowrite', 'noa2c', 'sharp', 'sharp4', 'freeze']);
+    expect(AB_GROUPS.shimmer).toEqual(['base', 'write', 'noa2c', 'sharp', 'sharp4', 'freeze']);
     expect(AB_GROUPS['zdiag-all']).toEqual(['base', ...ZDIAG_MODES]);
     expect(AB_GROUPS.halo).toEqual(['on', 'off']);
     expect(AB_GROUPS.calm).toEqual(['1', '0.5', '0.25']);

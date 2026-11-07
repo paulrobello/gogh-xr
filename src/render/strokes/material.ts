@@ -129,10 +129,17 @@ export function pinMotionPhase(phase: number | null): void {
 }
 
 /**
- * Opaque alpha-to-coverage stroke material: no blending, depth write on, back faces culled (each
- * quad faces its instance normal). Colours are written as given, like the bench material.
+ * Opaque alpha-to-coverage stroke material: no blending, back faces culled (each quad faces its
+ * instance normal). Colours are written as given, like the bench material. Depth write is on
+ * unless `depthWrite` is false, which the stroke batch passes (BATCH_DEPTH_WRITE in batch.ts). A
+ * lone stroke mesh, such as the teleport arc or the settings panel, keeps it on, so it occludes
+ * whatever draws after it.
  */
-export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMaterial {
+export function createStrokeMaterial(
+  atlas: Texture,
+  sizeScale = 1,
+  depthWrite = true,
+): StrokeMaterial {
   const uniforms: StrokeMaterialUniforms = {
     uAtlas: { value: atlas },
     uBrushRects: {
@@ -194,7 +201,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       ...(pinnedMotionPhase === null ? {} : { MOTION_PHASE_PIN: glslFloat(pinnedMotionPhase) }),
     },
     transparent: false,
-    depthWrite: true,
+    depthWrite,
     alphaToCoverage: true,
   });
   material.name = 'stroke-a2c';

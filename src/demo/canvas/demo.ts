@@ -77,7 +77,8 @@ export async function startCanvasDemo(deps: CanvasDemoDeps): Promise<CanvasDemoH
   const target = deps.count ?? CANVAS_STROKE_TARGET;
   const buffers = buildCanvasStrokes({ color, flow: field, regions }, { seed, target });
   const placed = performance.now();
-  const batch = createStrokeBatch(buffers, { cellSize: CANVAS_CELL_SIZE });
+  // Its regions lie LAYER_STEP apart along the normal and never tie, so depth keeps them in order.
+  const batch = createStrokeBatch(buffers, { cellSize: CANVAS_CELL_SIZE, depthWrite: true });
   const batched = performance.now();
   const atlasMs = batch.stats().atlasMs;
   const times: CanvasBuildTimes = {
