@@ -1,5 +1,5 @@
 /**
- * Stroke-flicker probe: captures the Starry Night world at four painter's-spot poses, then at each
+ * Stroke-flicker probe: captures the Starry Night world at eight painter's-spot poses, then at each
  * pose again unmoved and shifted 0.1 mm and 1 mm along x, and prints the share of pixels that
  * change (`scripts/zfight-lib.ts`) over the frame and per screen third. A head that sways by a
  * fraction of a millimetre moves almost nothing by parallax, so a large flip share there is
@@ -33,6 +33,8 @@ const POSES: readonly (readonly [string, number, number, number, number, number]
   ['sky-up-0.5', 0, 1.6, 0, 0, 0.5],
   ['sky-up-1.0', 0, 1.6, 0, 0, 1],
   ['ridge-horizon', 0, 1.6, 0, -0.7, 0.05],
+  // Read over CDP from the headset on build 616f0c9, where Paul saw buildings and ground strobe.
+  ['paul-strobe1', 0.067, 1.551, 0, -0.571, -0.26],
 ];
 
 const browser = await chromium.launch({ channel: 'chromium', headless: true, args: gpuArgs });

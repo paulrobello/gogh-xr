@@ -29,7 +29,7 @@ import { type CanvasSource, sampleCanvas } from '../../paintings/starry-night/ca
 import { mulberry32 } from '../../util/prng';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import { BRUSHES, type BrushKind } from './brush-atlas-data';
-import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
+import { DEPTH_RANKED_FLAG, DEPTH_TIE_BREAK_FRONT_FLAG, sizeShare } from './depth-tie-break';
 import {
   BRUSH_FOOTPRINT,
   encodeFitScale,
@@ -43,7 +43,7 @@ import { strokeAxes, surfaceBasis, type Vec3 } from './frame';
 import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
 
 /** Bump when the scatter's output changes for the same inputs; part of the cache key. */
-export const SCATTER_VERSION: number = 5;
+export const SCATTER_VERSION: number = 6;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -538,9 +538,11 @@ export function scatterSurfaces(
 
         const sample = sampleCanvas(source, point, layer, rand);
         const brush = style.brushes[Math.floor(rand() * style.brushes.length)];
-        const strokeLength =
-          strokeSizeAt(size, eyeDistance(point)) * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
-        const lift = SCATTER_DEPTH_JITTER * strokeLength * rand();
+        const graded = strokeSizeAt(size, eyeDistance(point));
+        const strokeLength = graded * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
+        // The lift's former draw: the share now comes from the final quad size, and this keeps the
+        // later draws where they were.
+        rand();
         const flip = rand() < 0.5 ? Math.PI : 0;
         const phase = Math.floor(rand() * 256);
         // The tangent and the shade use the normal the GPU decodes (the quantised-basis caveat in
@@ -583,6 +585,10 @@ export function scatterSurfaces(
           ];
           fitBits = encodeFitScale(clamped.fitScale);
         }
+        // The lift follows the graded length, not the jittered one, so between two neighbours it
+        // orders them by their share, as the tie-break does (depth-tie-break.ts).
+        const lift =
+          SCATTER_DEPTH_JITTER * graded * sizeShare(Math.fround(quad[0]), Math.fround(quad[1]));
         packInstance(buffers, index++, {
           position: [
             centre[0] + normal[0] * lift,
@@ -599,6 +605,7 @@ export function scatterSurfaces(
           flags:
             (emissive ? DEPTH_TIE_BREAK_FRONT_FLAG : 0) |
             (backdrop ? DEPTH_BACKDROP_FLAG : 0) |
+            DEPTH_RANKED_FLAG |
             fitBits,
         });
       }
@@ -613,8 +620,8 @@ export function scatterSurfaces(
 /**
  * Places a surface's outline strokes, from its outline stream: along each face side, evenly with
  * jitter, the long axis along the side, fitted flush inside it (`fitStrokeToFace`), coloured from
- * the canvas at the edge darkened by OUTLINE_DARKEN, and lifted the most a stroke lifts so the
- * contour tends to lie over its neighbours. Returns the next free index.
+ * the canvas at the edge darkened by OUTLINE_DARKEN, and lifted by the share of its quad size
+ * (`sizeShare`) like every other ranked stroke. Returns the next free index.
  */
 function placeOutlines(
   buffers: StrokeBuffers,
@@ -652,8 +659,8 @@ function placeOutlines(
         ];
         const sample = sampleCanvas(source, point, layer, rand);
         const brush = brushes[Math.floor(rand() * brushes.length)];
-        const strokeLength =
-          strokeSizeAt(size, eyeDistance(point)) * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
+        const graded = strokeSizeAt(size, eyeDistance(point));
+        const strokeLength = graded * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
         const sign = rand() < 0.5 ? -1 : 1;
         const phase = Math.floor(rand() * 256);
         const foot = BRUSH_FOOTPRINT[BRUSHES[brush].kind];
@@ -667,7 +674,14 @@ function placeOutlines(
           FACE_CLAMP_MARGIN,
         );
         const [x, y, z] = fitted.long;
-        const lift = SCATTER_DEPTH_JITTER * strokeLength;
+        const outlineSize: [number, number] = [
+          fitted.length === length ? quad[0] : fitted.length / foot.length,
+          fitted.width === width ? quad[1] : fitted.width / foot.width,
+        ];
+        const lift =
+          SCATTER_DEPTH_JITTER *
+          graded *
+          sizeShare(Math.fround(outlineSize[0]), Math.fround(outlineSize[1]));
         const rgb = sample.rgb.map((c) => (c * OUTLINE_DARKEN) / shade);
         packInstance(buffers, index++, {
           position: [
@@ -678,14 +692,11 @@ function placeOutlines(
           normal: face.normal,
           tangent: Math.atan2(x * b2[0] + y * b2[1] + z * b2[2], x * b1[0] + y * b1[1] + z * b1[2]),
           color: [rgb[0], rgb[1], rgb[2], 255],
-          size: [
-            fitted.length === length ? quad[0] : fitted.length / foot.length,
-            fitted.width === width ? quad[1] : fitted.width / foot.width,
-          ],
+          size: outlineSize,
           brush,
           layer: style.layer,
           phase,
-          flags: encodeFitScale(fitted.fitScale),
+          flags: DEPTH_RANKED_FLAG | encodeFitScale(fitted.fitScale),
         });
       }
     }

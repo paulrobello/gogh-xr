@@ -86,6 +86,12 @@ void main() {
       lowbias32(floatBitsToUint(iPosition.y) ^ lowbias32(floatBitsToUint(iPosition.z)))
   );
   float u = float(h >> 8u) * (1.0 / 16777216.0);
+  // A ranked stroke takes the share its lift took, a hash of its stored quad size
+  // (depth-tie-break.ts), so lift and tie-break order it alike.
+  if ((iMeta.w & DEPTH_RANKED_FLAG) != 0u) {
+    uint hs = lowbias32(floatBitsToUint(iSize.x) ^ lowbias32(floatBitsToUint(iSize.y)));
+    u = float(hs >> 8u) * (1.0 / 16777216.0);
+  }
   if ((iMeta.w & DEPTH_BACKDROP_FLAG) != 0u) {
     // Sky dome (src/render/strokes/backdrop-depth.ts): a constant NDC z just in front of the far
     // plane, nearer by BACKDROP_RANK_NDC per rank, so dome strokes keep one order by hash rank and

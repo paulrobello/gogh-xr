@@ -503,7 +503,7 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
         ground: 129_925,
         building: 87_369,
       },
-      hash: '177391e4',
+      hash: '51173374',
       haze: 30_000,
       hazeHash: '49bf0339',
     });

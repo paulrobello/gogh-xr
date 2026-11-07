@@ -22,7 +22,12 @@ import {
 } from '../src/paintings/starry-night/canvas-histogram.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import { BRUSHES } from '../src/render/strokes/brush-atlas-data.ts';
-import { DEPTH_TIE_BREAK_FRONT_FLAG } from '../src/render/strokes/depth-tie-break.ts';
+import {
+  DEPTH_RANKED_FLAG,
+  DEPTH_TIE_BREAK_FRONT_FLAG,
+  lowbias32,
+  sizeShare,
+} from '../src/render/strokes/depth-tie-break.ts';
 import { BRUSH_FOOTPRINT } from '../src/render/strokes/face-clamp.ts';
 import { strokeAxes, type Vec3 } from '../src/render/strokes/frame.ts';
 import {
@@ -36,6 +41,7 @@ import {
   LAYER_DENSITY,
   LAYER_SIZE,
   OUTLINE_DARKEN,
+  SCATTER_DEPTH_JITTER,
   SCATTER_SIZE_JITTER,
   scatterDensityAt,
   scatterOverrides,
@@ -45,6 +51,7 @@ import {
   WORLD_LAYERS,
 } from '../src/render/strokes/scatter.ts';
 import { hashStrokeBuffers } from '../src/render/strokes/scatter-cache.ts';
+import vertexShader from '../src/render/strokes/stroke.vert.glsl?raw';
 import { createCypress } from '../src/world/cypress.ts';
 import { createSkyDome } from '../src/world/sky.ts';
 import { createTerrain } from '../src/world/terrain.ts';
@@ -383,6 +390,147 @@ test('colours are the canvas colour with the stroke shade divided out', () => {
   }
 });
 
+test('the lift takes the share of its quad size that the tie-break takes, so both order alike', () => {
+  const src = single(REGION.hills, 0.3);
+  const buffers = scatterSurfaces([ground(6, 0, 0, -12, 'terrain')], src, {
+    seed: 4,
+    density: { terrain: 20 },
+    size: flat(0.2, 'terrain'),
+  });
+  const shares: number[] = [];
+  for (let i = 0; i < buffers.count; i++) {
+    const s = unpackInstance(buffers, i);
+    expect((s.flags ?? 0) & DEPTH_RANKED_FLAG).toBe(DEPTH_RANKED_FLAG);
+    // Sizes come back from the float32 buffer, exactly as the shader reads them.
+    const share = sizeShare(s.size[0], s.size[1]);
+    shares.push(share);
+    // Flat ground at y = 0 and a flat size: the lift is the height, from the graded length only.
+    expect(s.position[1]).toBeCloseTo(SCATTER_DEPTH_JITTER * 0.2 * share, 6);
+  }
+  // The shares spread over the range, not onto a few values.
+  shares.sort((a, b) => a - b);
+  expect(new Set(shares).size).toBe(shares.length);
+  expect(shares[Math.floor(shares.length * 0.1)]).toBeLessThan(0.15);
+  expect(shares[Math.floor(shares.length * 0.9)]).toBeGreaterThan(0.85);
+});
+
+test('lowbias32 matches the shader hash on fixed inputs, and the share is the top 24 bits', () => {
+  // Reference: the same steps in BigInt modulo 2^32, as GLSL uint arithmetic wraps.
+  const ref = (x: number): number => {
+    const m = 0xffffffffn;
+    let h = BigInt(x >>> 0);
+    h ^= h >> 16n;
+    h = (h * 0x7feb352dn) & m;
+    h ^= h >> 15n;
+    h = (h * 0x846ca68bn) & m;
+    h ^= h >> 16n;
+    return Number(h);
+  };
+  for (const x of [0, 1, 2, 0x3e4ccccd, 0x7fffffff, 0x80000000, 0xdeadbeef, 0xffffffff]) {
+    expect(lowbias32(x)).toBe(ref(x));
+  }
+  const bits = (v: number): number => new Uint32Array(new Float32Array([v]).buffer)[0];
+  const length = Math.fround(0.237);
+  const width = Math.fround(0.061);
+  expect(sizeShare(length, width)).toBe((ref(bits(length) ^ ref(bits(width))) >>> 8) / 2 ** 24);
+});
+
+/**
+ * The ranked share as stroke.vert.glsl computes it, translated statement by statement from the
+ * shader source: the `lowbias32` body, the `uint hs = ...` line with its argument order, the
+ * `u = float(hs >> Nu) * (1.0 / S)` extraction. Any other statement in
+ * those places throws, so a reflowed or changed shader fails here instead of drifting from the CPU.
+ */
+function shaderShare(): (length: number, width: number) => number {
+  const body = /uint lowbias32\(uint x\) \{\n([\s\S]*?)\n\}/.exec(vertexShader)?.[1];
+  if (!body) throw new Error('lowbias32 not found in stroke.vert.glsl');
+  const steps = body.split('\n').map((line) => line.trim());
+  expect(steps).toEqual([
+    'x ^= x >> 16u;',
+    'x *= 0x7feb352du;',
+    'x ^= x >> 15u;',
+    'x *= 0x846ca68bu;',
+    'x ^= x >> 16u;',
+    'return x;',
+  ]);
+  const hash = (input: number): number => {
+    let x = input >>> 0;
+    for (const step of steps) {
+      const shift = /^x \^= x >> (\d+)u;$/.exec(step);
+      const mul = /^x \*= (0x[0-9a-f]+)u;$/.exec(step);
+      if (shift) x = (x ^ (x >>> Number(shift[1]))) >>> 0;
+      else if (mul) x = Math.imul(x, Number(mul[1])) >>> 0;
+      else if (step === 'return x;') return x;
+      else throw new Error(`unexpected lowbias32 statement: ${step}`);
+    }
+    throw new Error('lowbias32 has no return');
+  };
+  const ranked = /if \(\(iMeta\.w & DEPTH_RANKED_FLAG\) != 0u\) \{\n([\s\S]*?)\n {2}\}\n/.exec(
+    vertexShader,
+  )?.[1];
+  if (!ranked) throw new Error('ranked branch not found in stroke.vert.glsl');
+  const lines = ranked
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && line !== '}');
+  const hs = /^uint hs = (.+);$/.exec(lines[0])?.[1];
+  const extract = /^u = float\(hs >> (\d+)u\) \* \(1\.0 \/ (\d+)\.0\);$/.exec(lines[1]);
+  expect(lines.slice(2)).toEqual([]);
+  if (!hs || !extract) throw new Error(`unexpected ranked share lines: ${lines.join(' | ')}`);
+  expect(Number(extract[1])).toBe(8);
+  expect(Number(extract[2])).toBe(16777216);
+  // Translate the hash expression: iSize.x is the length, iSize.y the width. Nested calls are
+  // evaluated innermost first by a tiny recursive reader, so the argument order is the shader's.
+  const bits = (v: number): number => new Uint32Array(new Float32Array([v]).buffer)[0];
+  const evaluate = (expr: string, length: number, width: number): number => {
+    const e = expr.trim();
+    if (e === 'floatBitsToUint(iSize.x)') return bits(length);
+    if (e === 'floatBitsToUint(iSize.y)') return bits(width);
+    // A top-level xor first: split at the first ^ outside parentheses.
+    let depth = 0;
+    for (let i = 0; i < e.length; i++) {
+      if (e[i] === '(') depth++;
+      else if (e[i] === ')') depth--;
+      else if (e[i] === '^' && depth === 0) {
+        return (
+          (evaluate(e.slice(0, i), length, width) ^ evaluate(e.slice(i + 1), length, width)) >>> 0
+        );
+      }
+    }
+    const call = /^lowbias32\((.*)\)$/.exec(e);
+    if (call) return hash(evaluate(call[1], length, width));
+    throw new Error(`unexpected share expression: ${e}`);
+  };
+  return (length, width) =>
+    (evaluate(hs, length, width) >>> Number(extract[1])) / Number(extract[2]);
+}
+
+test('the scatter lift share equals the vertex shader share, translated from its source', () => {
+  const gpu = shaderShare();
+  for (const [length, width] of [
+    [0.237, 0.061],
+    [1.5, 0.41],
+    [3.75, 0.9],
+  ]) {
+    const l = Math.fround(length);
+    const w = Math.fround(width);
+    expect(gpu(l, w)).toBe(sizeShare(l, w));
+    // Swapping length and width gives another share, so an argument swap on either side fails.
+    expect(gpu(w, l)).not.toBe(gpu(l, w));
+  }
+  // The scatter's lift on flat ground, against the shader's share of the stored size.
+  const buffers = scatterSurfaces([ground(6, 0, 0, -12, 'terrain')], single(REGION.hills, 0.3), {
+    seed: 4,
+    density: { terrain: 20 },
+    size: flat(0.2, 'terrain'),
+  });
+  for (let i = 0; i < buffers.count; i++) {
+    const s = unpackInstance(buffers, i);
+    const share = gpu(s.size[0], s.size[1]);
+    expect(s.position[1]).toBeCloseTo(SCATTER_DEPTH_JITTER * 0.2 * share, 6);
+  }
+});
+
 test('window strokes keep the emissive warm colour, sRGB encoded', () => {
   const glass = wall(3, 2, [0, 2, -15], 'window');
   glass.userData.emissive = true;
@@ -484,7 +632,7 @@ test('only strokes on a backdrop surface carry the backdrop flag', () => {
   for (let i = 0; i < buffers.count; i++) {
     const s = unpackInstance(buffers, i);
     const onDome = eyeDistance(s.position) > 100;
-    expect(s.flags).toBe(onDome ? DEPTH_BACKDROP_FLAG : 0);
+    expect(s.flags).toBe((onDome ? DEPTH_BACKDROP_FLAG : 0) | DEPTH_RANKED_FLAG);
     if (onDome) backdrop++;
   }
   expect(backdrop).toBeGreaterThan(1000);

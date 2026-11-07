@@ -53,7 +53,10 @@ export interface StrokeInstance {
   readonly layer: StrokeLayer;
   /** Animation phase byte 0..255. */
   readonly phase: number;
-  /** Flag bits 0..255; 0 when omitted. `DEPTH_TIE_BREAK_FRONT_FLAG` marks lit windows. */
+  /**
+   * Flag bits 0..255; 0 when omitted. `DEPTH_TIE_BREAK_FRONT_FLAG` marks lit windows, and
+   * `DEPTH_RANKED_FLAG` a tie-break share taken from the quad size, the share of its lift.
+   */
   readonly flags?: number;
 }
 

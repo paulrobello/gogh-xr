@@ -10,6 +10,21 @@
  * exceed the roof overhang or the 0.3 m gap between neighbouring roofs, so in far views eaves,
  * walls and roof edges trade places only along thin junction lines (docs/verification.md, stroke
  * flicker). A larger cap thickens those lines; a smaller one lets the flicker back.
+ *
+ * The scatter also lifts each stroke off its surface along the normal, and that lift is a
+ * world-space order: from in front of a flat face, the stroke lifted more is nearer along every
+ * ray. The tie-break is a depth-space order whose size in metres grows with the square of the view
+ * depth. When the two orders disagree for an overlapping pair, the pair's depth gap passes through
+ * zero at some view angle and distance, and past it the order flips as the viewer walks. So a
+ * scattered stroke carries DEPTH_RANKED_FLAG, and one share drives both: the scatter lifts it by
+ * that share of the largest lift, and the shader takes the same share of the tie-break range. The
+ * share is a hash of the stroke's quad size (`sizeShare`), which the scatter writes exactly and the
+ * lift does not move, so the scatter and the shader compute it alike. The lift is the share times
+ * the graded length, which grows with the distance from the painter's eye, so two overlapping
+ * neighbours with close shares can still disagree. In the seed-1 world that is 0.66% of
+ * overlapping ground pairs, 0.18% of building pairs and 0.21% of cypress pairs, against about half
+ * of them with independent orders. Where they agree, the order holds from any view in front of
+ * parallel strokes.
  */
 
 /** One 24-bit window-depth step in NDC z, whose range is 2. */
@@ -24,6 +39,40 @@ export const DEPTH_TIE_BREAK_MAX_M: number = 0.25;
  * it. Any detail meant to sit on top of its surface by less than the cap needs it too.
  */
 export const DEPTH_TIE_BREAK_FRONT_FLAG: number = 1;
+/**
+ * Bit in a stroke's spare meta byte (`iMeta.w`): its tie-break share is `sizeShare` of its quad
+ * size, the share its lift took. Bits 2-5 hold the fit level (face-clamp.ts). Strokes without it
+ * (haze, `?demo=canvas`, `?strokesTest`) may repeat a size, so they take the position hash share.
+ */
+export const DEPTH_RANKED_FLAG: number = 64;
+/** The 32-bit integer hash the vertex shader uses (`lowbias32` in stroke.vert.glsl). */
+export function lowbias32(x: number): number {
+  let h = x >>> 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x7feb352d);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x846ca68b);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+const floatBits = new Float32Array(1);
+const floatWord = new Uint32Array(floatBits.buffer);
+
+/** The bits of `value` as a float32, as GLSL's floatBitsToUint reads them. */
+export function float32Bits(value: number): number {
+  floatBits[0] = value;
+  return floatWord[0];
+}
+
+/**
+ * The share of the largest lift and of the tie-break range a ranked stroke takes, in [0, 1): a hash
+ * of its quad size as stored (float32), as the shader computes it.
+ */
+export function sizeShare(length: number, width: number): number {
+  const h = lowbias32(float32Bits(length) ^ lowbias32(float32Bits(width)));
+  return (h >>> 8) / 16777216;
+}
 
 /** View depth, metres, that one window-depth step spans at view depth `depth`. */
 export function depthStepAt(depth: number, near: number, far: number): number {
