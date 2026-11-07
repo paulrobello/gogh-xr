@@ -303,6 +303,17 @@ test('?ab=calm cycles the motion calm through 1, 0.5 and 0.25', async ({ page, x
   expect(await glErrors(page)).toEqual([]);
 });
 
+test('?wrap=fade with no world builds the sky base map from the bound batch, so fade has a target', async ({
+  xr,
+}) => {
+  for (const scene of ['demo=canvas', 'strokesTest']) {
+    await xr.boot(`${scene}&wrap=fade`);
+    await expect
+      .poll(async () => ((await xr.diag()).variants as { skyBase: boolean }).skyBase)
+      .toBe(true);
+  }
+});
+
 test('?ab=calm starts at the stored calm, not at 1', async ({ page, xr }) => {
   await page.addInitScript(() => {
     localStorage.setItem(
@@ -313,6 +324,25 @@ test('?ab=calm starts at the stored calm, not at 1', async ({ page, xr }) => {
   await xr.boot('demo=canvas&ab=calm');
   await expect.poll(async () => (await ab(xr))?.variant).toBe('0.25');
   expect(((await xr.diag()).motion as { calm: number }).calm).toBe(0.25);
+});
+
+test('?ab=calm inserts a stored calm that is no variant and starts there, so the boot keeps it (F1)', async ({
+  page,
+  xr,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      'gogh-xr.settings.v1',
+      JSON.stringify({ version: 1, settings: { calm: 0.7 } }),
+    );
+  });
+  await xr.boot('demo=canvas&ab=calm');
+  await expect.poll(async () => (await ab(xr))?.variant).toBe('0.7');
+  expect(await ab(xr)).toMatchObject({ variants: ['1', '0.7', '0.5', '0.25'], index: 1 });
+  expect(((await xr.diag()).motion as { calm: number }).calm).toBe(0.7);
+  await pressV(page, xr);
+  expect(await ab(xr)).toMatchObject({ index: 2, variant: '0.5' });
+  expect(((await xr.diag()).motion as { calm: number }).calm).toBe(0.5);
 });
 
 test.describe('the painter view', () => {
@@ -384,6 +414,74 @@ test.describe('the painter view', () => {
       await hideHud();
       const cycled = await rawPixels(page);
       expect(cycled.length).toBe(fresh.length);
+      expect(cycled.equals(fresh), 'a full cycle back to base renders a fresh boot').toBe(true);
+      expect(await glErrors(page)).toEqual([]);
+    });
+  }
+  // The motion variants (src/motion/variants.ts) only show while the motion runs, so these boot
+  // with a pinned ?motiont rather than ?noanim, where every variant draws the rest pose.
+  for (const [group, layer] of [
+    ['wrap', 'sky'],
+    ['flame', 'cypress'],
+  ] as const) {
+    test(`V cycles ${group} live at a pinned motion time, each variant draws differently, and a full cycle back to base matches a fresh boot byte for byte`, async ({
+      page,
+      xr,
+    }) => {
+      test.setTimeout(240_000);
+      const query = 'painting=starry-night&seed=1&shot&painter&nogov&motiont=3.7';
+      const bootWorld = async (extra: string): Promise<void> => {
+        await xr.boot(`${query}${extra}`);
+        await expect
+          .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+          .toBe(true);
+        await xr.waitFrames(5);
+      };
+      const hideHud = async (): Promise<void> => {
+        if (!((await xr.diag()).hud as { visible: boolean }).visible) return;
+        await page.keyboard.press('h');
+        await expect
+          .poll(async () => ((await xr.diag()).hud as { visible: boolean }).visible)
+          .toBe(false);
+        await xr.waitFrames(5);
+      };
+      const variantsDiag = async () =>
+        (await xr.diag()).variants as { wrap: string; flame: string; skyBase: boolean };
+
+      await bootWorld('');
+      expect(await variantsDiag()).toEqual({ wrap: 'base', flame: 'base', skyBase: false });
+      const fresh = await rawPixels(page);
+
+      await bootWorld(`&ab=${group}`);
+      const variants = ((await ab(xr)) as AbDiag).variants;
+      expect(variants[0]).toBe('base');
+      // The fade's sky base map is built once the world's batch binds, for the wrap group only.
+      expect((await variantsDiag()).skyBase).toBe(group === 'wrap');
+      await hideHud();
+      expect((await rawPixels(page)).equals(fresh), `${group} base matches a fresh boot`).toBe(
+        true,
+      );
+      const timings: string[] = [];
+      for (let step = 1; step <= variants.length; step += 1) {
+        const index = step % variants.length;
+        const variant = variants[index];
+        await pressV(page, xr);
+        expect(await ab(xr), variant).toMatchObject({ index, variant });
+        expect((await variantsDiag())[group], variant).toBe(variant);
+        const sw = (await xr.diag()).abSwitch as { variant: string; applyMs: number };
+        expect(sw.variant).toBe(variant);
+        timings.push(`${variant} apply ${sw.applyMs.toFixed(2)} ms`);
+        if (variant !== 'base') {
+          await hideHud();
+          expect(
+            (await rawPixels(page)).equals(fresh),
+            `${group} ${variant} moves the ${layer} differently from base`,
+          ).toBe(false);
+        }
+      }
+      console.log(`[e2e] ab ${group} desktop switches: ${timings.join('; ')}`);
+      await hideHud();
+      const cycled = await rawPixels(page);
       expect(cycled.equals(fresh), 'a full cycle back to base renders a fresh boot').toBe(true);
       expect(await glErrors(page)).toEqual([]);
     });

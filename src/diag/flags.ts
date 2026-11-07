@@ -1,5 +1,6 @@
 import type { TurnMode } from '../locomotion/settings';
 import { REACTIVE_MOTION_BIT } from '../motion/layers';
+import { FLAME_SWAYS, type FlameSway, SKY_WRAPS, type SkyWrap } from '../motion/variants';
 import { STROKE_LAYER, type StrokeLayerName } from '../render/strokes/instance';
 
 export interface Flags {
@@ -76,6 +77,10 @@ export interface Flags {
   readonly zdiag: ZdiagMode | null;
   /** `?ab=<group>`: the A/B group the A/B button cycles (src/diag/ab.ts). Lower-cased; null when absent. */
   readonly ab: string | null;
+  /** `?wrap=<variant>`: the sky swirl's wrap treatment (src/motion/variants.ts). null is base. */
+  readonly wrap: SkyWrap | null;
+  /** `?flame=<variant>`: the cypress sway (src/motion/variants.ts). null is base. */
+  readonly flame: FlameSway | null;
   /** `?scene=bare`: boots the bare scene instead of the default gallery (src/boot-mode.ts). */
   readonly scene: SceneName | null;
 }
@@ -201,6 +206,11 @@ function parseZdiag(raw: string | null): ZdiagMode | null {
   return ZDIAG_MODES.find((mode) => mode === value) ?? null;
 }
 
+function parseVariant<T extends string>(variants: readonly T[], raw: string | null): T | null {
+  const value = raw?.trim().toLowerCase();
+  return variants.find((variant) => variant === value) ?? null;
+}
+
 function parseId(raw: string | null): string | null {
   const value = raw?.trim().toLowerCase();
   return value ? value : null;
@@ -244,6 +254,8 @@ export function parseFlags(search: string): Flags {
     turn: parseTurn(params.get('turn')),
     zdiag: parseZdiag(params.get('zdiag')),
     ab: parseId(params.get('ab')),
+    wrap: parseVariant(SKY_WRAPS, params.get('wrap')),
+    flame: parseVariant(FLAME_SWAYS, params.get('flame')),
     scene: parseScene(params.get('scene')),
   });
 }

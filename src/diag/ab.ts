@@ -9,6 +9,7 @@
  * desktop. main.ts builds a controller only when a group resolves, so a boot with no A/B flag
  * builds no group and does no per-frame A/B work. The bench ignores all of it.
  */
+import { FLAME_SWAYS, type FlameSway, SKY_WRAPS, type SkyWrap } from '../motion/variants';
 import { ZDIAG_MODES, type ZdiagMode } from './flags';
 
 const SHIMMER = ['base', 'nowrite', 'noa2c', 'sharp', 'sharp4', 'freeze'] as const;
@@ -23,16 +24,24 @@ export const AB_GROUPS = {
   halo: ['on', 'off'],
   /** The motion calm (`?calm`). */
   calm: ['1', '0.5', '0.25'],
+  /** The sky swirl's wrap treatment (`?wrap`, src/motion/variants.ts). */
+  wrap: SKY_WRAPS,
+  /** The cypress sway (`?flame`, src/motion/variants.ts). */
+  flame: FLAME_SWAYS,
 } as const satisfies Record<string, readonly string[]>;
 
 export type AbGroupName = keyof typeof AB_GROUPS;
 
+type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap' | 'flame';
+
 /** The setting each group drives. Two groups that drive the same setting are rivals. */
-const OWNS: Record<AbGroupName, 'zdiag' | 'halo' | 'calm'> = {
+const OWNS: Record<AbGroupName, AbSetting> = {
   shimmer: 'zdiag',
   'zdiag-all': 'zdiag',
   halo: 'halo',
   calm: 'calm',
+  wrap: 'wrap',
+  flame: 'flame',
 };
 
 /** The flags the resolution reads (src/diag/flags.ts), plus the effective calm. */
@@ -41,6 +50,8 @@ export interface AbFlags {
   readonly ab: string | null;
   readonly zdiag: ZdiagMode | null;
   readonly nohalo: boolean;
+  readonly wrap: SkyWrap | null;
+  readonly flame: FlameSway | null;
   /**
    * The effective calm setting: `?calm` laid over the stored calm (src/settings/schema.ts), so
    * `?ab=calm` starts where the session already is. null starts at the first variant.
@@ -51,8 +62,13 @@ export interface AbFlags {
 
 export interface AbActivation {
   readonly group: AbGroupName;
-  /** Index into `AB_GROUPS[group]` of the variant the group starts at. */
+  /** Index into the group's variants (`variants`, else `AB_GROUPS[group]`) of the start variant. */
   readonly start: number;
+  /**
+   * Set only when the variants differ from `AB_GROUPS[group]`: `?ab=calm` with an effective calm
+   * that is not one of its variants inserts it, in descending order (`calmVariants`).
+   */
+  readonly variants?: readonly string[];
 }
 
 export interface AbResolution {
@@ -63,7 +79,7 @@ export interface AbResolution {
 
 /** An A/B flag other than `?ab`: the setting it drives, its text and the group it implies. */
 interface ImpliedFlag {
-  readonly setting: 'zdiag' | 'halo';
+  readonly setting: Exclude<AbSetting, 'calm'>;
   readonly text: string;
   readonly variant: string;
   readonly group: AbGroupName;
@@ -77,7 +93,7 @@ function variantIndex(group: AbGroupName, variant: string): number {
   return (AB_GROUPS[group] as readonly string[]).indexOf(variant);
 }
 
-/** The implied flags in precedence order: `?zdiag` before `?nohalo`. */
+/** The implied flags in precedence order: `?zdiag`, `?nohalo`, `?wrap`, then `?flame`. */
 function impliedFlags(flags: AbFlags): ImpliedFlag[] {
   const implied: ImpliedFlag[] = [];
   if (flags.zdiag !== null) {
@@ -91,17 +107,54 @@ function impliedFlags(flags: AbFlags): ImpliedFlag[] {
   if (flags.nohalo) {
     implied.push({ setting: 'halo', text: '?nohalo', variant: 'off', group: 'halo' });
   }
+  if (flags.wrap !== null) {
+    implied.push({
+      setting: 'wrap',
+      text: `?wrap=${flags.wrap}`,
+      variant: flags.wrap,
+      group: 'wrap',
+    });
+  }
+  if (flags.flame !== null) {
+    implied.push({
+      setting: 'flame',
+      text: `?flame=${flags.flame}`,
+      variant: flags.flame,
+      group: 'flame',
+    });
+  }
   return implied;
+}
+
+/**
+ * The `calm` group's variants for effective calm `calm`: `AB_GROUPS.calm`, with `calm` inserted in
+ * descending order when it is not one of them, so `?ab=calm` starts where the session already is
+ * and the boot does not change the calm (F1).
+ */
+export function calmVariants(calm: number | null): readonly string[] {
+  const base: readonly string[] = AB_GROUPS.calm;
+  if (calm === null || base.includes(String(calm))) return base;
+  return [...base, String(calm)].sort((a, b) => Number(b) - Number(a));
+}
+
+/**
+ * Whether the boot builds the HUD shown for the A/B group: only for a group `?ab` names. A group
+ * an older A/B flag implies (`?zdiag`, `?nohalo`, `?wrap`, `?flame`) leaves it hidden, because those
+ * flags drive byte-compared captures.
+ */
+export function abShowsHudAtBoot(activation: AbActivation | null, ab: string | null): boolean {
+  return activation !== null && activation.group === ab;
 }
 
 /**
  * Which group starts, and where.
  * - `?ab=<group>` starts that group at its first variant. An unknown group warns and is ignored.
  * - Each other A/B flag implies its group at that flag's variant: `?zdiag=<m>` implies `shimmer`
- *   when m is in it, else `zdiag-all`, and `?nohalo` implies `halo` at off. `?calm` is a setting,
- *   not an A/B flag, so it implies nothing, but `?ab=calm` starts at the effective calm (the
- *   stored setting, or `?calm` over it) when that is a variant, else at 1.
- * - The winner is `?ab`, else the first implied flag (`?zdiag`, then `?nohalo`). A flag that drives
+ *   when m is in it, else `zdiag-all`, `?nohalo` implies `halo` at off, `?wrap=<v>` implies `wrap`
+ *   and `?flame=<v>` implies `flame`, each at v. `?calm` is a setting, not an A/B flag, so it
+ *   implies nothing, but `?ab=calm` starts at the effective calm (the stored setting, or `?calm`
+ *   over it), inserted among the variants when it is not one (`calmVariants`).
+ * - The winner is `?ab`, else the first implied flag (`?zdiag`, `?nohalo`, `?wrap`, `?flame`). A flag that drives
  *   the winner's setting at one of its variants sets the start. Any other flag loses: it stays
  *   fixed when the winner drives a different setting, and is ignored when it drives the same one.
  *   Every loss goes into one warning.
@@ -131,9 +184,11 @@ export function resolveAb(flags: AbFlags): AbResolution {
 
   let start = 0;
   let started = false;
+  let variants: readonly string[] | undefined;
   if (winner === 'calm' && flags.calm !== null) {
-    const index = variantIndex('calm', String(flags.calm));
-    if (index >= 0) start = index;
+    const calm = calmVariants(flags.calm);
+    start = calm.indexOf(String(flags.calm));
+    if (calm !== AB_GROUPS.calm) variants = calm;
   }
   const losers: string[] = [];
   for (const flag of implied) {
@@ -151,7 +206,7 @@ export function resolveAb(flags: AbFlags): AbResolution {
     problems.push(`${winnerText} has the A/B button (${winner}); ${losers.join(', ')}`);
   }
   return {
-    activation: { group: winner, start },
+    activation: variants ? { group: winner, start, variants } : { group: winner, start },
     warnings: problems.length > 0 ? [problems.join('. ')] : [],
   };
 }
@@ -224,11 +279,21 @@ export interface AbGroupDeps {
   /** Shows or hides the halo pass, now or once the world builds. */
   setHalo(on: boolean): void;
   setCalm(calm: number): void;
+  /** The sky wrap variant (src/motion/variants.ts). */
+  setWrap(wrap: SkyWrap): void;
+  /** The cypress sway variant (src/motion/variants.ts). */
+  setFlame(sway: FlameSway): void;
 }
 
-/** Builds one group's runtime. Called only for the group that resolved. */
-export function createAbGroup(name: AbGroupName, deps: AbGroupDeps): AbGroup {
-  const variants: readonly string[] = AB_GROUPS[name];
+/**
+ * Builds one group's runtime. Called only for the group that resolved, with its activation's
+ * `variants` when it carries them.
+ */
+export function createAbGroup(
+  name: AbGroupName,
+  deps: AbGroupDeps,
+  variants: readonly string[] = AB_GROUPS[name],
+): AbGroup {
   if (name === 'shimmer' || name === 'zdiag-all') {
     const modeOf = (variant: string): ZdiagMode | null =>
       variant === 'base' ? null : (variant as ZdiagMode);
@@ -237,6 +302,12 @@ export function createAbGroup(name: AbGroupName, deps: AbGroupDeps): AbGroup {
   }
   if (name === 'halo') {
     return { name, variants, apply: (variant) => deps.setHalo(variant === 'on') };
+  }
+  if (name === 'wrap') {
+    return { name, variants, apply: (variant) => deps.setWrap(variant as SkyWrap) };
+  }
+  if (name === 'flame') {
+    return { name, variants, apply: (variant) => deps.setFlame(variant as FlameSway) };
   }
   return { name, variants, apply: (variant) => deps.setCalm(Number(variant)) };
 }

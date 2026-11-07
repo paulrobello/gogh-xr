@@ -10,7 +10,13 @@ import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { bootWorld, resolveBootMode } from './boot-mode';
 import { installDesktopControls } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
-import { type AbController, createAbController, createAbGroup, resolveAb } from './diag/ab';
+import {
+  type AbController,
+  abShowsHudAtBoot,
+  createAbController,
+  createAbGroup,
+  resolveAb,
+} from './diag/ab';
 import { installDiag, installPose, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
 import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
@@ -18,11 +24,16 @@ import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
 import { MOTION_TIME_WRAP_S, motionClock } from './motion/clock';
 import { MOTION_LAYER_MASK } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
+import { skyWrapLoop } from './motion/sky-swirl';
+import { motionVariants } from './motion/variant-uniforms';
+import type { SkyBaseStrokes } from './motion/variants';
 import { livePainting, logRegistryProblems } from './paintings/registry';
+import { PAINTER_EYE } from './paintings/starry-night/canvas-camera';
 import type { PainterCamera, WorldHandle, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
+import { STROKE_LAYER } from './render/strokes/instance';
 import { pinMotionPhase } from './render/strokes/material';
 import { createZdiag } from './render/zdiag';
 import { applySettingsChange, type HudLive } from './settings/apply';
@@ -74,6 +85,9 @@ if (settingsRecovered) {
 // `?noanim` freezes the clock.
 motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
+// `?wrap` and `?flame` set their motion variant whatever A/B group wins: a losing one stays fixed.
+motionVariants.setWrap(flags.wrap ?? 'base');
+motionVariants.setFlame(flags.flame ?? 'base');
 /**
  * `?motiont` pins the motion time for the e2e (R-P4g). `import.meta.env.MODE` is replaced at build
  * time, so a production build drops this and keeps calling `motionClock.frame`.
@@ -285,14 +299,64 @@ if (abResolution.warnings.length > 0) console.warn(abResolution.warnings.join(' 
 const abActive = abResolution.activation;
 const ab: AbController | null = abActive
   ? createAbController(
-      createAbGroup(abActive.group, {
-        zdiag,
-        setHalo,
-        setCalm: (calm) => motionClock.setCalm(calm),
-      }),
+      createAbGroup(
+        abActive.group,
+        {
+          zdiag,
+          setHalo,
+          setCalm: (calm) => motionClock.setCalm(calm),
+          setWrap: (wrap) => motionVariants.setWrap(wrap),
+          setFlame: (sway) => motionVariants.setFlame(sway),
+        },
+        abActive.variants,
+      ),
       abActive.start,
     )
   : null;
+/** The `fade` wrap variant can run: its sky base map is built from the first bound stroke batch. */
+const skyFadeLive = abActive?.group === 'wrap' || flags.wrap === 'fade';
+/** The first bound stroke batch, which the `wrap` diag key scans. */
+let skyBatch: StrokeBatch | null = null;
+
+/** The sky strokes of every chunk of `batch`, as their instance arrays hold them. */
+function skyBaseStrokes(batch: StrokeBatch): SkyBaseStrokes[] {
+  return batch.chunks.map((chunk) => ({
+    count: chunk.count,
+    position: chunk.geometry.getAttribute('iPosition').array,
+    color: chunk.geometry.getAttribute('iColor').array,
+    meta: chunk.geometry.getAttribute('iMeta').array,
+  }));
+}
+
+/**
+ * The drawn sky strokes of `batch` this frame, and how many draw below 0.8 of their rest size or
+ * carry a fade weight above 0.2 at the clock's time under the active wrap variant (the TS mirror,
+ * skyWrapLoop). The `wrap` diag key, registered only while a wrap variant can run.
+ */
+function skyWrapStats(batch: StrokeBatch | null): {
+  drawn: number;
+  small: number;
+  faded: number;
+} | null {
+  if (!batch) return null;
+  const wrap = motionVariants.diag().wrap;
+  const time = motionClock.uniforms.uTime.value;
+  let drawn = 0;
+  let small = 0;
+  let faded = 0;
+  for (const chunk of batch.chunks) {
+    if (!chunk.mesh.visible) continue;
+    const meta = chunk.geometry.getAttribute('iMeta').array;
+    for (let i = 0; i < chunk.drawCount; i++) {
+      if (meta[i * 4 + 1] !== STROKE_LAYER.sky) continue;
+      const loop = skyWrapLoop(wrap, meta[i * 4 + 2] / 256, time);
+      drawn++;
+      if (1 + loop.gain < 0.8) small++;
+      if (loop.fade > 0.2) faded++;
+    }
+  }
+  return { drawn, small, faded };
+}
 /** The last switch's cost on the CPU: its apply, then the rest of that frame (`abSwitch` diag). */
 let abSwitch: { variant: string; applyMs: number; frameMs: number | null } | null = null;
 let abSwitchStart: number | null = null;
@@ -493,6 +557,10 @@ if (flags.diag) {
   registerDiag('abSwitch', () => abSwitch && { ...abSwitch });
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
   registerDiag('motion', () => motionClock.diag());
+  registerDiag('variants', () => motionVariants.diag());
+  if (skyFadeLive || flags.wrap !== null) {
+    registerDiag('wrap', () => skyWrapStats(skyBatch));
+  }
   registerDiag('settings', () => ({
     stored: settingsStore.stored,
     effective: settingsStore.effective,
@@ -527,7 +595,7 @@ if (flags.bench !== null) {
 // A group implied by `?zdiag` or `?nohalo` does not: those flags drive byte-compared captures.
 if (flags.bench === null) {
   const toggle = createHudToggle({
-    visible: settings.hud || (abActive !== null && abActive.group === flags.ab),
+    visible: settings.hud || abShowsHudAtBoot(abActive, flags.ab),
     build: async () => {
       const { startPerfHud } = await import('./ui/perf-hud');
       return startPerfHud({
@@ -563,6 +631,11 @@ window.addEventListener('keydown', (event) => {
 /** With two stroke scenes at once, the first batch to load is the one bound. */
 function governStrokes(batch: StrokeBatch): Promise<void> {
   zdiag.applyToBatch(batch);
+  skyBatch ??= batch;
+  // The test scenes start the eye at the origin, 1.6 m up, which is PAINTER_EYE.
+  if (skyFadeLive) {
+    motionVariants.buildSkyBase(skyBaseStrokes(batch), STROKE_LAYER.sky, PAINTER_EYE);
+  }
   buildArc(batch.atlas);
   reactiveBatch ??= batch;
   return strokes.batch ? Promise.resolve() : strokes.bind(batch);

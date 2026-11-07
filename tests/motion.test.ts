@@ -225,7 +225,7 @@ describe('uniform plumbing', () => {
     expect(gate).toBeGreaterThan(strokeGlsl.indexOf('thin = skyLightThin('));
     expect(gate).toBeLessThan(strokeGlsl.indexOf('gl_Position = projectionMatrix'));
     expect(strokeGlsl).toContain(
-      'Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts);',
+      'Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts, color);',
     );
     expect(strokeGlsl.match(/motionOffset\(/g)).toHaveLength(1);
     // The haze thin widens by each reach only behind its own gate (R-P4b).
@@ -234,7 +234,7 @@ describe('uniform plumbing', () => {
     );
     // Nothing else in main reads the motion uniforms: the closed gate is the whole default path.
     const main = strokeGlsl.slice(strokeGlsl.indexOf('void main()'));
-    expect(main).not.toMatch(/uTime|uCalm|uMotionLayers/);
+    expect(main).not.toMatch(/uTime|uCalm|uMotionLayers|uSkyWrap|uCypressSway|uSkyBase/);
   });
 
   test('motion.glsl scales the offset and turn by uCalm once, after every layer and reactive', () => {

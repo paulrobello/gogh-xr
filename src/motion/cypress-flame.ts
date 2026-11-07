@@ -28,6 +28,7 @@
  * Change the two together.
  */
 import type { Vec3 } from '../render/strokes/frame';
+import { CYPRESS_WIND, CYPRESS_WIND_MAX, type FlameSway } from './variants';
 
 /** Seconds per rise loop: 3600 / 900, so it divides the 3600 s wrap of uTime (ruling R-P4d). */
 export const CYPRESS_FLAME_PERIOD: number = 4;
@@ -153,8 +154,8 @@ const STILL: CypressFlame = Object.freeze({
 
 /**
  * The cypress motion of a stroke centred at `position` with unit normal `normal`, phase fraction
- * `phase` and alpha byte `flameByte`, at motion time `time`, before calm. Matches cypressMotion in
- * motion.glsl.
+ * `phase` and alpha byte `flameByte`, at motion time `time`, before calm, under sway variant `sway`
+ * (src/motion/variants.ts). Matches cypressMotion in motion.glsl.
  */
 export function cypressFlame(
   position: Vec3,
@@ -162,6 +163,7 @@ export function cypressFlame(
   phase: number,
   flameByte: number,
   time: number,
+  sway: FlameSway = 'base',
 ): CypressFlame {
   const flame = decodeFlame(flameByte);
   if (flame === null) return STILL;
@@ -169,7 +171,18 @@ export function cypressFlame(
   const taper = flameTaper(flame.height);
   const f = fract(time / CYPRESS_FLAME_PERIOD + phase);
   const s = (2 * f - 1) * CYPRESS_FLAME_HALF_ARC * taper;
-  const a = flickerAmplitude(flame.height) * flickerWave(flame.lobe, position[1], time);
+  const wave = flickerWave(flame.lobe, position[1], time);
+  if (sway === 'wind') {
+    const a = CYPRESS_WIND_MAX * flame.height * flame.height * wave;
+    const [wx, wy, wz] = CYPRESS_WIND;
+    return {
+      offset: [-s * nx * ny + a * wx, s * (1 - ny * ny) + a * wy, -s * nz * ny + a * wz],
+      turn: 0,
+      gain: taper > 0 ? smoothstep(0, CYPRESS_FLAME_FADE, Math.min(f, 1 - f)) - 1 : 0,
+      bright: 0,
+    };
+  }
+  const a = flickerAmplitude(flame.height) * wave;
   return {
     // s × up + a × side, up = (−nx ny, 1 − ny², −nz ny), side = (nz, 0, −nx).
     offset: [-s * nx * ny + a * nz, s * (1 - ny * ny), -s * nz * ny - a * nx],
@@ -183,15 +196,18 @@ export function cypressFlame(
  * The farthest the flame moves a stroke with unit normal y component `ny` and alpha byte
  * `flameByte` from rest at calm 1, metres. `up` and `side` are orthogonal with length
  * sin φ = √(1 − ny²), the rise reaches ±HALF_ARC × taper and the sway ±amplitude independently, so
- * the exact maximum is sin φ × √(rise² + sway²). The stroke batch grows a cypress chunk's cull
- * sphere by its largest (ruling R-P4a).
+ * the exact maximum is sin φ × √(rise² + sway²). The `wind` sway runs along the unit CYPRESS_WIND,
+ * neither in the stroke's plane nor orthogonal to `up`, so its bound is the triangle inequality,
+ * sin φ × rise + CYPRESS_WIND_MAX × h². The stroke batch grows a cypress chunk's cull sphere by its
+ * largest (ruling R-P4a).
  */
-export function cypressFlameReach(ny: number, flameByte: number): number {
+export function cypressFlameReach(ny: number, flameByte: number, sway: FlameSway = 'base'): number {
   const flame = decodeFlame(flameByte);
   if (flame === null) return 0;
   const rise = CYPRESS_FLAME_HALF_ARC * flameTaper(flame.height);
-  const sway = flickerAmplitude(flame.height);
-  return Math.sqrt(Math.max(0, 1 - ny * ny)) * Math.hypot(rise, sway);
+  const sinPhi = Math.sqrt(Math.max(0, 1 - ny * ny));
+  if (sway === 'wind') return sinPhi * rise + CYPRESS_WIND_MAX * flame.height * flame.height;
+  return sinPhi * Math.hypot(rise, flickerAmplitude(flame.height));
 }
 
 /** A GLSL float literal: always carries a decimal point or an exponent. */

@@ -158,7 +158,7 @@ void main() {
   // is the turn of the axes. The depth hashes below keep reading the rest iPosition, so a moving
   // stroke keeps its depth order.
   if ((layerMoves || reacts) && thin > 0.0) {
-    Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts);
+    Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts, color);
     // The turn is small (SKY_SWIRL_MAX_TURN plus REACTIVE_MAX_TURN), so cosine and sine are
     // polynomials; this pair has c² + s² <= 1, so a turned quad never outgrows its rest extent.
     float a2 = m.turn * m.turn;

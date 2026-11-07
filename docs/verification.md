@@ -1056,3 +1056,68 @@ The CPU-bound recovery traces with window noise keep their original 120 s bounds
 ### Not verified
 
 There is no headset in this session (no adb). The foveation steps, the back-off and the shed order are verified only in unit tests and in the desktop gates. The governor itself has not been run with these changes on the headset. Foveation does not reach 72 Hz in the painter's area: the measured foveation 1 frame is 17.2 to 18.1 ms. Even 0.49x the pixels with foveation 1 reads 18.71 ms. The remaining cost is the alpha-to-coverage strokes' geometry plus fragment work. Whether 0.5 shimmers acceptably in the world is Paul's check.
+
+## Sky wrap and cypress sway variants (2026-11-07)
+
+In the headset Paul found the sky-swirl strokes' size pulse at the wrap distracting (Q39, and Q37 at low calm), and did not notice the cypress sway (Q40). Two A/B groups (`src/motion/variants.ts`, CLAUDE.md, Motion A/B variants) let him pick in the headset with the A/B button (left stick click, or V):
+
+- `https://gogh-xr.pardev.net/?painting=starry-night&ab=wrap`
+- `https://gogh-xr.pardev.net/?painting=starry-night&ab=flame`
+
+The variants:
+
+- wrap `base`: the P4.2 shrink to nothing over the first and last 6% of the 8 s loop.
+- wrap `fade`: full size through the wrap. Over the same window the colour mixes toward the sky base map under the stroke (the mean colour of the sky strokes by direction from the painter's eye, 64 × 64 octahedral), all the way at the jump.
+- wrap `half`: the shrink stops at 0.5 of the size, over a 12 s loop on base's arc (2/3 of base's speed), so every reach bound holds.
+- wrap `pair` is not built. Strokes are opaque alpha-to-coverage quads with depth write, so two overlapping strokes cannot sum colour weights (alpha below 1 dithers, R3), and a partner half a period apart needs a second instance per sky stroke, which is new per-instance data.
+- flame `base`: the P4.4 sway along each face's tangent, up to 0.14 m × h².
+- flame `wind`: the same two travelling sines along the world-fixed `CYPRESS_WIND` (0.928, 0, −0.374), across the painter's view of the cypress, at up to 0.15 m × h². It started at 0.3 m and was stepped down on coverage (below).
+
+### Base is unchanged
+
+`bun scripts/motion-variant-probe.ts capture` took five captures (the `?noanim` painter view, the painter view at `?motiont=0.5` and `3.7`, sky-up and under-the-cypress at `3.7`) from an e2e build of 31fc538 and from this branch at 75f6340. All five are byte-identical with no flag, with `&wrap=base&flame=base`, with `&ab=wrap` and with `&ab=flame` (the HUD hidden). Fix round 1 retook all four sets on the final tree (on 6b5473e, after the wind step-down, the placeholder texture, the map built from any bound batch and the merge of b48b931), against the same 31fc538 shots: all 20 captures are byte-identical (load 13.6 to 14.8 at the start of each run, 13.4 to 17.8 after). `tests/e2e/ab.spec.ts` cycles both groups at a pinned `?motiont` and checks that each non-base variant draws differently and a full cycle back to base matches a fresh boot byte for byte.
+
+### Measurements
+
+`bun scripts/motion-variant-probe.ts measure http://localhost:<port>/` on an e2e build, headless Chromium on the GPU at 1280 × 1014, seed 1. The 1-minute load was 15 or less at the start of each variant (13.7 to 14.8) and 14.3 to 56.7 after (other projects' work spiked it during `wrap base`; coverage, size and flicker are pixel and count measures at pinned times, so load does not change them).
+
+Sky, at the five sky poses (spot ahead, spot behind, spot left raised, spot straight up, boundary north-east). Worst bare is the worst `?coverage` share over `?motiont` 0.5, 2.3, 3.7, 6.1 and 9.9 (limit 0.5%). The size columns are the share of drawn sky strokes below 0.8 of their rest size, and above a 0.2 fade weight, at `?motiont=3.7` (`__goghDiag().wrap`, the range over the poses). Flicker is `temporalFlicker`'s share of pixels that change between consecutive frames, per pose in that order: motion over 12 frames stepped 1/72 s from 3.7, and jitter over 8 frames of 0.1 to 0.3 mm eye jitter at 3.7.
+
+| wrap | Worst bare | Below 0.8 size | Faded | Motion flicker, % | Jitter flicker, % |
+| --- | --- | --- | --- | --- | --- |
+| base | 0.333% | 8.41 to 8.72% | 0 | 5.04 / 2.70 / 4.99 / 8.21 / 2.30 | 8.55 / 12.20 / 10.57 / 7.81 / 5.52 |
+| fade | 0.303% | 0 | 8.41 to 8.72% | 4.73 / 1.59 / 3.76 / 6.05 / 2.64 | 8.44 / 12.02 / 10.27 / 7.48 / 5.47 |
+| half | 0.347% | 6.40 to 6.69% | 0 | 4.18 / 1.59 / 3.57 / 5.77 / 1.62 | 8.57 / 12.16 / 10.59 / 7.93 / 5.39 |
+
+`fade` removes the size pulse and cuts the motion flicker at four of five poses (spot straight up 8.21 to 6.05%), and is 0.34 points higher at boundary north-east. `half` keeps 6.4 to 6.7% of strokes below 0.8 (the pulse is half as deep and two thirds as fast) and has the lowest motion flicker at four poses, level with `fade` at spot behind. Jitter flicker, the still-view shimmer, is within 0.4 points of base for both, since neither touches a still frame's rasterisation.
+
+Cypress, at three poses (spot toward the cypress, under the cypress, cypress side on looking along the wind), worst bare over `?motiont` 0.5 to 11.5 in 1 s steps:
+
+| flame | Amplitude at the tip | Worst bare | Per pose |
+| --- | --- | --- | --- |
+| base | 0.14 m (face tangent) | 0.259% | 0.259 / 0.160 / 0.175% |
+| wind | 0.3 m | 1.228% | 0.551 / 1.228 / 0.292% |
+| wind | 0.2 m | 0.579% | 0.391 / 0.579 / 0.206% |
+| wind (shipped) | 0.15 m | 0.386% | 0.331 / 0.386 / 0.183% |
+
+The wind moves a whole height of the tree the same way, so the upwind side of the cypress mesh shows through by up to the sway, where base's tangent sway largely cancels along the outline. At 0.15 m the hull excess (tests/motion-cypress-flame.test.ts, seed-1 strokes) is p99 11.65 cm (35.4% of the stroke length) and max 22.02 cm (69.0%), against base's p99 7.98 cm (24.6%). The largest offset is 0.191 m and the largest per-stroke reach 0.258 m (base 0.179 m), which the `cypressWind` cull reach covers. In painter-view crops at `?motiont` 0.5 and 3.7, 0.15 m still moves the whole outline sideways against the sky and moon, with no gaps; 0.3 m splayed silhouette strokes visibly.
+
+### Cost
+
+Desktop only: `bun scripts/motion-perf.ts --only "(v)"` on an e2e build, ANGLE Metal on an Apple M4 Max, 1280 × 1014, live motion, `?nogov`, one 4 s window per view (GPU time from EXT_disjoint_timer_query_webgl2). Every kept row had a 1-minute load of 15 or less before and after; rows over 15 after were discarded and re-run.
+
+| Variant | View | GPU mean / p95, ms | Draw calls | Drawn strokes | Visible chunks |
+| --- | --- | --- | --- | --- | --- |
+| wrap base | painter | 3.57 / 4.17 | 127 | 249,207 | 119 |
+| wrap base | spot ahead | 3.54 / 6.21 | 150 | 257,238 | 144 |
+| wrap fade | painter | 2.90 / 4.26 | 127 | 249,207 | 119 |
+| wrap fade | spot ahead | 4.13 / 6.50 | 150 | 257,238 | 144 |
+| flame wind | painter | 3.63 / 4.01 | 127 | 249,207 | 119 |
+| flame wind | spot ahead | 4.11 / 4.50 | 150 | 257,238 | 144 |
+
+Draw calls, drawn strokes and visible chunks are identical to base for both variants: the wind's larger cull reach (0.258 m against 0.179 m) passes no extra chunk at these views. The GPU means are single 4 s windows: `fade` is 0.67 ms below base at the painter view and 0.59 ms above it ahead, and `wind` 0.06 ms and 0.57 ms above. This host's run-to-run spread was not measured, so these deltas are not separated from noise. `half` was not measured: its runs were discarded twice on load and then stopped for time. Its shader path is base's with different constants and the same draws. `fade` also builds the sky base map once, at boot, when the wrap group or `?wrap=fade` is active. That build time was not measured.
+
+### Not verified
+
+- No headset run: the variants were judged in desktop captures only, so how `fade`, `half` and `wind` read in the Quest is Paul's A/B call. In the headset, `half` differs from base in two ways at once: the shrink stops at half size, and the whole swirl also moves at 2/3 of base's speed (the same arc over 12 s), so a preference for `half` may be a preference for the slower swirl.
+- Quest GPU cost: not measured. The desktop cost is below.

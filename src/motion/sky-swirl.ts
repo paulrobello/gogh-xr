@@ -26,6 +26,7 @@ import regionsJson from '../../assets/bake/starry-night/regions.json';
 import { canvasRay, PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import type { Vec3 } from '../render/strokes/frame';
 import { SKY_DOME_RADIUS } from '../world/sky';
+import { SKY_WRAP_HALF_FLOOR, SKY_WRAP_HALF_PERIOD, type SkyWrap } from './variants';
 
 /** Seconds per loop: 3600 / 450, so it divides the 3600 s wrap of uTime (ruling R-P4d). */
 export const SKY_SWIRL_PERIOD: number = 8;
@@ -201,11 +202,34 @@ export interface SkySwirl {
   readonly turn: number;
   /** Size delta: the stroke draws at 1 + gain of its size, gain in [-1, 0]. */
   readonly gain: number;
+  /** The `fade` wrap's colour weight toward the sky base under the stroke, in [0, 1]; else 0. */
+  readonly fade: number;
+}
+
+/**
+ * The loop of a stroke with phase fraction `phase` at motion time `time` under wrap variant `wrap`
+ * (src/motion/variants.ts): `tau`, seconds from mid-loop scaled to base's 8 s arc, the size gain
+ * and the fade weight. Matches skyMotion and skyWrapMotion in motion.glsl.
+ */
+export function skyWrapLoop(
+  wrap: SkyWrap,
+  phase: number,
+  time: number,
+): { readonly tau: number; readonly gain: number; readonly fade: number } {
+  const period = wrap === 'half' ? SKY_WRAP_HALF_PERIOD : SKY_SWIRL_PERIOD;
+  const f = fract(time / period + phase);
+  const edge = smoothstep(0, SKY_SWIRL_FADE, Math.min(f, 1 - f));
+  return {
+    tau: (f - 0.5) * SKY_SWIRL_PERIOD,
+    gain: wrap === 'base' ? edge - 1 : wrap === 'half' ? (1 - SKY_WRAP_HALF_FLOOR) * (edge - 1) : 0,
+    fade: wrap === 'fade' ? 1 - edge : 0,
+  };
 }
 
 /**
  * The sky motion of a stroke centred at `position` with unit normal `normal` and phase fraction
- * `phase`, at motion time `time`, before calm. Matches skyMotion in motion.glsl.
+ * `phase`, at motion time `time`, before calm, under wrap variant `wrap`. Matches skyMotion in
+ * motion.glsl.
  */
 export function skySwirl(
   position: Vec3,
@@ -213,6 +237,7 @@ export function skySwirl(
   phase: number,
   time: number,
   vortices: readonly SkyVortex[] = SKY_VORTICES,
+  wrap: SkyWrap = 'base',
 ): SkySwirl {
   const d: Vec3 = [
     position[0] - PAINTER_EYE[0],
@@ -221,13 +246,13 @@ export function skySwirl(
   ];
   const inv = 1 / Math.hypot(d[0], d[1], d[2]);
   const omega = skyOmega([d[0] * inv, d[1] * inv, d[2] * inv], vortices);
-  const f = fract(time / SKY_SWIRL_PERIOD + phase);
-  const tau = (f - 0.5) * SKY_SWIRL_PERIOD;
+  const { tau, gain, fade } = skyWrapLoop(wrap, phase, time);
   const v = cross(omega, d);
   return {
     offset: [tau * v[0], tau * v[1], tau * v[2]],
     turn: tau * (omega[0] * normal[0] + omega[1] * normal[1] + omega[2] * normal[2]),
-    gain: smoothstep(0, SKY_SWIRL_FADE, Math.min(f, 1 - f)) - 1,
+    gain,
+    fade,
   };
 }
 

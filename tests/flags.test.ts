@@ -35,13 +35,15 @@ test('defaults when search is empty', () => {
     turn: null,
     zdiag: null,
     ab: null,
+    wrap: null,
+    flame: null,
     scene: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Fade&flame=WIND',
   );
   expect(f).toEqual({
     seed: 42,
@@ -76,8 +78,19 @@ test('parses every flag', () => {
     turn: 'smooth',
     zdiag: 'nosort',
     ab: 'shimmer',
+    wrap: 'fade',
+    flame: 'wind',
     scene: 'bare',
   });
+});
+
+test('?wrap and ?flame take only their variants', () => {
+  for (const wrap of ['base', 'fade', 'half'] as const)
+    expect(parseFlags(`?wrap=${wrap}`).wrap).toBe(wrap);
+  expect(parseFlags('?wrap=pair').wrap).toBeNull();
+  expect(parseFlags('?wrap').wrap).toBeNull();
+  expect(parseFlags('?flame=wind').flame).toBe('wind');
+  expect(parseFlags('?flame=gust').flame).toBeNull();
 });
 
 test('malformed numbers become null', () => {
