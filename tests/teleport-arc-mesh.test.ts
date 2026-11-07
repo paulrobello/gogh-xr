@@ -8,8 +8,12 @@ import {
   ARC_VALID_COLOR,
   createArcMesh,
   RING_LIFT,
+  RING_PULL_CAP_SHARE,
+  RING_PULL_MAX,
+  RING_PULL_MIN,
   RING_RADIUS,
   RING_STROKES,
+  ringPull,
 } from '../src/locomotion/arc-mesh';
 import {
   createArcResult,
@@ -92,6 +96,78 @@ function expectShadedColor(s: StrokeInstance, rgb: readonly [number, number, num
   }
 }
 
+/** The mean position of the ring's strokes. */
+function ringCentre(ring: StrokeInstance[]): Vec3 {
+  const c: [number, number, number] = [0, 0, 0];
+  for (const s of ring)
+    for (let k = 0; k < 3; k += 1)
+      c[k] = (c[k] as number) + (s.position[k] as number) / ring.length;
+  return c;
+}
+
+describe('the landing ring pull', () => {
+  it('is a share of the eye distance within 0.3 to 0.6 m, and at most a quarter of it', () => {
+    expect(RING_PULL_MIN).toBe(0.3);
+    expect(RING_PULL_MAX).toBe(0.6);
+    expect(ringPull(15)).toBe(RING_PULL_MAX);
+    expect(ringPull(8)).toBeCloseTo(0.6, 6);
+    expect(ringPull(5)).toBeCloseTo(0.5, 6);
+    expect(ringPull(2)).toBeCloseTo(RING_PULL_MIN, 6);
+    // Close to the eye the quarter cap wins over the floor.
+    expect(ringPull(1)).toBeCloseTo(RING_PULL_CAP_SHARE, 6);
+    for (let d = 0.1; d <= 15; d += 0.1) {
+      expect(ringPull(d)).toBeLessThanOrEqual(RING_PULL_MAX);
+      expect(ringPull(d)).toBeLessThanOrEqual(RING_PULL_CAP_SHARE * d + 1e-12);
+    }
+  });
+
+  it('moves the whole ring along the line to the eye, by exactly that pull, at any aim distance', () => {
+    for (const direction of [
+      [0, 0.3, -1],
+      [0.2, 0.7, -1],
+      [-0.3, 0.2, -1],
+    ] as const) {
+      const { arc, instances } = setup();
+      const aim = aimAt([...direction]);
+      expect(aim.valid).toBe(true);
+      arc.show(aim, EYE);
+      const hit = aim.hit as Vec3;
+      const toEye = sub(EYE, hit);
+      const distance = len(toEye);
+      const centre = ringCentre(instances().filter(isRing));
+      // Remove the lift along the ground normal; the rest is the pull, parallel to the eye line.
+      const pulled = sub(centre, [0, RING_LIFT, 0]);
+      const offset = sub(pulled, hit);
+      expect(len(offset)).toBeCloseTo(ringPull(distance), 5);
+      expect(dot(offset, toEye) / (len(offset) * distance)).toBeCloseTo(1, 5);
+    }
+  });
+});
+
+describe('the landing ring pull at degenerate eyes', () => {
+  it('is zero with the eye on the hit, and every position stays finite', () => {
+    const { arc, instances } = setup();
+    const aim = aimAt([0, 0.3, -1]);
+    const hit = aim.hit as Vec3;
+    arc.show(aim, [hit[0], hit[1], hit[2]]);
+    const ring = instances().filter(isRing);
+    expect(ring).toHaveLength(RING_STROKES);
+    for (const s of ring) for (const v of s.position) expect(Number.isFinite(v)).toBe(true);
+    const lifted = sub(ringCentre(ring), hit);
+    expect(lifted[0]).toBeCloseTo(0, 5);
+    expect(lifted[1]).toBeCloseTo(RING_LIFT, 5);
+    expect(lifted[2]).toBeCloseTo(0, 5);
+  });
+
+  it('draws nothing, with no NaN written, for a non-finite eye', () => {
+    const { arc } = setup();
+    const aim = aimAt([0, 0.3, -1]);
+    arc.show(aim, [Number.POSITIVE_INFINITY, 1.6, 0]);
+    expect(arc.mesh.visible).toBe(false);
+    expect(arc.mesh.geometry.instanceCount).toBe(0);
+  });
+});
+
 describe('the arc mesh', () => {
   it('is one hidden mesh on the stroke material and the given atlas, never culled by three', () => {
     const { parent, atlas, arc } = setup();
@@ -116,12 +192,16 @@ describe('the arc mesh', () => {
     const ring = all.filter(isRing);
     expect(ring).toHaveLength(RING_STROKES);
     const hit = aim.hit as Vec3;
+    const centre = ringCentre(ring);
+    // Ring strokes lie on the ground plane round the pulled-and-lifted centre.
     for (const s of ring) {
-      const offset = sub(s.position, hit);
-      expect(offset[1]).toBeCloseTo(RING_LIFT, 6);
+      const offset = sub(s.position, centre);
+      expect(offset[1]).toBeCloseTo(0, 6);
       expect(Math.hypot(offset[0], offset[2])).toBeCloseTo(RING_RADIUS, 6);
       expect(s.normal[1]).toBeCloseTo(1, 4);
     }
+    const lifted = sub(centre, hit);
+    expect(lifted[1]).toBeGreaterThanOrEqual(RING_LIFT);
     for (const s of all) {
       expectShadedColor(s, ARC_VALID_COLOR);
       expect(['ridge', 'bristle']).toContain(BRUSHES[s.brush]?.kind);

@@ -59,6 +59,26 @@ export const RING_STROKES = 10;
 export const RING_RADIUS = 0.35;
 export const RING_WIDTH = 0.08;
 export const RING_LIFT = 0.04;
+/**
+ * The ring is pulled towards the eye along the line from the hit, so it stays on top of the ground
+ * strokes, with its centre on the same eye ray (a rigid translation scales it up by about
+ * d / (d - pull)). A lift along the ground normal cannot do it: seen along a
+ * grazing ray, 4 cm of height is millimetres of depth, less than the ground strokes' own lift and
+ * tilt, the terrain's triangle mismatch and the shader's per-stroke tie-break (up to 0.25 m of view
+ * depth, which the ring's front flag only matches). The pull is a share of the eye distance, within
+ * these bounds in metres, and never more than a quarter of the distance, so it stays far from the
+ * eye. A house or a hill crest nearer the eye than the pull still hides the ring.
+ */
+export const RING_PULL_MIN = 0.3;
+export const RING_PULL_MAX = 0.6;
+export const RING_PULL_SHARE = 0.1;
+export const RING_PULL_CAP_SHARE = 0.25;
+
+/** The ring's pull towards the eye, metres, for a hit `distance` metres from the eye. */
+export function ringPull(distance: number): number {
+  const pull = Math.min(RING_PULL_MAX, Math.max(RING_PULL_MIN, RING_PULL_SHARE * distance));
+  return Math.min(pull, RING_PULL_CAP_SHARE * distance);
+}
 /** One stroke per arc segment, plus the ring. */
 export const ARC_CAPACITY = MAX_SAMPLES - 1 + RING_STROKES;
 
@@ -211,8 +231,18 @@ export function createArcMesh(parent: Object3D, atlas: Texture): ArcMesh {
     }
   }
 
-  function pushRing(hit: Vec3, ground: Vec3): void {
+  function pushRing(hit: Vec3, ground: Vec3, eye: Vec3): void {
     const { b1, b2 } = surfaceBasis(ground);
+    const ex = eye[0] - hit[0];
+    const ey = eye[1] - hit[1];
+    const ez = eye[2] - hit[2];
+    const distance = Math.hypot(ex, ey, ez);
+    // The pull as a vector; none when the eye is on the hit.
+    const pullScale =
+      Number.isFinite(distance) && distance > DEGENERATE ? ringPull(distance) / distance : 0;
+    const px = ex * pullScale;
+    const py = ey * pullScale;
+    const pz = ez * pullScale;
     stroke.flags = DEPTH_TIE_BREAK_FRONT_FLAG;
     stroke.normal[0] = ground[0];
     stroke.normal[1] = ground[1];
@@ -226,6 +256,7 @@ export function createArcMesh(parent: Object3D, atlas: Texture): ArcMesh {
       for (let j = 0; j < 3; j += 1) {
         stroke.position[j] =
           (hit[j] as number) +
+          (j === 0 ? px : j === 1 ? py : pz) +
           (ground[j] as number) * RING_LIFT +
           ((b1[j] as number) * c + (b2[j] as number) * s) * RING_RADIUS;
       }
@@ -241,8 +272,14 @@ export function createArcMesh(parent: Object3D, atlas: Texture): ArcMesh {
     mesh,
     show(aim, eye) {
       count = 0;
+      // A non-finite eye would put NaN in every stroke normal, which packInstance rejects.
+      if (!(Number.isFinite(eye[0]) && Number.isFinite(eye[1]) && Number.isFinite(eye[2]))) {
+        geometry.instanceCount = 0;
+        mesh.visible = false;
+        return;
+      }
       pushArc(aim, eye, aim.valid ? ARC_VALID_COLOR : ARC_INVALID_COLOR);
-      if (aim.valid && aim.hit) pushRing(aim.hit, aim.normal);
+      if (aim.valid && aim.hit) pushRing(aim.hit, aim.normal, eye);
       geometry.instanceCount = count;
       for (const attribute of attributes) {
         attribute.clearUpdateRanges();
