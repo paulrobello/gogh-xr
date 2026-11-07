@@ -241,7 +241,8 @@ export interface WorldStrokes {
  * Every stroke of the world: the scatter (or its cache read), the moon and stars
  * (`createSkyLights`, colours from `scan`, lights.webp) and the boundary haze, appended in that
  * order. The last two are generated on every build, outside the scatter cache. Every haze stroke
- * carries SKY_LIGHT_CULL_FLAG, so the shader clears it, per view, from in front of the discs.
+ * carries SKY_LIGHT_CULL_FLAG, so the shader clears it, per view, from in front of the discs and
+ * thins it over a feather around them.
  */
 export function assembleWorldStrokes(
   scattered: StrokeBuffers,

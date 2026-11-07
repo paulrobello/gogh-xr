@@ -15,9 +15,9 @@
  * that. The batch pins these strokes (`isPinnedStroke` in batch.ts): each chunk draws all of them
  * at every band density, so the stored count is sized for SKY_LIGHT_OVERDRAW as drawn.
  *
- * The boundary haze would hide most discs from the painter's spot. The stroke shader culls the
- * haze in front of each disc per view, in the cones `skyLightCones` returns
- * (src/render/strokes/sky-light-cull.ts).
+ * The boundary haze would hide most discs from the painter's spot. The stroke shader clears the
+ * haze in front of each disc per view, in the cones `skyLightCones` returns, and thins it over a
+ * feather around them (src/render/strokes/sky-light-cull.ts).
  */
 import type { Raster } from '../demo/canvas/field';
 import { REGION, type RegionId, sampleColor, sampleFlow } from '../demo/canvas/field';
@@ -53,6 +53,14 @@ import { type SkyScanCrop, sampleSkyScan, skyScanCrops } from './sky-scan';
  * around the moon and the stars lie in that band.
  */
 export const SKY_LIGHT_RIM: number = 1.5;
+/**
+ * The boundary haze thins toward each light over this many anchor radii past its cone, plus one
+ * haze stroke's half diagonal (sky-light-cull.ts), so the haze has no rim in front of the disc. At
+ * least SKY_LIGHT_RIM, the width of the scan's halo band. At that floor the haze dabs still shrank
+ * in a visible ring beside the moon; twice it spreads the shrink as gradually as the dome strokes
+ * vary in size (docs/shots/moon-hole-after-*.jpg).
+ */
+export const SKY_LIGHT_FEATHER: number = 3;
 /**
  * Quad overdraw where the density is full: stored strokes times mean drawn quad area over the area.
  * The lights are pinned, so every governor level draws all of them. The brush masks cover about a
@@ -536,7 +544,7 @@ export function createSkyLights(
 /**
  * The cones the stroke shader clears the haze from (sky-light-cull.ts): each anchor's dome centre
  * and the lights' reach in metres, out to SKY_LIGHT_RIM radii plus the longest drawn stroke's half
- * diagonal.
+ * diagonal, and a feather of SKY_LIGHT_FEATHER anchor radii in metres.
  */
 export function skyLightCones(
   domeSize: GradedSize,
@@ -554,6 +562,10 @@ export function skyLightCones(
       const rim = domePoint(...offsetUv(anchor.uv, reach * Math.cos(t), reach * Math.sin(t)));
       radius = Math.max(radius, Math.hypot(...sub(rim, anchor.position)));
     }
-    return { centre: anchor.position, radius: radius + half };
+    return {
+      centre: anchor.position,
+      radius: radius + half,
+      feather: SKY_LIGHT_FEATHER * anchor.radius * metresPerWidth(anchor),
+    };
   });
 }

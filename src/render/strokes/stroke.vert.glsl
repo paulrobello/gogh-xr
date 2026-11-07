@@ -13,8 +13,9 @@ uniform vec4 uBrushRects[BRUSH_COUNT];
 // Distance-band stroke-size multiplier (P1.4).
 uniform float uSizeScale;
 // Moon and star discs (src/render/strokes/sky-light-cull.ts): world centre xyz, radius w in
-// metres; w = 0 is an unused slot.
+// metres; w = 0 is an unused slot. Each cone's feather, metres past its radius on the dome.
 uniform vec4 uSkyLightCones[SKY_LIGHT_CONES];
+uniform float uSkyLightFeathers[SKY_LIGHT_CONES];
 // Boundary haze thickening, 0-1 (material.ts uHazeThickness): the haze is the sky layer's only
 // SKY_LIGHT_CULL_FLAG strokes.
 uniform float uHazeThickness;
@@ -64,24 +65,42 @@ uint lowbias32(uint x) {
   return x;
 }
 
-// Matches skyLightCulled in sky-light-cull.ts: the stroke centre p, seen from this view's eye,
-// lies inside a disc's cone widened by the stroke's own drawn half diagonal.
-bool skyLightCulled(vec3 p, float halfExtent) {
+// Matches skyLightThin in sky-light-cull.ts: 0 when the stroke centre p, seen from this view's
+// eye, lies inside a disc's cone widened by the stroke's own drawn half diagonal; past that edge,
+// the product over the cones of a smoothstep of the angular gap over each cone's feather.
+float skyLightThin(vec3 p, float halfExtent) {
   vec3 eye = cameraPosition;
   vec3 h = p - eye;
   float lenH = length(h);
   float sinB = min(1.0, halfExtent / lenH);
   float cosB = sqrt(1.0 - sinB * sinB);
+  // The angle k = 2 beta + SKY_LIGHT_MIN_FEATHER. A cone's factor is exactly 1 from outer + k on,
+  // the feather's far end or past it, which stays under pi while beta <= pi / 6.
+  float cos2B = 1.0 - 2.0 * sinB * sinB;
+  float sin2B = 2.0 * sinB * cosB;
+  float cosK = cos2B * SKY_LIGHT_MIN_FEATHER_COS - sin2B * SKY_LIGHT_MIN_FEATHER_SIN;
+  float sinK = sin2B * SKY_LIGHT_MIN_FEATHER_COS + cos2B * SKY_LIGHT_MIN_FEATHER_SIN;
+  bool early = sinB <= 0.5;
+  float thin = 1.0;
   for (int i = 0; i < SKY_LIGHT_CONES; i++) {
     vec4 cone = uSkyLightCones[i];
     if (cone.w <= 0.0) continue;
     vec3 a = cone.xyz - eye;
-    float lenA = length(a);
+    float lenA = max(length(a), 1e-3);
+    float d = dot(a, h);
+    float sinO = min(1.0, (cone.w + uSkyLightFeathers[i]) / lenA);
+    float cosO = sqrt(1.0 - sinO * sinO);
+    if (early && sinO < 1.0 && d <= (cosO * cosK - sinO * sinK) * lenA * lenH) continue;
     float sinA = min(1.0, cone.w / lenA);
     float cosA = sqrt(1.0 - sinA * sinA);
-    if (dot(a, h) > (cosA * cosB - sinA * sinB) * lenA * lenH) return true;
+    if (d > (cosA * cosB - sinA * sinB) * lenA * lenH) return 0.0;
+    float beta = asin(sinB);
+    float alpha = asin(sinA);
+    float feather = max(SKY_LIGHT_MIN_FEATHER, asin(sinO) - alpha + beta);
+    float gap = acos(clamp(d / (lenA * lenH), -1.0, 1.0)) - alpha - beta;
+    thin *= smoothstep(0.0, feather, gap);
   }
-  return false;
+  return thin;
 }
 
 void main() {
@@ -103,6 +122,14 @@ void main() {
     sizeScale *= 1.0 + HAZE_GROWTH * uHazeThickness;
   }
   vec2 size = iSize * sizeScale;
+  // Boundary haze thins toward the moon and stars (sky-light-cull.ts): the drawn size scales by
+  // the square root of the factor, so the quad's area follows it. Judged at the full size, haze
+  // growth included, so a shrunk quad stays out of the disc cone at any thickness.
+  float thin = 1.0;
+  if ((iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {
+    thin = skyLightThin((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size));
+    size *= sqrt(thin);
+  }
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));
   // Depth tie-break (src/render/strokes/depth-tie-break.ts): each stroke moves towards the eye by
@@ -152,10 +179,7 @@ void main() {
   vColor = iColor.rgb;
 
   // Last, after every other output.
-  if (
-    (iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u &&
-    skyLightCulled((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size))
-  ) {
+  if (thin <= 0.0) {
     // Every corner outside the clip volume: the quad draws nothing.
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
   }

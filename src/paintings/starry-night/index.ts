@@ -15,7 +15,7 @@ import {
   scatterCacheKey,
   shouldBypassScatterCache,
 } from '../../render/strokes/scatter-cache';
-import { skyLightConeUniforms } from '../../render/strokes/sky-light-cull';
+import { skyLightConeUniforms, skyLightFeatherUniforms } from '../../render/strokes/sky-light-cull';
 import { boundaryFactor } from '../../world/boundary';
 import type { PainterCamera, WorldDeps, WorldHandle, WorldPose } from '../world-module';
 import { BARE_COLOR, createBaseMeshes, disposeBaseMeshes, underpaintColor } from './base-meshes';
@@ -109,8 +109,10 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
 
   const batch = createStrokeBatch(buffers, { cellSize: WORLD_CELL_SIZE });
   const coneUniforms = skyLightConeUniforms(cones);
+  const featherUniforms = skyLightFeatherUniforms(cones);
   for (const material of Object.values(batch.materials)) {
     material.uniforms.uSkyLightCones.value = coneUniforms;
+    material.uniforms.uSkyLightFeathers.value = featherUniforms;
   }
   const batched = performance.now();
   const atlasMs = batch.stats().atlasMs;

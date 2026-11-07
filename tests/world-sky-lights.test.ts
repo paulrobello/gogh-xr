@@ -28,20 +28,25 @@ import {
 import { FIT_SCALE_MASK, FIT_SCALE_SHIFT } from '../src/render/strokes/face-clamp.ts';
 import { strokeAxes, type Vec3 } from '../src/render/strokes/frame.ts';
 import { STROKE_LAYER } from '../src/render/strokes/instance.ts';
-import { createStrokeMaterial } from '../src/render/strokes/material.ts';
+import { createStrokeMaterial, HAZE_GROWTH } from '../src/render/strokes/material.ts';
 import { SCATTER_SIZE_JITTER, strokeSizeAt } from '../src/render/strokes/scatter.ts';
 import {
   SKY_LIGHT_CONES,
   SKY_LIGHT_CULL_FLAG,
+  SKY_LIGHT_MIN_FEATHER,
+  type SkyLightCone,
   skyLightConeUniforms,
   skyLightCulled,
+  skyLightFeatherUniforms,
+  skyLightThin,
 } from '../src/render/strokes/sky-light-cull.ts';
-import { HAZE_RADIUS } from '../src/world/boundary.ts';
+import { HAZE_RADIUS, HAZE_STROKE_SIZE } from '../src/world/boundary.ts';
 import { SKY_DOME_RADIUS, skyAnchors } from '../src/world/sky.ts';
 import {
   createSkyLights,
   metresPerWidth,
   RankPicker,
+  SKY_LIGHT_FEATHER,
   SKY_LIGHT_FINE_LEVELS,
   SKY_LIGHT_MOON_EDGE_LEVEL,
   SKY_LIGHT_RIM,
@@ -368,6 +373,14 @@ test('regions.png reads stars and moon at every anchor centre', () => {
   }
 });
 
+/**
+ * `skyLightThin` takes the half extent the shader passes: half the drawn diagonal after the haze
+ * growth (`HAZE_GROWTH` times `uHazeThickness`). A far-band haze stroke's at thickness 0 and 1. The
+ * tests below that use HAZE_HALF_THIN are thickness-0 cases.
+ */
+const HAZE_HALF_THIN = 0.5 * Math.hypot(...HAZE_STROKE_SIZE) * DEFAULT_BAND_SIZE.far;
+const HAZE_HALF_THICK = HAZE_HALF_THIN * (1 + HAZE_GROWTH);
+
 test('each cone holds its whole disc and rim band, seen from the painter eye', () => {
   const groups = byAnchor();
   groups.forEach((group, a) => {
@@ -378,7 +391,7 @@ test('each cone holds its whole disc and rim band, seen from the painter eye', (
 });
 
 test('the cones cull haze in front of every disc, from any eye, and nothing far from one', () => {
-  const half = 2.4;
+  const half = HAZE_HALF_THIN;
   const r = (HAZE_RADIUS.min + HAZE_RADIUS.max) / 2;
   for (const eye of [PAINTER_EYE, [20, 1.6, 0] as Vec3, [-15, 30, 25] as Vec3]) {
     for (const cone of CONES) {
@@ -397,14 +410,18 @@ test('the cones cull haze in front of every disc, from any eye, and nothing far 
   expect(skyLightCulled(PAINTER_EYE, [0, 20, 50], half, CONES)).toBe(false);
   // An unused slot (radius 0) culls nothing, even straight at its centre.
   expect(
-    skyLightCulled(PAINTER_EYE, [0, 1.6, -50], half, [{ centre: [0, 1.6, -120], radius: 0 }]),
+    skyLightCulled(PAINTER_EYE, [0, 1.6, -50], half, [
+      { centre: [0, 1.6, -120], radius: 0, feather: 10 },
+    ]),
   ).toBe(false);
+  // Behind the painter, no feather reaches either: the haze draws at full size.
+  expect(skyLightThin(PAINTER_EYE, [0, 20, 50], half, CONES)).toBe(1);
 });
 
 test('a haze stroke just inside a cone is culled and one just outside is kept, from two eyes', () => {
   // The cone's edge: asin(radius / distance to the centre) plus asin(half extent / distance to the
   // stroke) off the eye's ray to the centre.
-  const half = 2.4;
+  const half = HAZE_HALF_THIN;
   const r = (HAZE_RADIUS.min + HAZE_RADIUS.max) / 2;
   const margin = 1e-4;
   for (const eye of [PAINTER_EYE, [20, 1.6, 0] as Vec3]) {
@@ -429,6 +446,222 @@ test('a haze stroke just inside a cone is culled and one just outside is kept, f
   }
 });
 
+test('past a cone the haze ramps from 0 to full over the feather, and no shrunk quad reaches the disc', () => {
+  // The feather: the cone's feather metres past its radius, as an angle from the eye, plus the
+  // stroke's half-diagonal angle. The shader scales the drawn size by sqrt(thin).
+  const half = HAZE_HALF_THIN;
+  const r = (HAZE_RADIUS.min + HAZE_RADIUS.max) / 2;
+  const margin = 1e-4;
+  // The moon and the smallest star, from the painter eye and off the spot.
+  const moon = ANCHORS.findIndex((a) => a.kind === 'moon');
+  const small = ANCHORS.reduce((best, a, i) => (a.radius < ANCHORS[best].radius ? i : best), 0);
+  for (const eye of [PAINTER_EYE, [-4, 1.6, 3] as Vec3, [20, 1.6, 0] as Vec3]) {
+    for (const cone of [CONES[moon], CONES[small]]) {
+      const a: Vec3 = [cone.centre[0] - eye[0], cone.centre[1] - eye[1], cone.centre[2] - eye[2]];
+      const lenA = Math.hypot(...a);
+      const axis: Vec3 = [a[0] / lenA, a[1] / lenA, a[2] / lenA];
+      const across: Vec3 = [-axis[2], 0, axis[0]];
+      const lenX = Math.hypot(...across);
+      const disc = Math.asin(cone.radius / lenA);
+      const beta = Math.asin(half / r);
+      const edge = disc + beta;
+      const feather = Math.asin((cone.radius + cone.feather) / lenA) - disc + beta;
+      const at = (angle: number): Vec3 => {
+        const p = (k: number): number =>
+          eye[k] + r * (Math.cos(angle) * axis[k] + (Math.sin(angle) * across[k]) / lenX);
+        return [p(0), p(1), p(2)];
+      };
+      expect(skyLightThin(eye, at(edge - margin), half, [cone])).toBe(0);
+      const justOut = skyLightThin(eye, at(edge + margin), half, [cone]);
+      expect(justOut).toBeGreaterThan(0);
+      expect(justOut).toBeLessThan(1e-4);
+      expect(skyLightThin(eye, at(edge + feather / 2), half, [cone])).toBeCloseTo(0.5, 6);
+      expect(skyLightThin(eye, at(edge + feather + margin), half, [cone])).toBe(1);
+      let last = 0;
+      for (let k = 0; k <= 64; k++) {
+        const angle = edge + (feather * k) / 64;
+        const thin = skyLightThin(eye, at(angle), half, [cone]);
+        expect(thin).toBeGreaterThanOrEqual(last);
+        last = thin;
+        // The drawn quad reaches sqrt(thin) half diagonals: its widest angle off its centre's ray
+        // still clears the disc's cone.
+        expect(angle - Math.asin((Math.sqrt(thin) * half) / r)).toBeGreaterThanOrEqual(disc);
+      }
+    }
+  }
+});
+
+test('the early-out never changes the factor, around and far beyond every feather', () => {
+  // Sweep each cone's ray outward, in four directions across it, from the edge to past the
+  // feather's far end, at three half extents (0 and the drawn far-band haze size included). A
+  // feather-0 copy of each cone exercises the SKY_LIGHT_MIN_FEATHER floor.
+  const cones: SkyLightCone[] = [...CONES, ...CONES.map((c) => ({ ...c, feather: 0 }))];
+  let skipped = 0;
+  for (const eye of [
+    PAINTER_EYE,
+    [-4, 1.6, 3] as Vec3,
+    [20, 1.6, 0] as Vec3,
+    [0, 40, -40] as Vec3,
+  ]) {
+    for (const r of [HAZE_RADIUS.min, HAZE_RADIUS.max]) {
+      for (const half of [0, HAZE_HALF_THIN, HAZE_HALF_THICK, 6]) {
+        for (const cone of cones) {
+          const a: Vec3 = [
+            cone.centre[0] - eye[0],
+            cone.centre[1] - eye[1],
+            cone.centre[2] - eye[2],
+          ];
+          const lenA = Math.hypot(...a);
+          const axis: Vec3 = [a[0] / lenA, a[1] / lenA, a[2] / lenA];
+          const u0: Vec3 = [-axis[2], 0, axis[0]];
+          const lu = Math.hypot(...u0);
+          const u: Vec3 = [u0[0] / lu, u0[1] / lu, u0[2] / lu];
+          const v: Vec3 = [
+            axis[1] * u[2] - axis[2] * u[1],
+            axis[2] * u[0] - axis[0] * u[2],
+            axis[0] * u[1] - axis[1] * u[0],
+          ];
+          const beta = Math.asin(Math.min(1, half / r));
+          const outer = Math.asin(Math.min(1, (cone.radius + cone.feather) / lenA));
+          const end = outer + 2 * beta + SKY_LIGHT_MIN_FEATHER;
+          for (let k = 0; k <= 200; k++) {
+            const angle = (end * 1.6 * k) / 200;
+            for (const phi of [0, 1.3, 2.9, 4.4]) {
+              const dir = [0, 1, 2].map(
+                (j) =>
+                  Math.cos(angle) * axis[j] +
+                  Math.sin(angle) * (Math.cos(phi) * u[j] + Math.sin(phi) * v[j]),
+              );
+              const p: Vec3 = [eye[0] + r * dir[0], eye[1] + r * dir[1], eye[2] + r * dir[2]];
+              const fast = skyLightThin(eye, p, half, [cone]);
+              const slow = skyLightThin(eye, p, half, [cone], false);
+              expect(fast).toBe(slow);
+              if (angle > end && half < 6) skipped++;
+            }
+          }
+        }
+      }
+    }
+  }
+  // The sweep reaches well past the far end, where the early-out takes over.
+  expect(skipped).toBeGreaterThan(10_000);
+  // The whole cone set at once, over the real haze shell: the same factor either way.
+  for (let i = 0; i < 2000; i++) {
+    const az = (i * 2.399963) % (2 * Math.PI);
+    const el = -0.1 + ((i * 0.618034) % 1) * 0.9;
+    const r = HAZE_RADIUS.min + ((i * 0.414214) % 1) * (HAZE_RADIUS.max - HAZE_RADIUS.min);
+    const p: Vec3 = [
+      PAINTER_EYE[0] + r * Math.cos(el) * Math.sin(az),
+      PAINTER_EYE[1] + r * Math.sin(el),
+      PAINTER_EYE[2] - r * Math.cos(el) * Math.cos(az),
+    ];
+    const half = HAZE_HALF_THIN;
+    expect(skyLightThin(PAINTER_EYE, p, half, CONES)).toBe(
+      skyLightThin(PAINTER_EYE, p, half, CONES, false),
+    );
+  }
+});
+
+test('at full haze thickness no shrunk quad reaches a disc, from any eye up to the boundary', () => {
+  // uHazeThickness 1: the shader judges the 1.5x grown quad, so the half extent is HAZE_HALF_THICK.
+  // Eyes include flight's reach: 40 m up and the 55 m boundary clamp, inside the haze shell.
+  const half = HAZE_HALF_THICK;
+  const moon = ANCHORS.findIndex((a) => a.kind === 'moon');
+  const small = ANCHORS.reduce((best, a, i) => (a.radius < ANCHORS[best].radius ? i : best), 0);
+  const large = ANCHORS.reduce((best, a, i) => (a.radius > ANCHORS[best].radius ? i : best), 0);
+  let ramped = 0;
+  const eyes: Vec3[] = [
+    PAINTER_EYE,
+    [20, 1.6, 0],
+    [0, 41.6, -30],
+    [-38.9, 30, -38.9],
+    [0, 10, -55],
+  ];
+  for (const eye of eyes) {
+    for (const cone of [CONES[moon], CONES[small], CONES[large]]) {
+      const a: Vec3 = [cone.centre[0] - eye[0], cone.centre[1] - eye[1], cone.centre[2] - eye[2]];
+      const lenA = Math.hypot(...a);
+      const axis: Vec3 = [a[0] / lenA, a[1] / lenA, a[2] / lenA];
+      const across: Vec3 = [-axis[2], 0, axis[0]];
+      const lenX = Math.hypot(...across);
+      const disc = Math.asin(cone.radius / lenA);
+      for (const r of [8, 25, HAZE_RADIUS.min, HAZE_RADIUS.max]) {
+        for (let k = 0; k <= 400; k++) {
+          const angle = (Math.PI / 2) * (k / 400);
+          const at = (j: number): number =>
+            eye[j] + r * (Math.cos(angle) * axis[j] + (Math.sin(angle) * across[j]) / lenX);
+          const p: Vec3 = [at(0), at(1), at(2)];
+          const thin = skyLightThin(eye, p, half, [cone]);
+          if (thin === 0) continue;
+          if (thin < 1) ramped++;
+          // The drawn quad reaches sqrt(thin) grown half diagonals off its centre: its widest angle
+          // off the centre's ray still clears the disc's cone.
+          const reach = Math.asin(Math.min(1, (Math.sqrt(thin) * half) / r));
+          expect(angle - reach).toBeGreaterThanOrEqual(disc);
+        }
+      }
+    }
+  }
+  expect(ramped).toBeGreaterThan(100);
+});
+
+test('an eye at a cone centre gives a number, not NaN', () => {
+  const cone = CONES[0];
+  const thin = skyLightThin(cone.centre, [0, 1.6, -50], 2.4, [cone]);
+  expect(Number.isNaN(thin)).toBe(false);
+});
+
+test('two lights whose feathers overlap combine as the product of their factors', () => {
+  // The two nearest cones, and haze strokes inside both of their feathers.
+  let best: [number, number] = [0, 1];
+  let bestD = Infinity;
+  for (let i = 0; i < CONES.length; i++) {
+    for (let j = i + 1; j < CONES.length; j++) {
+      const d = Math.hypot(
+        CONES[i].centre[0] - CONES[j].centre[0],
+        CONES[i].centre[1] - CONES[j].centre[1],
+        CONES[i].centre[2] - CONES[j].centre[2],
+      );
+      if (d < bestD) {
+        bestD = d;
+        best = [i, j];
+      }
+    }
+  }
+  const [a, b] = best.map((i) => CONES[i]);
+  const half = HAZE_HALF_THIN;
+  const r = (HAZE_RADIUS.min + HAZE_RADIUS.max) / 2;
+  let both = 0;
+  // Haze strokes on a grid of directions over the forward sky, around both lights.
+  for (let i = 0; i < 4096; i++) {
+    const az = -Math.PI / 2 + (Math.PI * (i % 64)) / 63;
+    const el = (Math.PI / 2) * (Math.floor(i / 64) / 63);
+    const p: Vec3 = [
+      PAINTER_EYE[0] + r * Math.cos(el) * Math.sin(az),
+      PAINTER_EYE[1] + r * Math.sin(el),
+      PAINTER_EYE[2] - r * Math.cos(el) * Math.cos(az),
+    ];
+    const fa = skyLightThin(PAINTER_EYE, p, half, [a]);
+    const fb = skyLightThin(PAINTER_EYE, p, half, [b]);
+    const fab = skyLightThin(PAINTER_EYE, p, half, [a, b]);
+    expect(fab).toBe(fa * fb);
+    if (fa > 0 && fa < 1 && fb > 0 && fb < 1) both++;
+  }
+  // The pair's feathers do overlap: some strokes between them are inside both ramps.
+  expect(both).toBeGreaterThan(0);
+});
+
+test('each feather is SKY_LIGHT_FEATHER anchor radii, at least the halo band', () => {
+  expect(SKY_LIGHT_FEATHER).toBeGreaterThanOrEqual(SKY_LIGHT_RIM);
+  CONES.forEach((cone, i) => {
+    expect(cone.feather).toBeCloseTo(
+      SKY_LIGHT_FEATHER * ANCHORS[i].radius * metresPerWidth(ANCHORS[i]),
+      9,
+    );
+    expect(cone.feather).toBeGreaterThan(0);
+  });
+});
+
 test('the cull flag bit is free, the defines and uniforms match, and the GLSL holds the mirror steps', () => {
   // Bit 7 is free: no other iMeta.w flag or the fit level field uses it.
   const taken =
@@ -443,9 +676,13 @@ test('the cull flag bit is free, the defines and uniforms match, and the GLSL ho
   expect(material.defines.SKY_LIGHT_CULL_FLAG).toBe('128u');
   expect(material.uniforms.uSkyLightCones.value).toHaveLength(SKY_LIGHT_CONES);
   expect(material.uniforms.uSkyLightCones.value.every((v) => v.w === 0)).toBe(true);
+  expect(material.uniforms.uSkyLightFeathers.value).toHaveLength(SKY_LIGHT_CONES);
+  expect(material.uniforms.uSkyLightFeathers.value.every((f) => f === 0)).toBe(true);
   const uniforms = skyLightConeUniforms(CONES);
+  const feathers = skyLightFeatherUniforms(CONES);
   CONES.forEach((cone, i) => {
     expect(uniforms[i].toArray()).toEqual([...cone.centre, cone.radius]);
+    expect(feathers[i]).toBe(cone.feather);
   });
   expect(CONES).toHaveLength(SKY_LIGHT_CONES);
 
@@ -459,14 +696,51 @@ test('the cull flag bit is free, the defines and uniforms match, and the GLSL ho
     'if (cone.w <= 0.0) continue;',
     'float sinA = min(1.0, cone.w / lenA);',
     'float cosA = sqrt(1.0 - sinA * sinA);',
-    'if (dot(a, h) > (cosA * cosB - sinA * sinB) * lenA * lenH) return true;',
-    '(iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u &&',
-    // The margin is the drawn quad's half diagonal.
-    'skyLightCulled((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size))',
+    'uniform float uSkyLightFeathers[SKY_LIGHT_CONES];',
+    'float beta = asin(sinB);',
+    'float d = dot(a, h);',
+    'if (d > (cosA * cosB - sinA * sinB) * lenA * lenH) return 0.0;',
+    'float alpha = asin(sinA);',
+    'float feather = max(SKY_LIGHT_MIN_FEATHER, asin(sinO) - alpha + beta);',
+    // The early-out and its guards.
+    'float lenA = max(length(a), 1e-3);',
+    'float cos2B = 1.0 - 2.0 * sinB * sinB;',
+    'float sin2B = 2.0 * sinB * cosB;',
+    'float cosK = cos2B * SKY_LIGHT_MIN_FEATHER_COS - sin2B * SKY_LIGHT_MIN_FEATHER_SIN;',
+    'float sinK = sin2B * SKY_LIGHT_MIN_FEATHER_COS + cos2B * SKY_LIGHT_MIN_FEATHER_SIN;',
+    'bool early = sinB <= 0.5;',
+    'float sinO = min(1.0, (cone.w + uSkyLightFeathers[i]) / lenA);',
+    'float cosO = sqrt(1.0 - sinO * sinO);',
+    'if (early && sinO < 1.0 && d <= (cosO * cosK - sinO * sinK) * lenA * lenH) continue;',
+    'float gap = acos(clamp(d / (lenA * lenH), -1.0, 1.0)) - alpha - beta;',
+    'thin *= smoothstep(0.0, feather, gap);',
+    'if ((iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {',
+    // The margin is the drawn quad's full half diagonal, before the shrink.
+    'thin = skyLightThin((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size));',
+    'size *= sqrt(thin);',
+    'if (thin <= 0.0) {',
     'gl_Position = vec4(2.0, 2.0, 2.0, 1.0);',
   ]) {
     expect(glsl).toContain(line);
   }
+  // The haze growth comes first, so the thin judges the grown quad; the shrink comes before the
+  // quad's corners are placed.
+  expect(glsl.indexOf('sizeScale *= 1.0 + HAZE_GROWTH * uHazeThickness;')).toBeLessThan(
+    glsl.indexOf('vec2 size = iSize * sizeScale;'),
+  );
+  expect(glsl.indexOf('vec2 size = iSize * sizeScale;')).toBeLessThan(
+    glsl.indexOf('thin = skyLightThin('),
+  );
+  expect(glsl.indexOf('size *= sqrt(thin);')).toBeLessThan(glsl.indexOf('vec3 local = iPosition'));
+  // The early-out runs before any inverse trigonometry in the loop.
+  const loop = glsl.slice(glsl.indexOf('float skyLightThin('));
+  expect(loop.indexOf('if (early && sinO < 1.0')).toBeLessThan(loop.indexOf('asin('));
+  expect(material.defines.SKY_LIGHT_MIN_FEATHER_COS).toBe(
+    Math.cos(SKY_LIGHT_MIN_FEATHER).toExponential(8),
+  );
+  expect(material.defines.SKY_LIGHT_MIN_FEATHER_SIN).toBe(
+    Math.sin(SKY_LIGHT_MIN_FEATHER).toExponential(8),
+  );
 
   // The shader's eye is three's cameraPosition, which the renderer sets from each camera's
   // matrixWorld in the same per-camera block as viewMatrix, so each XR eye (its own camera in the

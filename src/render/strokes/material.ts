@@ -17,7 +17,13 @@ import {
 } from './depth-tie-break';
 import { FIT_SCALE_MASK, FIT_SCALE_SHIFT, FIT_SCALE_STEP } from './face-clamp';
 import { STROKE_LAYER } from './instance';
-import { SKY_LIGHT_CONES, SKY_LIGHT_CULL_FLAG, skyLightConeUniforms } from './sky-light-cull';
+import {
+  SKY_LIGHT_CONES,
+  SKY_LIGHT_CULL_FLAG,
+  SKY_LIGHT_MIN_FEATHER,
+  skyLightConeUniforms,
+  skyLightFeatherUniforms,
+} from './sky-light-cull';
 import fragmentShader from './stroke.frag.glsl?raw';
 import vertexShader from './stroke.vert.glsl?raw';
 
@@ -41,7 +47,7 @@ export interface StrokeMaterialUniforms {
   uRelief: { value: number };
   /** Stroke-size multiplier: the quad's length and width scale by it. */
   uSizeScale: { value: number };
-  /** Moon and star discs whose cones cull SKY_LIGHT_CULL_FLAG strokes (sky-light-cull.ts). */
+  /** Moon and star discs whose cones thin SKY_LIGHT_CULL_FLAG strokes (sky-light-cull.ts). */
   uSkyLightCones: { value: Vector4[] };
   /**
    * Boundary haze thickening, 0-1 (P3.5): haze strokes grow by `HAZE_GROWTH` times it. The haze is
@@ -49,6 +55,8 @@ export interface StrokeMaterialUniforms {
    * as the flags byte has no spare bit for a haze flag of its own. 0 draws the world as built.
    */
   uHazeThickness: { value: number };
+  /** Each cone's feather in metres, past its radius (sky-light-cull.ts). */
+  uSkyLightFeathers: { value: number[] };
 }
 
 export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUniforms };
@@ -74,6 +82,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
     uSizeScale: { value: sizeScale },
     uSkyLightCones: { value: skyLightConeUniforms([]) },
     uHazeThickness: { value: 0 },
+    uSkyLightFeathers: { value: skyLightFeatherUniforms([]) },
   };
   const material = new RawShaderMaterial({
     glslVersion: GLSL3,
@@ -105,6 +114,9 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       SKY_LIGHT_CONES,
       SKY_LIGHT_CULL_FLAG: `${SKY_LIGHT_CULL_FLAG}u`,
       HAZE_GROWTH: glslFloat(HAZE_GROWTH),
+      SKY_LIGHT_MIN_FEATHER: glslFloat(SKY_LIGHT_MIN_FEATHER),
+      SKY_LIGHT_MIN_FEATHER_COS: glslFloat(Math.cos(SKY_LIGHT_MIN_FEATHER)),
+      SKY_LIGHT_MIN_FEATHER_SIN: glslFloat(Math.sin(SKY_LIGHT_MIN_FEATHER)),
     },
     transparent: false,
     depthWrite: true,
