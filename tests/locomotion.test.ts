@@ -1,16 +1,26 @@
-import { Euler, PerspectiveCamera, Quaternion, Scene, Vector3 } from 'three';
+import { Euler, Object3D, PerspectiveCamera, Quaternion, Scene, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 import { installDesktopControls } from '../src/desktop/controls';
 import { EYE_HEIGHT } from '../src/desktop/walk';
 import { createLocomotion, type FrameActions } from '../src/locomotion/locomotion';
 import { DEFAULT_LOCOMOTION_SETTINGS, type LocomotionSettings } from '../src/locomotion/settings';
 import type { Ground } from '../src/locomotion/step';
+import {
+  type ArcResult,
+  BLINK_DOWN,
+  GRAVITY,
+  LAUNCH_SPEED,
+  type LandingWorld,
+} from '../src/locomotion/teleport';
+import type { Vec3 } from '../src/render/strokes/frame';
 
 const IDLE: FrameActions = {
   dt: 0.05,
   move: { x: 0, y: 0 },
   sprint: false,
   turn: { x: 0, snap: 0 },
+  teleportAim: false,
+  teleportCommit: false,
 };
 const FORWARD: FrameActions = { ...IDLE, move: { x: 0, y: 1 } };
 /** A right-stick push past the snap threshold, on its first frame. */
@@ -205,7 +215,7 @@ describe('the vignette', () => {
     const scene = new Scene();
     const camera = new PerspectiveCamera();
     const desktop = installDesktopControls(document.createElement('canvas'), camera);
-    const vignette = { setAlpha: (alpha: number) => void alphas.push(alpha) };
+    const vignette = { setAlpha: (alpha: number) => void alphas.push(alpha), setFade: () => {} };
     const locomotion = createLocomotion({ scene, camera, look: desktop, settings, vignette });
     const head = new Vector3(0, 1.6, 0);
     const xr = (actions: FrameActions, frames = 1): number => {
@@ -342,6 +352,8 @@ describe('diag', () => {
       speed: 2,
       turnMode: 'snap',
       vignette: 0,
+      aim: { active: false, valid: false, reason: 'none', hit: null },
+      lastTeleport: null,
     });
     expect(first.position).toHaveLength(3);
     desktopFrame(IDLE);
@@ -349,5 +361,226 @@ describe('diag', () => {
     expect(second).toBe(first);
     expect(second.position).toBe(first.position);
     expect(second.speed).toBe(0);
+  });
+});
+
+describe('teleport', () => {
+  const AIM: FrameActions = { ...IDLE, teleportAim: true };
+  const RELEASE: FrameActions = { ...IDLE, teleportCommit: true };
+  const LEVEL: Vec3 = [0, 1, 0];
+  /** Where a shot fired level from `height` above flat ground lands, metres out. */
+  const levelReach = (height: number): number => LAUNCH_SPEED * Math.sqrt((2 * height) / GRAVITY);
+
+  function withTeleport(settings: LocomotionSettings = DEFAULT_LOCOMOTION_SETTINGS) {
+    const scene = new Scene();
+    const camera = new PerspectiveCamera();
+    const desktop = installDesktopControls(document.createElement('canvas'), camera);
+    const fades: number[] = [];
+    const shown: { valid: boolean; eye: Vec3 }[] = [];
+    const arc = {
+      hidden: 0,
+      show: (aim: ArcResult, eye: Vec3) => void shown.push({ valid: aim.valid, eye: [...eye] }),
+      hide: () => {
+        arc.hidden += 1;
+      },
+    };
+    /** The right controller's target-ray space, under the rig as main.ts parents it. */
+    const controller = new Object3D();
+    const hand = { tracked: true };
+    const locomotion = createLocomotion({
+      scene,
+      camera,
+      look: desktop,
+      settings,
+      vignette: { setAlpha: () => {}, setFade: (fade: number) => void fades.push(fade) },
+      aimSource: () => (hand.tracked ? controller : null),
+      arc,
+      now: () => 1234,
+    });
+    locomotion.rig.add(controller);
+    const desktopFrame = (actions: FrameActions): void => {
+      desktop.update();
+      locomotion.frame(actions, false);
+    };
+    const xrFrame = (actions: FrameActions, head: Vector3): void => {
+      camera.position.copy(head);
+      locomotion.frame(actions, true);
+    };
+    /** The camera's world XZ from the rig state, as step.ts computes the head's. */
+    const headXZ = (): [number, number] => {
+      const { position, yaw } = locomotion.diag();
+      const s = Math.sin(yaw);
+      const c = Math.cos(yaw);
+      return [
+        position[0] + c * camera.position.x + s * camera.position.z,
+        position[2] - s * camera.position.x + c * camera.position.z,
+      ];
+    };
+    return { arc, controller, fades, hand, locomotion, shown, desktopFrame, xrFrame, headXZ };
+  }
+
+  it('on the desktop, T aims from the eye along the view and its release jumps at once', () => {
+    const t = withTeleport();
+    // Rig yaw +90° faces -X; the level look adds nothing.
+    t.locomotion.spawn(1, 0, 2, Math.PI / 2);
+    t.desktopFrame(AIM);
+    const aim = t.locomotion.diag().aim;
+    expect(aim.active).toBe(true);
+    expect(aim.valid).toBe(true);
+    expect(aim.reason).toBe('ok');
+    const hit = [...(aim.hit as Vec3)] as Vec3;
+    expect(hit[0]).toBeCloseTo(1 - levelReach(EYE_HEIGHT), 6);
+    expect(hit[1]).toBe(0);
+    expect(hit[2]).toBeCloseTo(2, 9);
+    expect(t.locomotion.diag().lastTeleport).toBeNull();
+
+    t.desktopFrame(RELEASE);
+    const [hx, hz] = t.headXZ();
+    expect(hx).toBeCloseTo(hit[0], 9);
+    expect(hz).toBeCloseTo(hit[2], 9);
+    expect(t.locomotion.diag().position[1]).toBe(0);
+    expect(t.locomotion.diag().lastTeleport).toEqual({ from: [1, 0, 2], to: hit, t: 1234 });
+    expect(t.locomotion.diag().aim).toEqual({
+      active: false,
+      valid: false,
+      reason: 'none',
+      hit: null,
+    });
+  });
+
+  it('in XR it aims from the right controller under the rig, and jumps the head at full black', () => {
+    const t = withTeleport();
+    const yaw = 0.5;
+    t.locomotion.spawn(2, 0, 1, yaw);
+    t.controller.position.set(0.25, 1.4, -0.4);
+    const head = new Vector3(0.3, 1.6, -0.2);
+    t.xrFrame(AIM, head);
+    const hit = [...(t.locomotion.diag().aim.hit as Vec3)] as Vec3;
+    const s = Math.sin(yaw);
+    const c = Math.cos(yaw);
+    // The controller's world origin, then a level shot along the rig's -Z.
+    const ox = 2 + c * 0.25 + s * -0.4;
+    const oz = 1 - s * 0.25 + c * -0.4;
+    const reach = levelReach(1.4);
+    expect(hit[0]).toBeCloseTo(ox - s * reach, 6);
+    expect(hit[2]).toBeCloseTo(oz - c * reach, 6);
+
+    const before = [...t.locomotion.diag().position];
+    t.xrFrame(RELEASE, head);
+    // The commit frame starts the fade and moves nothing.
+    expect(t.locomotion.diag().position).toEqual(before);
+    expect(t.locomotion.diag().lastTeleport).toBeNull();
+    // The head drifts during the fade; the jump still lands it on the hit.
+    const drifted = new Vector3(0.1, 1.6, 0.3);
+    const frames = Math.ceil(BLINK_DOWN / IDLE.dt - 1e-9);
+    const fadesBefore = t.fades.length;
+    for (let i = 0; i < frames - 1; i += 1) t.xrFrame(IDLE, drifted);
+    expect(t.locomotion.diag().lastTeleport).toBeNull();
+    t.xrFrame(IDLE, drifted);
+    expect(t.fades.at(-1)).toBe(1);
+    expect(t.fades.slice(fadesBefore, -1).every((f) => f > 0 && f < 1)).toBe(true);
+    const [hx, hz] = t.headXZ();
+    expect(hx).toBeCloseTo(hit[0], 9);
+    expect(hz).toBeCloseTo(hit[2], 9);
+    expect(t.locomotion.diag().yaw).toBe(yaw);
+    expect(t.locomotion.diag().lastTeleport?.to).toEqual(hit);
+    for (let i = 0; i < 5; i += 1) t.xrFrame(IDLE, drifted);
+    expect(t.fades.at(-1)).toBe(0);
+  });
+
+  it('jumps the rig y straight onto the landing ground, with no ground-follow ease', () => {
+    const t = withTeleport();
+    const terrace: LandingWorld = {
+      ground: { heightAt: (_x, z) => (z < -2 ? -1 : 0), normalAt: () => LEVEL },
+    };
+    t.locomotion.setWorld(terrace);
+    t.locomotion.spawn(0, 0, 0, 0);
+    t.desktopFrame(AIM);
+    expect(t.locomotion.diag().aim.hit?.[1]).toBe(-1);
+    t.desktopFrame(RELEASE);
+    expect(t.locomotion.diag().position[1]).toBe(-1);
+    t.desktopFrame(IDLE);
+    expect(t.locomotion.diag().position[1]).toBe(-1);
+  });
+
+  it('an invalid aim on release does nothing', () => {
+    const t = withTeleport();
+    t.locomotion.setWorld({
+      ground: { heightAt: () => 0, normalAt: () => LEVEL },
+      blocked: () => true,
+    });
+    t.locomotion.spawn(0, 0, 0, 0);
+    t.desktopFrame(AIM);
+    expect(t.locomotion.diag().aim).toMatchObject({
+      active: true,
+      valid: false,
+      reason: 'footprint',
+    });
+    t.desktopFrame(RELEASE);
+    expect(t.locomotion.diag().position).toEqual([0, 0, 0]);
+    expect(t.locomotion.diag().lastTeleport).toBeNull();
+    for (let i = 0; i < 5; i += 1) t.desktopFrame(IDLE);
+    expect(t.locomotion.diag().position).toEqual([0, 0, 0]);
+  });
+
+  it('while aiming, snap and smooth turn are ignored and the left stick still moves', () => {
+    for (const turnMode of ['snap', 'smooth'] as const) {
+      const t = withTeleport({ ...DEFAULT_LOCOMOTION_SETTINGS, turnMode });
+      t.locomotion.spawn(0, 0, 0, 0);
+      // A diagonal right-stick push held as an aim: X past the snap threshold.
+      const diagonal: FrameActions = { ...AIM, move: { x: 0, y: 1 }, turn: { x: 0.8, snap: 1 } };
+      for (let i = 0; i < 10; i += 1) t.desktopFrame(diagonal);
+      expect(t.locomotion.diag().yaw).toBe(0);
+      expect(t.locomotion.diag().position[2]).toBeCloseTo(-1, 9);
+      // Released, the same stick turns again.
+      t.desktopFrame({ ...IDLE, turn: { x: 0.8, snap: 1 } });
+      expect(t.locomotion.diag().yaw).toBeLessThan(0);
+    }
+  });
+
+  it('draws the arc while aiming, facing the eye, and hides it otherwise', () => {
+    const t = withTeleport();
+    t.locomotion.spawn(0, 0, 0, 0);
+    t.desktopFrame(IDLE);
+    expect(t.shown).toHaveLength(0);
+    const hidden = t.arc.hidden;
+    t.desktopFrame(AIM);
+    expect(t.shown).toEqual([{ valid: true, eye: [0, EYE_HEIGHT, 0] }]);
+    expect(t.arc.hidden).toBe(hidden);
+    t.desktopFrame(RELEASE);
+    expect(t.arc.hidden).toBe(hidden + 1);
+    // The desktop never fades.
+    expect(t.fades.every((f) => f === 0)).toBe(true);
+  });
+
+  it('has no aim while a world ground loads, or in XR with no tracked right controller', () => {
+    const loading = withTeleport();
+    loading.locomotion.awaitGround();
+    loading.desktopFrame(AIM);
+    expect(loading.locomotion.diag().aim.active).toBe(false);
+    loading.desktopFrame(RELEASE);
+    expect(loading.locomotion.diag().lastTeleport).toBeNull();
+
+    const untracked = withTeleport();
+    untracked.hand.tracked = false;
+    untracked.xrFrame(AIM, new Vector3(0, 1.6, 0));
+    expect(untracked.locomotion.diag().aim.active).toBe(false);
+  });
+
+  it('setWorld binds the landing limits and the walk ground; null is the flat floor', () => {
+    const t = withTeleport();
+    t.locomotion.setWorld({
+      ground: { heightAt: () => 0.4, normalAt: () => LEVEL },
+      boundaryFactor: () => 0.2,
+    });
+    for (let i = 0; i < 40; i += 1) t.desktopFrame(IDLE);
+    expect(t.locomotion.diag().position[1]).toBeCloseTo(0.4, 6);
+    t.desktopFrame(AIM);
+    expect(t.locomotion.diag().aim.reason).toBe('boundary');
+    t.locomotion.setWorld(null);
+    t.desktopFrame(AIM);
+    expect(t.locomotion.diag().aim.reason).toBe('ok');
+    for (let i = 0; i < 40; i += 1) t.desktopFrame(IDLE);
+    expect(t.locomotion.diag().position[1]).toBeCloseTo(0, 6);
   });
 });

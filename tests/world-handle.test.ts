@@ -10,6 +10,7 @@ import * as starryNight from '../src/paintings/starry-night/index.ts';
 import type { WorldHandle } from '../src/paintings/world-module.ts';
 import { BOUNDARY_ALTITUDE, BOUNDARY_RADIUS } from '../src/world/boundary.ts';
 import { createTerrain } from '../src/world/terrain.ts';
+import { createVillage } from '../src/world/village.ts';
 
 let handle: WorldHandle;
 
@@ -49,4 +50,15 @@ test('the handle boundary factor is 0 at the spot and 1 past the edge', () => {
   expect(handle.boundaryFactor([BOUNDARY_RADIUS + 1, 0, 0])).toBe(1);
   expect(handle.boundaryFactor([0, 0, -(BOUNDARY_RADIUS + 10)])).toBe(1);
   expect(handle.boundaryFactor([0, BOUNDARY_ALTITUDE + 1, 0])).toBe(1);
+});
+
+test('the handle blocks the seed-1 village’s houses and church, and not the painter’s spot', () => {
+  const blocked = handle.blocked;
+  expect(blocked).toBeDefined();
+  if (!blocked) return;
+  const village = createVillage(1, createTerrain(1));
+  for (const house of village.houses) expect(blocked(house.center[0], house.center[2])).toBe(true);
+  expect(blocked(village.church.center[0], village.church.center[2])).toBe(true);
+  expect(blocked(0, 0)).toBe(false);
+  expect(blocked(0, -5)).toBe(false);
 });

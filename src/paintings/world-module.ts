@@ -62,6 +62,11 @@ export interface WorldHandle {
   readonly ground: WorldGround;
   /** 0 inside the world, 1 at and beyond its edge, smooth between: locomotion pushes back on it. */
   boundaryFactor(position: Vec3): number;
+  /**
+   * True where (x, z) is inside a building's footprint or within a small margin of its walls:
+   * no teleport lands there (P3.4). Omitted: a world without buildings.
+   */
+  blocked?(x: number, z: number): boolean;
 }
 
 export interface WorldModule {

@@ -4,6 +4,8 @@ precision highp float;
 
 // Strength times the comfort factor, eased (vignette-alpha.ts).
 uniform float uAlpha;
+// The teleport blink (src/locomotion/teleport.ts): uniform black over the whole view.
+uniform float uFade;
 
 in vec3 vView;
 
@@ -15,5 +17,5 @@ void main() {
   // both eyes see it at the same angle and it carries no stereo disparity.
   float angle = acos(clamp(-normalize(vView).z, -1.0, 1.0));
   float ring = smoothstep(CLEAR_RADIUS, CLEAR_RADIUS + FALLOFF, angle);
-  fragColor = vec4(0.0, 0.0, 0.0, uAlpha * ring);
+  fragColor = vec4(0.0, 0.0, 0.0, max(uAlpha * ring, uFade));
 }

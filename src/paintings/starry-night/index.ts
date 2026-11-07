@@ -26,6 +26,7 @@ import {
   PAINTER_SPOT,
 } from './canvas-camera';
 import { buildCanvasHistogram, type CanvasSource } from './canvas-histogram';
+import { createFootprintTest } from './footprints';
 import {
   createWorldGeometry,
   DEFAULT_WORLD_SEED,
@@ -137,7 +138,8 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     strokes: batch.stats(),
   }));
   const { heightAt, normalAt } = world.terrain;
-  return { batch, ground: { heightAt, normalAt }, boundaryFactor };
+  const blocked = createFootprintTest(world.village);
+  return { batch, ground: { heightAt, normalAt }, boundaryFactor, blocked };
 }
 
 /** Nothing animates yet (P4). */

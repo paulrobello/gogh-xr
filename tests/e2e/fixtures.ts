@@ -17,7 +17,7 @@ export interface Pose {
 
 export interface Diag {
   build: string;
-  renderer: { frame: number; programs: number; unmaskedRenderer: string | null };
+  renderer: { frame: number; programs: number; textures: number; unmaskedRenderer: string | null };
   xr: { supported: boolean | null; presenting: boolean; sessionMode: string | null };
   camera: { position: number[]; quaternion: number[] };
   input?: {

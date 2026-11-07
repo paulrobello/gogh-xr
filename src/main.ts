@@ -1,15 +1,17 @@
-import { PerspectiveCamera, Quaternion, Vector3, WebGLRenderer } from 'three';
+import { PerspectiveCamera, Quaternion, type Texture, Vector3, WebGLRenderer } from 'three';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { installDesktopControls } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
 import { installDiag, installPose, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
-import { createLocomotion } from './locomotion/locomotion';
+import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
+import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
 import { clampLocomotionSettings, DEFAULT_LOCOMOTION_SETTINGS } from './locomotion/settings';
 import { livePainting } from './paintings/registry';
 import type { PainterCamera, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
+import { createBrushAtlas } from './render/strokes/brush-atlas';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
@@ -20,6 +22,7 @@ import { createBareScene } from './world/bare-scene';
 import { type Actions, createInput } from './xr/input';
 import { createInputCounter } from './xr/input-counter';
 import { installKeyboardInput } from './xr/input-keyboard';
+import { trackRightController } from './xr/right-controller';
 import { createSessionController, isVrSupported, resolveTargetFrameRate } from './xr/session';
 
 // Must run before any WebXR code reads navigator.xr. The MODE guard keeps IWER out of production.
@@ -61,6 +64,16 @@ const desktop = installDesktopControls(renderer.domElement, camera);
  */
 const runLocomotion = flags.bench === null;
 const vignette = runLocomotion ? createVignette(camera) : undefined;
+/** The teleport arc's strokes, built once by `buildArc`. */
+let arcStrokes: ArcMesh | null = null;
+const strokeScene = Boolean(painting?.world) || flags.strokesTest || flags.demo === 'canvas';
+const arc: ArcTarget = {
+  show: (aim, eye) => {
+    if (!arcStrokes && !strokeScene) buildArc(createBrushAtlas());
+    arcStrokes?.show(aim, eye);
+  },
+  hide: () => arcStrokes?.hide(),
+};
 const locomotion = createLocomotion({
   scene,
   camera,
@@ -71,11 +84,25 @@ const locomotion = createLocomotion({
     turnMode: flags.turn ?? DEFAULT_LOCOMOTION_SETTINGS.turnMode,
   }),
   vignette,
+  aimSource: () => rightController?.() ?? null,
+  arc,
 });
+/** The XR teleport aim. Its controller slots must exist before a session starts. */
+const rightController = runLocomotion ? trackRightController(renderer.xr, locomotion.rig) : null;
 // three compiles a program on its first visible draw, which for the vignette is the first smooth
 // move in XR. `compile` also takes hidden meshes, and a raw shader's program does not depend on
 // the render target, so the XR draw reuses this one.
 if (vignette) renderer.compile(vignette.mesh, camera, scene);
+
+/**
+ * Builds the arc once, on `atlas`. A stroke scene's batch already holds the atlas and the stroke
+ * program, so the arc shares both. The bare scene has no batch: it builds an atlas of its own on
+ * the first aim, so a boot that never aims never pays for the 2048² atlas, its upload or the
+ * program, and the first aim does instead.
+ */
+function buildArc(atlas: Texture): void {
+  if (runLocomotion && !arcStrokes) arcStrokes = createArcMesh(scene, atlas);
+}
 /** `?painter` (fidelity capture): the world's painter camera, applied before the world builds. */
 let painterView: PainterCamera | null = null;
 // Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls.
@@ -214,6 +241,7 @@ if (flags.bench === null) {
 
 /** With two stroke scenes at once, the first batch to load is the one bound. */
 function governStrokes(batch: StrokeBatch): Promise<void> {
+  buildArc(batch.atlas);
   return strokes.batch ? Promise.resolve() : strokes.bind(batch);
 }
 
@@ -258,11 +286,11 @@ if (painting?.world) {
         debug: flags.diag ? (flags.bare ? 'bare' : flags.coverage ? 'coverage' : null) : null,
       });
       world = module;
-      locomotion.setGround(handle.ground);
+      locomotion.setWorld(handle);
       await governStrokes(handle.batch);
     })
     .catch((error: unknown) => {
-      locomotion.setGround(null);
+      locomotion.setWorld(null);
       console.warn(`painting ${painting.id} failed to start`, error);
     });
 }

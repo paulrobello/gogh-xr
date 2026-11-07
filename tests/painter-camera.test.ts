@@ -31,7 +31,14 @@ function painterCamera(): PerspectiveCamera {
   for (let i = 0; i < 10; i += 1) {
     look.update();
     locomotion.frame(
-      { dt: 0.016, move: { x: 0, y: 0 }, sprint: false, turn: { x: 0, snap: 0 } },
+      {
+        dt: 0.016,
+        move: { x: 0, y: 0 },
+        sprint: false,
+        turn: { x: 0, snap: 0 },
+        teleportAim: false,
+        teleportCommit: false,
+      },
       false,
     );
   }

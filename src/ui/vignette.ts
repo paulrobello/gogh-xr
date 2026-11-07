@@ -32,14 +32,20 @@ const DEG = Math.PI / 180;
 export interface VignetteUniforms {
   [name: string]: { value: unknown };
   uAlpha: { value: number };
+  uFade: { value: number };
 }
 
 export type VignetteMaterial = RawShaderMaterial & { uniforms: VignetteUniforms };
 
 export interface Vignette {
   readonly mesh: Mesh<SphereGeometry, VignetteMaterial>;
-  /** 0 hides the mesh, so a vignette at rest costs no draw call. */
+  /** The tunnel alpha. With the fade also at 0 the mesh hides, so rest costs no draw call. */
   setAlpha(alpha: number): void;
+  /**
+   * The teleport blink (P3.4): black over the whole view at this alpha, centre included, drawn
+   * over the tunnel. It overrides the tunnel wherever it is darker.
+   */
+  setFade(fade: number): void;
   dispose(): void;
 }
 
@@ -48,7 +54,7 @@ const glslFloat = (value: number): string => value.toExponential(8);
 
 export function createVignette(camera: Object3D): Vignette {
   const geometry = new SphereGeometry(VIGNETTE_RADIUS, 32, 16);
-  const uniforms: VignetteUniforms = { uAlpha: { value: 0 } };
+  const uniforms: VignetteUniforms = { uAlpha: { value: 0 }, uFade: { value: 0 } };
   const material = new RawShaderMaterial({
     glslVersion: GLSL3,
     vertexShader,
@@ -71,11 +77,19 @@ export function createVignette(camera: Object3D): Vignette {
   mesh.visible = false;
   camera.add(mesh);
 
+  const show = (): void => {
+    mesh.visible = uniforms.uAlpha.value > 0 || uniforms.uFade.value > 0;
+  };
+
   return {
     mesh,
     setAlpha(alpha) {
       uniforms.uAlpha.value = alpha;
-      mesh.visible = alpha > 0;
+      show();
+    },
+    setFade(fade) {
+      uniforms.uFade.value = fade;
+      show();
     },
     dispose() {
       mesh.removeFromParent();

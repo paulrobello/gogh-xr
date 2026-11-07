@@ -32,6 +32,30 @@ describe('the vignette mesh', () => {
     expect(vignette.mesh.material.uniforms.uAlpha.value).toBe(0);
   });
 
+  it('the teleport fade shows it whatever the tunnel alpha, and hides only once both are 0', () => {
+    const vignette = createVignette(new PerspectiveCamera());
+    const { uniforms } = vignette.mesh.material;
+    expect(uniforms.uFade.value).toBe(0);
+    vignette.setFade(1);
+    expect(uniforms.uFade.value).toBe(1);
+    expect(vignette.mesh.visible).toBe(true);
+    // The tunnel at rest sets alpha 0 every frame: the fade must survive it.
+    vignette.setAlpha(0);
+    expect(vignette.mesh.visible).toBe(true);
+    vignette.setAlpha(0.4);
+    vignette.setFade(0);
+    expect(vignette.mesh.visible).toBe(true);
+    vignette.setAlpha(0);
+    expect(vignette.mesh.visible).toBe(false);
+    expect(uniforms.uAlpha.value).toBe(0);
+  });
+
+  it('draws the fade as full-view black over the ring, not inside it', () => {
+    const { material } = createVignette(new PerspectiveCamera()).mesh;
+    // The ring is 0 at the centre, so the fade cannot be a factor of it.
+    expect(material.fragmentShader).toMatch(/max\(\s*uAlpha \* ring,\s*uFade\s*\)/);
+  });
+
   it('is a transparent GLSL3 overlay with no depth test or write, ordered under the HUD', () => {
     const { mesh } = createVignette(new PerspectiveCamera());
     const material = mesh.material;
