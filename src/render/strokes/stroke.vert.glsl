@@ -126,18 +126,35 @@ void main() {
   vec2 size = iSize * sizeScale;
   // Boundary haze thins toward the moon and stars (sky-light-cull.ts): the drawn size scales by
   // the square root of the factor, so the quad's area follows it. Judged at the full size, haze
-  // growth included, so a shrunk quad stays out of the disc cone at any thickness.
+  // growth included, so a shrunk quad stays out of the disc cone at any thickness. The thin is
+  // judged at rest, before the motion (R-P4b): an open gate widens the stroke by its motion reach,
+  // the farthest the motion can carry its centre, so a moved quad stays inside the judged extent
+  // and out of the disc cone. The haze around a disc then clears a little wider while the sky
+  // moves, rather than paying the motion before the thin for every haze stroke.
   float thin = 1.0;
   if ((iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {
-    thin = skyLightThin((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size));
+    float reach = motionGate(iMeta.y) ? motionReach(iMeta.y, iPosition) : 0.0;
+    thin = skyLightThin((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size) + reach);
     size *= sqrt(thin);
   }
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
   // Motion (P4.1): one AND, compare and branch for a stroke whose layer is still, or for every
-  // stroke while frozen or at calm 0. The depth hashes below keep reading the rest iPosition, so a
-  // moving stroke keeps its depth order.
-  if (motionGate(iMeta.y)) {
-    local += motionOffset(iMeta.y, iPosition, iMeta.z);
+  // stroke while frozen or at calm 0, and none for a thinned-out haze stroke. The motion is the
+  // centre's, the same at every corner; the corner work is the turn of the axes. The depth hashes
+  // below keep reading the rest iPosition, so a moving stroke keeps its depth order.
+  if (motionGate(iMeta.y) && thin > 0.0) {
+    Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z);
+    // The turn is small (SKY_SWIRL_MAX_TURN), so cosine and sine are polynomials; this pair has
+    // c² + s² <= 1, so a turned quad never outgrows its rest extent.
+    float a2 = m.turn * m.turn;
+    float c = 1.0 - 0.5 * a2;
+    float s = m.turn * (1.0 - a2 * (1.0 / 6.0));
+    vec3 turned = c * longAxis + s * shortAxis;
+    shortAxis = c * shortAxis - s * longAxis;
+    longAxis = turned;
+    size *= 1.0 + m.gain;
+    local = iPosition + m.offset + longAxis * (position.x * size.x) +
+      shortAxis * (position.y * size.y);
   }
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));
   // Depth tie-break (src/render/strokes/depth-tie-break.ts): each stroke moves towards the eye by

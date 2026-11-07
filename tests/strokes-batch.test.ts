@@ -8,6 +8,9 @@ import {
   Scene,
 } from 'three';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { motionClock } from '../src/motion/clock.ts';
+import { MOTION_LAYER_MASK } from '../src/motion/layers.ts';
+import { skySwirlReach } from '../src/motion/sky-swirl.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import {
   bandDrawCount,
@@ -43,7 +46,10 @@ function tinyAtlas(): DataTexture {
   return new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat);
 }
 
-/** Strokes in a row along -z at x = 0, one per metre: 4 m cells give one chunk per 4 strokes. */
+/**
+ * Strokes in a row along -z at x = 0, one per metre: 4 m cells give one chunk per 4 strokes. On a
+ * still layer, so no motion reach widens the cull spheres the culling tests pin.
+ */
 function row(count: number, zStart = -1): StrokeBuffers {
   const buffers = createStrokeBuffers(count);
   for (let i = 0; i < count; i++) {
@@ -54,7 +60,7 @@ function row(count: number, zStart = -1): StrokeBuffers {
       color: [200, 180, 40, 255],
       size: [0.2, 0.1],
       brush: i % 16,
-      layer: STROKE_LAYER.sky,
+      layer: STROKE_LAYER.ground,
       phase: 0,
     });
   }
@@ -81,7 +87,7 @@ function cluster(
       color: [200, 180, 40, 255],
       size: [0.04, 0.02],
       brush: i % 16,
-      layer: STROKE_LAYER.sky,
+      layer: STROKE_LAYER.ground,
       phase: 0,
     });
   }
@@ -344,7 +350,7 @@ describe('bands', () => {
       color: [255, 255, 255, 255],
       size: [1, 1],
       brush: 0,
-      layer: STROKE_LAYER.sky,
+      layer: STROKE_LAYER.ground,
       phase: 0,
     });
     const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
@@ -389,14 +395,44 @@ describe('bands', () => {
     const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
     for (const band of STROKE_BANDS) batch.setSizeMultiplier(band, 1.7);
     const cull = vi.mocked(cullAndSortInto);
-    batch.update(originCamera());
-    const spheres = cull.mock.calls.at(-1)?.[0] ?? [];
-    expect(spheres).toHaveLength(2);
     const halfDiagonal = 0.5 * Math.hypot(3, 1.2);
+    const radii = (): number[] => {
+      batch.update(originCamera());
+      const spheres = cull.mock.calls.at(-1)?.[0] ?? [];
+      expect(spheres).toHaveLength(2);
+      return spheres.map((sphere) => sphere.radius);
+    };
+    // The app clock's gate starts closed: the spheres are the rest spheres.
+    const rest = radii();
+    try {
+      motionClock.setLayerMask(MOTION_LAYER_MASK);
+      motionClock.setCalm(0.5);
+      const half = radii();
+      motionClock.setCalm(1);
+      const full = radii();
+      // Calm 0 closes the gate again.
+      motionClock.setCalm(0);
+      expect(radii()).toEqual(rest);
+      motionClock.setCalm(1);
+      motionClock.setFrozen(true);
+      expect(radii()).toEqual(rest);
+      batch.chunks.forEach((chunk, i) => {
+        const position = chunk.bounds.center.x < 0 ? [-7, 0.5, -5] : [7, 0.5, -5];
+        // Both chunks are sky: an open gate grows the sphere by calm times the exact reach (R-P4a).
+        const reach = 1.001 * skySwirlReach(position[0], position[1], position[2]);
+        expect(reach).toBeGreaterThan(0);
+        expect(half[i]).toBeCloseTo(rest[i] + 0.5 * reach, 9);
+        expect(full[i]).toBeCloseTo(rest[i] + reach, 9);
+      });
+    } finally {
+      motionClock.setFrozen(false);
+      motionClock.setCalm(1);
+      motionClock.setLayerMask(0);
+    }
     batch.chunks.forEach((chunk, i) => {
-      const sphere = spheres[i];
       const haze = chunk.bounds.center.x < 0;
       const grown = halfDiagonal * 1.7 * (haze ? 1 + HAZE_GROWTH : 1);
+      const sphere = { radius: rest[i], center: chunk.bounds.center };
       expect(sphere.radius).toBeCloseTo(grown, 6);
       // Every corner of the fully grown stroke, at any tangent angle in its plane, is inside.
       const position = haze ? [-7, 0.5, -5] : [7, 0.5, -5];

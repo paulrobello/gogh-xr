@@ -715,8 +715,9 @@ test('the cull flag bit is free, the defines and uniforms match, and the GLSL ho
     'float gap = acos(clamp(d / (lenA * lenH), -1.0, 1.0)) - alpha - beta;',
     'thin *= smoothstep(0.0, feather, gap);',
     'if ((iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {',
-    // The margin is the drawn quad's full half diagonal, before the shrink.
-    'thin = skyLightThin((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size));',
+    // The margin is the drawn quad's full half diagonal, before the shrink, plus the motion reach
+    // while the gate is open (R-P4b).
+    'thin = skyLightThin((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size) + reach);',
     'size *= sqrt(thin);',
     'if (thin <= 0.0) {',
     'gl_Position = vec4(2.0, 2.0, 2.0, 1.0);',

@@ -12,16 +12,19 @@ import {
   type LayerMotion,
   MOTION_LAYER_MASK,
   MOTION_LAYERS,
+  type Motion,
   type MotionFunctions,
   motionGate,
   motionLayerMask,
   motionOffset,
+  REST,
   STUB_MOTION,
 } from '../src/motion/motion.ts';
 import { STROKE_LAYER, type StrokeLayer } from '../src/render/strokes/instance.ts';
 import {
   createStrokeMaterial,
   MOTION_INCLUDE,
+  pinMotionPhase,
   spliceGlsl,
 } from '../src/render/strokes/material.ts';
 
@@ -33,7 +36,7 @@ const strokeGlsl = readFileSync('src/render/strokes/stroke.vert.glsl', 'utf8');
 describe('motion clock', () => {
   test('defaults: calm 1, not frozen, time 0, gate the live layers', () => {
     const clock = createMotionClock({ layerMask: ALL_MASK });
-    expect(clock.diag()).toEqual({ time: 0, calm: 1, frozen: false });
+    expect(clock.diag()).toEqual({ time: 0, calm: 1, frozen: false, layers: ALL_MASK });
     expect(clock.uniforms.uTime.value).toBe(0);
     expect(clock.uniforms.uCalm.value).toBe(1);
     expect(clock.uniforms.uFreeze.value).toBe(0);
@@ -111,11 +114,30 @@ describe('motion clock', () => {
     expect(clock.uniforms.uCalm.value).toBe(1);
   });
 
-  test('P4.1 ships no live motion: the default gate is closed for every layer', () => {
-    expect(MOTION_LAYERS).toEqual([]);
-    expect(MOTION_LAYER_MASK).toBe(0);
-    for (const layer of ALL_LAYERS) expect(motionGate(MOTION_LAYER_MASK, layer)).toBe(false);
+  test('P4.2 opens the sky alone; the app clock starts closed until a world opens it', () => {
+    expect(MOTION_LAYERS).toEqual([STROKE_LAYER.sky]);
+    expect(MOTION_LAYER_MASK).toBe(1 << STROKE_LAYER.sky);
+    for (const layer of ALL_LAYERS) {
+      expect(motionGate(MOTION_LAYER_MASK, layer)).toBe(layer === STROKE_LAYER.sky);
+    }
     expect(motionClock.uniforms.uMotionLayers.value).toBe(0);
+    expect(motionClock.diag().layers).toBe(0);
+  });
+
+  test('setLayerMask opens and closes layers, and frozen or calm 0 still close them all', () => {
+    const clock = createMotionClock({ layerMask: 0 });
+    expect(clock.uniforms.uMotionLayers.value).toBe(0);
+    clock.setLayerMask(MOTION_LAYER_MASK);
+    expect(clock.uniforms.uMotionLayers.value).toBe(MOTION_LAYER_MASK);
+    expect(clock.diag().layers).toBe(MOTION_LAYER_MASK);
+    clock.setFrozen(true);
+    expect(clock.uniforms.uMotionLayers.value).toBe(0);
+    clock.setFrozen(false);
+    clock.setCalm(0);
+    expect(clock.uniforms.uMotionLayers.value).toBe(0);
+    clock.setCalm(1);
+    clock.setLayerMask(0);
+    expect(clock.uniforms.uMotionLayers.value).toBe(0);
   });
 });
 
@@ -138,7 +160,7 @@ describe('uniform plumbing', () => {
     const material = createStrokeMaterial(new Texture());
     expect(material.vertexShader).not.toContain(MOTION_INCLUDE);
     expect(material.vertexShader).toContain(motionGlsl.trimEnd());
-    expect(material.vertexShader.indexOf('vec3 motionOffset(')).toBeLessThan(
+    expect(material.vertexShader.indexOf('Motion motionOffset(')).toBeLessThan(
       material.vertexShader.indexOf('void main()'),
     );
     for (const name of ['STROKE_LAYER_SKY', 'STROKE_LAYER_STAR', 'STROKE_LAYER_MOON']) {
@@ -153,27 +175,47 @@ describe('uniform plumbing', () => {
     expect(() => spliceGlsl('// #m\n// #m', '// #m', 'C')).toThrow(/found 2/);
   });
 
-  test('the vertex shader gates motion once, after the rest quad, with the rest position', () => {
-    const gate = strokeGlsl.indexOf('if (motionGate(iMeta.y)) {');
+  test('the vertex shader gates motion once, after the rest quad and the haze thin', () => {
+    const gate = strokeGlsl.indexOf('if (motionGate(iMeta.y) && thin > 0.0) {');
     expect(gate).toBeGreaterThan(strokeGlsl.indexOf('vec3 local = iPosition'));
+    expect(gate).toBeGreaterThan(strokeGlsl.indexOf('thin = skyLightThin('));
     expect(gate).toBeLessThan(strokeGlsl.indexOf('gl_Position = projectionMatrix'));
-    expect(strokeGlsl).toContain('local += motionOffset(iMeta.y, iPosition, iMeta.z);');
+    expect(strokeGlsl).toContain('Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z);');
     expect(strokeGlsl.match(/motionOffset\(/g)).toHaveLength(1);
+    // The haze thin widens by the reach only behind the gate (R-P4b).
+    expect(strokeGlsl).toContain(
+      'float reach = motionGate(iMeta.y) ? motionReach(iMeta.y, iPosition) : 0.0;',
+    );
     // Nothing else in main reads the motion uniforms: the closed gate is the whole default path.
     const main = strokeGlsl.slice(strokeGlsl.indexOf('void main()'));
     expect(main).not.toMatch(/uTime|uCalm|uMotionLayers/);
   });
 
-  test('motion.glsl multiplies by uCalm once, after every layer and the reactive term', () => {
-    const body = motionGlsl.slice(motionGlsl.indexOf('vec3 motionOffset('));
+  test('motion.glsl scales the offset and turn by uCalm once, after every layer and reactive', () => {
+    const start = motionGlsl.indexOf('Motion motionOffset(');
+    const body = motionGlsl.slice(start, motionGlsl.indexOf('float motionReach('));
     for (const layer of ['SKY', 'STAR', 'MOON', 'CYPRESS']) {
       expect(body).toContain(`layer == STROKE_LAYER_${layer}`);
     }
     expect(body.match(/uCalm/g)).toHaveLength(1);
-    expect(body.indexOf('return uCalm * offset;')).toBeGreaterThan(
-      body.indexOf('offset += reactiveMotion('),
+    expect(body.indexOf('return scaleMotion(m, uCalm);')).toBeGreaterThan(
+      body.indexOf('Motion r = reactiveMotion('),
     );
+    // The gain is the wrap envelope: full depth whenever the gate is open (amended R-P4e).
+    expect(motionGlsl).toContain('return Motion(k * m.offset, k * m.turn, m.gain);');
     expect(motionGlsl).toContain('return (uMotionLayers & (1u << layer)) != 0u;');
+  });
+
+  test('pinMotionPhase defines MOTION_PHASE_PIN for later materials only (e2e, R-P4g)', () => {
+    expect(createStrokeMaterial(new Texture()).defines.MOTION_PHASE_PIN).toBeUndefined();
+    pinMotionPhase(0.25);
+    try {
+      expect(createStrokeMaterial(new Texture()).defines.MOTION_PHASE_PIN).toBe('2.50000000e-1');
+    } finally {
+      pinMotionPhase(null);
+    }
+    expect(createStrokeMaterial(new Texture()).defines.MOTION_PHASE_PIN).toBeUndefined();
+    expect(motionGlsl).toContain('#ifdef MOTION_PHASE_PIN\n  float phase = MOTION_PHASE_PIN;');
   });
 });
 
@@ -183,58 +225,87 @@ describe('calm scaling', () => {
     ({ phase, time }) => {
       const v: [number, number, number] = [0, 0, 0];
       v[axis] = 1 + phase + time;
-      return v;
+      return { offset: v, turn: 0.1 + phase, gain: -0.25 };
     };
   const live: MotionFunctions = {
     sky: unit(0),
     star: unit(1),
     moon: unit(2),
     cypress: unit(0),
-    reactive: () => [0, 0, 0.5],
+    reactive: () => ({ offset: [0, 0, 0.5], turn: 0.05, gain: -0.1 }),
   };
   const p = [1, 2, 3] as const;
+  const n = [0, 0, 1] as const;
+  const flat = (m: Motion): number[] => [...m.offset, m.turn, m.gain];
 
-  test('reaches every layer: the offset is linear in calm and 0 at calm 0', () => {
+  test('reaches every layer and every field: offset and turn are linear in calm, the gain is not', () => {
     for (const layer of ALL_LAYERS) {
-      const full = motionOffset(layer, 64, p, { time: 2, calm: 1, layerMask: ALL_MASK }, live);
-      expect(Math.hypot(...full)).toBeGreaterThan(0);
+      const full = motionOffset(layer, 64, p, n, { time: 2, calm: 1, layerMask: ALL_MASK }, live);
+      expect(Math.hypot(...full.offset)).toBeGreaterThan(0);
+      expect(full.turn).not.toBe(0);
+      expect(full.gain).not.toBe(0);
       for (const calm of [0, 0.25, 0.5]) {
-        const scaled = motionOffset(layer, 64, p, { time: 2, calm, layerMask: ALL_MASK }, live);
-        for (let k = 0; k < 3; k++) expect(scaled[k]).toBeCloseTo(calm * full[k], 12);
+        const scaled = motionOffset(layer, 64, p, n, { time: 2, calm, layerMask: ALL_MASK }, live);
+        flat(scaled)
+          .slice(0, 4)
+          .forEach((value, k) => {
+            expect(value).toBeCloseTo(calm * flat(full)[k], 12);
+          });
+        // At calm 0 the clock closes the gate, so the unscaled gain never draws there.
+        expect(scaled.gain).toBeCloseTo(full.gain, 12);
       }
+    }
+  });
+
+  test('the sky shrinks to nothing at its wrap for every calm the gate is open at (I1)', () => {
+    const position = [0, 60, -100] as const;
+    const normal = [0, -0.5, 0.86] as const;
+    for (const calm of [1e-3, 0.1, 0.25, 0.5, 0.75, 1]) {
+      const uniforms = { time: 0, calm, layerMask: MOTION_LAYER_MASK };
+      // Phase byte 0 at time 0 is the wrap itself: f = 0.
+      const at = motionOffset(STROKE_LAYER.sky, 0, position, normal, uniforms);
+      expect(1 + at.gain).toBe(0);
+      // Just before it: f = 1 - 1e-6.
+      const before = motionOffset(STROKE_LAYER.sky, 0, position, normal, {
+        ...uniforms,
+        time: 8 * (1 - 1e-6),
+      });
+      expect(1 + before.gain).toBeCloseTo(0, 6);
     }
   });
 
   test('a closed gate bit leaves the stroke at rest whatever the motion', () => {
     for (const layer of ALL_LAYERS) {
       const mask = ALL_MASK & ~(1 << layer);
-      expect(motionOffset(layer, 64, p, { time: 2, calm: 1, layerMask: mask }, live)).toEqual([
-        0, 0, 0,
-      ]);
-      expect(motionOffset(layer, 64, p, { time: 2, calm: 1, layerMask: 0 }, live)).toEqual([
-        0, 0, 0,
-      ]);
+      expect(motionOffset(layer, 64, p, n, { time: 2, calm: 1, layerMask: mask }, live)).toBe(REST);
+      expect(motionOffset(layer, 64, p, n, { time: 2, calm: 1, layerMask: 0 }, live)).toBe(REST);
     }
   });
 
-  test('the layer motion sees the phase byte as a fraction and uTime', () => {
-    const seen: number[] = [];
+  test('the layer motion sees the phase byte as a fraction, the normal and uTime', () => {
+    const seen: unknown[] = [];
     const spy: MotionFunctions = {
       ...STUB_MOTION,
-      sky: ({ phase, time }) => {
-        seen.push(phase, time);
-        return [0, 0, 0];
+      sky: ({ phase, time, normal }) => {
+        seen.push(phase, time, normal);
+        return REST;
       },
     };
-    motionOffset(STROKE_LAYER.sky, 128, p, { time: 7, calm: 1, layerMask: ALL_MASK }, spy);
-    expect(seen).toEqual([0.5, 7]);
+    motionOffset(STROKE_LAYER.sky, 128, p, n, { time: 7, calm: 1, layerMask: ALL_MASK }, spy);
+    expect(seen).toEqual([0.5, 7, n]);
   });
 
-  test('the P4.1 stubs displace nothing on any layer', () => {
+  test('every layer but the sky is still in P4.2', () => {
     for (const layer of ALL_LAYERS) {
-      expect(motionOffset(layer, 200, p, { time: 3, calm: 1, layerMask: ALL_MASK })).toEqual([
-        0, 0, 0,
-      ]);
+      if (layer === STROKE_LAYER.sky) continue;
+      const m = motionOffset(layer, 200, p, n, { time: 3, calm: 1, layerMask: ALL_MASK });
+      expect(flat(m)).toEqual([0, 0, 0, 0, 0]);
     }
+    const sky = motionOffset(STROKE_LAYER.sky, 200, [0, 60, -100], [0, -0.5, 0.86], {
+      time: 3,
+      calm: 1,
+      layerMask: ALL_MASK,
+    });
+    expect(Math.hypot(...sky.offset)).toBeGreaterThan(0);
   });
 });

@@ -8,11 +8,13 @@ import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
 import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
 import { clampLocomotionSettings, DEFAULT_LOCOMOTION_SETTINGS } from './locomotion/settings';
 import { motionClock } from './motion/clock';
+import { MOTION_LAYER_MASK } from './motion/motion';
 import { livePainting } from './paintings/registry';
 import type { PainterCamera, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
+import { pinMotionPhase } from './render/strokes/material';
 import { createZdiag } from './render/zdiag';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
@@ -50,6 +52,19 @@ const renderer = new WebGLRenderer({ canvas, context });
 // The P5 settings panel will set calm; until then `?calm` does. `?noanim` freezes the clock.
 motionClock.setCalm(flags.calm ?? 1);
 motionClock.setFrozen(flags.noanim);
+/**
+ * `?motiont` pins the motion time for the e2e (R-P4g). `import.meta.env.MODE` is replaced at build
+ * time, so a production build drops this and keeps calling `motionClock.frame`.
+ */
+const pinnedMotionTime = import.meta.env.MODE === 'e2e' ? flags.motiont : null;
+if (pinnedMotionTime !== null) motionClock.uniforms.uTime.value = pinnedMotionTime;
+// `?motionphase` pins every stroke's phase and installs the swirl's TS prediction, e2e builds only.
+if (import.meta.env.MODE === 'e2e') {
+  pinMotionPhase(flags.motionphase);
+  void import('./diag/swirl-probe').then(({ predictSkyShift }) => {
+    window.__goghSkyShift = predictSkyShift;
+  });
+}
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
@@ -172,7 +187,7 @@ function renderFrame(time: number): void {
   const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
   actions = input.read(sources, keyboard, dt);
   if (flags.slow > 0) busyWait(flags.slow);
-  motionClock.frame(time);
+  if (pinnedMotionTime === null) motionClock.frame(time);
   strokes.frame(time);
   world?.update(time / 1000, dt);
   if (!renderer.xr.isPresenting) desktop.update();
@@ -278,6 +293,8 @@ if (flags.demo === 'canvas' && !painting) {
 }
 
 if (painting?.world) {
+  // Only a world moves: the canvas demo, test scene and bench share its stroke layers (R-P4f).
+  motionClock.setLayerMask(MOTION_LAYER_MASK);
   locomotion.awaitGround();
   const load = painting.world;
   Promise.all([load(), import('./demo/canvas/demo')])

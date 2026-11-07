@@ -5,10 +5,10 @@
  * one write per frame reaches the batch's band materials and the teleport arc alike.
  *
  * Speed scales with calm here, on the CPU: `uTime` advances by `dt × calm`. Scaling the time in the
- * shader (`uTime * uCalm`) would jump every stroke by `t × Δcalm` whenever calm changed. Amplitude
- * scales with calm in the shader, once, where motion.glsl dispatches on the layer.
+ * shader (`uTime * uCalm`) would jump every stroke by `t × Δcalm` whenever calm changed. Offsets
+ * and turns scale with calm in the shader, once, where motion.glsl dispatches on the layer.
  */
-import { MOTION_LAYER_MASK } from './motion';
+import { MOTION_LAYER_MASK } from './layers';
 
 /** `uTime` wraps at this many seconds, to keep float precision. Motion periods should divide it. */
 export const MOTION_TIME_WRAP_S = 3600;
@@ -19,7 +19,7 @@ export interface MotionUniforms {
   [name: string]: { value: unknown };
   /** Motion time in seconds: animation-frame time scaled by calm, held while frozen, wrapped. */
   uTime: { value: number };
-  /** Calm, 0-1 (1 is full motion): the shader multiplies every motion amplitude by it. */
+  /** Calm, 0-1 (1 is full motion): the shader multiplies every motion offset and turn by it. */
   uCalm: { value: number };
   /**
    * 1 while frozen (`?noanim`), else 0. No shader reads it: freezing also clears `uMotionLayers`,
@@ -39,6 +39,8 @@ export interface MotionState {
   readonly time: number;
   readonly calm: number;
   readonly frozen: boolean;
+  /** The layers the clock opens when not frozen and calm is above 0 (`setLayerMask`). */
+  readonly layers: number;
 }
 
 export interface MotionClock {
@@ -48,6 +50,8 @@ export interface MotionClock {
   /** Clamped to 0-1; a non-finite value means 1. */
   setCalm(calm: number): void;
   setFrozen(frozen: boolean): void;
+  /** The layers whose motion runs while the clock is not frozen and calm is above 0. */
+  setLayerMask(mask: number): void;
   diag(): MotionState;
 }
 
@@ -63,7 +67,7 @@ export function clampCalm(calm: number): number {
 }
 
 export function createMotionClock(options: MotionClockOptions = {}): MotionClock {
-  const layerMask = options.layerMask ?? MOTION_LAYER_MASK;
+  let layerMask = (options.layerMask ?? MOTION_LAYER_MASK) >>> 0;
   const uniforms: MotionUniforms = {
     uTime: { value: 0 },
     uCalm: { value: 1 },
@@ -95,12 +99,20 @@ export function createMotionClock(options: MotionClockOptions = {}): MotionClock
       frozen = value;
       sync();
     },
-    diag: () => ({ time: uniforms.uTime.value, calm, frozen }),
+    setLayerMask(mask) {
+      layerMask = mask >>> 0;
+      sync();
+    },
+    diag: () => ({ time: uniforms.uTime.value, calm, frozen, layers: layerMask }),
   };
   clock.setCalm(options.calm ?? 1);
   clock.setFrozen(options.frozen ?? false);
   return clock;
 }
 
-/** The app's one clock, whose uniforms every stroke material shares. main.ts drives it. */
-export const motionClock: MotionClock = createMotionClock();
+/**
+ * The app's one clock, whose uniforms every stroke material shares. main.ts drives it. It starts
+ * with every layer closed: main.ts opens `MOTION_LAYER_MASK` only for a world, so the P1 canvas
+ * demo, the stroke test scene and the bench, whose strokes share the sky layer, stay static (R-P4f).
+ */
+export const motionClock: MotionClock = createMotionClock({ layerMask: 0 });

@@ -1,6 +1,7 @@
 import { GLSL3, RawShaderMaterial, type Texture, Vector3, Vector4 } from 'three';
 import { type MotionUniforms, motionClock } from '../../motion/clock';
 import motionShader from '../../motion/motion.glsl?raw';
+import { skySwirlGlslDefines } from '../../motion/sky-swirl';
 import {
   BACKDROP_DOME_RANKS,
   BACKDROP_FRONT_RANK_SHIFT,
@@ -46,6 +47,8 @@ export function spliceGlsl(source: string, marker: string, chunk: string): strin
 }
 
 const vertexShader = spliceGlsl(strokeVertexShader, MOTION_INCLUDE, motionShader);
+/** The sky swirl's vortex tables and loop constants, which motion.glsl reads (P4.2). */
+const SKY_SWIRL_DEFINES = skySwirlGlslDefines();
 
 /** Towards the moon: from the upper right, in front of a viewer looking down -z. */
 export const MOON_DIRECTION: Readonly<Vector3> = new Vector3(0.45, 0.6, 0.66).normalize();
@@ -84,6 +87,18 @@ export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUnifo
 
 /** A GLSL float literal: always carries a decimal point or an exponent. */
 const glslFloat = (value: number): string => value.toExponential(8);
+
+/** The motion phase every later material pins (`pinMotionPhase`), or null for the phase bytes. */
+let pinnedMotionPhase: number | null = null;
+
+/**
+ * e2e only (`?motionphase`, main.ts, R-P4g): materials built after this call give every stroke the
+ * motion phase `phase` in place of its phase byte, through the MOTION_PHASE_PIN define, so a pinned
+ * `?motiont` moves the whole sky coherently. Materials built without it carry no trace of it.
+ */
+export function pinMotionPhase(phase: number | null): void {
+  pinnedMotionPhase = phase;
+}
 
 /**
  * Opaque alpha-to-coverage stroke material: no blending, depth write on, back faces culled (each
@@ -140,6 +155,8 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       SKY_LIGHT_MIN_FEATHER: glslFloat(SKY_LIGHT_MIN_FEATHER),
       SKY_LIGHT_MIN_FEATHER_COS: glslFloat(Math.cos(SKY_LIGHT_MIN_FEATHER)),
       SKY_LIGHT_MIN_FEATHER_SIN: glslFloat(Math.sin(SKY_LIGHT_MIN_FEATHER)),
+      ...SKY_SWIRL_DEFINES,
+      ...(pinnedMotionPhase === null ? {} : { MOTION_PHASE_PIN: glslFloat(pinnedMotionPhase) }),
     },
     transparent: false,
     depthWrite: true,

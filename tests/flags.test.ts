@@ -6,6 +6,8 @@ test('defaults when search is empty', () => {
     seed: null,
     noanim: false,
     calm: null,
+    motiont: null,
+    motionphase: null,
     shot: false,
     diag: false,
     hud: false,
@@ -35,12 +37,14 @@ test('defaults when search is empty', () => {
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort',
   );
   expect(f).toEqual({
     seed: 42,
     noanim: true,
     calm: 0.25,
+    motiont: 12.5,
+    motionphase: 0.25,
     shot: true,
     diag: true,
     hud: true,
@@ -265,4 +269,21 @@ test('calm is clamped to 0-1, and null when absent or malformed', () => {
   expect(parseFlags('?calm').calm).toBeNull();
   expect(parseFlags('?calm=abc').calm).toBeNull();
   expect(parseFlags('').calm).toBeNull();
+});
+
+test('?motiont pins a time in seconds, wrapped at 3600; negative or malformed is null', () => {
+  expect(parseFlags('?motiont=2.5').motiont).toBe(2.5);
+  expect(parseFlags('?motiont=7200').motiont).toBe(0);
+  expect(parseFlags('?motiont=-1').motiont).toBeNull();
+  expect(parseFlags('?motiont=abc').motiont).toBeNull();
+  expect(parseFlags('?motiont').motiont).toBeNull();
+});
+
+test('?motionphase pins a phase fraction, wrapped to [0, 1); negative or malformed is null', () => {
+  expect(parseFlags('?motionphase=0.3').motionphase).toBe(0.3);
+  expect(parseFlags('?motionphase=0').motionphase).toBe(0);
+  expect(parseFlags('?motionphase=2.5').motionphase).toBe(0.5);
+  expect(parseFlags('?motionphase=-0.1').motionphase).toBeNull();
+  expect(parseFlags('?motionphase=x').motionphase).toBeNull();
+  expect(parseFlags('?motionphase').motionphase).toBeNull();
 });

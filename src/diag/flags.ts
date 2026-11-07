@@ -6,6 +6,17 @@ export interface Flags {
   readonly noanim: boolean;
   /** `?calm=0..1`: the motion calm, clamped. null means the default (1, full motion). */
   readonly calm: number | null;
+  /**
+   * `?motiont=<s>`: pins the motion time at s seconds, wrapped at 3600, with the gate open. Only
+   * honoured in `--mode e2e` builds. null when absent, negative or not a number.
+   */
+  readonly motiont: number | null;
+  /**
+   * `?motionphase=<f>`: every stroke's motion phase, wrapped to [0, 1), in place of its phase byte,
+   * so a pinned `?motiont` moves the whole sky coherently. Only honoured in `--mode e2e` builds.
+   * null when absent, negative or not a number.
+   */
+  readonly motionphase: number | null;
   /** Enables `__goghShot()` in diag mode; carries no value. */
   readonly shot: boolean;
   readonly diag: boolean;
@@ -115,6 +126,16 @@ function parseCalm(raw: string | null): number | null {
   return value === null ? null : Math.min(1, Math.max(0, value));
 }
 
+function parseMotionT(raw: string | null): number | null {
+  const value = parseNumber(raw);
+  return value === null || value < 0 ? null : value % 3600;
+}
+
+function parseMotionPhase(raw: string | null): number | null {
+  const value = parseNumber(raw);
+  return value === null || value < 0 ? null : value % 1;
+}
+
 function parseCount(raw: string | null): number | null {
   const value = parseNumber(raw);
   return value === null
@@ -150,6 +171,8 @@ export function parseFlags(search: string): Flags {
     seed: parseNumber(params.get('seed')),
     noanim: parseBool(params, 'noanim'),
     calm: parseCalm(params.get('calm')),
+    motiont: parseMotionT(params.get('motiont')),
+    motionphase: parseMotionPhase(params.get('motionphase')),
     shot: parseBool(params, 'shot'),
     diag: parseBool(params, 'diag'),
     hud: parseBool(params, 'hud'),

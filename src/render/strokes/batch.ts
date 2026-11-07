@@ -13,6 +13,8 @@ import {
   type Texture,
   Vector3,
 } from 'three';
+import { motionGate } from '../../motion/layers';
+import { skySwirlReach } from '../../motion/sky-swirl';
 import { addBeforeRender } from '../scene-hooks';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import {
@@ -207,6 +209,25 @@ export function holdsHaze(buffers: StrokeBuffers): boolean {
 }
 
 /**
+ * The farthest any stroke in `buffers` moves from rest at calm 1, metres: the largest exact
+ * `skySwirlReach` of its sky strokes, times SKY_REACH_MARGIN. The cull sphere of a chunk grows by it
+ * times calm while the sky's gate is open (ruling R-P4a), so a moving stroke never leaves its
+ * sphere, and by nothing while it is closed.
+ */
+export function motionReachOf(buffers: StrokeBuffers): number {
+  let reach = 0;
+  const p = buffers.position;
+  for (let i = 0; i < buffers.count; i++) {
+    if (buffers.meta[i * 4 + 1] !== STROKE_LAYER.sky) continue;
+    reach = Math.max(reach, skySwirlReach(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]));
+  }
+  return reach * SKY_REACH_MARGIN;
+}
+
+/** Headroom for the shader's float32 motion over the float64 reach. */
+export const SKY_REACH_MARGIN = 1.001;
+
+/**
  * The sky's moon and star strokes (src/world/sky-lights.ts) are pinned: a density draws all of
  * them, so a disc stays solid at every governor level. They fill a small part of their dome
  * chunk, so the chunk's stratified order thins them like the dome, and no prefix short of most of
@@ -303,10 +324,15 @@ export function createStrokeBatch(
   /**
    * Cull spheres: the bounds with the half-diagonal scaled by the band's size multiplier, and for
    * a chunk holding boundary haze also by the haze's full growth (`HAZE_GROWTH`), so a thickened
-   * haze stroke never reaches past its sphere.
+   * haze stroke never reaches past its sphere. A chunk holding sky strokes also grows by its motion
+   * reach (`motionReachOf`) times `motionScale`, unscaled by the band.
    */
   const cullSpheres: Sphere[] = [];
   const reaches: number[] = [];
+  const motionReaches: number[] = [];
+  /** Calm while the sky's motion gate is open, else 0: the share of the motion reach applied. */
+  let motionScale = 0;
+  const motionUniforms = materials.near.uniforms;
   const halfDiagonals: number[] = [];
   for (let c = 0; c + 1 < offsets.length; c++) {
     const indices = order.subarray(offsets[c], offsets[c + 1]);
@@ -328,6 +354,7 @@ export function createStrokeBatch(
     bandOf.push(null);
     cullSpheres.push(bounds.clone());
     reaches.push(box.reach);
+    motionReaches.push(motionReachOf(data));
     halfDiagonals.push(box.halfDiagonal * (holdsHaze(data) ? 1 + HAZE_GROWTH : 1));
     chunks.push({
       mesh,
@@ -354,7 +381,8 @@ export function createStrokeBatch(
   }
 
   function applySize(i: number, band: StrokeBand): void {
-    cullSpheres[i].radius = reaches[i] + halfDiagonals[i] * sizes[band];
+    cullSpheres[i].radius =
+      reaches[i] + motionScale * motionReaches[i] + halfDiagonals[i] * sizes[band];
   }
 
   const frustum = new Frustum();
@@ -382,13 +410,21 @@ export function createStrokeBatch(
     },
     update(camera: Camera) {
       eye.setFromMatrixPosition(camera.matrixWorld);
+      const scale = motionGate(motionUniforms.uMotionLayers.value, STROKE_LAYER.sky)
+        ? motionUniforms.uCalm.value
+        : 0;
+      const rescale = scale !== motionScale;
+      motionScale = scale;
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         const band = nextBand(
           bandOf[i],
           chunkDistance(chunk.bounds.center, chunk.bounds.radius, eye),
         );
-        if (band === bandOf[i]) continue;
+        if (band === bandOf[i]) {
+          if (rescale && band) applySize(i, band);
+          continue;
+        }
         bandOf[i] = band;
         chunk.mesh.material = materials[band];
         applyDensity(i, band);
@@ -507,6 +543,7 @@ export function createStrokeBatch(
       bandOf.length = 0;
       cullSpheres.length = 0;
       reaches.length = 0;
+      motionReaches.length = 0;
       halfDiagonals.length = 0;
       for (const band of STROKE_BANDS) materials[band].dispose();
       atlas.dispose();

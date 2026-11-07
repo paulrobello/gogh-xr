@@ -215,3 +215,29 @@ test('at each of the 24 poses at most 0.5% of the view is bare, within the defau
   }
   expect(await glErrors(page)).toEqual([]);
 });
+
+test('with the sky swirl pinned mid-motion, the spot-ahead view stays within 0.5% bare', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(240_000);
+  const [ahead] = COVERAGE_POSES;
+  expect(ahead.name).toBe('spot ahead');
+  // The sweep above runs under ?noanim, so it never sees the motion's shrinking wrap strokes.
+  for (const time of [0.5, 3.7]) {
+    await xr.boot(`painting=starry-night&seed=1&shot&coverage&motiont=${time}`);
+    expect((await world(xr)).debug).toBe('coverage');
+    const motion = (await xr.diag()).motion as { time: number; frozen: boolean; layers: number };
+    expect(motion.time).toBe(time);
+    expect(motion.frozen).toBe(false);
+    expect(motion.layers).not.toBe(0);
+    await visit(page, xr, ahead);
+    const { binary, weighted } = await bareShare(page);
+    const drawn = ((await xr.diag()).world as WorldDiag).strokes.visible;
+    console.log(
+      `[e2e] coverage spot ahead at motiont ${time}: bare ${(binary * 100).toFixed(3)}%, weighted ${(weighted * 100).toFixed(3)}%, drawn ${drawn}`,
+    );
+    expect(binary).toBeLessThanOrEqual(MAX_BARE);
+  }
+  expect(await glErrors(page)).toEqual([]);
+});

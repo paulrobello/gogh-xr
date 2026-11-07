@@ -34,6 +34,14 @@ declare global {
     __goghDiag?: () => Record<string, unknown>;
     __goghShot?: () => string;
     __goghPose?: (x: number, y: number, z: number, yaw: number, pitch: number) => void;
+    /** e2e builds only: `predictSkyShift` (src/diag/swirl-probe.ts). */
+    __goghSkyShift?: (
+      u: number,
+      vDown: number,
+      calm: number,
+      time: number,
+      phase: number,
+    ) => [number, number] | null;
   }
 }
 

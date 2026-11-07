@@ -210,5 +210,38 @@
         }
       ]
     }
-  ]
+  ],
+  "vortices": {
+    "about": "Sky swirl vortices (P4.2, src/motion/sky-swirl.ts), not read by the bake. UV origin top-left, v down; radius in painting-width units, the Rankine core. speed is the angular speed at the core edge, rad/s. spin is the sense as displayed: the arms of both central swirls wind inward clockwise (flow.png ring pitch), and a vortex turns the way its arms wind inward. The central pair was fitted to flow.png's most circular flow; the eddies sit on the two largest halos.",
+    "shapes": [
+      {
+        "note": "central double swirl, left (large)",
+        "center": [0.518, 0.337],
+        "radius": 0.14,
+        "speed": 0.005,
+        "spin": "clockwise"
+      },
+      {
+        "note": "central double swirl, right",
+        "center": [0.681, 0.478],
+        "radius": 0.06,
+        "speed": 0.005,
+        "spin": "clockwise"
+      },
+      {
+        "note": "eddy round the moon's halo",
+        "center": [0.904, 0.171],
+        "radius": 0.1,
+        "speed": 0.003,
+        "spin": "clockwise"
+      },
+      {
+        "note": "eddy round the large star's halo, lower left of centre",
+        "center": [0.354, 0.529],
+        "radius": 0.08,
+        "speed": 0.003,
+        "spin": "clockwise"
+      }
+    ]
+  }
 }

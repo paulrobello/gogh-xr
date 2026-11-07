@@ -58,7 +58,7 @@ Derived from `assets/scans/starry-night.jpg` by `make bake` (`scripts/bake/analy
 <!-- bake-hashes:start -->
 | file | SHA-256 | role |
 | --- | --- | --- |
-| `assets/bake/starry-night/regions.json` | 06773ec086e93287a5e635270009c758b0beef07bdcd8b875f4056f059d85043 | bake input, hand-authored |
+| `assets/bake/starry-night/regions.json` | bd226828116d927404ad8712fe9d2ac8962b437fd03b7ff032c4f14f45e21115 | bake input, hand-authored |
 | `public/paintings/starry-night/palette.json` | 8242fe99fe1acd445db97d47fba24f0afdb341d5ca22f29226a2f5957bb1859c | bake: 24-swatch palette |
 | `public/paintings/starry-night/flow.png` | 36dfa824a20303a670941b3aa380e78496f2f3380bd6f6ebdeef2e1fecc52d97 | bake: 1024² flow field |
 | `public/paintings/starry-night/regions.png` | c86235ee902a17185e63d568b18dd1837d3e3683da3339156818039bce7bf74a | bake: 1024² region ids |
