@@ -808,7 +808,7 @@ The light-to-dark measure is the gap colour the fix changes, so it shows the gap
 
 ## Headset shimmer diagnosis (2026-11-06, on 6d82235)
 
-Paul saw a lot of z-fight on the ground, the buildings and the sky on the Quest 3. It looked the same whether he moved or held still. No fix is applied here. The evidence below does not support a depth-separation change. The one change that would cut stroke depth ties is a wider tie-break cap, and that reverses ruling Q21, so it is Paul's call.
+Paul saw a lot of z-fight on the ground, the buildings and the sky on the Quest 3. It looked the same whether he moved or held still. No fix is applied here. The evidence below does not support a depth-separation change within the Q21 cap (the 2 m cap does reach the nowrite bound). The one change that would cut stroke depth ties is a wider tie-break cap, and that reverses ruling Q21, so it is Paul's call.
 
 ### Diagnostics added
 
@@ -877,7 +877,7 @@ Depth separation sweeps on base, with rotation (shader constants only, reverted)
 
 ### Findings
 
-- **F1. Most of the desktop flicker is resampling, not depth.** Removing stroke-against-stroke depth tests outright (`paintorder`, `nowrite`) cuts total flicker by only 8-25% under rotation jitter. A 0.01° turn moves the image about 0.15 px here. The dense, high-contrast stroke edges then change one or more of their 4 MSAA samples, which crosses the 24-level threshold. No depth or sort change can remove that, and mips and anisotropy do not move it.
+- **F1. Most of the desktop flicker is resampling, not depth.** Removing stroke-against-stroke depth tests outright (`paintorder`, `nowrite`) cuts total flicker by only 8-25% under rotation jitter. A 0.01° turn moves the image about 0.13-0.15 px near the view centre (1014 px frame height, f = 507 / tan(FOV/2) px: 0.15 px at the 60° painter FOV, 0.13 px at the 70° default FOV). The dense, high-contrast stroke edges then change one or more of their 4 MSAA samples, which crosses the 24-level threshold. No depth or sort change can remove that, and mips and anisotropy do not move it.
 - **F2. Depth ties are real and show as clustered patches.** With translation jitter only, removing the depth tests drops clustered flicker as follows:
   - sky: 0.14 to 0.002;
   - ridge: 0.19 to 0.01-0.04;
@@ -888,7 +888,7 @@ Depth separation sweeps on base, with rotation (shader constants only, reverted)
   These are the overlapping-stroke fights the earlier probes found. They are small against F1 in total pixels, but they flip whole patches, which reads as z-fight.
 - **F3. Separation helps only with a wider cap.** Eight times the steps alone barely moves clustered flicker, because past 14 m the 0.25 m cap binds and the steps do not reach it. With a 2 m cap, clustered flicker reaches the `nowrite` bound at every pose (ground 2.83 to 2.08, against `nowrite`'s 2.15). That cap lets separate surfaces up to 2 m apart trade places. The stroke flicker section measured 0.41% of the far village swapping surfaces at 0.25 m, 0.78% at 0.5 m and 1.78% at 1.5 m, and ruling Q21 chose 0.25 m. Raising it is Paul's decision.
 - **F4. Alpha-to-coverage drives much of the near-ground patching.** `noa2c` cuts ground clustered flicker from 2.83 to 0.57 with rotation and from 0.99 to 0.36 without, more than removing depth tests does. The sharpened coverage (ruling R3) gives every bristle gap a 1 px a2c rim, and those rims re-dither as the view moves. Apple and Adreno lay out a2c sample masks differently, so this is the result most likely to differ in the headset.
-- **F5. The sky's remaining depth fight is the backdrop rank.** About 277 dome strokes share each of the 1024 ranks, and same-rank pairs tie at one NDC z (Sky dome strokes, above). The 0.25 m cap does not touch them.
+- **F5. The sky's remaining depth fight is probably the backdrop rank (hypothesis, not tested).** About 277 dome strokes share each of the 1024 ranks, and same-rank pairs tie at one NDC z (Sky dome strokes, above). The 0.25 m cap does not touch them.
 - `nosort` changes nothing, so the chunk sort is stable for a still eye. `nomip` is worse everywhere, and `mip` (anisotropy) changes nothing.
 
 ### For the headset
@@ -897,14 +897,14 @@ These URLs need a deployed build, which needs an approved push.
 
 - `?painting=starry-night&zdiag=nowrite`: no stroke-against-stroke depth tests, with the strokes still visible. If the shimmer drops, depth ties are the cause.
 - `?painting=starry-night&zdiag=noa2c`: tests F4.
-- `?painting=starry-night&zdiag=freeze`: the same pixels every frame. If the shimmer stays, it is the compositor's reprojection and not render-time jitter.
+- `?painting=starry-night&zdiag=freeze`: the same pixels every frame. If the shimmer stays, that points to the compositor's reprojection (or the MSAA / alpha-to-coverage resolve) and not render-time jitter. Leave this mode with the Quest button, because the frozen view makes the in-app Exit VR control hard to reach.
 - `?painting=starry-night&zdiag=strokeorder`: reproduces the live test, with the world strokes hidden. Reference only.
 - Add `&diag&hud` to any of them to read `__goghDiag().zdiag`.
 - Also worth reading: frame-to-frame deltas of `__goghDiag().camera` over CDP while Paul holds still. The real rotation noise decides how much of the shimmer F1 accounts for.
 
 ### Gates
 
-`make checkall` exited 0. `E2E_PORT=4321 make e2e` exited 0, 37 of 37 passed. Neither the scatter nor the shipped shader path changed, so SCATTER_VERSION stays 11. Fidelity and coverage run inside the e2e suite.
+`make checkall` exited 0. `E2E_PORT=4321 make e2e` exited 0, 37 of 37 passed. The scatter did not change and the default shader output is unchanged (`stroke.frag.glsl` gained an `#ifdef ZDIAG_ALPHA_TEST` block that is off by default), so SCATTER_VERSION stays 11. Fidelity and coverage run inside the e2e suite.
 
 ## Governor sheds foveation first (2026-11-06, on e0eac54)
 

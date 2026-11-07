@@ -87,7 +87,12 @@ export function createZdiag(mode: ZdiagMode | null, renderer: WebGLRenderer): Zd
       applied = true;
     },
     beforeRender(camera) {
-      if (mode !== 'freeze' || !renderer.xr.isPresenting) return;
+      if (mode !== 'freeze') return;
+      if (!renderer.xr.isPresenting) {
+        // The session ended: the next one freezes its own first frame.
+        frozen = null;
+        return;
+      }
       renderer.xr.updateCamera(camera);
       const xrCamera = renderer.xr.getCamera();
       const views = [xrCamera, ...xrCamera.cameras];
