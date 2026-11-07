@@ -25,7 +25,30 @@ import {
   PAINTER_EYE,
   type WorldLayer,
 } from '../../paintings/starry-night/canvas-camera';
-import { type CanvasSource, sampleCanvas } from '../../paintings/starry-night/canvas-histogram';
+import {
+  type CanvasSample,
+  type CanvasSource,
+  sampleCanvas,
+} from '../../paintings/starry-night/canvas-histogram';
+import {
+  facesEye,
+  jitterTint,
+  LIFT_PIVOT_QUANTILE,
+  liftLightness,
+  lightnessQuantile,
+  mixLinear,
+  pickTint,
+  SEEN_LIGHTNESS_LIFT,
+  SEEN_TINT_BLEND,
+  splitTintBands,
+  srgbToLab,
+  TINT_ROLE,
+  type Tint,
+  type TintBands,
+  type TintRole,
+  type TintTags,
+  tintSeed,
+} from '../../paintings/starry-night/village-tint';
 import { mulberry32 } from '../../util/prng';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import { BRUSHES, type BrushKind } from './brush-atlas-data';
@@ -43,7 +66,7 @@ import { strokeAxes, surfaceBasis, type Vec3 } from './frame';
 import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
 
 /** Bump when the scatter's output changes for the same inputs; part of the cache key. */
-export const SCATTER_VERSION: number = 6;
+export const SCATTER_VERSION: number = 7;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -360,6 +383,81 @@ function cameraDirection(point: Vec3, n: Vec3, angle: number): Vec3 | null {
   return scale(dir, 1 / len);
 }
 
+function tintTagsOf(geometry: BufferGeometry): TintTags | null {
+  const tint = geometry.userData.tint as TintTags | undefined;
+  return tint?.owner instanceof Uint16Array && tint.role instanceof Uint8Array ? tint : null;
+}
+
+/** How a tagged triangle is painted: its owner's tint, and the lightness lift on its seen strokes. */
+interface VillagePaint {
+  readonly tint: Tint;
+  /** SEEN_LIGHTNESS_LIFT on a church wall or spire triangle, else null. */
+  readonly lift: { readonly t: number; readonly pivot: number; readonly target: number } | null;
+}
+
+/**
+ * Each triangle's paint on a tagged village mesh (`userData.tint`): its owner's pick for its role,
+ * seeded from the world seed, the layer and the owner, so it does not depend on stroke order.
+ */
+function tintLookup(
+  tags: TintTags,
+  bands: TintBands,
+  seed: number,
+  layer: WorldLayer,
+  layerIndex: number,
+  source: CanvasSource,
+): (triangle: number) => VillagePaint {
+  const picked = new Map<number, VillagePaint>();
+  const lift = SEEN_LIGHTNESS_LIFT[layer] ?? 0;
+  const pivot =
+    lift > 0
+      ? lightnessQuantile(source.histogram, LAYER_REGION[layer], LIFT_PIVOT_QUANTILE)
+      : Infinity;
+  return (triangle) => {
+    const owner = tags.owner[triangle];
+    const role = tags.role[triangle] as TintRole;
+    const key = owner * 4 + role;
+    let paint = picked.get(key);
+    if (!paint) {
+      const tint = pickTint(bands[role], tintSeed(seed, layerIndex, owner, role));
+      paint = {
+        tint,
+        lift:
+          lift > 0 && role === TINT_ROLE.churchWall
+            ? { t: lift, pivot, target: srgbToLab(tint.rgb)[0] }
+            : null,
+      };
+      picked.set(key, paint);
+    }
+    return paint;
+  };
+}
+
+/**
+ * Paint on a tagged village face: where the face is turned toward the painter's spot and the
+ * point is in frame on the layer's region (no occlusion test), the scan pixel, moved toward the
+ * stroke's tint colour by the layer's SEEN_TINT_BLEND and lifted in lightness by the paint's lift;
+ * elsewhere a stroke colour around the owner's tint. Always advances `rng` once, from the mesh's
+ * own tint stream.
+ */
+function villagePaint(
+  sample: CanvasSample,
+  paint: VillagePaint,
+  point: Vec3,
+  normal: Vec3,
+  layer: WorldLayer,
+  rng: () => number,
+): Vec3 {
+  const jittered = jitterTint(paint.tint, rng);
+  let rgb = jittered;
+  if (!sample.extrapolated && facesEye(point, normal, PAINTER_EYE)) {
+    rgb = mixLinear(sample.rgb, jittered, SEEN_TINT_BLEND[layer] ?? 0);
+    const { lift } = paint;
+    if (lift) rgb = liftLightness(rgb, lift.pivot, lift.target, lift.t);
+  }
+  return [rgb[0], rgb[1], rgb[2]];
+}
+
 function checkSize(size: GradedSize, label: string): void {
   if (!(size.near > 0) || !(size.far >= size.near) || !(size.slope >= 0)) {
     throw new RangeError(`bad graded size ${JSON.stringify(size)} for ${label}`);
@@ -436,7 +534,8 @@ function planOutlines(surfaces: readonly Surface[], budget: number): void {
  * meshes within a layer changes it.
  *
  * Per stroke: colour and flow from `sampleCanvas` (emissive meshes keep `userData.color`, linear
- * RGB, sRGB encoded), the colour divided by `strokeShade`; the flags (`DEPTH_TIE_BREAK_FRONT_FLAG` on
+ * RGB, sRGB encoded; meshes tagged with `userData.tint` take `villagePaint`, from their own tint
+ * streams), the colour divided by `strokeShade`; the flags (`DEPTH_TIE_BREAK_FRONT_FLAG` on
  * emissive meshes, `DEPTH_BACKDROP_FLAG` on meshes with `userData.backdrop`, the sky dome); the
  * interpolated vertex normal (the face normal without one); the tangent laid into the surface plane
  * through the painter's camera in frame, or against `stableFrame` where the sample was
@@ -488,12 +587,20 @@ export function scatterSurfaces(
   planOutlines(surfaces, Math.floor(OUTLINE_SHARE * clamped));
   for (const { outline } of surfaces) total += outline?.reduce((sum, c) => sum + c, 0) ?? 0;
 
-  // Pass 2: placement, from each mesh's placement stream.
+  // Pass 2: placement, from each mesh's placement stream. Village tints draw from their own
+  // streams, so the placement streams, and every stroke's position, size and brush, are unchanged.
+  const bands = surfaces.some((s) => tintTagsOf(s.geometry))
+    ? splitTintBands(source.histogram)
+    : null;
   const buffers = createStrokeBuffers(total);
   let index = 0;
   for (const surface of surfaces) {
     const { geometry, layer, layerIndex, meshIndex, size, counts, faces } = surface;
     const rand = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 1));
+    const tags = tintTagsOf(geometry);
+    const tintOf =
+      tags && bands ? tintLookup(tags, bands, options.seed, layer, layerIndex, source) : null;
+    const tintRand = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 3));
     const style = REGION_STYLES[LAYER_REGION[layer]];
     const emissive = emissiveColor(geometry);
     const backdrop = geometry.userData.backdrop === true;
@@ -554,7 +661,9 @@ export function scatterSurfaces(
         const frame = along ? { right: along, up: cross(decoded, along) } : stableFrame(decoded);
         const angle = (along ? 0 : sample.flowAngle) + flip;
         const shade = strokeShade(decoded);
-        const rgb = emissive ?? sample.rgb;
+        const rgb =
+          emissive ??
+          (tintOf ? villagePaint(sample, tintOf(t), point, normal, layer, tintRand) : sample.rgb);
         let tangent = canvasTangent(decoded, frame.right, frame.up, angle);
         let centre: Vec3 = point;
         let quad: [number, number] = [strokeLength, strokeLength * BRUSHES[brush].aspect];
@@ -611,7 +720,7 @@ export function scatterSurfaces(
       }
     }
     if (faces && surface.outline) {
-      index = placeOutlines(buffers, index, surface, faces, source, options.seed);
+      index = placeOutlines(buffers, index, surface, faces, source, options.seed, tintOf);
     }
   }
   return buffers;
@@ -620,8 +729,9 @@ export function scatterSurfaces(
 /**
  * Places a surface's outline strokes, from its outline stream: along each face side, evenly with
  * jitter, the long axis along the side, fitted flush inside it (`fitStrokeToFace`), coloured from
- * the canvas at the edge darkened by OUTLINE_DARKEN, and lifted by the share of its quad size
- * (`sizeShare`) like every other ranked stroke. Returns the next free index.
+ * the canvas at the edge (or `villagePaint` on a tagged mesh) darkened by OUTLINE_DARKEN, and
+ * lifted by the share of its quad size (`sizeShare`) like every other ranked stroke. Returns the
+ * next free index.
  */
 function placeOutlines(
   buffers: StrokeBuffers,
@@ -630,17 +740,25 @@ function placeOutlines(
   faces: FaceSet,
   source: CanvasSource,
   seed: number,
+  tintOf: ((triangle: number) => VillagePaint) | null,
 ): number {
   const { layer, layerIndex, meshIndex, size } = surface;
   const outline = surface.outline;
   if (!outline) return start;
   const rand = mulberry32(streamSeed(seed, layerIndex, meshIndex, 2));
+  const tintRand = mulberry32(streamSeed(seed, layerIndex, meshIndex, 4));
+  // A triangle of each face, for its owner's tint.
+  const faceTriangle = new Int32Array(faces.faces.length).fill(-1);
+  faces.faceOf.forEach((f, t) => {
+    if (f >= 0 && faceTriangle[f] < 0) faceTriangle[f] = t;
+  });
   const style = REGION_STYLES[LAYER_REGION[layer]];
   const straight = style.brushes.filter((b) => OUTLINE_KINDS.includes(BRUSHES[b].kind));
   const brushes = straight.length > 0 ? straight : style.brushes;
   let index = start;
   let k = 0;
-  for (const face of faces.faces) {
+  for (const [f, face] of faces.faces.entries()) {
+    const tint = tintOf ? tintOf(faceTriangle[f]) : null;
     const decoded = decodedNormal(face.normal);
     const { b1, b2 } = surfaceBasis(decoded);
     const shade = strokeShade(decoded);
@@ -682,7 +800,10 @@ function placeOutlines(
           SCATTER_DEPTH_JITTER *
           graded *
           sizeShare(Math.fround(outlineSize[0]), Math.fround(outlineSize[1]));
-        const rgb = sample.rgb.map((c) => (c * OUTLINE_DARKEN) / shade);
+        const paint = tint
+          ? villagePaint(sample, tint, point, face.normal, layer, tintRand)
+          : sample.rgb;
+        const rgb = paint.map((c) => (c * OUTLINE_DARKEN) / shade);
         packInstance(buffers, index++, {
           position: [
             fitted.centre[0] + face.normal[0] * lift,

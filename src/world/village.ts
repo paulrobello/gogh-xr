@@ -18,6 +18,7 @@ import {
   projectToCanvas,
   type Vec2,
 } from '../paintings/starry-night/canvas-camera';
+import { TINT_ROLE, type TintRole, type TintTags } from '../paintings/starry-night/tint-tags';
 import type { Vec3 } from '../render/strokes/frame';
 import { mulberry32 } from '../util/prng';
 import {
@@ -227,7 +228,8 @@ export interface Village {
   readonly windows: readonly WindowRecord[];
   /**
    * Merged flat-shaded triangle soups, one per world layer, each tagged in `userData.layer`. The
-   * window geometry also carries `userData.emissive = true` and `userData.color = WINDOW_COLOR`.
+   * window geometry also carries `userData.emissive = true` and `userData.color = WINDOW_COLOR`;
+   * the building, roof and church geometries carry per-triangle paint tags in `userData.tint`.
    */
   readonly geometries: Readonly<{
     building: BufferGeometry;
@@ -453,6 +455,11 @@ function buildChurch(m: MeshBuilder, church: ChurchPlan): void {
   pushGableRoof(m, nave, box);
 }
 
+/** Per-triangle paint tags (`userData.tint`, village-tint.ts) from owners and a role per triangle. */
+function tintTags(owner: readonly number[], role: (triangle: number) => TintRole): TintTags {
+  return { owner: Uint16Array.from(owner), role: Uint8Array.from(owner, (_, t) => role(t)) };
+}
+
 /** Lays out the seeded village and church on `terrain` and builds their per-layer geometry. */
 export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>): Village {
   const rand = mulberry32(seed ^ 0x51ed270b);
@@ -537,9 +544,13 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
   const glass = createMeshBuilder();
   const churchMesh = createMeshBuilder();
   const windows: WindowRecord[] = [];
+  const wallOwner: number[] = [];
+  const roofOwner: number[] = [];
   boxes.forEach(({ frame, box, groundTop }, house) => {
     pushGableWalls(building, frame, box);
     pushGableRoof(roof, frame, box);
+    while (wallOwner.length < building.positions.length / 9) wallOwner.push(house);
+    while (roofOwner.length < roof.positions.length / 9) roofOwner.push(house);
     const y = (groundTop + box.eave) / 2;
     const walls: { lx: number; lz: number; span: number; onGable: boolean }[] = [
       { lx: 0, lz: 1, span: box.width, onGable: false },
@@ -581,16 +592,35 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
   const windowGeometry = toGeometry(glass, 'window');
   windowGeometry.userData.emissive = true;
   windowGeometry.userData.color = WINDOW_COLOR;
+  const buildingGeometry = toGeometry(building, 'building');
+  const roofGeometry = toGeometry(roof, 'roof');
+  const churchGeometry = toGeometry(churchMesh, 'church');
+  buildingGeometry.userData.tint = tintTags(wallOwner, () => TINT_ROLE.wall);
+  roofGeometry.userData.tint = tintTags(roofOwner, () => TINT_ROLE.roof);
+  // Church walls (tower shaft, nave walls and gables) are exactly vertical, and the spire lies
+  // wholly above the tower top: both take the church wall tint (the painting's spire is pale). The
+  // nave roof is the rest, below the tower top.
+  const { normals: churchNormals, positions: churchPositions } = churchMesh;
+  const spireFrom = church.frame.base + church.towerTop - 1e-6;
+  const aboveTower = (t: number): boolean =>
+    [1, 4, 7].every((k) => churchPositions[t * 9 + k] >= spireFrom);
+  churchGeometry.userData.tint = tintTags(
+    new Array<number>(churchNormals.length / 9).fill(0),
+    (t) =>
+      Math.abs(churchNormals[t * 9 + 1]) < 1e-6 || aboveTower(t)
+        ? TINT_ROLE.churchWall
+        : TINT_ROLE.roof,
+  );
   return {
     seed,
     houses,
     church: church.record,
     windows,
     geometries: Object.freeze({
-      building: toGeometry(building, 'building'),
-      roof: toGeometry(roof, 'roof'),
+      building: buildingGeometry,
+      roof: roofGeometry,
       window: windowGeometry,
-      church: toGeometry(churchMesh, 'church'),
+      church: churchGeometry,
     }),
   };
 }
