@@ -7,6 +7,7 @@ import { flags } from './diag/flags';
 import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
 import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
 import { clampLocomotionSettings, DEFAULT_LOCOMOTION_SETTINGS } from './locomotion/settings';
+import { motionClock } from './motion/clock';
 import { livePainting } from './paintings/registry';
 import type { PainterCamera, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
@@ -46,6 +47,9 @@ const context = canvas.getContext('webgl2', {
 });
 if (!context) throw new Error('WebGL2 is not available');
 const renderer = new WebGLRenderer({ canvas, context });
+// The P5 settings panel will set calm; until then `?calm` does. `?noanim` freezes the clock.
+motionClock.setCalm(flags.calm ?? 1);
+motionClock.setFrozen(flags.noanim);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
@@ -168,6 +172,7 @@ function renderFrame(time: number): void {
   const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
   actions = input.read(sources, keyboard, dt);
   if (flags.slow > 0) busyWait(flags.slow);
+  motionClock.frame(time);
   strokes.frame(time);
   world?.update(time / 1000, dt);
   if (!renderer.xr.isPresenting) desktop.update();
@@ -205,6 +210,7 @@ if (flags.diag) {
   }));
   registerDiag('zdiag', () => zdiag.diag());
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
+  registerDiag('motion', () => motionClock.diag());
   if (runLocomotion) registerDiag('rig', () => locomotion.diag());
   installPose(locomotion.setPose);
 }

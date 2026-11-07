@@ -1,7 +1,8 @@
 /**
  * `?demo=canvas`: the P1 test canvas (PRD P1-A2). Decodes the painting and its bake outputs in the
- * browser, places the strokes and attaches one stroke batch. Nothing animates yet, so `?noanim`
- * changes nothing here and `?shot` captures are deterministic for a `?seed`.
+ * browser, places the strokes and attaches one stroke batch. `?noanim` freezes the motion clock
+ * (src/motion/clock.ts), so every stroke sits at rest and `?shot` captures are deterministic for a
+ * `?seed`.
  */
 import type { Scene } from 'three';
 import { registerDiag, unregisterDiag } from '../../diag/diag';

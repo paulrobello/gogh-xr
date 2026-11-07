@@ -1,4 +1,6 @@
 import { GLSL3, RawShaderMaterial, type Texture, Vector3, Vector4 } from 'three';
+import { type MotionUniforms, motionClock } from '../../motion/clock';
+import motionShader from '../../motion/motion.glsl?raw';
 import {
   BACKDROP_DOME_RANKS,
   BACKDROP_FRONT_RANK_SHIFT,
@@ -25,7 +27,25 @@ import {
   skyLightFeatherUniforms,
 } from './sky-light-cull';
 import fragmentShader from './stroke.frag.glsl?raw';
-import vertexShader from './stroke.vert.glsl?raw';
+import strokeVertexShader from './stroke.vert.glsl?raw';
+
+/** The line in stroke.vert.glsl that motion.glsl replaces. */
+export const MOTION_INCLUDE = '// #include motion.glsl';
+
+/**
+ * Splices `chunk` in place of the line starting `marker` in `source`. Throws unless exactly one
+ * line does. three's own `#include <name>` resolves against its ShaderChunk table, even for a raw
+ * shader, so the stroke shader uses a comment marker instead.
+ */
+export function spliceGlsl(source: string, marker: string, chunk: string): string {
+  const lines = source.split('\n');
+  const at = lines.flatMap((line, i) => (line.startsWith(marker) ? [i] : []));
+  if (at.length !== 1) throw new Error(`expected one "${marker}" line, found ${at.length}`);
+  lines.splice(at[0], 1, chunk.trimEnd());
+  return lines.join('\n');
+}
+
+const vertexShader = spliceGlsl(strokeVertexShader, MOTION_INCLUDE, motionShader);
 
 /** Towards the moon: from the upper right, in front of a viewer looking down -z. */
 export const MOON_DIRECTION: Readonly<Vector3> = new Vector3(0.45, 0.6, 0.66).normalize();
@@ -39,7 +59,8 @@ export const RELIEF_MIN_TEXELS = 2;
  */
 export const HAZE_GROWTH = 0.5;
 
-export interface StrokeMaterialUniforms {
+/** The motion uniforms (src/motion/clock.ts) are `motionClock`'s own objects, shared by reference. */
+export interface StrokeMaterialUniforms extends MotionUniforms {
   [name: string]: { value: unknown };
   uAtlas: { value: Texture };
   uBrushRects: { value: Vector4[] };
@@ -83,6 +104,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
     uSkyLightCones: { value: skyLightConeUniforms([]) },
     uHazeThickness: { value: 0 },
     uSkyLightFeathers: { value: skyLightFeatherUniforms([]) },
+    ...motionClock.uniforms,
   };
   const material = new RawShaderMaterial({
     glslVersion: GLSL3,
@@ -108,6 +130,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       STROKE_LAYER_SKY: `${STROKE_LAYER.sky}u`,
       STROKE_LAYER_STAR: `${STROKE_LAYER.star}u`,
       STROKE_LAYER_MOON: `${STROKE_LAYER.moon}u`,
+      STROKE_LAYER_CYPRESS: `${STROKE_LAYER.cypress}u`,
       FIT_SCALE_SHIFT: `${FIT_SCALE_SHIFT}u`,
       FIT_SCALE_MASK: `${FIT_SCALE_MASK}u`,
       FIT_SCALE_STEP: glslFloat(FIT_SCALE_STEP),

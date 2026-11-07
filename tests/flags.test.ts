@@ -5,6 +5,7 @@ test('defaults when search is empty', () => {
   expect(parseFlags('')).toEqual({
     seed: null,
     noanim: false,
+    calm: null,
     shot: false,
     diag: false,
     hud: false,
@@ -34,11 +35,12 @@ test('defaults when search is empty', () => {
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort',
+    '?seed=42&noanim&calm=0.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort',
   );
   expect(f).toEqual({
     seed: 42,
     noanim: true,
+    calm: 0.25,
     shot: true,
     diag: true,
     hud: true,
@@ -251,4 +253,16 @@ test('zdiag is one of the diagnostic modes, trimmed and lower-cased, null otherw
   expect(parseFlags('?zdiag=bogus').zdiag).toBeNull();
   expect(parseFlags('?zdiag').zdiag).toBeNull();
   expect(parseFlags('').zdiag).toBeNull();
+});
+
+test('calm is clamped to 0-1, and null when absent or malformed', () => {
+  expect(parseFlags('?calm=0.5').calm).toBe(0.5);
+  expect(parseFlags('?calm=0').calm).toBe(0);
+  expect(parseFlags('?calm=1').calm).toBe(1);
+  expect(parseFlags('?calm=2').calm).toBe(1);
+  expect(parseFlags('?calm=-1').calm).toBe(0);
+  expect(parseFlags('?calm= .75 ').calm).toBe(0.75);
+  expect(parseFlags('?calm').calm).toBeNull();
+  expect(parseFlags('?calm=abc').calm).toBeNull();
+  expect(parseFlags('').calm).toBeNull();
 });

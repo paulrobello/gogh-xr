@@ -37,6 +37,8 @@ flat out vec3 vNormal;
 flat out vec3 vLong;
 flat out vec3 vShort;
 
+// #include motion.glsl (src/motion/motion.glsl, spliced in by material.ts)
+
 // Matches octDecode in instance.ts.
 vec3 octDecode(vec2 e) {
   vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y));
@@ -131,6 +133,12 @@ void main() {
     size *= sqrt(thin);
   }
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
+  // Motion (P4.1): one AND, compare and branch for a stroke whose layer is still, or for every
+  // stroke while frozen or at calm 0. The depth hashes below keep reading the rest iPosition, so a
+  // moving stroke keeps its depth order.
+  if (motionGate(iMeta.y)) {
+    local += motionOffset(iMeta.y, iPosition, iMeta.z);
+  }
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));
   // Depth tie-break (src/render/strokes/depth-tie-break.ts): each stroke moves towards the eye by
   // a stable random share of the range, in clip z. Only gl_Position changes, so early-z holds.

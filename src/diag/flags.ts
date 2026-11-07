@@ -2,7 +2,10 @@ import type { TurnMode } from '../locomotion/settings';
 
 export interface Flags {
   readonly seed: number | null;
+  /** `?noanim`: freezes the motion clock, so every stroke sits at rest and time holds. */
   readonly noanim: boolean;
+  /** `?calm=0..1`: the motion calm, clamped. null means the default (1, full motion). */
+  readonly calm: number | null;
   /** Enables `__goghShot()` in diag mode; carries no value. */
   readonly shot: boolean;
   readonly diag: boolean;
@@ -107,6 +110,11 @@ function parseSlow(raw: string | null): number {
   return value === null ? 0 : Math.min(MAX_SLOW_MS, Math.max(0, value));
 }
 
+function parseCalm(raw: string | null): number | null {
+  const value = parseNumber(raw);
+  return value === null ? null : Math.min(1, Math.max(0, value));
+}
+
 function parseCount(raw: string | null): number | null {
   const value = parseNumber(raw);
   return value === null
@@ -141,6 +149,7 @@ export function parseFlags(search: string): Flags {
   return Object.freeze({
     seed: parseNumber(params.get('seed')),
     noanim: parseBool(params, 'noanim'),
+    calm: parseCalm(params.get('calm')),
     shot: parseBool(params, 'shot'),
     diag: parseBool(params, 'diag'),
     hud: parseBool(params, 'hud'),
