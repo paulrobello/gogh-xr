@@ -8,19 +8,26 @@ import {
   Scene,
 } from 'three';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import {
   bandDrawCount,
   DEFAULT_BAND_DENSITY,
   DEFAULT_BAND_SIZE,
   STROKE_BANDS,
 } from '../src/render/strokes/bands.ts';
-import { createStrokeBatch, type StrokeBatch } from '../src/render/strokes/batch.ts';
+import {
+  createStrokeBatch,
+  isPinnedStroke,
+  type StrokeBatch,
+} from '../src/render/strokes/batch.ts';
 import { cullAndSortInto } from '../src/render/strokes/chunks.ts';
+import { importanceOrder } from '../src/render/strokes/importance.ts';
 import {
   createStrokeBuffers,
   packInstance,
   STROKE_LAYER,
   type StrokeBuffers,
+  selectStrokes,
 } from '../src/render/strokes/instance.ts';
 import { mulberry32 } from '../src/util/prng.ts';
 
@@ -470,6 +477,79 @@ describe('per-frame cull buffers (M3)', () => {
       expect(call[3]).toBe(first[3]);
       expect(call[4]).toBe(first[4]);
     }
+    batch.dispose();
+  });
+});
+
+describe('pinned strokes', () => {
+  /**
+   * `cluster` with every `every`-th stroke moved to the star or moon layer, alternately, with
+   * DEPTH_BACKDROP_FLAG as the sky lights carry it.
+   */
+  function withLights(count: number, every: number): StrokeBuffers {
+    const buffers = cluster(count, [0, 0, -2], 3);
+    for (let i = 0; i < count; i += every) {
+      buffers.meta[i * 4 + 1] = (i / every) % 2 ? STROKE_LAYER.moon : STROKE_LAYER.star;
+      buffers.meta[i * 4 + 3] = DEPTH_BACKDROP_FLAG;
+    }
+    return buffers;
+  }
+
+  test('star and moon strokes without the backdrop flag (the P1 canvas) are not pinned', () => {
+    const buffers = withLights(400, 8);
+    for (let i = 0; i < buffers.count; i += 8) buffers.meta[i * 4 + 3] = 0;
+    const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    expect(batch.chunks.every((c) => c.pinned === 0)).toBe(true);
+    batch.dispose();
+  });
+
+  test('a chunk with no pinned stroke keeps the plain importance order and draw counts', () => {
+    // One cell at the origin, so the chunk's order seed is the batch seed itself.
+    const buffers = cluster(300, [2, 2, 2], 5);
+    const batch = createStrokeBatch(buffers, { cellSize: 100, seed: 7, createAtlas: tinyAtlas });
+    const [chunk] = batch.chunks;
+    expect(chunk.pinned).toBe(0);
+    const identity = Uint32Array.from({ length: buffers.count }, (_, i) => i);
+    const expected = selectStrokes(buffers, importanceOrder(buffers.position, identity, 7));
+    expect(chunk.geometry.getAttribute('iPosition').array).toEqual(expected.position);
+    batch.update(originCamera());
+    const band = chunk.band ?? 'near';
+    for (const d of [0, 0.1, 0.28, 0.4, 1]) {
+      batch.setDensity(band, d);
+      expect(chunk.drawCount).toBe(bandDrawCount(d, chunk.count));
+    }
+    batch.dispose();
+  });
+
+  test('star and moon strokes come first in their chunk and every density draws them all', () => {
+    const buffers = withLights(400, 8);
+    let lights = 0;
+    for (let i = 0; i < buffers.count; i++) if (isPinnedStroke(buffers, i)) lights++;
+    expect(lights).toBe(50);
+    const plain = createStrokeBatch(cluster(400, [0, 0, -2], 3), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+    });
+    const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    // Pinning adds no chunk, so no draw call.
+    expect(batch.chunks).toHaveLength(plain.chunks.length);
+    expect(batch.chunks.reduce((sum, c) => sum + c.pinned, 0)).toBe(lights);
+    batch.update(originCamera());
+    for (const chunk of batch.chunks) {
+      const meta = chunk.geometry.getAttribute('iMeta').array as Uint8Array;
+      for (let k = 0; k < chunk.count; k++) {
+        const layer = meta[k * 4 + 1];
+        const light = layer === STROKE_LAYER.star || layer === STROKE_LAYER.moon;
+        const pinned = light && (meta[k * 4 + 3] & DEPTH_BACKDROP_FLAG) !== 0;
+        expect(pinned).toBe(k < chunk.pinned);
+      }
+      const band = chunk.band ?? 'near';
+      for (const d of [0, 0.1, 0.28, 0.4, 1]) {
+        batch.setDensity(band, d);
+        expect(chunk.drawCount).toBe(chunk.pinned + bandDrawCount(d, chunk.count - chunk.pinned));
+      }
+    }
+    plain.dispose();
     batch.dispose();
   });
 });

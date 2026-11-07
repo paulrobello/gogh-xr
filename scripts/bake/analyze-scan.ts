@@ -1,6 +1,6 @@
 /**
- * `make bake`: analyzes assets/scans/starry-night.jpg and writes palette.json, flow.png and
- * regions.png to public/paintings/starry-night/, then records their hashes (and the hash of the
+ * `make bake`: analyzes assets/scans/starry-night.jpg and writes palette.json, flow.png,
+ * regions.png and lights.webp to public/paintings/starry-night/, then records their hashes (and the hash of the
  * hand-authored regions.json input) in the bake block of assets/PROVENANCE.md.
  *
  * Outputs (see scan-analysis.ts for the conventions):
@@ -11,12 +11,15 @@
  * - regions.png: 1024² 8-bit greyscale, pixel value = region id. Sample with NearestFilter and no
  *   mipmaps or ids blend. Ids: 0 sky (fallback), 1 stars, 2 moon, 3 cypress, 4 village, 5 hills,
  *   6 church.
+ * - lights.webp: the scan at full resolution around each moon and star anchor, one square per anchor
+ *   stacked top to bottom (src/world/sky-scan.ts), lossy WebP at quality 90. The sky-light strokes
+ *   read their colours there.
  */
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import sharp from 'sharp';
 import { sha256Of } from '../asset-lib.ts';
-import { bakeScan } from './bake.ts';
+import { bakeScan, bakeSkyLights } from './bake.ts';
 import type { RegionsDoc } from './scan-analysis.ts';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -39,11 +42,17 @@ if (Math.abs(scanAspect - regionsDoc.aspect) > 0.005) {
 }
 
 const { palette, flow, regions } = await bakeScan(scan, regionsDoc);
+const lights = await bakeSkyLights(scan);
 mkdirSync(resolve(root, OUT_DIR), { recursive: true });
 const outputs: Array<{ path: string; bytes: Uint8Array; role: string }> = [
   { path: `${OUT_DIR}/palette.json`, bytes: Buffer.from(palette), role: 'bake: 24-swatch palette' },
   { path: `${OUT_DIR}/flow.png`, bytes: flow, role: 'bake: 1024² flow field' },
   { path: `${OUT_DIR}/regions.png`, bytes: regions, role: 'bake: 1024² region ids' },
+  {
+    path: `${OUT_DIR}/lights.webp`,
+    bytes: lights,
+    role: 'bake: full-resolution scan around the moon and stars',
+  },
 ];
 for (const out of outputs) writeFileSync(resolve(root, out.path), out.bytes);
 

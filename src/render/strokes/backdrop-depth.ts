@@ -18,17 +18,19 @@
  * w ≥ 0, so clipping stays correct. The dome has no base mesh: the clear colour is its under-paint
  * (src/paintings/starry-night/base-meshes.ts).
  *
- * Stars and moon (STROKE_LAYER star and moon) will sit on the dome too and must draw over it. They
- * get the 'front' tier: the next BACKDROP_FRONT_RANKS ranks, all nearer than every dome rank and
- * still behind the world (tests/strokes-backdrop-depth.test.ts checks the budget). Today the shader
- * puts every flagged stroke in the dome tier. When those layers land, their scatter sets
- * DEPTH_BACKDROP_FLAG, and the shader takes a star or moon stroke's rank from the top 8 bits of the
- * hash (`h >> 24`, log2 BACKDROP_FRONT_RANKS bits) and then offsets it by BACKDROP_DOME_RANKS. The
- * dome's 10-bit rank plus that offset would reach index 2047. That rank still sits behind the
- * 168.7 m world reach the budget test asserts, at about 169.8 m, but ranks 1280-2047 fall outside
- * the 256-rank front tier the test checks, and the real margin shrinks from about 78 m to about 1 m.
+ * The moon and stars (STROKE_LAYER moon and star, src/world/sky-lights.ts) sit on the dome too and
+ * must draw over it. A flagged stroke on either layer takes the 'front' tier: the next
+ * BACKDROP_FRONT_RANKS ranks, all nearer than every dome rank and still behind the world
+ * (tests/strokes-backdrop-depth.test.ts checks the budget). Its rank is the top 8 bits of the same
+ * position hash (`h >> BACKDROP_FRONT_RANK_SHIFT`), offset by BACKDROP_DOME_RANKS. Offsetting the
+ * dome's 10-bit rank instead would reach index 2047, outside the 256-rank front tier the test
+ * checks, and shrink the margin to the 168.7 m world reach from about 78 m to about 1 m. Only the
+ * flag selects a tier at all: `?demo=canvas` draws star and moon strokes without it, at their
+ * normal depth.
  */
-import { NDC_DEPTH_STEP } from './depth-tie-break';
+import { float32Bits, lowbias32, NDC_DEPTH_STEP } from './depth-tie-break';
+import type { Vec3 } from './frame';
+import { STROKE_LAYER } from './instance';
 
 /** Bit in a stroke's spare meta byte (`iMeta.w`): the stroke draws at its backdrop rank's depth. */
 export const DEPTH_BACKDROP_FLAG: number = 2;
@@ -45,6 +47,8 @@ export const BACKDROP_DOME_RANKS: number = 1024;
 export const BACKDROP_RANK_SHIFT: number = 32 - Math.log2(BACKDROP_DOME_RANKS);
 /** Ranks reserved for the star and moon tier, in front of the dome tier. */
 export const BACKDROP_FRONT_RANKS: number = 256;
+/** Right shift that leaves log2(BACKDROP_FRONT_RANKS) top bits of a 32-bit hash. */
+export const BACKDROP_FRONT_RANK_SHIFT: number = 32 - Math.log2(BACKDROP_FRONT_RANKS);
 
 export type BackdropTier = 'dome' | 'front';
 
@@ -66,4 +70,23 @@ export function backdropNdc(rank: number, tier: BackdropTier): number {
 /** View depth, metres, at which three's perspective projection gives NDC z `ndc`. */
 export function viewDepthAtNdc(ndc: number, near: number, far: number): number {
   return (2 * far * near) / (far + near - ndc * (far - near));
+}
+
+/** The stroke position hash the vertex shader ranks and tie-breaks by, over the float32 bits. */
+export function positionHash(position: Vec3): number {
+  return lowbias32(
+    float32Bits(position[0]) ^
+      lowbias32(float32Bits(position[1]) ^ lowbias32(float32Bits(position[2]))),
+  );
+}
+
+/** The tier a stroke with DEPTH_BACKDROP_FLAG draws in: 'front' on the star and moon layers. */
+export function backdropTier(layer: number): BackdropTier {
+  return layer === STROKE_LAYER.star || layer === STROKE_LAYER.moon ? 'front' : 'dome';
+}
+
+/** The rank within its tier that the shader gives a flagged stroke at `position` on `layer`. */
+export function backdropRank(position: Vec3, layer: number): number {
+  const shift = backdropTier(layer) === 'front' ? BACKDROP_FRONT_RANK_SHIFT : BACKDROP_RANK_SHIFT;
+  return positionHash(position) >>> shift;
 }

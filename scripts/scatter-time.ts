@@ -57,6 +57,11 @@ export async function decode(name: string): Promise<Raster> {
   return { width: info.width, height: info.height, data };
 }
 
+/** lights.webp, the bake's full-resolution scan around the moon and stars (src/world/sky-scan.ts). */
+export function loadSkyScan(): Promise<Raster> {
+  return decode('lights.webp');
+}
+
 /** The real CanvasSource from frame.webp, regions.png and flow.png. */
 export async function loadRealSource(): Promise<CanvasSource> {
   const [image, regions, flowRaster] = await Promise.all([

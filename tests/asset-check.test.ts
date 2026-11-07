@@ -59,7 +59,7 @@ describe('asset hash checks', () => {
   });
 
   it('passes when every hash matches and every required file has a row', () => {
-    expect(checkAssets(root, fullManifest())).toEqual({ failures: [], checked: 8 });
+    expect(checkAssets(root, fullManifest())).toEqual({ failures: [], checked: 9 });
   });
 
   it('accepts uppercase hex', () => {
@@ -99,7 +99,7 @@ describe('asset hash checks', () => {
     write('public/fonts/A.ttf', 'hello');
     write('public/fonts/.DS_Store', 'x');
     const md = `${fullManifest()}\n${row('public/fonts/A.ttf', HELLO)}`;
-    expect(checkAssets(root, md)).toEqual({ failures: [], checked: 9 });
+    expect(checkAssets(root, md)).toEqual({ failures: [], checked: 10 });
     write('public/fonts/A.ttf', 'hellp');
     expect(checkAssets(root, md).failures[0]).toContain('public/fonts/A.ttf: hash drift');
   });

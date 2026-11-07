@@ -15,6 +15,7 @@ import {
   scatterCacheKey,
   shouldBypassScatterCache,
 } from '../../render/strokes/scatter-cache';
+import { skyLightConeUniforms } from '../../render/strokes/sky-light-cull';
 import { boundaryFactor } from '../../world/boundary';
 import type { PainterCamera, WorldDeps, WorldHandle, WorldPose } from '../world-module';
 import { BARE_COLOR, createBaseMeshes, disposeBaseMeshes, underpaintColor } from './base-meshes';
@@ -28,12 +29,11 @@ import {
 import { buildCanvasHistogram, type CanvasSource } from './canvas-histogram';
 import { createFootprintTest } from './footprints';
 import {
+  assembleWorldStrokes,
   createWorldGeometry,
   DEFAULT_WORLD_SEED,
   scatterWorld,
-  strokeLayerCounts,
   WORLD_CELL_SIZE,
-  withHaze,
   worldScatterKeyInputs,
   worldSeeds,
 } from './world';
@@ -43,7 +43,7 @@ const PAINTING_DIR = `${import.meta.env.BASE_URL}paintings/starry-night/`;
 
 /** Wall times of the build stages, ms. GPU upload happens at the first render and is not timed. */
 export interface WorldBuildTimes {
-  /** Fetch and decode of the three rasters, the flow field and the histograms. */
+  /** Fetch and decode of the four rasters, the flow field and the histograms. */
   decodeMs: number;
   /** Terrain, village, cypress and sky dome. */
   generateMs: number;
@@ -69,10 +69,11 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   const seed = deps.seed ?? DEFAULT_WORLD_SEED;
   const debug = deps.debug ?? null;
   const start = performance.now();
-  const [image, flowRaster, regions] = await Promise.all([
+  const [image, flowRaster, regions, scan] = await Promise.all([
     deps.loadRaster(`${PAINTING_DIR}frame.webp`, false),
     deps.loadRaster(`${PAINTING_DIR}flow.png`, true),
     deps.loadRaster(`${PAINTING_DIR}regions.png`, true),
+    deps.loadRaster(`${PAINTING_DIR}lights.webp`, false),
   ]);
   const flow = buildFlowField(flowRaster);
   const source: CanvasSource = {
@@ -97,10 +98,20 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     bypass,
     scatter: () => scatterWorld(world, source, seeds),
   });
-  const buffers = withHaze(load.buffers, world, source, seeds);
+  const { buffers, counts, cones, lightRankTies } = assembleWorldStrokes(
+    load.buffers,
+    world,
+    source,
+    scan,
+    seeds,
+  );
   const scattered = performance.now();
 
   const batch = createStrokeBatch(buffers, { cellSize: WORLD_CELL_SIZE });
+  const coneUniforms = skyLightConeUniforms(cones);
+  for (const material of Object.values(batch.materials)) {
+    material.uniforms.uSkyLightCones.value = coneUniforms;
+  }
   const batched = performance.now();
   const atlasMs = batch.stats().atlasMs;
   const times: WorldBuildTimes = {
@@ -123,7 +134,6 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   if (debug === 'bare') batch.group.visible = false;
   built = { scene, batch, base, background };
 
-  const counts = { ...strokeLayerCounts(load.buffers), haze: buffers.count - load.buffers.count };
   const cache = bypass ? 'bypass' : load.hit ? 'hit' : 'miss';
   // Read out here so the closure does not hold the stroke buffers (about 19 MB) past the upload.
   const total = buffers.count;
@@ -132,6 +142,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     seed,
     debug,
     counts,
+    lightRankTies,
     total,
     times,
     cache,

@@ -1,5 +1,7 @@
 import { GLSL3, RawShaderMaterial, type Texture, Vector3, Vector4 } from 'three';
 import {
+  BACKDROP_DOME_RANKS,
+  BACKDROP_FRONT_RANK_SHIFT,
   BACKDROP_RANK_SHIFT,
   BACKDROP_RANK_SPACING,
   backdropNdc,
@@ -14,6 +16,8 @@ import {
   NDC_DEPTH_STEP,
 } from './depth-tie-break';
 import { FIT_SCALE_MASK, FIT_SCALE_SHIFT, FIT_SCALE_STEP } from './face-clamp';
+import { STROKE_LAYER } from './instance';
+import { SKY_LIGHT_CONES, SKY_LIGHT_CULL_FLAG, skyLightConeUniforms } from './sky-light-cull';
 import fragmentShader from './stroke.frag.glsl?raw';
 import vertexShader from './stroke.vert.glsl?raw';
 
@@ -32,6 +36,8 @@ export interface StrokeMaterialUniforms {
   uRelief: { value: number };
   /** Stroke-size multiplier: the quad's length and width scale by it. */
   uSizeScale: { value: number };
+  /** Moon and star discs whose cones cull SKY_LIGHT_CULL_FLAG strokes (sky-light-cull.ts). */
+  uSkyLightCones: { value: Vector4[] };
 }
 
 export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUniforms };
@@ -55,6 +61,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
     uMoonDir: { value: MOON_DIRECTION.clone() },
     uRelief: { value: RELIEF_STRENGTH },
     uSizeScale: { value: sizeScale },
+    uSkyLightCones: { value: skyLightConeUniforms([]) },
   };
   const material = new RawShaderMaterial({
     glslVersion: GLSL3,
@@ -75,9 +82,15 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       BACKDROP_FAR_NDC: glslFloat(backdropNdc(0, 'dome')),
       BACKDROP_RANK_NDC: glslFloat(BACKDROP_RANK_SPACING * NDC_DEPTH_STEP),
       BACKDROP_RANK_SHIFT: `${BACKDROP_RANK_SHIFT}u`,
+      BACKDROP_DOME_RANKS: `${BACKDROP_DOME_RANKS}u`,
+      BACKDROP_FRONT_RANK_SHIFT: `${BACKDROP_FRONT_RANK_SHIFT}u`,
+      STROKE_LAYER_STAR: `${STROKE_LAYER.star}u`,
+      STROKE_LAYER_MOON: `${STROKE_LAYER.moon}u`,
       FIT_SCALE_SHIFT: `${FIT_SCALE_SHIFT}u`,
       FIT_SCALE_MASK: `${FIT_SCALE_MASK}u`,
       FIT_SCALE_STEP: glslFloat(FIT_SCALE_STEP),
+      SKY_LIGHT_CONES,
+      SKY_LIGHT_CULL_FLAG: `${SKY_LIGHT_CULL_FLAG}u`,
     },
     transparent: false,
     depthWrite: true,

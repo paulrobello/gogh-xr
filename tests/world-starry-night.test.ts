@@ -15,7 +15,7 @@ import {
   Vector3,
 } from 'three';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
-import { loadRealSource } from '../scripts/scatter-time.ts';
+import { loadRealSource, loadSkyScan } from '../scripts/scatter-time.ts';
 import { REGION } from '../src/demo/canvas/field.ts';
 import {
   BARE_COLOR,
@@ -35,6 +35,7 @@ import {
 } from '../src/paintings/starry-night/canvas-histogram.ts';
 import { painterSpot, spawnPose } from '../src/paintings/starry-night/index.ts';
 import {
+  assembleWorldStrokes,
   createWorldGeometry,
   RIDGE_SCATTER,
   scatterWorld,
@@ -43,7 +44,7 @@ import {
   WORLD_SCATTER_SIZE,
   WORLD_SIZE_SCALE,
   type WorldGeometry,
-  withHaze,
+  type WorldStrokes,
   worldScatterKeyInputs,
   worldSeeds,
 } from '../src/paintings/starry-night/world.ts';
@@ -71,6 +72,7 @@ import {
   STROKE_ATTRIBUTES,
   STROKE_LAYER,
   type StrokeBuffers,
+  selectStrokes,
   unpackInstance,
 } from '../src/render/strokes/instance.ts';
 import {
@@ -80,6 +82,7 @@ import {
   WORLD_LAYERS,
 } from '../src/render/strokes/scatter.ts';
 import { hashStrokeBuffers } from '../src/render/strokes/scatter-cache.ts';
+import { SKY_LIGHT_CULL_FLAG } from '../src/render/strokes/sky-light-cull.ts';
 import { deltaE2000, srgb8ToLab } from '../src/util/cielab.ts';
 import { boundaryFactor } from '../src/world/boundary.ts';
 import { CYPRESS_OUTLINE } from '../src/world/cypress.ts';
@@ -173,6 +176,7 @@ function paintBoxes(seed: number): { length: number; width: number }[] {
 }
 
 const SOURCE = await loadRealSource();
+const SKY_SCAN = await loadSkyScan();
 const SEEDS = worldSeeds(1);
 const WORLD: WorldGeometry = createWorldGeometry(SEEDS);
 
@@ -191,7 +195,7 @@ const insidePolygon = (p: Vec2, poly: readonly Vec2[]): boolean => {
 };
 
 test('seed 1 gives every generator seed 1, and the cache key carries seeds and overrides', () => {
-  expect(SEEDS).toEqual({ terrain: 1, village: 1, cypress: 1, scatter: 1, haze: 1 });
+  expect(SEEDS).toEqual({ terrain: 1, village: 1, cypress: 1, scatter: 1, haze: 1, lights: 1 });
   const inputs = worldScatterKeyInputs(WORLD, SEEDS);
   expect(inputs.seed).toBe(1);
   expect(WORLD_SCATTER_SIZE.terrain).toEqual({
@@ -460,6 +464,7 @@ const QUEST_ASPECT = Math.tan((55 * Math.PI) / 180) / Math.tan((48 * Math.PI) / 
 
 describe('the default-mode budget at the painter spot and the 24 poses', () => {
   let scattered: StrokeBuffers;
+  let assembled: WorldStrokes;
   let buffers: StrokeBuffers;
   let batch: StrokeBatch;
 
@@ -467,7 +472,8 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     fitLog.on = true;
     scattered = scatterWorld(WORLD, SOURCE, SEEDS);
     fitLog.on = false;
-    buffers = withHaze(scattered, WORLD, SOURCE, SEEDS);
+    assembled = assembleWorldStrokes(scattered, WORLD, SOURCE, SKY_SCAN, SEEDS);
+    buffers = assembled.buffers;
     batch = createStrokeBatch(buffers, {
       cellSize: WORLD_CELL_SIZE,
       createAtlas: () => new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat),
@@ -481,23 +487,63 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     for (const layer of ['sky', 'cypress', 'ground', 'building'] as const) {
       expect(counts[layer], layer).toBeGreaterThan(1000);
     }
-    expect(buffers.count - scattered.count).toBeGreaterThan(20_000);
+    expect(assembled.counts.haze).toBeGreaterThan(20_000);
+    expect(assembled.counts.moon).toBeGreaterThan(1000);
+    expect(assembled.counts.star).toBeGreaterThan(1000);
     expect(buffers.count).toBeLessThan(900_000);
     console.log(
-      `[world] stored ${buffers.count} (${JSON.stringify(counts)}, haze ${buffers.count - scattered.count}), ${batch.chunks.length} chunks at ${WORLD_CELL_SIZE} m`,
+      `[world] stored ${buffers.count} (${JSON.stringify(assembled.counts)}), ${batch.chunks.length} chunks at ${WORLD_CELL_SIZE} m`,
     );
   });
 
+  test('the world counts list the scatter, the moon and stars and the haze once each', () => {
+    const { counts, lightsStart, hazeStart } = assembled;
+    const lights = strokeLayerCounts(
+      selectStrokes(
+        buffers,
+        Array.from({ length: hazeStart - lightsStart }, (_, i) => lightsStart + i),
+      ),
+    );
+    const scatter = strokeLayerCounts(scattered);
+    expect(lightsStart).toBe(scattered.count);
+    expect(counts).toEqual({
+      ...scatter,
+      star: lights.star,
+      moon: lights.moon,
+      haze: buffers.count - hazeStart,
+    });
+    expect(lights.star + lights.moon).toBe(hazeStart - lightsStart);
+  });
+
   test('P2-A1: the seed-1 scatter and haze match their pinned counts and hashes', () => {
-    // A change here requires bumping SCATTER_VERSION in src/render/strokes/scatter.ts (see
-    // GENERATOR_PINS above).
-    const haze = strokeRange(buffers, scattered.count);
+    // A change to the scatter pins requires bumping SCATTER_VERSION in
+    // src/render/strokes/scatter.ts (see GENERATOR_PINS above). The moon and stars and the haze
+    // are generated outside the scatter cache, so their pins move without a bump. The haze is
+    // createBoundaryHaze's own output plus SKY_LIGHT_CULL_FLAG on every stroke: with the flag
+    // cleared it hashes as it did before the moon and stars (49bf0339).
+    const haze = strokeRange(buffers, assembled.hazeStart);
+    let unflagged = 0;
+    for (let i = 0; i < haze.count; i++) {
+      if ((haze.meta[i * 4 + 3] & SKY_LIGHT_CULL_FLAG) === 0) unflagged++;
+    }
+    const hazeMeta = haze.meta.slice();
+    for (let i = 0; i < haze.count; i++) hazeMeta[i * 4 + 3] &= ~SKY_LIGHT_CULL_FLAG;
+    const lights = selectStrokes(
+      buffers,
+      Array.from(
+        { length: assembled.hazeStart - assembled.lightsStart },
+        (_, i) => assembled.lightsStart + i,
+      ),
+    );
     const pins = {
       total: scattered.count,
       layers: strokeLayerCounts(scattered),
       hash: hashStrokeBuffers(scattered),
+      lights: lights.count,
+      lightsHash: hashStrokeBuffers(lights),
       haze: haze.count,
-      hazeHash: hashStrokeBuffers(haze),
+      hazeUnflagged: unflagged,
+      hazeHash: hashStrokeBuffers({ ...haze, meta: hazeMeta }),
     };
     expect(pins).toEqual({
       total: 538_116,
@@ -510,30 +556,39 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
         building: 87_369,
       },
       hash: '696165d1',
+      lights: 12_294,
+      lightsHash: 'da2a676f',
       haze: 30_000,
+      hazeUnflagged: 0,
       hazeHash: '49bf0339',
     });
   });
 
-  test('every dome stroke, and nothing else, carries the backdrop flag', () => {
+  test('every dome, moon and star stroke, and nothing else, carries the backdrop flag', () => {
     // One assertion over the whole buffer: a per-stroke expect over ~540k strokes runs past the
     // 5 s test timeout on the CI runner.
-    let dome = 0;
+    let flagged = 0;
     let wrong = 0;
     let firstWrong = -1;
     for (let i = 0; i < buffers.count; i++) {
       const flags = buffers.meta[i * 4 + 3];
       const layer = buffers.meta[i * 4 + 1];
       const backdrop = (flags & DEPTH_BACKDROP_FLAG) !== 0;
-      // Haze is appended after the scattered strokes and keeps its normal depth.
-      if (backdrop !== (i < scattered.count && layer === STROKE_LAYER.sky)) {
+      // Haze is appended after the moon and stars and keeps its normal depth.
+      const dome = i < scattered.count && layer === STROKE_LAYER.sky;
+      const light =
+        i >= assembled.lightsStart &&
+        i < assembled.hazeStart &&
+        (layer === STROKE_LAYER.star || layer === STROKE_LAYER.moon);
+      if (backdrop !== (dome || light)) {
         wrong++;
         if (firstWrong < 0) firstWrong = i;
       }
-      if (backdrop) dome++;
+      if (backdrop) flagged++;
     }
     expect({ wrong, firstWrong }).toEqual({ wrong: 0, firstWrong: -1 });
-    expect(dome).toBe(strokeLayerCounts(scattered).sky);
+    const { sky, star, moon } = assembled.counts;
+    expect(flagged).toBe(sky + star + moon);
   });
 
   test('village and church strokes stay inside their host face plus 10% of their width', () => {

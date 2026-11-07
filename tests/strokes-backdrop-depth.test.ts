@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { DataTexture, PerspectiveCamera, RGBAFormat } from 'three';
 import { describe, expect, test } from 'vitest';
 import { PAINTER_SPOT } from '../src/paintings/starry-night/canvas-camera.ts';
@@ -5,18 +6,23 @@ import { createWorldGeometry, worldSeeds } from '../src/paintings/starry-night/w
 import {
   BACKDROP_DOME_RANKS,
   BACKDROP_FAR_MARGIN,
+  BACKDROP_FRONT_RANK_SHIFT,
   BACKDROP_FRONT_RANKS,
   BACKDROP_RANK_SHIFT,
   BACKDROP_RANK_SPACING,
   backdropNdc,
+  backdropRank,
   backdropSteps,
+  backdropTier,
   DEPTH_BACKDROP_FLAG,
+  positionHash,
   viewDepthAtNdc,
 } from '../src/render/strokes/backdrop-depth.ts';
 import {
   DEPTH_TIE_BREAK_FRONT_FLAG,
   NDC_DEPTH_STEP,
 } from '../src/render/strokes/depth-tie-break.ts';
+import { STROKE_LAYER } from '../src/render/strokes/instance.ts';
 import { createStrokeMaterial } from '../src/render/strokes/material.ts';
 import { BOUNDARY_RADIUS, HAZE_RADIUS, HAZE_STROKE_SIZE } from '../src/world/boundary.ts';
 import { createSkyDome } from '../src/world/sky.ts';
@@ -135,5 +141,30 @@ test('the stroke material carries the backdrop constants as defines', () => {
   );
   expect(defines.BACKDROP_RANK_SHIFT).toBe(`${BACKDROP_RANK_SHIFT}u`);
   expect(defines.DEPTH_BACKDROP_FLAG).toBe(`${DEPTH_BACKDROP_FLAG}u`);
+  expect(defines.BACKDROP_DOME_RANKS).toBe(`${BACKDROP_DOME_RANKS}u`);
+  expect(defines.BACKDROP_FRONT_RANK_SHIFT).toBe(`${BACKDROP_FRONT_RANK_SHIFT}u`);
+  expect(defines.STROKE_LAYER_STAR).toBe(`${STROKE_LAYER.star}u`);
+  expect(defines.STROKE_LAYER_MOON).toBe(`${STROKE_LAYER.moon}u`);
   material.dispose();
+});
+
+test('a flagged moon or star stroke draws at its front rank, in front of every dome rank', () => {
+  expect(BACKDROP_FRONT_RANK_SHIFT).toBe(32 - Math.log2(BACKDROP_FRONT_RANKS));
+  expect(backdropTier(STROKE_LAYER.star)).toBe('front');
+  expect(backdropTier(STROKE_LAYER.moon)).toBe('front');
+  expect(backdropTier(STROKE_LAYER.sky)).toBe('dome');
+  const p: [number, number, number] = [12.5, 80.25, -90.125];
+  const h = positionHash(p);
+  expect(backdropRank(p, STROKE_LAYER.moon)).toBe(h >>> 24);
+  expect(backdropRank(p, STROKE_LAYER.sky)).toBe(h >>> BACKDROP_RANK_SHIFT);
+  // The shader's NDC for front rank r: the far NDC less (BACKDROP_DOME_RANKS + r) rank steps.
+  for (const r of [0, 255]) {
+    const shader =
+      backdropNdc(0, 'dome') - (BACKDROP_DOME_RANKS + r) * BACKDROP_RANK_SPACING * NDC_DEPTH_STEP;
+    expect(shader).toBeCloseTo(backdropNdc(r, 'front'), 12);
+    expect(backdropNdc(r, 'front')).toBeLessThan(backdropNdc(BACKDROP_DOME_RANKS - 1, 'dome'));
+  }
+  const vert = readFileSync('src/render/strokes/stroke.vert.glsl', 'utf8');
+  expect(vert).toContain('iMeta.y == STROKE_LAYER_STAR || iMeta.y == STROKE_LAYER_MOON');
+  expect(vert).toContain('float(BACKDROP_DOME_RANKS + (h >> BACKDROP_FRONT_RANK_SHIFT))');
 });

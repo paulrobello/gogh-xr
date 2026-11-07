@@ -85,6 +85,8 @@ export interface SkyAnchor {
   readonly position: Vec3;
   /** Half-angle the circle subtends at the eye, radians, measured along the canvas u axis. */
   readonly angularRadius: number;
+  /** The circle's radius in regions.json, painting widths. */
+  readonly radius: number;
 }
 
 interface CircleShape {
@@ -127,6 +129,7 @@ export function skyAnchors(
             PAINTER_EYE[2] + ray[2] * SKY_DOME_RADIUS,
           ]) as Vec3,
           angularRadius: Math.acos(Math.min(1, cos)),
+          radius: shape.radius,
         }),
       );
     }

@@ -5,10 +5,12 @@
  * and the base meshes.
  */
 import type { BufferGeometry } from 'three';
+import type { Raster } from '../../demo/canvas/field';
 import {
   appendStrokes,
   STROKE_LAYER,
   type StrokeBuffers,
+  type StrokeInstance,
   type StrokeLayerName,
 } from '../../render/strokes/instance';
 import {
@@ -21,9 +23,11 @@ import {
   scatterSurfaces,
 } from '../../render/strokes/scatter';
 import type { ScatterKeyInputs } from '../../render/strokes/scatter-cache';
+import { SKY_LIGHT_CULL_FLAG, type SkyLightCone } from '../../render/strokes/sky-light-cull';
 import { createBoundaryHaze, HAZE_STROKE_DEFAULT } from '../../world/boundary';
 import { type Cypress, createCypress } from '../../world/cypress';
 import { createSkyDome } from '../../world/sky';
+import { createSkyLights, skyLightCones } from '../../world/sky-lights';
 import { createTerrain, type Terrain } from '../../world/terrain';
 import { createVillage, type Village } from '../../world/village';
 import type { WorldLayer } from './canvas-camera';
@@ -87,16 +91,25 @@ export interface WorldSeeds {
   readonly cypress: number;
   readonly scatter: number;
   readonly haze: number;
+  /** The moon and star strokes (src/world/sky-lights.ts). */
+  readonly lights: number;
 }
 
 /**
  * Every part takes the world seed itself. The generators were fitted at seed 1 (church fit,
  * cypress against the canvas), so seed 1 must give generator seed 1, not a hashed derivative.
- * Within the one scatter call each mesh has its own streams, and the haze and generators use
- * unrelated algorithms, so sharing the number does not correlate them.
+ * Within the one scatter call each mesh has its own streams, and the haze, the moon and stars and
+ * the generators use unrelated algorithms, so sharing the number does not correlate them.
  */
 export function worldSeeds(seed: number): WorldSeeds {
-  return Object.freeze({ terrain: seed, village: seed, cypress: seed, scatter: seed, haze: seed });
+  return Object.freeze({
+    terrain: seed,
+    village: seed,
+    cypress: seed,
+    scatter: seed,
+    haze: seed,
+    lights: seed,
+  });
 }
 
 export interface WorldGeometry {
@@ -183,19 +196,67 @@ export function scatterWorld(
   return strokes;
 }
 
-/** The scattered strokes followed by the boundary haze, clipped to the terrain. */
-export function withHaze(
-  scattered: StrokeBuffers,
+/** The boundary haze, clipped to the terrain. */
+function worldHaze(
   world: WorldGeometry,
   source: CanvasSource,
   seeds: WorldSeeds,
-): StrokeBuffers {
-  const haze = createBoundaryHaze(source, {
+): StrokeInstance[] {
+  return createBoundaryHaze(source, {
     seed: seeds.haze,
     count: WORLD_HAZE_COUNT,
     groundHeight: world.terrain.heightAt,
   });
-  return appendStrokes(scattered, haze);
+}
+
+/** Strokes per stroke layer, the moon and stars included, plus the haze on its own. */
+export type WorldStrokeCounts = Record<StrokeLayerName | 'haze', number>;
+
+export interface WorldStrokes {
+  /** The scattered strokes, then the moon and star strokes, then the boundary haze. */
+  readonly buffers: StrokeBuffers;
+  /** Index of the first moon or star stroke: the scattered stroke count. */
+  readonly lightsStart: number;
+  /** Index of the first haze stroke. */
+  readonly hazeStart: number;
+  readonly counts: WorldStrokeCounts;
+  /** Moon and star strokes that share a front-tier rank with an overlapping one (`SkyLights`). */
+  readonly lightRankTies: number;
+  /** The moon and star discs, for the stroke materials' `uSkyLightCones`. */
+  readonly cones: readonly SkyLightCone[];
+}
+
+/**
+ * Every stroke of the world: the scatter (or its cache read), the moon and stars
+ * (`createSkyLights`, colours from `scan`, lights.webp) and the boundary haze, appended in that
+ * order. The last two are generated on every build, outside the scatter cache. Every haze stroke
+ * carries SKY_LIGHT_CULL_FLAG, so the shader clears it, per view, from in front of the discs.
+ */
+export function assembleWorldStrokes(
+  scattered: StrokeBuffers,
+  world: WorldGeometry,
+  source: CanvasSource,
+  scan: Raster,
+  seeds: WorldSeeds,
+): WorldStrokes {
+  const { strokes: lights, rankTies } = createSkyLights(source, scan, seeds.lights);
+  const haze = worldHaze(world, source, seeds).map((s) => ({
+    ...s,
+    flags: (s.flags ?? 0) | SKY_LIGHT_CULL_FLAG,
+  }));
+  const buffers = appendStrokes(scattered, [...lights, ...haze]);
+  const hazeStart = scattered.count + lights.length;
+  const counts = { ...strokeLayerCounts(buffers), haze: haze.length };
+  // Haze strokes are on the sky stroke layer: count them once, under haze.
+  counts.sky -= haze.length;
+  return {
+    buffers,
+    lightsStart: scattered.count,
+    hazeStart,
+    counts,
+    lightRankTies: rankTies,
+    cones: skyLightCones(),
+  };
 }
 
 const LAYER_NAMES = Object.keys(STROKE_LAYER) as StrokeLayerName[];

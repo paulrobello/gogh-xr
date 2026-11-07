@@ -62,6 +62,7 @@ Derived from `assets/scans/starry-night.jpg` by `make bake` (`scripts/bake/analy
 | `public/paintings/starry-night/palette.json` | 8242fe99fe1acd445db97d47fba24f0afdb341d5ca22f29226a2f5957bb1859c | bake: 24-swatch palette |
 | `public/paintings/starry-night/flow.png` | 36dfa824a20303a670941b3aa380e78496f2f3380bd6f6ebdeef2e1fecc52d97 | bake: 1024² flow field |
 | `public/paintings/starry-night/regions.png` | c86235ee902a17185e63d568b18dd1837d3e3683da3339156818039bce7bf74a | bake: 1024² region ids |
+| `public/paintings/starry-night/lights.webp` | 9107ec83a3ae44f0dc7ed7de7df36b1514ef6c05405681ddc58bbb88cf964f3e | bake: full-resolution scan around the moon and stars |
 <!-- bake-hashes:end -->
 
 ## Audio sources (Suno score)

@@ -5,10 +5,16 @@ precision highp int;
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
+// The eye of the view being drawn: three sets it from each camera's matrixWorld, next to viewMatrix,
+// so each XR eye has its own.
+uniform vec3 cameraPosition;
 // Per brush: atlas uv min corner (xy) and size (zw), from brushUvRect().
 uniform vec4 uBrushRects[BRUSH_COUNT];
 // Distance-band stroke-size multiplier (P1.4).
 uniform float uSizeScale;
+// Moon and star discs (src/render/strokes/sky-light-cull.ts): world centre xyz, radius w in
+// metres; w = 0 is an unused slot.
+uniform vec4 uSkyLightCones[SKY_LIGHT_CONES];
 
 // Unit quad corner in [-0.5, 0.5]²: x along the stroke, y across it.
 in vec3 position;
@@ -55,6 +61,26 @@ uint lowbias32(uint x) {
   return x;
 }
 
+// Matches skyLightCulled in sky-light-cull.ts: the stroke centre p, seen from this view's eye,
+// lies inside a disc's cone widened by the stroke's own drawn half diagonal.
+bool skyLightCulled(vec3 p, float halfExtent) {
+  vec3 eye = cameraPosition;
+  vec3 h = p - eye;
+  float lenH = length(h);
+  float sinB = min(1.0, halfExtent / lenH);
+  float cosB = sqrt(1.0 - sinB * sinB);
+  for (int i = 0; i < SKY_LIGHT_CONES; i++) {
+    vec4 cone = uSkyLightCones[i];
+    if (cone.w <= 0.0) continue;
+    vec3 a = cone.xyz - eye;
+    float lenA = length(a);
+    float sinA = min(1.0, cone.w / lenA);
+    float cosA = sqrt(1.0 - sinA * sinA);
+    if (dot(a, h) > (cosA * cosB - sinA * sinB) * lenA * lenH) return true;
+  }
+  return false;
+}
+
 void main() {
   vec3 n = octDecode(iNormal);
   vec3 b1;
@@ -95,8 +121,12 @@ void main() {
   if ((iMeta.w & DEPTH_BACKDROP_FLAG) != 0u) {
     // Sky dome (src/render/strokes/backdrop-depth.ts): a constant NDC z just in front of the far
     // plane, nearer by BACKDROP_RANK_NDC per rank, so dome strokes keep one order by hash rank and
-    // sit behind the whole world. Clip z = w × ndc keeps perspective-correct varyings.
-    float rank = float(h >> BACKDROP_RANK_SHIFT);
+    // sit behind the whole world. Clip z = w × ndc keeps perspective-correct varyings. The moon
+    // and star layers take the front tier, the BACKDROP_FRONT_RANKS ranks past the dome's.
+    bool front = iMeta.y == STROKE_LAYER_STAR || iMeta.y == STROKE_LAYER_MOON;
+    float rank = front
+      ? float(BACKDROP_DOME_RANKS + (h >> BACKDROP_FRONT_RANK_SHIFT))
+      : float(h >> BACKDROP_RANK_SHIFT);
     gl_Position.z = gl_Position.w * (BACKDROP_FAR_NDC - rank * BACKDROP_RANK_NDC);
   } else {
     // Lit windows sit just proud of their wall: the whole range keeps almost every wall stroke
@@ -114,4 +144,13 @@ void main() {
   vRect = vec4(rect.xy, rect.xy + rect.zw);
   // iColor.a is reserved: under alpha-to-coverage, alpha below 1 inside a stroke dithers (R3).
   vColor = iColor.rgb;
+
+  // Last, after every other output.
+  if (
+    (iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u &&
+    skyLightCulled((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size))
+  ) {
+    // Every corner outside the clip volume: the quad draws nothing.
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  }
 }

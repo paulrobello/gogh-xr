@@ -20,6 +20,7 @@ export const BAKE_FILES = [
   'public/paintings/starry-night/palette.json',
   'public/paintings/starry-night/flow.png',
   'public/paintings/starry-night/regions.png',
+  'public/paintings/starry-night/lights.webp',
 ];
 
 export function sha256Of(bytes: Uint8Array): string {

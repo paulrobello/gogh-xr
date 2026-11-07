@@ -14,6 +14,7 @@ import {
   Vector3,
 } from 'three';
 import { addBeforeRender } from '../scene-hooks';
+import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import {
   bandDrawCount,
   chunkDistance,
@@ -26,7 +27,7 @@ import {
 import { createBrushAtlas } from './brush-atlas';
 import { computeBounds, cullAndSortInto, DEFAULT_CELL_SIZE, partitionIndices } from './chunks';
 import { importanceOrder } from './importance';
-import { STROKE_ATTRIBUTES, type StrokeBuffers, selectStrokes } from './instance';
+import { STROKE_ATTRIBUTES, STROKE_LAYER, type StrokeBuffers, selectStrokes } from './instance';
 import { createStrokeMaterial, type StrokeMaterial } from './material';
 
 /** Default seed of the per-chunk importance order. */
@@ -37,6 +38,12 @@ export interface StrokeChunk {
   readonly geometry: InstancedBufferGeometry;
   /** Instances stored in the chunk, in importance order. */
   readonly count: number;
+  /**
+   * Pinned instances (`isPinnedStroke`): the chunk's first `pinned`, which every band density
+   * draws in full. 0 for a chunk with none, which then orders and draws as if pinning did not
+   * exist.
+   */
+  readonly pinned: number;
   /** Instances drawn: a prefix of the chunk, `geometry.instanceCount`. */
   readonly drawCount: number;
   /** World-space bounds at size multiplier 1; chunk meshes stay at the identity transform. */
@@ -101,8 +108,8 @@ export interface StrokeBatch {
   update(camera: Camera): void;
   /**
    * Sets a band's density, clamped to [0, 1]: each of its chunks draws the first
-   * `bandDrawCount(d, count)` instances from now on. Only instance counts change. Throws
-   * RangeError on a non-finite `d`.
+   * `pinned + bandDrawCount(d, count - pinned)` instances from now on. Only instance counts
+   * change. Throws RangeError on a non-finite `d`.
    */
   setDensity(band: StrokeBand, d: number): void;
   density(band: StrokeBand): number;
@@ -167,6 +174,49 @@ function createChunkGeometry(
   return geometry;
 }
 
+/**
+ * The sky's moon and star strokes (src/world/sky-lights.ts) are pinned: a density draws all of
+ * them, so a disc stays solid at every governor level. They fill a small part of their dome
+ * chunk, so the chunk's stratified order thins them like the dome, and no prefix short of most of
+ * the chunk holds them all. A pinned stroke is on the star or moon layer and carries
+ * DEPTH_BACKDROP_FLAG: the P1 canvas and the stroke test scene also use those layers, without
+ * the flag, and keep their plain order.
+ */
+export function isPinnedStroke(buffers: StrokeBuffers, i: number): boolean {
+  const layer = buffers.meta[i * 4 + 1];
+  const backdrop = (buffers.meta[i * 4 + 3] & DEPTH_BACKDROP_FLAG) !== 0;
+  return backdrop && (layer === STROKE_LAYER.star || layer === STROKE_LAYER.moon);
+}
+
+/** Salt of the pinned group's importance-order seed, so it differs from the rest's. */
+const PINNED_SEED_SALT = 0x5bd1e995;
+
+/**
+ * A chunk's instance order: its pinned strokes in importance order, then the rest in importance
+ * order. With none pinned this is `importanceOrder(position, indices, seed)` itself.
+ */
+function chunkOrder(
+  buffers: StrokeBuffers,
+  indices: Uint32Array,
+  seed: number,
+): { order: Uint32Array; pinned: number } {
+  let pinned = 0;
+  for (let k = 0; k < indices.length; k++) if (isPinnedStroke(buffers, indices[k])) pinned++;
+  if (pinned === 0) return { order: importanceOrder(buffers.position, indices, seed), pinned };
+  const lights = new Uint32Array(pinned);
+  const rest = new Uint32Array(indices.length - pinned);
+  let a = 0;
+  let b = 0;
+  for (let k = 0; k < indices.length; k++) {
+    if (isPinnedStroke(buffers, indices[k])) lights[a++] = indices[k];
+    else rest[b++] = indices[k];
+  }
+  const order = new Uint32Array(indices.length);
+  order.set(importanceOrder(buffers.position, lights, (seed ^ PINNED_SEED_SALT) >>> 0));
+  order.set(importanceOrder(buffers.position, rest, seed), pinned);
+  return { order, pinned };
+}
+
 /** A chunk's importance-order seed, from its cell so one chunk's order ignores the others. */
 function chunkSeed(seed: number, cells: Int32Array, c: number): number {
   return (
@@ -185,9 +235,9 @@ function checkBand(band: StrokeBand): void {
 /**
  * Partitions `buffers` into spatial chunks, one `Mesh` + `InstancedBufferGeometry` per chunk, with
  * each chunk's instances in importance order (`importanceOrder`) so a density draws an even
- * prefix. Chunks share the per-band materials and one atlas. Three's own frustum culling is off;
- * call `update(camera)` once per frame with the camera three renders with, which `attach(scene)`
- * arranges.
+ * prefix. Pinned strokes (`isPinnedStroke`) come first and are always drawn. Chunks share the
+ * per-band materials and one atlas. Three's own frustum culling is off; call `update(camera)`
+ * once per frame with the camera three renders with, which `attach(scene)` arranges.
  */
 export function createStrokeBatch(
   buffers: StrokeBuffers,
@@ -224,10 +274,8 @@ export function createStrokeBatch(
   const halfDiagonals: number[] = [];
   for (let c = 0; c + 1 < offsets.length; c++) {
     const indices = order.subarray(offsets[c], offsets[c + 1]);
-    const data = selectStrokes(
-      buffers,
-      importanceOrder(buffers.position, indices, chunkSeed(seed, cells, c)),
-    );
+    const { order: chunkIndices, pinned } = chunkOrder(buffers, indices, chunkSeed(seed, cells, c));
+    const data = selectStrokes(buffers, chunkIndices);
     const box = computeBounds(data);
     const geometry = createChunkGeometry(data, quad);
     const bounds = new Sphere(new Vector3(...box.center), box.radius);
@@ -249,6 +297,7 @@ export function createStrokeBatch(
       mesh,
       geometry,
       count,
+      pinned,
       bounds,
       get drawCount() {
         return geometry.instanceCount;
@@ -264,7 +313,8 @@ export function createStrokeBatch(
   }
 
   function applyDensity(i: number, band: StrokeBand): void {
-    chunks[i].setDrawCount(bandDrawCount(densities[band], chunks[i].count));
+    const { count, pinned } = chunks[i];
+    chunks[i].setDrawCount(pinned + bandDrawCount(densities[band], count - pinned));
   }
 
   function applySize(i: number, band: StrokeBand): void {

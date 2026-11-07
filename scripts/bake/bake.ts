@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { SKY_SCAN_SIZE, skyScanAtlasSize, skyScanCrops } from '../../src/world/sky-scan.ts';
 import {
   encodeFlow,
   kmeansPalette,
@@ -101,4 +102,38 @@ export async function bakeScan(
   const palette = paletteJson(k, seed, kmeansPalette(new Uint8Array(sample), k, seed));
 
   return { palette, flow, regions };
+}
+
+/**
+ * The scan's crops around the moon and star anchors (src/world/sky-scan.ts), stacked top to bottom
+ * at x = 0 on black. Lossy WebP at quality 90 keeps the full-resolution luma in about 0.8 MB, a
+ * third of the lossless size; smart chroma subsampling keeps the crescent's colour edge.
+ */
+export async function bakeSkyLights(input: string | Buffer): Promise<Buffer> {
+  const { width, height } = await sharp(input).metadata();
+  if (width !== SKY_SCAN_SIZE[0] || height !== SKY_SCAN_SIZE[1]) {
+    throw new Error(
+      `bakeSkyLights: scan is ${width}x${height}, sky-scan.ts expects ${SKY_SCAN_SIZE}`,
+    );
+  }
+  const crops = skyScanCrops();
+  const [atlasWidth, atlasHeight] = skyScanAtlasSize(crops);
+  const tiles = await Promise.all(
+    crops.map(async (c) => ({
+      input: await sharp(input)
+        .removeAlpha()
+        .toColourspace('srgb')
+        .extract({ left: c.left, top: c.top, width: c.size, height: c.size })
+        .png()
+        .toBuffer(),
+      left: 0,
+      top: c.y,
+    })),
+  );
+  return sharp({
+    create: { width: atlasWidth, height: atlasHeight, channels: 3, background: '#000000' },
+  })
+    .composite(tiles)
+    .webp({ quality: 90, smartSubsample: true, effort: 6 })
+    .toBuffer();
 }
