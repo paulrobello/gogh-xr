@@ -527,7 +527,7 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       expect(counts[layer], layer).toBeGreaterThan(1000);
     }
     expect(assembled.counts.haze).toBeGreaterThan(20_000);
-    expect(assembled.counts.moon).toBeGreaterThan(1000);
+    expect(assembled.counts.moon).toBeGreaterThan(200);
     expect(assembled.counts.star).toBeGreaterThan(1000);
     expect(buffers.count).toBeLessThan(900_000);
     console.log(
@@ -595,8 +595,8 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
         building: 87_369,
       },
       hash: 'cf326988',
-      lights: 12_294,
-      lightsHash: 'da2a676f',
+      lights: 4_935,
+      lightsHash: '1e63faa8',
       haze: 30_000,
       hazeUnflagged: 0,
       hazeHash: '49bf0339',

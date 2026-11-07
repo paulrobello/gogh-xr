@@ -1,10 +1,11 @@
 /**
  * The moon and the 11 stars as static strokes on the sky dome (P4.3 pulled forward, static only).
- * Each sky anchor (sky.ts) gets a disc of concentric rings of strokes, each stroke running along
- * its ring, coloured from the full-resolution scan (sky-scan.ts) at its projected canvas uv. So
- * the crescent and the star rings come from the painting's own colours. The moon's strokes are
- * half the stars' length, so the crescent's edge survives. Pure and deterministic per seed, so it
- * runs in unit tests without WebGL.
+ * Each sky anchor (sky.ts) gets strokes brushed like the dome around it: the dome's stroke size,
+ * length jitter and brushes, each stroke along the flow field, coloured from the full-resolution
+ * scan (sky-scan.ts) along its length. Strokes split to half and quarter size only where the
+ * scan's colour steps across them, such as the crescent's edge. They reach past each anchor's
+ * circle into a rim band where they thin out, so the dome shows between them and the disc has no
+ * edge. Pure and deterministic per seed, so it runs in unit tests without WebGL.
  *
  * The strokes carry DEPTH_BACKDROP_FLAG on the moon and star stroke layers, so the shader draws
  * them in the backdrop's front tier: over every dome stroke and behind the rest of the world
@@ -19,18 +20,10 @@
  * (src/render/strokes/sky-light-cull.ts).
  */
 import type { Raster } from '../demo/canvas/field';
-import { REGION, type RegionId, sampleColor } from '../demo/canvas/field';
+import { REGION, type RegionId, sampleColor, sampleFlow } from '../demo/canvas/field';
 import { COLOR_INSET, decodedNormal, REGION_STYLES, strokeShade } from '../demo/canvas/placement';
-import {
-  CANVAS_ASPECT,
-  canvasRay,
-  PAINTER_EYE,
-  projectToCanvas,
-} from '../paintings/starry-night/canvas-camera';
-import {
-  type CanvasSource,
-  sampleRegionHistogram,
-} from '../paintings/starry-night/canvas-histogram';
+import { CANVAS_ASPECT, canvasRay, PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
+import type { CanvasSource } from '../paintings/starry-night/canvas-histogram';
 import {
   BACKDROP_FRONT_RANK_SHIFT,
   BACKDROP_FRONT_RANKS,
@@ -41,37 +34,70 @@ import { BRUSHES } from '../render/strokes/brush-atlas-data';
 import { float32Bits, lowbias32 } from '../render/strokes/depth-tie-break';
 import { surfaceBasis, type Vec3 } from '../render/strokes/frame';
 import type { StrokeInstance } from '../render/strokes/instance';
+import {
+  cameraDirection,
+  type GradedSize,
+  SCATTER_SIZE_JITTER,
+  strokeSizeAt,
+} from '../render/strokes/scatter';
 import type { SkyLightCone } from '../render/strokes/sky-light-cull';
+import { deltaE2000, type Lab, srgb8ToLab } from '../util/cielab';
 import { mulberry32 } from '../util/prng';
 import { SKY_DOME_RADIUS, type SkyAnchor, skyAnchors } from './sky';
 import { type SkyScanCrop, sampleSkyScan, skyScanCrops } from './sky-scan';
 
-/** Drawn stroke length and ring spacing per anchor kind, painting widths. */
-export const SKY_LIGHT_STROKE: Readonly<
-  Record<SkyAnchor['kind'], { readonly length: number; readonly spacing: number }>
-> = Object.freeze({
-  // About 15 px of a 1280 px painter capture.
-  star: Object.freeze({ length: 0.012, spacing: 0.005 }),
-  // Half the stars' length: the crescent is about 0.02 painting widths thick.
-  moon: Object.freeze({ length: 0.006, spacing: 0.0025 }),
-});
 /**
- * Quad overdraw over a disc: stored strokes times mean drawn quad area over the disc's area. The
- * lights are pinned, so every governor level draws all of them. The brush masks cover about a
- * quarter to a half of their quads: at 8 the moon was solid but dark gaps stayed between the star
- * dabs, which 12 closes.
+ * A light's strokes reach out to this many anchor radii. Inside one radius they are at full
+ * density; from there to this radius their density eases to 0 (smoothstep), so the dome's own
+ * strokes show between them more and more and the disc has no circular edge. The scan's halo rings
+ * around the moon and the stars lie in that band.
+ */
+export const SKY_LIGHT_RIM: number = 1.5;
+/**
+ * Quad overdraw where the density is full: stored strokes times mean drawn quad area over the area.
+ * The lights are pinned, so every governor level draws all of them. The brush masks cover about a
+ * quarter to a half of their quads, and 12 leaves no dark gaps across the moon.
  */
 export const SKY_LIGHT_OVERDRAW: number = 12;
-/** Stroke length varies uniformly by ± this share, as SCATTER_SIZE_JITTER does. */
-export const SKY_LIGHT_LENGTH_JITTER: number = 0.15;
-/** A stroke's ring radius varies by ± this share of the ring spacing. */
-const RING_JITTER = 0.3;
-/** A stroke turns off its ring tangent by up to ± this, radians. */
-const TANGENT_JITTER = 0.15;
-/** Strokes closer than this many longest drawn lengths never share a front-tier rank. */
-export const SKY_LIGHT_RANK_REACH: number = 1.3;
+/**
+ * A stroke splits into four at half the size, at most this many times, where the scan's colour
+ * steps across its footprint: the crescent's edge and the stars' cores. Elsewhere the lights use
+ * the dome strokes' own size.
+ */
+export const SKY_LIGHT_FINE_LEVELS: number = 2;
+/**
+ * Colour step over which a star stroke splits: CIEDE2000 between the mean colours of its
+ * footprint's two halves, end against end or side against side.
+ */
+export const SKY_LIGHT_EDGE_DE: number = 20;
+/**
+ * The moon does not split: every cell holds a dome-size stroke, so the moon's strokes match the
+ * dome's (Paul's ruling, fix round 2). The crescent's edges get extra strokes at this size level
+ * on top instead, only where their footprint straddles the crescent's gold.
+ */
+export const SKY_LIGHT_MOON_EDGE_LEVEL: number = 2;
+/** Quad overdraw of the moon's edge strokes, where they are placed. */
+export const SKY_LIGHT_MOON_EDGE_OVERDRAW: number = 3;
+/**
+ * CIELAB b* over which the scan's moon reads as the crescent's gold. The cream disc the crescent
+ * bites into and the halo stay under it (b* about 35 to 45; the gold is 55 to 75).
+ */
+export const SKY_LIGHT_GOLD_B: number = 50;
+/** Samples of the crescent mask, of 15 over an edge stroke's footprint, needed on each side. */
+const EDGE_SIDE_SAMPLES = 3;
+/** Split path of a moon edge-stroke cell; the main grid's paths start at 1. */
+const EDGE_PATH = 0;
 /** Most x float32 steps `rankedDomePoint` tries; one in BACKDROP_FRONT_RANKS hits. */
 const RANK_TRIES = 1 << 16;
+/** Colour samples along a stroke footprint, as shares of its drawn length from the centre. */
+const FOOTPRINT_ALONG: readonly number[] = [-0.45, -0.225, 0, 0.225, 0.45];
+/** Colour-step samples across a stroke footprint, as shares of its drawn width. */
+const FOOTPRINT_ACROSS: readonly number[] = [-0.45, 0, 0.45];
+/**
+ * Two quads closer than this times the sum of their half diagonals take different ranks. It covers
+ * the micrometre x move `rankedDomePoint` makes after the rank is picked.
+ */
+const RANK_MARGIN = 1.01;
 
 const REGION_OF: Readonly<Record<SkyAnchor['kind'], RegionId>> = Object.freeze({
   star: REGION.stars,
@@ -80,10 +106,14 @@ const REGION_OF: Readonly<Record<SkyAnchor['kind'], RegionId>> = Object.freeze({
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const smoothstep = (a: number, b: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
 
-/** Longest drawn stroke of an anchor kind after length jitter, painting widths. */
-export function skyLightMaxLength(kind: SkyAnchor['kind']): number {
-  return SKY_LIGHT_STROKE[kind].length * (1 + SKY_LIGHT_LENGTH_JITTER);
+/** Share of full density at `rho` anchor radii from the centre. */
+export function skyLightFade(rho: number): number {
+  return rho < 1 ? 1 : 1 - smoothstep(1, SKY_LIGHT_RIM, rho);
 }
 
 /** The point on the dome sphere along the painter's ray through canvas (u, v). */
@@ -97,7 +127,7 @@ function domePoint(u: number, v: number): Vec3 {
 }
 
 /** Metres per painting width on the dome around an anchor, along canvas u. */
-function metresPerWidth(anchor: SkyAnchor): number {
+export function metresPerWidth(anchor: SkyAnchor): number {
   const step = 1e-3;
   return Math.hypot(...sub(domePoint(anchor.uv[0] + step, anchor.uv[1]), anchor.position)) / step;
 }
@@ -133,35 +163,6 @@ function offsetUv(uv: readonly [number, number], dx: number, dy: number): [numbe
   return [uv[0] + dx, uv[1] + dy * CANVAS_ASPECT];
 }
 
-/**
- * The scan's colour at the point's projected uv: from the anchor's full-resolution crop when it
- * covers the point, else from frame.webp inset past the mat by COLOR_INSET, with no region check
- * (the painted star or moon is what the scan shows there). Off the frame it draws from the
- * region's histogram, as `sampleCanvas` does.
- */
-function scanColor(
-  source: CanvasSource,
-  scan: Raster,
-  crop: SkyScanCrop | null,
-  point: Vec3,
-  region: RegionId,
-  rng: () => number,
-): readonly [number, number, number] {
-  const { uv, inFrustum } = projectToCanvas(point);
-  if (inFrustum && uv !== null) {
-    const fine = crop ? sampleSkyScan(scan, crop, uv) : null;
-    return (
-      fine ??
-      sampleColor(
-        source.image,
-        COLOR_INSET[0] + uv[0] * (1 - 2 * COLOR_INSET[0]),
-        COLOR_INSET[1] + uv[1] * (1 - 2 * COLOR_INSET[1]),
-      )
-    );
-  }
-  return sampleRegionHistogram(source.histogram, region, rng).rgb;
-}
-
 /** A stream seed per anchor, so retuning one disc leaves the others unchanged. */
 function anchorSeed(seed: number, anchor: number): number {
   let h = Math.imul((seed >>> 0) ^ (anchor + 0x9e3779b9), 0x85ebca6b);
@@ -170,38 +171,53 @@ function anchorSeed(seed: number, anchor: number): number {
 }
 
 /**
- * Front-tier ranks for one disc, greedily: each stroke takes the first rank, from a random start,
- * that no earlier stroke within `reach` painting widths holds. Only strokes within `reach` can
- * overlap. When every rank is held nearby, the stroke takes its start rank anyway and `ties`
- * counts it; the world diag reports the total (`lightRankTies`).
+ * Front-tier ranks for the sky lights, greedily: each stroke takes the first rank, from a random start,
+ * that no earlier stroke it can overlap holds. Two strokes can overlap only when their centres are
+ * closer than the sum of their half diagonals, all in metres on the dome, as drawn. When every rank
+ * is held by such a neighbour, the stroke takes its start rank anyway and `ties` counts it; the
+ * world diag reports the total (`lightRankTies`). `maxHalf` bounds every half diagonal the picker
+ * sees.
  */
 export class RankPicker {
-  private readonly cells = new Map<number, Array<{ x: number; y: number; rank: number }>>();
+  private readonly cells = new Map<number, Array<{ p: Vec3; half: number; rank: number }>>();
   private readonly used = new Uint8Array(BACKDROP_FRONT_RANKS);
-  /** Strokes that found no free rank and share one with a stroke within reach. */
+  private readonly cell: number;
+  /** Strokes that found no free rank and share one with a stroke they can overlap. */
   ties = 0;
 
-  constructor(private readonly reach: number) {}
-
-  private key(cx: number, cy: number): number {
-    return (cx + 32768) * 65536 + (cy + 32768);
+  constructor(private readonly maxHalf: number) {
+    this.cell = 2 * maxHalf;
   }
 
-  pick(x: number, y: number, start: number): number {
+  private key(cx: number, cy: number, cz: number): number {
+    return ((cx + 2048) * 4096 + (cy + 2048)) * 4096 + (cz + 2048);
+  }
+
+  /**
+   * The rank for a stroke at `p` of half diagonal `half`: the first free one from `start` in
+   * `step` steps, so step -1 from the top rank puts a stroke over every neighbour it can.
+   */
+  pick(p: Vec3, half: number, start: number, step: 1 | -1 = 1): number {
+    if (half > this.maxHalf) {
+      throw new Error(`half diagonal ${half} over the picker's ${this.maxHalf}`);
+    }
     this.used.fill(0);
-    const cx = Math.floor(x / this.reach);
-    const cy = Math.floor(y / this.reach);
-    const reach2 = this.reach * this.reach;
+    const [cx, cy, cz] = p.map((c) => Math.floor(c / this.cell));
     for (let i = cx - 1; i <= cx + 1; i++) {
       for (let j = cy - 1; j <= cy + 1; j++) {
-        for (const s of this.cells.get(this.key(i, j)) ?? []) {
-          if ((s.x - x) ** 2 + (s.y - y) ** 2 < reach2) this.used[s.rank] = 1;
+        for (let k = cz - 1; k <= cz + 1; k++) {
+          for (const s of this.cells.get(this.key(i, j, k)) ?? []) {
+            const reach = s.half + half;
+            const d = sub(s.p, p);
+            if (dot(d, d) < reach * reach) this.used[s.rank] = 1;
+          }
         }
       }
     }
     let rank = -1;
     for (let k = 0; k < BACKDROP_FRONT_RANKS; k++) {
-      const r = (start + k) % BACKDROP_FRONT_RANKS;
+      const r =
+        (((start + step * k) % BACKDROP_FRONT_RANKS) + BACKDROP_FRONT_RANKS) % BACKDROP_FRONT_RANKS;
       if (!this.used[r]) {
         rank = r;
         break;
@@ -211,9 +227,9 @@ export class RankPicker {
       rank = start % BACKDROP_FRONT_RANKS;
       this.ties++;
     }
-    const cell = this.key(cx, cy);
+    const cell = this.key(cx, cy, cz);
     const list = this.cells.get(cell);
-    const entry = { x, y, rank };
+    const entry = { p, half, rank };
     if (list) list.push(entry);
     else this.cells.set(cell, [entry]);
     return rank;
@@ -232,108 +248,312 @@ function cropsFor(anchors: readonly SkyAnchor[]): Array<SkyScanCrop | null> {
 
 export interface SkyLights {
   readonly strokes: StrokeInstance[];
-  /** Strokes that share a front-tier rank with a stroke within reach (`RankPicker.ties`). */
+  /** Strokes that share a front-tier rank with a stroke they can overlap (`RankPicker.ties`). */
   readonly rankTies: number;
 }
 
+/** The sky dome's own brushes and their mean and widest aspect. */
+function domeBrushes(): { brushes: readonly number[]; meanAspect: number; maxAspect: number } {
+  const { brushes } = REGION_STYLES[REGION.sky];
+  const aspects = brushes.map((b) => BRUSHES[b].aspect);
+  return {
+    brushes,
+    meanAspect: aspects.reduce((sum, a) => sum + a, 0) / aspects.length,
+    maxAspect: Math.max(...aspects),
+  };
+}
+
 /**
- * The moon and star strokes, anchor by anchor in `skyAnchors()` order. A disc of anchor radius r
- * (painting widths) holds rings at radii (i + 0.5)·r / n for n = max(1, round(r / spacing)); each
- * ring takes strokes at even angles with jitter, enough for SKY_LIGHT_OVERDRAW once the band
- * grows them. Per stroke: position on the dome sphere along the painter's ray;
- * normal towards the painter's eye; long axis along the ring; brush and stroke layer from the
- * region style; colour from the scan (`scan` is lights.webp) divided by `strokeShade`;
- * DEPTH_BACKDROP_FLAG; a front-tier rank no overlapping neighbour shares.
+ * Drawn half diagonal in metres of a quad of stored length `length` metres and brush aspect
+ * `aspect`, with RANK_MARGIN.
+ */
+export function skyLightHalfDiagonal(length: number, aspect: number): number {
+  return 0.5 * length * Math.hypot(1, aspect) * DEFAULT_BAND_SIZE.far * RANK_MARGIN;
+}
+
+/** A stream seed per anchor, grid cell and split path, so one flipped split moves only its cell. */
+function cellSeed(seed: number, anchor: number, i: number, j: number, path: number): number {
+  let h = lowbias32(anchorSeed(seed, anchor) ^ lowbias32(((i + 4096) << 13) | (j + 4096)));
+  h = lowbias32(h ^ path);
+  return h;
+}
+
+/** The scan's colour at canvas uv: the anchor's crop where it covers uv, else frame.webp. */
+function colourAtUv(
+  source: CanvasSource,
+  scan: Raster,
+  crop: SkyScanCrop | null,
+  uv: readonly [number, number],
+): readonly [number, number, number] {
+  return (
+    (crop ? sampleSkyScan(scan, crop, uv) : null) ??
+    sampleColor(
+      source.image,
+      COLOR_INSET[0] + uv[0] * (1 - 2 * COLOR_INSET[0]),
+      COLOR_INSET[1] + uv[1] * (1 - 2 * COLOR_INSET[1]),
+    )
+  );
+}
+
+/**
+ * The moon and star strokes, anchor by anchor in `skyAnchors()` order, brushed like the dome
+ * around them. Every stroke uses the dome's stroke size at the dome's radius (`domeSize`, the sky
+ * layer's resolved size), its length jitter and its brushes, and runs along the flow field at its
+ * uv, as the dome's strokes do (the scan's structure tensor agrees with the flow field better than
+ * with rings about the anchor, docs/verification.md). Where the scan's colour changes across a
+ * star stroke's footprint by more than SKY_LIGHT_EDGE_DE, the stroke splits into four at half the
+ * size, up to SKY_LIGHT_FINE_LEVELS times, so the stars' cores survive. The moon keeps dome-size
+ * strokes and gets finer edge strokes on top along the crescent (SKY_LIGHT_MOON_EDGE_LEVEL). Each
+ * grid cell draws its random numbers from its own seed (`cellSeed`).
+ *
+ * Placement is a jittered grid over the square of half side SKY_LIGHT_RIM·r (painting widths),
+ * with a cell sized for SKY_LIGHT_OVERDRAW as drawn. A stroke at rho anchor radii is kept with
+ * probability `skyLightFade(rho)`. Per stroke: position on the dome sphere along the painter's ray;
+ * normal towards the painter's eye; colour from the scan (`scan` is lights.webp, frame.webp past
+ * the crop) divided by `strokeShade`; the star or moon stroke layer; DEPTH_BACKDROP_FLAG; a
+ * front-tier rank no stroke it can overlap shares.
  */
 export function createSkyLights(
   source: CanvasSource,
   scan: Raster,
   seed: number,
+  domeSize: GradedSize,
   anchors: readonly SkyAnchor[] = skyAnchors(),
 ): SkyLights {
-  const out: StrokeInstance[] = [];
-  let rankTies = 0;
+  // Every stroke is placed first and ranked after, full size first, then half, then quarter: a
+  // full-size stroke overlaps far more quarter-size ones than the 256 ranks, but each stroke only
+  // needs a rank its already-ranked neighbours do not hold.
+  const pending: Array<{
+    readonly level: number;
+    readonly finish: (rank: number) => StrokeInstance;
+    readonly p: Vec3;
+    readonly half: number;
+    readonly start: number;
+    readonly top: boolean;
+  }> = [];
   const crops = cropsFor(anchors);
+  const { brushes, meanAspect, maxAspect } = domeBrushes();
+  const stored = strokeSizeAt(domeSize, SKY_DOME_RADIUS);
+  // One picker for every anchor, in metres on the dome: neighbouring stars' rims overlap, and a
+  // painting width spans a different length on the dome in each direction.
+  const ranks = new RankPicker(skyLightHalfDiagonal(stored * (1 + SCATTER_SIZE_JITTER), maxAspect));
   anchors.forEach((anchor, a) => {
-    const rand = mulberry32(anchorSeed(seed, a));
     const region = REGION_OF[anchor.kind];
-    const style = REGION_STYLES[region];
-    const { length: drawn, spacing: ringSpacing } = SKY_LIGHT_STROKE[anchor.kind];
-    const authored = drawn / DEFAULT_BAND_SIZE.far;
-    const meanAspect =
-      style.brushes.reduce((sum, b) => sum + BRUSHES[b].aspect, 0) / style.brushes.length;
-    const stored = SKY_LIGHT_OVERDRAW / (drawn * drawn * meanAspect);
+    const layer = REGION_STYLES[region].layer;
+    const crop = crops[a] ?? null;
     const perWidth = metresPerWidth(anchor);
-    // Quads of the widest brush (aspect 0.833) can touch corner to corner up to sqrt(1 + 0.833²),
-    // about 1.3 lengths apart; a hair more covers float32 rounding of the positions.
-    const ranks = new RankPicker(skyLightMaxLength(anchor.kind) * SKY_LIGHT_RANK_REACH * 1.01);
+    const drawn = (stored * DEFAULT_BAND_SIZE.far) / perWidth;
+    const cell = Math.sqrt((drawn * drawn * meanAspect) / SKY_LIGHT_OVERDRAW);
     const { radius } = anchor;
-    const rings = Math.max(1, Math.round(radius / ringSpacing));
-    const spacing = radius / rings;
-    for (let i = 0; i < rings; i++) {
-      const ring = (i + 0.5) * spacing;
-      const count = Math.max(3, Math.round(2 * Math.PI * ring * spacing * stored));
-      const offset = rand() * 2 * Math.PI;
-      for (let j = 0; j < count; j++) {
-        const theta = offset + ((j + rand()) / count) * 2 * Math.PI;
-        const rho = ring + (2 * rand() - 1) * RING_JITTER * spacing;
-        const c = Math.cos(theta);
-        const s = Math.sin(theta);
-        const [u, v] = offsetUv(anchor.uv, rho * c, rho * s);
-        const rank = ranks.pick(rho * c, rho * s, Math.floor(rand() * BACKDROP_FRONT_RANKS));
+    const outer = SKY_LIGHT_RIM * radius;
+    const moon = anchor.kind === 'moon';
+    const lab = (rgb: readonly number[]): Lab => {
+      const [r, g, b] = rgb.map((c) => Math.min(255, Math.max(0, Math.round(c))));
+      return srgb8ToLab(r, g, b);
+    };
+    /**
+     * The scan's colours over a stroke footprint at (x, y), drawn `length` painting widths long and
+     * `width` wide along the flow: FOOTPRINT_ALONG positions along it, at each of FOOTPRINT_ACROSS.
+     */
+    const footprint = (
+      x: number,
+      y: number,
+      length: number,
+      width: number,
+      across: readonly number[],
+    ): Array<readonly [number, number, number]> => {
+      const centre = offsetUv(anchor.uv, x, y);
+      const angle = sampleFlow(source.flow, centre[0], centre[1]).angle;
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      const out: Array<readonly [number, number, number]> = [];
+      for (const t of FOOTPRINT_ALONG) {
+        for (const k of across) {
+          const dx = t * length * c - k * width * s;
+          const dy = t * length * s + k * width * c;
+          out.push(colourAtUv(source, scan, crop, offsetUv(anchor.uv, x + dx, y + dy)));
+        }
+      }
+      return out;
+    };
+
+    /**
+     * The colour step across a stroke footprint at (x, y): the larger CIEDE2000 difference between
+     * the mean colours of its two halves, end against end and side against side. Brush texture
+     * and halo rings finer than the stroke average out in each half; an edge such as the
+     * crescent's does not.
+     */
+    const spread = (x: number, y: number, length: number): number => {
+      const labs = footprint(x, y, length, length * meanAspect, FOOTPRINT_ACROSS).map(lab);
+      const across = FOOTPRINT_ACROSS.length;
+      const meanOf = (keep: (t: number, k: number) => boolean): Lab => {
+        const sum = [0, 0, 0];
+        let n = 0;
+        labs.forEach((l, i) => {
+          if (!keep(FOOTPRINT_ALONG[Math.floor(i / across)], FOOTPRINT_ACROSS[i % across])) return;
+          for (let c = 0; c < 3; c++) sum[c] += l[c];
+          n++;
+        });
+        return [sum[0] / n, sum[1] / n, sum[2] / n];
+      };
+      return Math.max(
+        deltaE2000(
+          meanOf((t) => t < 0),
+          meanOf((t) => t > 0),
+        ),
+        deltaE2000(
+          meanOf((_, k) => k < 0),
+          meanOf((_, k) => k > 0),
+        ),
+      );
+    };
+
+    /** Whether a footprint at (x, y) `length` long holds both the crescent's gold and not. */
+    const straddles = (x: number, y: number, length: number): boolean => {
+      const labs = footprint(x, y, length, length * meanAspect, FOOTPRINT_ACROSS).map(lab);
+      const gold = labs.filter((l) => l[2] > SKY_LIGHT_GOLD_B).length;
+      return gold >= EDGE_SIDE_SAMPLES && labs.length - gold >= EDGE_SIDE_SAMPLES;
+    };
+
+    const emit = (x: number, y: number, level: number, rand: () => number, top = false): void => {
+      const scale = 0.5 ** level;
+      const [u, v] = offsetUv(anchor.uv, x, y);
+      const brush = brushes[Math.floor(rand() * brushes.length)];
+      const aspect = BRUSHES[brush].aspect;
+      const length = stored * scale * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
+      const flip = rand() < 0.5 ? Math.PI : 0;
+      const phase = Math.floor(rand() * 256);
+      // The lower half, so a moon edge stroke, which takes the highest free rank, lands on top.
+      const start = Math.floor((rand() * BACKDROP_FRONT_RANKS) / 2);
+      const finish = (rank: number): StrokeInstance => {
         const position = rankedDomePoint(u, v, rank);
         const toward = sub(PAINTER_EYE, position);
         const len = Math.hypot(...toward);
         const normal: Vec3 = [toward[0] / len, toward[1] / len, toward[2] / len];
-        // The ring's direction at this point, from a small step along it.
-        const e = 1e-3;
-        const at = (t: number): Vec3 =>
-          domePoint(...offsetUv(anchor.uv, rho * Math.cos(t), rho * Math.sin(t)));
-        const along = sub(at(theta + e), at(theta - e));
         const decoded = decodedNormal(normal);
         const { b1, b2 } = surfaceBasis(decoded);
-        const flip = rand() < 0.5 ? Math.PI : 0;
-        const tangent =
-          Math.atan2(dot(along, b2), dot(along, b1)) + (2 * rand() - 1) * TANGENT_JITTER + flip;
-        const brush = style.brushes[Math.floor(rand() * style.brushes.length)];
-        const length = authored * perWidth * (1 + (2 * rand() - 1) * SKY_LIGHT_LENGTH_JITTER);
-        const phase = Math.floor(rand() * 256);
-        const rgb = scanColor(source, scan, crops[a] ?? null, position, region, rand);
+        // Along the flow field, as the dome's strokes run; tangential about the anchor if the
+        // flow direction is edge-on (it never is on the dome, which faces the painter).
+        const along =
+          cameraDirection(position, decoded, sampleFlow(source.flow, u, v).angle) ??
+          sub(domePoint(...offsetUv(anchor.uv, x - y * 1e-3, y + x * 1e-3)), domePoint(u, v));
+        const tangent = Math.atan2(dot(along, b2), dot(along, b1)) + flip;
+        // The mean of the scan along the stroke's drawn length, so a thin dark line under its
+        // centre does not paint the whole stroke.
+        const samples = footprint(x, y, (length * DEFAULT_BAND_SIZE.far) / perWidth, 0, [0]);
+        const rgb = [0, 1, 2].map(
+          (k) => samples.reduce((sum, c) => sum + c[k], 0) / samples.length,
+        );
         const shade = strokeShade(decoded);
-        out.push({
+        return {
           position,
           normal,
           tangent,
           color: [rgb[0] / shade, rgb[1] / shade, rgb[2] / shade, 255],
-          size: [length, length * BRUSHES[brush].aspect],
+          size: [length, length * aspect],
           brush,
-          layer: style.layer,
+          layer,
           phase,
           flags: DEPTH_BACKDROP_FLAG,
-        });
+        };
+      };
+      pending.push({
+        level,
+        finish,
+        p: domePoint(u, v),
+        half: skyLightHalfDiagonal(length, aspect),
+        start,
+        top,
+      });
+    };
+
+    const place = (
+      x0: number,
+      y0: number,
+      size: number,
+      level: number,
+      i: number,
+      j: number,
+      path: number,
+    ): void => {
+      const cx = x0 + size / 2;
+      const cy = y0 + size / 2;
+      // A cell wholly past the rim holds nothing.
+      if (Math.hypot(cx, cy) - size * Math.SQRT1_2 >= outer) return;
+      if (
+        !moon &&
+        level < SKY_LIGHT_FINE_LEVELS &&
+        spread(cx, cy, drawn * 0.5 ** level) > SKY_LIGHT_EDGE_DE
+      ) {
+        const half = size / 2;
+        place(x0, y0, half, level + 1, i, j, path * 4);
+        place(x0 + half, y0, half, level + 1, i, j, path * 4 + 1);
+        place(x0, y0 + half, half, level + 1, i, j, path * 4 + 2);
+        place(x0 + half, y0 + half, half, level + 1, i, j, path * 4 + 3);
+        return;
+      }
+      const rand = mulberry32(cellSeed(seed, a, i, j, path));
+      const x = x0 + rand() * size;
+      const y = y0 + rand() * size;
+      if (rand() >= skyLightFade(Math.hypot(x, y) / radius)) return;
+      emit(x, y, level, rand);
+    };
+
+    const n = Math.ceil(outer / cell);
+    for (let j = -n; j < n; j++) {
+      for (let i = -n; i < n; i++) place(i * cell, j * cell, cell, 0, i, j, 1);
+    }
+    if (!moon) return;
+    // The crescent's edges: finer strokes over the dome-size ones, on a jittered grid of their own
+    // over the disc, kept only where their footprint straddles the gold.
+    const fine = drawn * 0.5 ** SKY_LIGHT_MOON_EDGE_LEVEL;
+    const fineCell = Math.sqrt((fine * fine * meanAspect) / SKY_LIGHT_MOON_EDGE_OVERDRAW);
+    const m = Math.ceil(radius / fineCell);
+    for (let j = -m; j < m; j++) {
+      for (let i = -m; i < m; i++) {
+        const rand = mulberry32(cellSeed(seed, a, i, j, EDGE_PATH));
+        const x = (i + rand()) * fineCell;
+        const y = (j + rand()) * fineCell;
+        if (Math.hypot(x, y) >= radius || !straddles(x, y, fine)) continue;
+        emit(x, y, SKY_LIGHT_MOON_EDGE_LEVEL, rand, true);
       }
     }
-    rankTies += ranks.ties;
   });
-  return { strokes: out, rankTies };
+  const order = pending
+    .map((_, i) => i)
+    .sort((i, j) => pending[i].level - pending[j].level || i - j);
+  const strokes = order.map((i) => {
+    const p = pending[i];
+    return p.finish(
+      p.top
+        ? ranks.pick(p.p, p.half, BACKDROP_FRONT_RANKS - 1, -1)
+        : ranks.pick(p.p, p.half, p.start),
+    );
+  });
+  return { strokes, rankTies: ranks.ties };
 }
 
 /**
  * The cones the stroke shader clears the haze from (sky-light-cull.ts): each anchor's dome centre
- * and the disc's reach in metres, out to its outermost ring plus ring jitter and half the longest
- * drawn stroke.
+ * and the lights' reach in metres, out to SKY_LIGHT_RIM radii plus the longest drawn stroke's half
+ * diagonal.
  */
-export function skyLightCones(anchors: readonly SkyAnchor[] = skyAnchors()): SkyLightCone[] {
+export function skyLightCones(
+  domeSize: GradedSize,
+  anchors: readonly SkyAnchor[] = skyAnchors(),
+): SkyLightCone[] {
+  const { maxAspect } = domeBrushes();
+  const longest = strokeSizeAt(domeSize, SKY_DOME_RADIUS) * (1 + SCATTER_SIZE_JITTER);
+  const half = skyLightHalfDiagonal(longest, maxAspect);
   return anchors.map((anchor) => {
-    const { spacing } = SKY_LIGHT_STROKE[anchor.kind];
-    const reach = anchor.radius + RING_JITTER * spacing + skyLightMaxLength(anchor.kind) / 2;
-    // The farthest dome point at that reach, over the rim: perspective stretches some directions.
+    const reach = SKY_LIGHT_RIM * anchor.radius;
+    // The farthest dome point on the rim, where perspective stretches it most, plus a stroke.
     let radius = 0;
     for (let k = 0; k < 32; k++) {
       const t = (k / 32) * 2 * Math.PI;
       const rim = domePoint(...offsetUv(anchor.uv, reach * Math.cos(t), reach * Math.sin(t)));
       radius = Math.max(radius, Math.hypot(...sub(rim, anchor.position)));
     }
-    return { centre: anchor.position, radius };
+    return { centre: anchor.position, radius: radius + half };
   });
 }

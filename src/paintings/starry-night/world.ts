@@ -84,6 +84,15 @@ export const WORLD_SCATTER_SIZE: Readonly<Partial<Record<WorldLayer, GradedSize>
   ),
 );
 
+/**
+ * The sky dome's stroke size as the scatter resolves it (`LAYER_SIZE.sky` under
+ * `WORLD_SCATTER_SIZE.sky`). The moon and stars are brushed at it (src/world/sky-lights.ts).
+ */
+export const WORLD_DOME_SIZE: GradedSize = Object.freeze({
+  ...LAYER_SIZE.sky,
+  ...WORLD_SCATTER_SIZE.sky,
+});
+
 /** The seed each part of the world draws from. */
 export interface WorldSeeds {
   readonly terrain: number;
@@ -239,7 +248,12 @@ export function assembleWorldStrokes(
   scan: Raster,
   seeds: WorldSeeds,
 ): WorldStrokes {
-  const { strokes: lights, rankTies } = createSkyLights(source, scan, seeds.lights);
+  const { strokes: lights, rankTies } = createSkyLights(
+    source,
+    scan,
+    seeds.lights,
+    WORLD_DOME_SIZE,
+  );
   const haze = worldHaze(world, source, seeds).map((s) => ({
     ...s,
     flags: (s.flags ?? 0) | SKY_LIGHT_CULL_FLAG,
@@ -255,7 +269,7 @@ export function assembleWorldStrokes(
     hazeStart,
     counts,
     lightRankTies: rankTies,
-    cones: skyLightCones(),
+    cones: skyLightCones(WORLD_DOME_SIZE),
   };
 }
 

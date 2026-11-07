@@ -114,6 +114,10 @@ test('?painting=starry-night boots the world at the painter eye with no errors',
   expect(stats.debug).toBeNull();
   expect(stats.total).toBeGreaterThan(0);
   expect(stats.strokes.total).toBe(stats.total);
+  // The seed-1 light counts the unit pin (tests/world-starry-night.test.ts) reads through sharp's
+  // decode. A stroke splits on the scan's colours, so the browser's decoder must give the same.
+  expect(stats.counts.moon).toBe(264);
+  expect(stats.counts.star).toBe(4_671);
   // e2e builds always bypass the scatter cache.
   expect(stats.cache).toBe('bypass');
   expect((diag.world as WorldDiag).strokes.visible).toBeGreaterThan(0);

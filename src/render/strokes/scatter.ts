@@ -376,7 +376,7 @@ function stableFrame(n: Vec3): { right: Vec3; up: Vec3 } {
  * tangent plane meets the plane through the eye spanned by the view ray and the screen direction,
  * which is exact under perspective. Null when the surface is seen nearly edge-on.
  */
-function cameraDirection(point: Vec3, n: Vec3, angle: number): Vec3 | null {
+export function cameraDirection(point: Vec3, n: Vec3, angle: number): Vec3 | null {
   const c = Math.cos(angle);
   const s = Math.sin(angle);
   // Screen right is world +X, screen up is (0, cos p, sin p): canvas-camera.ts.
