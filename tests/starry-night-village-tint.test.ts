@@ -1,11 +1,16 @@
 import { beforeAll, describe, expect, test } from 'vitest';
 import { loadRealSource } from '../scripts/scatter-time.ts';
-import type { CanvasSource } from '../src/paintings/starry-night/canvas-histogram.ts';
+import { LAYER_REGION } from '../src/paintings/starry-night/canvas-camera.ts';
+import type { CanvasSample, CanvasSource } from '../src/paintings/starry-night/canvas-histogram.ts';
 import {
   jitterTint,
+  LIFT_PIVOT_QUANTILE,
   liftLightness,
+  lightnessQuantile,
   pickTint,
   type Rgb,
+  raiseLightness,
+  SEEN_WALL_LIFT,
   splitTintBands,
   srgbToLab,
   TINT_NEIGHBOURS,
@@ -19,7 +24,13 @@ import {
   scatterWorld,
   worldSeeds,
 } from '../src/paintings/starry-night/world.ts';
-import { WORLD_LAYERS } from '../src/render/strokes/scatter.ts';
+import type { Vec3 } from '../src/render/strokes/frame.ts';
+import {
+  outlinePaint,
+  tintLookup,
+  villagePaint,
+  WORLD_LAYERS,
+} from '../src/render/strokes/scatter.ts';
 import { mulberry32 } from '../src/util/prng.ts';
 
 const key = (rgb: Rgb): string => rgb.join(',');
@@ -111,6 +122,61 @@ describe('the village tint bands (ruling Q28)', () => {
     const half = srgbToLab(liftLightness(pale, pivot, 90, 0.5));
     expect(half[0]).toBeCloseTo(before[0] + 0.5 * (90 - before[0]), 0);
     expect(Math.hypot(half[1] - before[1], half[2] - before[2])).toBeLessThan(2);
+  });
+
+  // A point the painter faces from 10 m: its stroke is seen when its sample is not extrapolated.
+  const SEEN_POINT: Vec3 = [0, 1.6, -10];
+  const TOWARD_PAINTER: Vec3 = [0, 0, 1];
+  const sample = (rgb: Rgb, extrapolated = false): CanvasSample => ({
+    rgb,
+    flowAngle: 0,
+    extrapolated,
+  });
+
+  test('a seen house-wall scan pixel darker than the wall band is raised to its floor', () => {
+    const floor = bands[TINT_ROLE.wall].lightness[0];
+    const dark: Rgb = [40, 50, 80];
+    const before = srgbToLab(dark);
+    expect(before[0]).toBeLessThan(floor);
+    const raised = srgbToLab(raiseLightness(dark, floor, SEEN_WALL_LIFT));
+    // 8-bit rounding moves L* by under 0.6.
+    expect(raised[0]).toBeGreaterThan(floor - (1 - SEEN_WALL_LIFT) * (floor - before[0]) - 0.6);
+    expect(Math.hypot(raised[1] - before[1], raised[2] - before[2])).toBeLessThan(3);
+    const pale: Rgb = [200, 200, 190];
+    expect(raiseLightness(pale, floor, 1)).toEqual(pale);
+
+    const { village } = createWorldGeometry(worldSeeds(1));
+    const tags = village.geometries.building.userData.tint as TintTags;
+    const paintOf = tintLookup(tags, bands, 1, 'building', BUILDING, source);
+    const paint = paintOf(0);
+    const rng = mulberry32(3);
+    const seen = srgbToLab(
+      villagePaint(sample(dark), paint, SEEN_POINT, TOWARD_PAINTER, 'building', rng),
+    );
+    expect(seen[0]).toBeGreaterThan(floor - (1 - SEEN_WALL_LIFT) * (floor - before[0]) - 0.6);
+  });
+
+  test('the outlines of every structure draw from their region trim, at or below the pivot (ruling Q31)', () => {
+    const { village } = createWorldGeometry(worldSeeds(1));
+    const pale = sample([230, 230, 225]);
+    const dark: Rgb = [20, 25, 40];
+    const rng = mulberry32(5);
+    for (const layer of ['building', 'roof', 'church'] as const) {
+      const tags = village.geometries[layer].userData.tint as TintTags;
+      const paintOf = tintLookup(tags, bands, 1, layer, WORLD_LAYERS.indexOf(layer), source);
+      const pivot = lightnessQuantile(source.histogram, LAYER_REGION[layer], LIFT_PIVOT_QUANTILE);
+      for (const role of new Set(tags.role)) {
+        const paint = paintOf(Array.from(tags.role).indexOf(role));
+        for (let i = 0; i < 100; i++) {
+          for (const s of [pale, sample(dark), sample([210, 210, 210], true)]) {
+            const rgb = outlinePaint(s, paint, SEEN_POINT, TOWARD_PAINTER, rng);
+            expect(srgbToLab(rgb)[0]).toBeLessThanOrEqual(pivot);
+          }
+        }
+        // Painted trim the painter sees keeps its scan colour.
+        expect(outlinePaint(sample(dark), paint, SEEN_POINT, TOWARD_PAINTER, rng)).toEqual(dark);
+      }
+    }
   });
 
   test('the tint changes only stroke colour: placement is bit-identical to untagged geometry', () => {

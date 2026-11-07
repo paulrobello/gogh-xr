@@ -31,6 +31,7 @@ import {
   sampleCanvas,
 } from '../../paintings/starry-night/canvas-histogram';
 import {
+  drawBand,
   facesEye,
   jitterTint,
   LIFT_PIVOT_QUANTILE,
@@ -38,16 +39,20 @@ import {
   lightnessQuantile,
   mixLinear,
   pickTint,
+  raiseLightness,
   SEEN_LIGHTNESS_LIFT,
   SEEN_TINT_BLEND,
+  SEEN_WALL_LIFT,
   splitTintBands,
   srgbToLab,
   TINT_ROLE,
   type Tint,
+  type TintBand,
   type TintBands,
   type TintRole,
   type TintTags,
   tintSeed,
+  trimBand,
 } from '../../paintings/starry-night/village-tint';
 import { mulberry32 } from '../../util/prng';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
@@ -66,7 +71,7 @@ import { strokeAxes, surfaceBasis, type Vec3 } from './frame';
 import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
 
 /** Bump when the scatter's output changes for the same inputs; part of the cache key. */
-export const SCATTER_VERSION: number = 10;
+export const SCATTER_VERSION: number = 11;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -154,7 +159,7 @@ export const OUTLINED_LAYERS: readonly WorldLayer[] = Object.freeze([
 /** Outline strokes come to at most this share of the FACE_CLAMPED_LAYERS strokes. */
 export const OUTLINE_SHARE: number = 0.05;
 
-/** An outline stroke's colour is the canvas colour sampled at the edge times this. */
+/** An untagged mesh's outline colour is the canvas colour sampled at the edge times this. */
 export const OUTLINE_DARKEN: number = 0.75;
 
 /** Outline strokes sit this share of their graded length apart along a side, within the budget. */
@@ -388,18 +393,22 @@ function tintTagsOf(geometry: BufferGeometry): TintTags | null {
   return tint?.owner instanceof Uint16Array && tint.role instanceof Uint8Array ? tint : null;
 }
 
-/** How a tagged triangle is painted: its owner's tint, and the lightness lift on its seen strokes. */
-interface VillagePaint {
+/** How a tagged triangle is painted: its owner's tint, its lifts and its outline trim. */
+export interface VillagePaint {
   readonly tint: Tint;
+  /** SEEN_WALL_LIFT on a house wall triangle, toward its band's floor L*, else null. */
+  readonly wallLift: { readonly t: number; readonly floor: number } | null;
   /** SEEN_LIGHTNESS_LIFT on a church wall or spire triangle, else null. */
   readonly lift: { readonly t: number; readonly pivot: number; readonly target: number } | null;
+  /** The outline colours (`trimBand` of the layer's region), and the L* up to which seen trim is kept. */
+  readonly trim: { readonly band: TintBand; readonly pivot: number };
 }
 
 /**
  * Each triangle's paint on a tagged village mesh (`userData.tint`): its owner's pick for its role,
  * seeded from the world seed, the layer and the owner, so it does not depend on stroke order.
  */
-function tintLookup(
+export function tintLookup(
   tags: TintTags,
   bands: TintBands,
   seed: number,
@@ -409,10 +418,9 @@ function tintLookup(
 ): (triangle: number) => VillagePaint {
   const picked = new Map<number, VillagePaint>();
   const lift = SEEN_LIGHTNESS_LIFT[layer] ?? 0;
-  const pivot =
-    lift > 0
-      ? lightnessQuantile(source.histogram, LAYER_REGION[layer], LIFT_PIVOT_QUANTILE)
-      : Infinity;
+  const region = LAYER_REGION[layer];
+  const pivot = lightnessQuantile(source.histogram, region, LIFT_PIVOT_QUANTILE);
+  const trim = { band: trimBand(source.histogram, region), pivot };
   return (triangle) => {
     const owner = tags.owner[triangle];
     const role = tags.role[triangle] as TintRole;
@@ -420,12 +428,15 @@ function tintLookup(
     let paint = picked.get(key);
     if (!paint) {
       const tint = pickTint(bands[role], tintSeed(seed, layerIndex, owner, role));
+      const church = role === TINT_ROLE.churchWall;
       paint = {
         tint,
-        lift:
-          lift > 0 && role === TINT_ROLE.churchWall
-            ? { t: lift, pivot, target: srgbToLab(tint.rgb)[0] }
+        wallLift:
+          SEEN_WALL_LIFT > 0 && role === TINT_ROLE.wall
+            ? { t: SEEN_WALL_LIFT, floor: bands[role].lightness[0] }
             : null,
+        lift: lift > 0 && church ? { t: lift, pivot, target: srgbToLab(tint.rgb)[0] } : null,
+        trim,
       };
       picked.set(key, paint);
     }
@@ -436,11 +447,11 @@ function tintLookup(
 /**
  * Paint on a tagged village face: where the face is turned toward the painter's spot and the
  * point is in frame on the layer's region (no occlusion test), the scan pixel, moved toward the
- * stroke's tint colour by the layer's SEEN_TINT_BLEND and lifted in lightness by the paint's lift;
- * elsewhere a stroke colour around the owner's tint. Always advances `rng` once, from the mesh's
- * own tint stream.
+ * stroke's tint colour by the layer's SEEN_TINT_BLEND, then lifted in lightness by the paint's
+ * church lift or raised by its wall lift; elsewhere a stroke colour around the owner's tint. Always
+ * advances `rng` once, from the mesh's own tint stream.
  */
-function villagePaint(
+export function villagePaint(
   sample: CanvasSample,
   paint: VillagePaint,
   point: Vec3,
@@ -452,9 +463,32 @@ function villagePaint(
   let rgb = jittered;
   if (!sample.extrapolated && facesEye(point, normal, PAINTER_EYE)) {
     rgb = mixLinear(sample.rgb, jittered, SEEN_TINT_BLEND[layer] ?? 0);
-    const { lift } = paint;
+    const { lift, wallLift } = paint;
     if (lift) rgb = liftLightness(rgb, lift.pivot, lift.target, lift.t);
+    if (wallLift) rgb = raiseLightness(rgb, wallLift.floor, wallLift.t);
   }
+  return [rgb[0], rgb[1], rgb[2]];
+}
+
+/**
+ * An outline stroke's paint on a tagged village face, the painted black trim: the scan pixel where
+ * the face is seen and the pixel is at or below the trim pivot, else a colour drawn from the trim
+ * band. Not darkened further. Always advances `rng` once.
+ */
+export function outlinePaint(
+  sample: CanvasSample,
+  paint: VillagePaint,
+  point: Vec3,
+  normal: Vec3,
+  rng: () => number,
+): Vec3 {
+  const { trim } = paint;
+  const drawn = drawBand(trim.band, rng);
+  const keep =
+    !sample.extrapolated &&
+    facesEye(point, normal, PAINTER_EYE) &&
+    srgbToLab(sample.rgb)[0] <= trim.pivot;
+  const rgb = keep ? sample.rgb : drawn;
   return [rgb[0], rgb[1], rgb[2]];
 }
 
@@ -729,7 +763,7 @@ export function scatterSurfaces(
 /**
  * Places a surface's outline strokes, from its outline stream: along each face side, evenly with
  * jitter, the long axis along the side, fitted flush inside it (`fitStrokeToFace`), coloured from
- * the canvas at the edge (or `villagePaint` on a tagged mesh) darkened by OUTLINE_DARKEN, and
+ * the canvas at the edge darkened by OUTLINE_DARKEN (on a tagged mesh, `outlinePaint`'s trim), and
  * lifted by the share of its quad size (`sizeShare`) like every other ranked stroke. Returns the
  * next free index.
  */
@@ -800,10 +834,8 @@ function placeOutlines(
           SCATTER_DEPTH_JITTER *
           graded *
           sizeShare(Math.fround(outlineSize[0]), Math.fround(outlineSize[1]));
-        const paint = tint
-          ? villagePaint(sample, tint, point, face.normal, layer, tintRand)
-          : sample.rgb;
-        const rgb = paint.map((c) => (c * OUTLINE_DARKEN) / shade);
+        const paint = tint ? outlinePaint(sample, tint, point, face.normal, tintRand) : sample.rgb;
+        const rgb = paint.map((c) => (c * (tint ? 1 : OUTLINE_DARKEN)) / shade);
         packInstance(buffers, index++, {
           position: [
             fitted.centre[0] + face.normal[0] * lift,

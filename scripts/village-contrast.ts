@@ -380,7 +380,19 @@ try {
     const otherWalls = [...sets.entries()]
       .filter(([key]) => key.startsWith('building:') && key !== wallKey)
       .flatMap(([, s]) => s);
-    const wall = meanLab(data, sets.get(wallKey) ?? []);
+    const wallSamples = sets.get(wallKey) ?? [];
+    const wall = meanLab(data, wallSamples);
+    // Upper and lower half of the target wall on screen, split at its middle grid row.
+    const wallRows = wallSamples.map(([, r]) => r);
+    const midRow = wallRows.length > 0 ? (Math.min(...wallRows) + Math.max(...wallRows)) / 2 : 0;
+    const wallTop = meanLab(
+      data,
+      wallSamples.filter(([, r]) => r < midRow),
+    );
+    const wallBottom = meanLab(
+      data,
+      wallSamples.filter(([, r]) => r >= midRow),
+    );
     const roof = meanLab(data, sets.get(roofKey) ?? []);
     const near = meanLab(data, ground);
     const houses = meanLab(data, otherWalls);
@@ -395,6 +407,9 @@ try {
       samples: { wall: wall.n, roof: roof.n, ground: near.n, houseWalls: houses.n },
       wallGround: dE(wall, near),
       roofWall: dE(roof, wall),
+      roofGround: dE(roof, near),
+      wallTopL: wallTop.lab?.[0] ?? null,
+      wallBottomL: wallBottom.lab?.[0] ?? null,
       wallL: wall.lab?.[0] ?? null,
       roofL: roof.lab?.[0] ?? null,
       groundL: near.lab?.[0] ?? null,
@@ -412,12 +427,12 @@ try {
 }
 const f = (v: unknown): string => (typeof v === 'number' ? v.toFixed(1) : String(v));
 console.log(
-  '| pose | eye | yaw | wall–ground ΔE | roof–wall ΔE | L* wall / roof / ground / other house walls | samples wall / roof / ground |',
+  '| pose | eye | yaw | wall–ground ΔE | roof–wall ΔE | roof–ground ΔE | L* wall / roof / ground / other house walls | L* wall upper / lower half | samples wall / roof / ground |',
 );
 for (const r of results) {
   const s = r.samples as Record<string, number>;
   console.log(
-    `| ${r.pose} (${(r.target as number) >= 0 ? `house ${r.target}` : 'church'}) | ${(r.eye as number[]).join(', ')} | ${r.yaw} | ${f(r.wallGround)} | ${f(r.roofWall)} | ${f(r.wallL)} / ${f(r.roofL)} / ${f(r.groundL)} / ${f(r.houseWallL)} | ${s.wall} / ${s.roof} / ${s.ground} |`,
+    `| ${r.pose} (${(r.target as number) >= 0 ? `house ${r.target}` : 'church'}) | ${(r.eye as number[]).join(', ')} | ${r.yaw} | ${f(r.wallGround)} | ${f(r.roofWall)} | ${f(r.roofGround)} | ${f(r.wallL)} / ${f(r.roofL)} / ${f(r.groundL)} / ${f(r.houseWallL)} | ${f(r.wallTopL)} / ${f(r.wallBottomL)} | ${s.wall} / ${s.roof} / ${s.ground} |`,
   );
 }
 if (jsonPath) writeFileSync(jsonPath, `${JSON.stringify(results, null, 2)}\n`);

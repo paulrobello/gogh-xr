@@ -42,7 +42,7 @@ Evidence for the Phase 2 criteria from [PRD.md](../PRD.md), gathered on branch `
 
 | ID | Criterion | Evidence | Status |
 | --- | --- | --- | --- |
-| P2-A1 | Generators are deterministic for a given seed (unit snapshot of vertex and stroke counts and bounds). | 2026-11-06, commit 4768e33. `tests/world-starry-night.test.ts` pins the seed-1 world as literals, over the real `CanvasSource` (frame.webp, regions.png and flow.png decoded with sharp). Generators: vertex and triangle counts and axis-aligned bounds rounded to 1 mm for the terrain (16,384 vertices, 32,258 triangles), ridge, houses, roofs, windows, church, cypress and sky dome. Scatter: the `scatterWorld` total (535,011), the per-layer counts and its `hashStrokeBuffers` (`9724bad8`, then `480f43d7`: SCATTER_VERSION 3 sets the lit-window depth flag in the spare meta byte, with the counts unchanged; then `51173374`: SCATTER_VERSION 6, see [Shared lift share](#shared-lift-share-walking-reorder); now `5b9be613`: SCATTER_VERSION 7 adds the village colours, see [Village house colours](#village-house-colours)). Haze: 30,000 strokes, hash `49bf0339`. Both tests pass inside `make checkall`. A scatter pin change requires a `SCATTER_VERSION` bump. A generator pin change does not, because the cache key carries the build SHA. | Met |
+| P2-A1 | Generators are deterministic for a given seed (unit snapshot of vertex and stroke counts and bounds). | 2026-11-06, commit 4768e33. `tests/world-starry-night.test.ts` pins the seed-1 world as literals, over the real `CanvasSource` (frame.webp, regions.png and flow.png decoded with sharp). Generators: vertex and triangle counts and axis-aligned bounds rounded to 1 mm for the terrain (16,384 vertices, 32,258 triangles), ridge, houses, roofs, windows, church, cypress and sky dome. Scatter: the `scatterWorld` total (535,011), the per-layer counts and its `hashStrokeBuffers` (`9724bad8`, then `480f43d7`: SCATTER_VERSION 3 sets the lit-window depth flag in the spare meta byte, with the counts unchanged; then `51173374`: SCATTER_VERSION 6, see [Shared lift share](#shared-lift-share-walking-reorder); then `5b9be613`: SCATTER_VERSION 7 adds the village colours, see [Village house colours](#village-house-colours); then `6ed76c8a` on 46eb08f's base: SCATTER_VERSION 8 raises the dark house-wall strokes and darkens the church trim, see [Upper walls and church trim](#upper-walls-and-church-trim); then `696165d1`: SCATTER_VERSION 10 keeps the cypress in its own palette, see [Cypress blue patches](#cypress-blue-patches); now `cf326988`: SCATTER_VERSION 11 is the wall raise with the trim on every structure, on the cypress fix and the moon and stars, see [Trim on every structure](#trim-on-every-structure-ruling-q31)). Haze: 30,000 strokes, hash `49bf0339`. Both tests pass inside `make checkall`. A scatter pin change requires a `SCATTER_VERSION` bump. A generator pin change does not, because the cache key carries the build SHA. | Met |
 | P2-A2 | The painter's spot screenshot (`?shot`, `?noanim`, fixed seed) is compared to the reference scan with the downscaled perceptual metric defined in the P2 plan, and its threshold is set and recorded here. | 2026-11-06, commit bf9d9a9, production build served by `vite preview`. URL `/?painting=starry-night&diag&shot&noanim&seed=1&painter` (`?painter` puts the desktop camera on the painter camera, so the frame is exactly canvas uv [0, 1]²). Captured at 1280 × 1014 (the canvas aspect) with `bun scripts/fidelity.ts --url "<url>" --capture docs/shots/p2-painter-spot.png`, which runs `scripts/capture-shot.ts --size 1280x1014 --wait world` (headless Chromium, ANGLE Metal). Metric (`scripts/fidelity-lib.ts`): the scan `assets/scans/starry-night.jpg` is inset past its mat by the colour-sampling inset (45 px at the sides, 15 px at top and bottom), and both images go to 256 × 203 with sharp Lanczos in sRGB. SSIM is Wang et al. 2004 on Rec. 709 luma of the gamma-encoded sRGB values (11 × 11 Gaussian, σ 1.5, K1 0.01, K2 0.03, L 255, valid windows). ΔE is the mean CIEDE2000 over 16 × 12 block-mean colours averaged in linear light, CIELAB under D65. Measured **SSIM 0.2943** and **mean ΔE2000 5.6961**. The e2e build gives the same values to 4 decimals. The worst blocks (column, row from the top-left) are (14, 2) 51.4, (11, 11) 43.2, (15, 2) 35.3, (14, 1) 33.5 and (5, 6) 30.9: the moon three times, one near lit window, and the large star left of the swirl. Margin rule: the measured values are rounded to 4 decimals, then SSIM threshold = measured − 0.03 and ΔE threshold = measured + 1.5, giving **SSIM ≥ 0.2643** and **mean ΔE2000 ≤ 7.1961**. They are the exported constants `SSIM_THRESHOLD` and `DELTA_E_THRESHOLD`, and `tests/e2e/fidelity.spec.ts` asserts both. Determinism: a second capture was byte-identical (SHA-256 `960a0b8e…ba57`). A framing check found the capture's best shift against the scan at (0, 0) of a ±3 px search at 64 px wide. The thresholds are Paul accepted them on 2026-11-06 as the regression floor. He judges the look itself in the headset at P2.9 (P2-A4). | Met |
 | P2-A3 | Every world surface is stroke-covered, with no bare mesh visible from any point inside the boundary, checked by an e2e sweep of sample poses that counts background-colour pixels. | `tests/e2e/world-coverage.spec.ts` renders 24 poses with `?painting=starry-night&noanim&seed=1&shot&coverage` at 1280 × 720 and fails a pose over 0.5% bare. Maximum binary bare share 0.442% at hill west. The sweep renders through the 70° vertical desktop camera, which is narrower than the Quest 3's roughly 96° vertical view, so the edges of a headset view are not checked here. Widening the sweep is deferred, and the gap is recorded here. The coverage-weighted share, which also counts MSAA rims, peaks at 0.591% at hill west and is logged as telemetry only (ruling P21). The same figures came out of the P2.8 `make e2e` run on 2026-11-06. | Met |
 
@@ -204,7 +204,7 @@ The fix (`src/render/strokes/depth-tie-break.ts`) makes one share drive both:
   - A top band of shares for outlines (0.75-1) packed overlapping outlines four times as densely in depth and raised the clustered flips at the village poses.
   - A first version with 256 ranks stored in the colour alpha piled equal-rank pairs onto one lift and a narrow bias spread. It raised the bottom-third flips at 6 of 8 poses (+0.02 to +0.09 points).
 - Haze, `?demo=canvas` and `?strokesTest` may repeat a size, so they keep the position hash.
-- SCATTER_VERSION 6. Every count is unchanged, and the scatter hash is `51173374`. The village colours on top make it SCATTER_VERSION 7, hash `5b9be613` ([Village house colours](#village-house-colours)).
+- SCATTER_VERSION 6. Every count is unchanged, and the scatter hash is `51173374`. The village colours on top make it SCATTER_VERSION 7, hash `5b9be613` ([Village house colours](#village-house-colours)), and the house wall raise and church trim SCATTER_VERSION 8, hash `6ed76c8a`, on that base. On the cypress palette fix (SCATTER_VERSION 10, hash `696165d1`), the wall raise with the trim on every structure is SCATTER_VERSION 11, hash `cf326988`.
 
 Order stability is measured without parallax, with a fixed eye. An id build colours each stroke by layer and hash, and a temporary uniform scales the tie-break range by 1.25, which is what walking about 12% farther does to the range against the lift. This is a proxy for distance only. It does not sweep the view angle. The table gives the share of the frame whose owning stroke changes. The after column is d36f7a4, whose scatter and shader the final build matches (same scatter hash).
 
@@ -309,7 +309,7 @@ Paul saw strokes hang past the house and church edges into the sky on build e018
 - What is fitted is the stroke's painted footprint, not its quad. Brush masks span only 50-94% of their quad (`BRUSH_FOOTPRINT`, the largest box measured over atlas seeds 1-12). Fitting the whole quad held the paint a quarter of a stroke inside every edge.
 - The clamp: move across by the overhang, or narrow to the face where it is narrower than the stroke. Then slide along the stroke's axis if the face has room for its length, otherwise shrink to the room. The footprint may reach past the face by 10% of its own width. A bevel half-plane at each hull vertex keeps the Euclidean overhang within that margin beside sharp corners.
 - Edge alignment (`fitStrokeToFace`): a stroke whose clamped footprint still reaches past a side is turned to run along that side, keeping the way it points. Its scattered centre moves in until its outer long side sits at the edge plus the margin, and it is clamped again at its original size. Between sides it reaches past by as much, it takes the one it already runs most nearly along. The brush's rounded ends then lie along the edge instead of across it.
-- Outline pass (`placeOutlines` in `scatter.ts`): every side of every wall, roof and church face gets a row of strokes laid along it and fitted flush inside it the same way, from their own rand stream. There is one per 0.8 of the graded stroke length, thinned evenly so the rows total at most 5% of the face-clamped strokes (`OUTLINE_SHARE`). They use the ridge and bristle brushes, the canvas colour at the edge darkened to 75% (`OUTLINE_DARKEN`), and a lift and tie-break share from their quad size like every other stroke (`sizeShare`, see Shared lift share). Van Gogh draws the village in dark contours, and the row covers the rim the rounded brush ends leave bare. Seed 1 gets 3,105 outline strokes, 3.7% of the 84,264 face-clamped strokes (budget 4,213).
+- Outline pass (`placeOutlines` in `scatter.ts`): every side of every wall, roof and church face gets a row of strokes laid along it and fitted flush inside it the same way, from their own rand stream. There is one per 0.8 of the graded stroke length, thinned evenly so the rows total at most 5% of the face-clamped strokes (`OUTLINE_SHARE`). They use the ridge and bristle brushes, the canvas colour at the edge darkened to 75% (`OUTLINE_DARKEN`), and a lift and tie-break share from their quad size like every other stroke (`sizeShare`, see Shared lift share). Van Gogh draws the village in dark contours, and the row covers the rim the rounded brush ends leave bare. Seed 1 gets 3,105 outline strokes, 3.7% of the 84,264 face-clamped strokes (budget 4,213). Since ruling Q31 every outlined layer is a tagged village mesh, whose outlines take their region's trim undarkened instead ([Trim on every structure](#trim-on-every-structure-ruling-q31)).
 - The shader scales strokes by the distance-band factor (1.05 mid, 1.6 far, more under the governor). The scatter stores the largest factor that still fits as a 4-bit fit level in the spare meta byte, bits 2-5 counted from 0 (mask 60), above the tie-break flag (bit 0, value 1) and the backdrop flag (bit 1, value 2), and the vertex shader caps the factor there. Level k caps at 1 + (k - 1)/16, so the cap tops out at 1.875.
 - SCATTER_VERSION 5. The face-clamped strokes keep their count and their triangle, because their rand stream is unchanged. The world gains the 3,105 outline strokes: 538,116 strokes in all, 87,369 in stroke layer `building`, and the scatter hash is `177391e4`.
 
@@ -356,8 +356,8 @@ Paul reported from the headset at ground level that the houses and the church "l
 - `src/paintings/starry-night/village-tint.ts` splits the village region's colour histogram into bands by texel-weighted L* quantile. Roofs and the church's nave roof take the darker half (L* 1.1-25.0). House walls take the 0.9-0.97 band, and the church walls and spire the 0.97-1 band. Each wall band keeps only bins at or under a texel-weighted chroma quantile of the region: the median for house walls (L* 46.6-56.8), the lower quartile for the church (L* 57.0-78.3). Without the cap, the lit windows' yellows, which are among the village's lightest paint, turned whole walls yellow. The church band lies wholly above the house band, so the church is lighter than every house. The house floor was 0.85 (L* 41.7-56.8) until ruling Q30. 0.9 is the lowest floor that lifts house 19's back past 15.
 - `src/world/village.ts` tags every building, roof and church triangle in `userData.tint` with its owner (house index; the church is owner 0) and role. Church triangles that are exactly vertical (tower shaft, nave walls and gables) and the spire (every vertex at or above the tower top) take the church wall tint, as the painting's spire is pale. Only the nave roof is dark.
 - Each owner picks one texel-weighted bin per role from its band, seeded from the world seed, the layer and the owner. Each stroke takes one of the 6 bins nearest that tint (CIE76), so a house reads as one object and neighbours differ. The jitter stays within CIE76 5.90 of the tint over the seed-1 houses, which get 15 distinct wall tints and 18 distinct roof tints among 20.
-- In `scatter.ts` the change is colour only. A stroke keeps the scan pixel when its face is turned toward the painter's spot and the stroke is in frame on its layer's region. There is no occlusion test, so a turned face hidden behind a nearer house also keeps the scan. On the church walls and spire, those scan pixels are lifted in lightness (see below). Every other village stroke, outlines included (still darkened to 75%), takes its owner's tint. The spire's outlines are therefore the pale tint at 75% (L* 46.5 for seed 1), not the dark roof tint they were before Q30. The tints draw from their own streams (purposes 3 and 4), so positions, normals, tangents, sizes and meta bytes are bit-identical to before. `tests/starry-night-village-tint.test.ts` checks this over the whole seed-1 scatter. The counts are unchanged, and coverage cannot move.
-- SCATTER_VERSION 7, on top of the shared lift share's 6. The only pin that moved is the scatter hash, because only colours changed. On their own branch, before integration, the colours moved it from `177391e4` to `54f8c866` (Q28), then `b6a97b83` (Q30). Combined with the shared lift share (`51173374`) it is `5b9be613`. The haze pin and every count stay. The generator pins are unchanged, because the tags live in `userData`.
+- In `scatter.ts` the change is colour only. A stroke keeps the scan pixel when its face is turned toward the painter's spot and the stroke is in frame on its layer's region. There is no occlusion test, so a turned face hidden behind a nearer house also keeps the scan. On the church walls and spire, those scan pixels are lifted in lightness, and on house walls the ones darker than the wall band are raised to its floor (both below). Every other village stroke takes its owner's tint. Outlines are darkened to 75%, and on the church walls and spire they draw from the church trim instead of the wall tint, so they read dark (mean L* 8.2 for seed 1, see [Upper walls and church trim](#upper-walls-and-church-trim)). Since ruling Q31, every outline on the houses, roofs, church and spire draws from its region's trim, undarkened ([Trim on every structure](#trim-on-every-structure-ruling-q31)). The tints draw from their own streams (purposes 3 and 4), so positions, normals, tangents, sizes and meta bytes are bit-identical to before. `tests/starry-night-village-tint.test.ts` checks this over the whole seed-1 scatter. The counts are unchanged, and coverage cannot move.
+- SCATTER_VERSION 7, on top of the shared lift share's 6. The only pin that moved is the scatter hash, because only colours changed. On their own branch, before integration, the colours moved it from `177391e4` to `54f8c866` (Q28), then `b6a97b83` (Q30). Combined with the shared lift share (`51173374`) it is `5b9be613`. The house wall raise and church trim make it SCATTER_VERSION 8, hash `6ed76c8a`. On the cypress palette fix, the wall raise with the trim on every structure is SCATTER_VERSION 11, hash `cf326988`. The haze pin and every count stay. The generator pins are unchanged, because the tags live in `userData`.
 
 ### Faces turned toward the painter keep the scan
 
@@ -369,7 +369,7 @@ Three builds were measured with those faces moved toward the house tint by α in
 | 0.5 | 0.3030 | 6.8984 | 12.2 |
 | 1 (tint everywhere) | 0.2763 | 7.6855 (fails) | 16.5 |
 
-α = 1 breaks fidelity. α = 0.5 spends 1.03 of the 1.40 ΔE margin and still leaves that wall under 15. So these faces keep the scan under the blend (`SEEN_TINT_BLEND` 0), and the church faces turned toward the painter keep it under the blend as well, as Paul asked. The one exception is the Q30 lightness lift on the church front (below): it raises the L* of the lighter scan strokes on the church walls and spire, and keeps their hue.
+α = 1 breaks fidelity. α = 0.5 spends 1.03 of the 1.40 ΔE margin and still leaves that wall under 15. So these faces keep the scan under the blend (`SEEN_TINT_BLEND` 0), and the church faces turned toward the painter keep it under the blend as well, as Paul asked. There are two exceptions, and both move L* only and keep the hue. The Q30 lightness lift on the church front (below) raises the lighter scan strokes on the church walls and spire. The house wall raise ([Upper walls and church trim](#upper-walls-and-church-trim)) raises the house-wall scan strokes darker than the wall band up to its floor.
 
 ### Church front lightness lift (ruling Q30)
 
@@ -386,6 +386,101 @@ Paul sees the church from the painter's spot as white with dark trim. The church
 | **1 (chosen)** | 0.3176 | 5.9748 | 11.2 | 48.2 |
 
 Every step keeps the margin, and none reaches 15, so α_L = 1, the best value within the margin. The ceiling comes from the pivot: about half of the church region's scan paint lies at or below the median and stays dark by design. As a diagnostic only, the 0.25 quantile pivot (L* 15.8) at α_L = 1 reads 18.2 (wall L* 55.3) with SSIM 0.3153 and ΔE 6.0689, also within the margin. It is not adopted, because the ruling puts the trim boundary at the median.
+
+### Upper walls and church trim
+
+The figures in this section were measured on 46eb08f's base. SCATTER_VERSION 11 keeps α_W 1 on the cypress palette fix and the moon and stars, see [Trim on every structure](#trim-on-every-structure-ruling-q31).
+
+Paul checked 46eb08f in the headset at ground level. The church read mostly white with no dark trim, and the houses read white at the bottom with ground colours on the top half.
+
+Diagnosis (seed 1, at 46eb08f). The roofs are not the cause: at the roofs pose the roof reads L* 6.4 against 33.5 for the ground (roof–ground ΔE 20.5, roof–wall 36.7), and the roof tint strokes average L* 14.5. The cause is the scan pixel kept on house walls turned toward the painter. Such a stroke keeps the scan when it projects into the painting's village region. The 3D walls rise past the painted wall tops, so their upper parts project onto the painting's dark roofs and shadows, while their lower parts more often fall below the frame and take the pale wall tint. Over the 24,236 painter-facing house-wall strokes, by height up the wall from base to eaves:
+
+| Height band | Strokes | Out of frame (tint) | On the village region (scan kept) | Other region (tint) | Scan-kept L* | Tint L* |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0-25% | 5,404 | 48.7% | 39.2% | 12.1% | 23.9 | 51.4 |
+| 25-50% | 5,563 | 37.7% | 49.3% | 13.0% | 24.0 | 51.3 |
+| 50-75% | 5,362 | 23.9% | 62.1% | 14.0% | 25.4 | 51.0 |
+| 75-100% | 5,388 | 15.4% | 62.2% | 22.4% | 29.0 | 50.6 |
+| gable, above the eaves | 2,519 | 3.7% | 58.8% | 37.5% | 33.1 | 49.8 |
+
+The church outlines took the pale church wall tint at 75%: its 294 outline strokes averaged L* 38.7 (42.2 on vertical faces, 32.6 on sloped ones), and only 21.1% were at L* 30 or below.
+
+House walls. A painter-facing house-wall stroke whose scan pixel is darker than the house wall band's floor (L* 46.6) has its L* raised toward that floor by α_W (`SEEN_WALL_LIFT`, `raiseLightness`). Its a* and b* are kept, so the wall keeps the scan's hue. The half-margin rule binds α_L only, so α_W answers to the fidelity thresholds. Production builds on 46eb08f, all with the church trim below:
+
+| Variant | SSIM (limit ≥ 0.2643) | mean ΔE2000 (limit ≤ 7.1961) | house 2 front, wall L* upper / lower half | house 16 gable, wall L* upper / lower half | wall–ground ΔE, house 2 front / house 16 gable |
+| --- | --- | --- | --- | --- | --- |
+| 46eb08f | 0.3163 | 5.9204 | 41.4 / 52.8 | 39.3 / 53.0 | 21.5 / 19.9 |
+| trim only (α_W 0) | 0.3163 | 5.9146 | 41.4 / 52.8 | 39.3 / 53.0 | 21.5 / 19.9 |
+| tint replaces the scan below the floor | 0.2908 | 7.7074 (fails) | 52.6 / 53.0 | 54.9 / 54.7 | 23.7 / 26.4 |
+| α_W 0.5 | 0.3108 | 6.3296 | 44.7 / 52.9 | 43.5 / 53.4 | 22.4 / 20.2 |
+| α_W 0.75 | 0.3036 | 6.6699 | 46.8 / 52.9 | 46.3 / 53.7 | 23.0 / 20.7 |
+| **α_W 1 (chosen)** | 0.2946 | 7.0740 | 49.2 / 52.9 | 49.6 / 54.1 | 23.7 / 21.4 |
+
+Replacing the scan with the tint breaks fidelity. α_W = 1 is the largest raise, and brings each wall's upper half to within 4.5 L* of its lower half. It spends 1.15 of the 1.28 ΔE margin left at 46eb08f. The cost is in the painter-spot view: the raised strokes lighten the foreground houses' painted shadows there too.
+
+Church trim. Each church owner also picks a trim colour from the church region's paint at or below the lift pivot (L* 27.4), with no chroma cap (`trimBand`, `trimSeed`). An outline stroke on church wall and spire triangles keeps the scan when the painter sees it and its scan L* is at or below the pivot, so painted trim stays painted. Otherwise it takes a colour around the trim tint (`outlinePaint`). Outlines are still darkened to 75%. The outlines were found by dumping the seed-1 church strokes' paint L* at `OUTLINE_DARKEN` 0.75 and 0.5, as the strokes that differ:
+
+| Church strokes | 46eb08f | Trim |
+| --- | --- | --- |
+| outline mean L* (294 strokes) | 38.7 | **8.2** |
+| outline mean L*, vertical faces / sloped faces | 42.2 / 32.6 | 7.9 / 8.7 |
+| outline share at L* ≤ 30 | 21.1% | 99.7% |
+| body mean L* | 47.7 | 47.7 |
+
+α_L stays 1. The church front wall still reads 56.1 on its upper half and 44.0 on its lower half, so the face keeps its painted variation, and the church front shot shows the dark outlines on the tower and spire edges.
+
+Contrast at ground level (`scripts/village-contrast.ts`, same poses as A1 below), 46eb08f → this change:
+
+| Pose | Wall–ground ΔE | Roof–wall ΔE | Roof–ground ΔE | Wall L*, upper / lower half | Wall / ground / other house walls L*, after |
+| --- | --- | --- | --- | --- | --- |
+| house 2, front | 21.5 → **23.7** | roof hidden | roof hidden | 41.4 / 52.8 → 49.2 / 52.9 | 51.5 / 33.2 / 47.9 |
+| house 19, back | 21.0 → **21.0** | roof hidden | roof hidden | 48.7 / 48.5 → 48.7 / 48.5 | 48.6 / 33.3 / 49.8 |
+| house 16, gable | 19.9 → **21.4** | roof hidden | roof hidden | 39.3 / 53.0 → 49.6 / 54.1 | 51.9 / 36.8 / 48.3 |
+| house 0, roofs | 22.1 → **22.1** | 36.7 → **36.7** | 20.5 → **20.5** | 51.8 / 50.9 → 51.8 / 50.9 | 51.4 / 33.5 / 52.1 (roof 6.4) |
+| church, front | 13.0 → 12.6 | nave roof hidden | nave roof hidden | 56.5 / 44.3 → 56.1 / 44.0 | 48.5 / 35.5 / 47.4 |
+| church, back | 30.2 → **30.1** | nave roof hidden | nave roof hidden | 59.8 / 59.8 → 59.7 / 59.7 | 59.7 / 32.2 / 51.0 |
+
+House 19's back and house 0's back wall face away from the painter, so they never kept the scan and do not move. The 46eb08f values differ from the A1 table's Q30 column, which was measured before integration onto the shared lift share.
+
+### Trim on every structure (ruling Q31)
+
+Paul compared the village with the scan and noted that every structure in the painting has black trim and outlines. Ruling Q31 asked for that trim and for per-building palettes. The review of dad7f6d held the palettes, so this build ships the trim alone, with 0579a44's wall raise and church trim, on top of the cypress palette fix.
+
+What changed:
+
+- `trimBand` (`village-tint.ts`) is now each layer region's paint at or below its texel-weighted median L* (the lift pivot), with no chroma cap: L* 1.1-25.0 for the village region (mean 15.3) and L* 1.1-27.4 for the church region (mean 15.4).
+- Every outline on a tagged mesh (house walls, roofs, the church walls, spire and nave roof, all roles) draws from its region's trim (`outlinePaint`). It keeps the scan pixel only where the painter sees the face and the pixel is at or below the median, so painted trim stays painted. Otherwise it draws one texel-weighted bin of the trim band (`drawBand`), one draw from the mesh's outline tint stream, so positions stay bit-identical.
+- No `OUTLINE_DARKEN` on the trim. Untagged meshes keep the 0.75 darkening. `trimSeed` and the per-owner church trim pick are gone, and `outlinePaint` lost its unused layer argument.
+- Body strokes are 0579a44's: no per-building palettes, no palette floors, and the house wall raise at full strength (α_W 1, `SEEN_WALL_LIFT`), so the walls read pale from base to eaves.
+- SCATTER_VERSION 11, scatter hash `cf326988`, every count unchanged. The moon and stars (a649d39) are a separate stroke set, so the scatter hash is the same on dab260e and on a649d39.
+
+Measured over the seed-1 scatter, counting the outline strokes from `placeOutlines`' index ranges: **3,105 outline strokes, mean L* 15.4**, 47.9% at or below L* 15 and 69.6% at or below 20. 2,795 (90.0%) draw from the trim band (mean L* 15.3), and 310 (10.0%) keep the scan's painted trim (mean L* 15.9). At 0579a44 only the church outlines took a trim (294 strokes, mean L* 8.2 after the 0.75 darkening), and the house and roof outlines took the wall or roof paint darkened to 75%. The wall raise does not touch outlines.
+
+Fidelity at the painter's spot, on a649d39 (the cypress fix with the moon and stars), from `E2E_PORT=4297 make e2e`: **SSIM 0.3347, mean ΔE2000 5.4771** (limits ≥ 0.2643 and ≤ 7.1961), leaving 1.72 of the ΔE margin. Coverage: max bare 0.451% at hill west (weighted 0.604% at hill west).
+
+On dab260e, before the moon and stars, the full raise did not fit. There the cypress fix alone had moved the base from ΔE 5.9204 to 6.3258, and α_W 1 added about 1.14 on top. Measured on dab260e (production build served by `vite preview`, `scripts/fidelity.ts`):
+
+| α_W | SSIM (≥ 0.2643) | Mean ΔE2000 (≤ 7.1961) |
+| --- | --- | --- |
+| 1 (e2e 36 of 37, `fidelity.spec.ts` failed) | 0.2727 | 7.4659 (fails) |
+| 0.75 | 0.2817 | 7.0647 |
+| 0.5 | 0.2888 | 6.7278 |
+| 0, trim only | 0.2945 | 6.3233 |
+
+The moon and stars lower the base: a649d39 measures mean ΔE 4.3370 before this change, which gives the full raise room again. The trim itself costs nothing measurable: on dab260e, α_W 0 gives 6.3233 against 6.3258 for the cypress fix alone.
+
+Contrast at ground level (`scripts/village-contrast.ts`, the 0579a44 poses), 0579a44 → this build:
+
+| Pose | Wall–ground ΔE | Roof–wall ΔE | Roof–ground ΔE | Wall L*, upper / lower half | Wall / ground L* |
+| --- | --- | --- | --- | --- | --- |
+| house 2, front | 23.7 → **23.5** | roof hidden | roof hidden | 48.9 / 52.8 | 51.3 / 33.2 |
+| house 19, back | 21.0 → **20.9** | roof hidden | roof hidden | 48.6 / 48.3 | 48.5 / 33.3 |
+| house 16, gable | 21.4 → **21.4** | roof hidden | roof hidden | 49.6 / 54.0 | 51.9 / 36.8 |
+| house 0, roofs | 22.1 → **21.8** | 36.7 → **36.4** | 20.5 → **20.5** | 51.5 / 50.7 | 51.0 / 33.5 (roof 6.4) |
+| church, back | 30.1 → **30.1** | nave roof hidden | nave roof hidden | 59.7 / 59.7 | 59.7 / 32.2 |
+| church, front | 12.6 → **12.6** | nave roof hidden | nave roof hidden | 56.2 / 44.0 | 48.5 / 35.5 |
+
+Per-building palettes are held until the village layout move (ruling Q32). On dad7f6d each building sampled the scan inside its own silhouette through the painter camera, but the seed-1 3D houses do not stand where the painted houses are. Their roofs project onto the cypress (houses 3-6), the bushes at the bottom left (house 2) and the hill band above the painted roofs (houses 7-19), while the painted houses Paul described stand at or below the church's base line. So the palettes sampled foliage and hills: roofs came out blue-grey, walls olive, 17 of 42 building roles fell back to a neighbour or the band tint, ground contrast fell at house 19's back (21.0 → 13.5) and house 0's roofs (roof–wall 36.7 → 14.2), and fidelity did not move (SSIM 0.2940, ΔE 7.0737 against 0.2946 and 7.0740). The palettes come back once the 3D houses sit on their painted counterparts.
 
 ### Ground-level contrast (A1)
 
@@ -416,20 +511,23 @@ Church lightness (L*) at ground level, Q30: from behind, the church walls read 5
 
 Open items:
 
-- **Church front.** Wall–ground reaches 11.2 against the 15 target. The lift with the median pivot cannot go further, and a lower pivot would lift strokes the ruling counts as trim.
+- **Church front.** Wall–ground reaches 12.6 (11.2 before integration, 13.0 at 46eb08f) against the 15 target. The lift with the median pivot cannot go further, and a lower pivot would lift strokes the ruling counts as trim.
+- **Fidelity margin.** On 46eb08f's base the house wall raise at α_W 1 left 0.12 of the ΔE margin (7.0740 against 7.1961). On dab260e (the cypress fix alone) α_W 1 broke it (7.4659). On a649d39 (the cypress fix with the moon and stars) α_W 1 gives 5.4771, leaving 1.72. See [Trim on every structure](#trim-on-every-structure-ruling-q31).
+- **Upper wall hue.** The raise keeps the scan's a* and b*, so the raised walls stay bluer than the tint. Over the seed-1 painter-facing house-wall strokes in the top quarter, the scan-kept strokes average Lab (47.4, −0.6, −11.7) against the tint's (50.9, −6.3, −1.4): ΔE2000 11.2 from the tint, and 14.8 from the house 2 front ground against 24.6 for the tint. These figures were measured at α_W 1 on 46eb08f's base. A hue blend toward the tint would cost fidelity, and SCATTER_VERSION 11 leaves 1.72 of the ΔE margin.
+- **Church trim darkness.** Resolved by ruling Q31: the outlines no longer stack `OUTLINE_DARKEN` on the trim ([Trim on every structure](#trim-on-every-structure-ruling-q31)).
 - **Occluded faces.** Front faces hidden from the painter behind a nearer house keep the scan, and none of the poses measures one.
 
 ### Coverage and fidelity
 
-| Gate | Before (fce5dab) | Q28 | Q30 | Q30 on the shared lift share (SCATTER_VERSION 7) |
-| --- | --- | --- | --- | --- |
-| `fidelity.spec.ts` SSIM (limit ≥ 0.2643) | 0.3202 | 0.3180 | 0.3176 | 0.3163 |
-| `fidelity.spec.ts` mean ΔE2000 (limit ≤ 7.1961) | 5.7934 | 5.8433 | 5.9748 | 5.9204 |
-| `world-coverage.spec.ts` max bare share (limit 0.5%) | 0.478% at village uphill (weighted 0.615%) | 0.478% at village uphill (weighted 0.608% at hill west, 0.582% at village uphill) | 0.478% at village uphill (weighted 0.608% at hill west, 0.583% at village uphill) | 0.451% at hill west and village uphill (weighted 0.604% at hill west, 0.555% at village uphill) |
+| Gate | Before (fce5dab) | Q28 | Q30 | Q30 on the shared lift share (SCATTER_VERSION 7) | Wall raise and church trim (SCATTER_VERSION 8) | Wall raise and trim on every structure, on the cypress fix and the moon and stars (SCATTER_VERSION 11) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `fidelity.spec.ts` SSIM (limit ≥ 0.2643) | 0.3202 | 0.3180 | 0.3176 | 0.3163 | 0.2946 | 0.3347 |
+| `fidelity.spec.ts` mean ΔE2000 (limit ≤ 7.1961) | 5.7934 | 5.8433 | 5.9748 | 5.9204 | 7.0740 | 5.4771 |
+| `world-coverage.spec.ts` max bare share (limit 0.5%) | 0.478% at village uphill (weighted 0.615%) | 0.478% at village uphill (weighted 0.608% at hill west, 0.582% at village uphill) | 0.478% at village uphill (weighted 0.608% at hill west, 0.583% at village uphill) | 0.451% at hill west and village uphill (weighted 0.604% at hill west, 0.555% at village uphill) | 0.451% at hill west and village uphill (weighted 0.604% at hill west, 0.555% at village uphill) | 0.451% at hill west (weighted 0.604% at hill west) |
 
-The Q28 and Q30 columns were measured on fce5dab's base. There placement is bit-identical to before, so only colour at MSAA rims can move the bare count, and the maximum did not move. The before column was measured on the Q28 build with the tags removed, which reproduces fce5dab's scatter hash `177391e4`. The last column is the colours integrated onto the shared lift share, whose lift changes stroke depth, so its coverage moves too. All runs used headless Chromium on ANGLE Metal (Apple M4 Max). The Q30 and integrated values are from `E2E_PORT=4297 make e2e` runs, 32 of 32 and 37 of 37 passed.
+The Q28 and Q30 columns were measured on fce5dab's base. There placement is bit-identical to before, so only colour at MSAA rims can move the bare count, and the maximum did not move. The before column was measured on the Q28 build with the tags removed, which reproduces fce5dab's scatter hash `177391e4`. The SCATTER_VERSION 7 column is the colours integrated onto the shared lift share, whose lift changes stroke depth, so its coverage moves too. The SCATTER_VERSION 8 column changes colour only, and its coverage did not move. The SCATTER_VERSION 11 column sits on the cypress palette fix and the moon and stars, and changes village colour only. All runs used headless Chromium on ANGLE Metal (Apple M4 Max). The Q30, integrated, SCATTER_VERSION 8 and 11 values are from `E2E_PORT=4297 make e2e` runs, 32 of 32, 37 of 37, 37 of 37 and 37 of 37 passed.
 
-`docs/shots/village-tint.png` shows the six poses, before (fce5dab) on the left and Q30 on the right. From the top: house 2 front, house 19 back, house 16 gable, house 0 roofs, church back, church front.
+`docs/shots/village-tint.png` shows three ground-level poses, 46eb08f on the left and the house wall raise with the church trim on the right. From the top: house 2 front, house 16 gable, church front. It was captured on 46eb08f's base at α_W 1, before the cypress fix and the trim on every structure, and was not regenerated for SCATTER_VERSION 11.
 
 ## Cypress blue patches
 

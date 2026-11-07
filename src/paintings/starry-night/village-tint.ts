@@ -78,6 +78,29 @@ export const SEEN_LIGHTNESS_LIFT: Readonly<Partial<Record<WorldLayer, number>>> 
 /** The lift's pivot: this texel-weighted L* quantile of the layer's region. */
 export const LIFT_PIVOT_QUANTILE: number = 0.5;
 
+/**
+ * House walls: a painter-facing wall stroke that keeps a scan pixel darker than the wall band's
+ * floor has its L* raised toward that floor by this factor, keeping a* and b*. The 3D walls rise
+ * past the painted wall tops, so their upper parts project onto the painting's dark roofs and
+ * shadows (mean L* 24-29) while their lower parts fall below the frame and take the pale tint,
+ * which read from the ground as pale walls with ground-coloured upper halves.
+ */
+export const SEEN_WALL_LIFT: number = 1;
+
+/**
+ * The trim (ruling Q31): `region`'s paint at or below the lift pivot, its texel-weighted median L*.
+ * Every outline stroke on the houses, roofs, church and spire draws from its layer region's trim,
+ * so all structures carry the painting's dark outlines.
+ */
+export function trimBand(histogram: CanvasHistogram, region: number): TintBand {
+  const spec: TintBandSpec = { lightness: [0, LIFT_PIVOT_QUANTILE], chroma: 1 };
+  return splitTintBands(histogram, region, {
+    [TINT_ROLE.roof]: spec,
+    [TINT_ROLE.wall]: spec,
+    [TINT_ROLE.churchWall]: spec,
+  })[TINT_ROLE.roof];
+}
+
 /** A stroke's colour is one of this many bins nearest its owner's tint (CIE76), tint included. */
 export const TINT_NEIGHBOURS: number = 6;
 
@@ -235,6 +258,20 @@ export function pickTint(band: TintBand, seed: number): Tint {
   return { rgb: band.rgb[lo], choices: order.map(({ i }) => band.rgb[i]) };
 }
 
+/** One texel-weighted bin of `band`. Advances `rng` once. */
+export function drawBand(band: TintBand, rng: () => number): Rgb {
+  const total = band.cdf[band.cdf.length - 1];
+  const target = Math.floor(rng() * total);
+  let lo = 0;
+  let hi = band.cdf.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (band.cdf[mid] > target) hi = mid;
+    else lo = mid + 1;
+  }
+  return band.rgb[lo];
+}
+
 /** A stroke's colour around `tint`: one of its choices. Advances `rng` once. */
 export function jitterTint(tint: Tint, rng: () => number): Rgb {
   return tint.choices[Math.min(tint.choices.length - 1, Math.floor(rng() * tint.choices.length))];
@@ -287,6 +324,14 @@ export function lightnessQuantile(histogram: CanvasHistogram, region: number, q:
     if (running >= q * h.count) return bin.l;
   }
   return bins[bins.length - 1].l;
+}
+
+/** `rgb` with its L* raised toward `floor` by `t` when it lies below, a* and b* kept. */
+export function raiseLightness(rgb: Rgb, floor: number, t: number): Rgb {
+  if (t === 0) return rgb;
+  const lab = srgbToLab(rgb);
+  if (lab[0] >= floor) return rgb;
+  return labToSrgb([lab[0] + t * (floor - lab[0]), lab[1], lab[2]]);
 }
 
 /**
