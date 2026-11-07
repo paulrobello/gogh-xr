@@ -806,6 +806,106 @@ The light-to-dark measure is the gap colour the fix changes, so it shows the gap
 
 ![Church front at 7 m and house 6 at 3 m, before and after, light-to-dark pixels in red](shots/building-zfight.png)
 
+## Headset shimmer diagnosis (2026-11-06, on 6d82235)
+
+Paul saw a lot of z-fight on the ground, the buildings and the sky on the Quest 3. It looked the same whether he moved or held still. No fix is applied here. The evidence below does not support a depth-separation change. The one change that would cut stroke depth ties is a wider tie-break cap, and that reverses ruling Q21, so it is Paul's call.
+
+### Diagnostics added
+
+- `?zdiag=<mode>` (`src/render/zdiag.ts`, parsed in `src/diag/flags.ts`) applies one change through three's materials, atlas and render order. It is honoured in production like `?slow`. `__goghDiag().zdiag` is `{ mode, applied, frozen }`.
+- The modes:
+  - `nowrite`: strokes drop depthWrite and draw after the base meshes, back to front by chunk.
+  - `strokeorder`: strokes test depth ALWAYS with depthWrite on and draw before the base meshes. This is the live headset A/B.
+  - `paintorder`: `strokeorder` with the chunks drawn back to front.
+  - `nosort`: each chunk keeps its first frame's render order.
+  - `noa2c`: strokes drop alpha-to-coverage and discard below alpha 0.5.
+  - `nomip`: the brush atlas samples mip 0 only.
+  - `mip`: trilinear mips plus the GPU's largest anisotropy.
+  - `freeze`: XR only. Every frame renders with the first presenting frame's eye poses and projections. Not yet run in a headset or IWER.
+- `StrokeBatch.setOrderPolicy` (`batch.ts`) carries the render order changes.
+- `scripts/shimmer-probe.ts <base-url> [frames] [modes] [norot]` renders 8 frames per pose. Each frame jitters the eye by ±(0.1-0.3) mm per axis and up to ±0.01° of yaw and pitch, from a fixed seed. It reports per-pixel temporal flicker (`temporalFlicker` in `scripts/zfight-lib.ts`) as three numbers, all as % of the frame:
+  - flicker: pixels that change by more than 24 summed RGB between any two consecutive frames;
+  - per frame: the mean share that changes per frame;
+  - clustered: flickering pixels with at least 4 of their 8 neighbours flickering too. A depth fight flips patches, while edge resampling flips 1 px lines.
+- `norot` drops the rotation jitter.
+- The runs used a production build served by `vite preview`, on headless Chromium on ANGLE Metal (Apple M4 Max) at 1280 × 1014, with `?painting=starry-night&diag&shot&nogov&nocache`. The 1-minute load average was 11-15. An unmoved repeat changed nothing at any pose.
+
+### The live strokeorder A/B hid the world strokes
+
+The chunks draw front to back, so the sky dome's chunks draw last. Under depthFunc ALWAYS their far-plane depth is the last write at almost every pixel. The base meshes then draw at render order 1e6, pass the depth test, and paint flat over every ground, building, cypress and ridge stroke. Only the dome above the ridge keeps its strokes. The shimmer was gone in the headset because the ground and buildings were flat base meshes. That A/B does not show that stroke-against-stroke depth ties cause the ground and building shimmer. Its sky observation still counts.
+
+Painter view, base on top and `strokeorder` below:
+
+![Base and zdiag=strokeorder, painter view](shots/shimmer-strokeorder.jpg)
+
+`nowrite` (top) and `paintorder` (below) keep the world strokes visible. They remove stroke-against-stroke depth tests, at the cost of wrong occlusion at chunk seams. For example, dome strokes paint over the far hills, and wall strokes partly cover the lit windows:
+
+![zdiag=nowrite and zdiag=paintorder, painter view](shots/shimmer-nowrite-paintorder.jpg)
+
+### Flicker per mode
+
+With rotation and translation jitter, 8 frames: flicker / per frame / clustered (% of frame).
+
+| Mode | ground (pitch −0.45) | paul-strobe1 | village | wall (house 11, 6 m) | ridge | sky (pitch +0.5) |
+| --- | --- | --- | --- | --- | --- | --- |
+| base | 10.09 / 4.32 / 2.83 | 10.83 / 4.56 / 2.88 | 10.35 / 4.22 / 2.88 | 3.56 / 1.37 / 0.71 | 9.47 / 3.71 / 2.22 | 6.93 / 2.54 / 1.16 |
+| strokeorder (world strokes hidden) | 0.66 / 0.24 / 0.14 | 1.05 / 0.38 / 0.15 | 3.18 / 1.16 / 0.48 | 1.73 / 0.62 / 0.18 | 2.92 / 1.04 / 0.41 | 5.28 / 1.92 / 0.62 |
+| paintorder | 8.70 / 3.68 / 1.91 | 9.16 / 3.78 / 1.82 | 8.62 / 3.42 / 1.76 | 3.29 / 1.28 / 0.47 | 8.70 / 3.35 / 1.57 | 7.07 / 2.60 / 1.00 |
+| nowrite | 9.30 / 3.97 / 2.15 | 9.87 / 4.14 / 2.17 | 9.46 / 3.83 / 2.21 | 3.27 / 1.27 / 0.48 | 8.83 / 3.42 / 1.67 | 7.06 / 2.59 / 0.98 |
+| nosort | same as base to 0.001 | | | | | |
+| noa2c | 6.61 / 2.64 / 0.57 | 6.60 / 2.64 / 0.62 | 6.91 / 2.64 / 0.63 | 2.76 / 1.01 / 0.31 | 5.83 / 2.17 / 0.46 | 4.73 / 1.65 / 0.24 |
+| nomip | 10.57 / 4.36 / 2.12 | 11.29 / 4.57 / 2.38 | 11.20 / 4.35 / 2.45 | 4.69 / 1.63 / 0.82 | 10.72 / 3.97 / 2.04 | 9.51 / 3.17 / 1.49 |
+| mip (anisotropy) | 10.06 / 4.39 / 2.70 | 10.75 / 4.62 / 2.72 | 10.35 / 4.28 / 2.77 | 3.59 / 1.37 / 0.66 | 9.36 / 3.74 / 2.04 | 7.01 / 2.57 / 1.09 |
+
+The same with translation jitter only (`norot`):
+
+| Mode | ground | paul-strobe1 | village | wall | ridge | sky |
+| --- | --- | --- | --- | --- | --- | --- |
+| base | 4.92 / 2.14 / 0.99 | 3.98 / 1.66 / 0.80 | 2.82 / 1.29 / 0.61 | 0.76 / 0.34 / 0.17 | 1.28 / 0.55 / 0.19 | 0.58 / 0.27 / 0.14 |
+| paintorder | 3.76 / 1.63 / 0.47 | 2.71 / 1.14 / 0.30 | 1.58 / 0.74 / 0.09 | 0.52 / 0.23 / 0.05 | 0.76 / 0.33 / 0.01 | 0.39 / 0.19 / 0.002 |
+| nowrite | 4.22 / 1.83 / 0.57 | 3.31 / 1.39 / 0.46 | 2.14 / 0.99 / 0.24 | 0.51 / 0.23 / 0.05 | 0.85 / 0.36 / 0.04 | 0.39 / 0.19 / 0.001 |
+| noa2c | 2.86 / 1.22 / 0.36 | 2.33 / 0.94 / 0.28 | 1.80 / 0.81 / 0.30 | 0.64 / 0.29 / 0.17 | 0.82 / 0.35 / 0.13 | 0.46 / 0.22 / 0.13 |
+| nomip | 4.50 / 2.02 / 0.73 | 3.62 / 1.57 / 0.61 | 2.71 / 1.26 / 0.55 | 0.78 / 0.34 / 0.17 | 1.30 / 0.56 / 0.20 | 0.62 / 0.29 / 0.14 |
+
+Depth separation sweeps on base, with rotation (shader constants only, reverted):
+
+| Build | ground | paul-strobe1 | village | wall | ridge | sky |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2048 steps, 0.25 m cap (shipped) | 10.09 / 4.32 / 2.83 | 10.83 / 4.56 / 2.88 | 10.35 / 4.22 / 2.88 | 3.56 / 1.37 / 0.71 | 9.47 / 3.71 / 2.22 | 6.93 / 2.54 / 1.16 |
+| 16384 steps, 0.25 m cap | 9.72 / 4.14 / 2.59 | 10.64 / 4.48 / 2.78 | 10.07 / 4.09 / 2.67 | 3.40 / 1.32 / 0.61 | 9.46 / 3.71 / 2.23 | 6.89 / 2.53 / 1.14 |
+| 16384 steps, 2 m cap (6 frames) | 8.92 / 3.34 / 2.08 | 9.67 / 3.68 / 2.14 | 9.36 / 3.55 / 2.25 | 3.09 / 1.16 / 0.47 | 8.79 / 3.34 / 1.74 | 6.67 / 2.49 / 0.97 |
+
+### Findings
+
+- **F1. Most of the desktop flicker is resampling, not depth.** Removing stroke-against-stroke depth tests outright (`paintorder`, `nowrite`) cuts total flicker by only 8-25% under rotation jitter. A 0.01° turn moves the image about 0.15 px here. The dense, high-contrast stroke edges then change one or more of their 4 MSAA samples, which crosses the 24-level threshold. No depth or sort change can remove that, and mips and anisotropy do not move it.
+- **F2. Depth ties are real and show as clustered patches.** With translation jitter only, removing the depth tests drops clustered flicker as follows:
+  - sky: 0.14 to 0.002;
+  - ridge: 0.19 to 0.01-0.04;
+  - village: 0.61 to 0.09-0.24;
+  - wall: 0.17 to 0.05;
+  - near ground: 0.99 to 0.47-0.57.
+
+  These are the overlapping-stroke fights the earlier probes found. They are small against F1 in total pixels, but they flip whole patches, which reads as z-fight.
+- **F3. Separation helps only with a wider cap.** Eight times the steps alone barely moves clustered flicker, because past 14 m the 0.25 m cap binds and the steps do not reach it. With a 2 m cap, clustered flicker reaches the `nowrite` bound at every pose (ground 2.83 to 2.08, against `nowrite`'s 2.15). That cap lets separate surfaces up to 2 m apart trade places. The stroke flicker section measured 0.41% of the far village swapping surfaces at 0.25 m, 0.78% at 0.5 m and 1.78% at 1.5 m, and ruling Q21 chose 0.25 m. Raising it is Paul's decision.
+- **F4. Alpha-to-coverage drives much of the near-ground patching.** `noa2c` cuts ground clustered flicker from 2.83 to 0.57 with rotation and from 0.99 to 0.36 without, more than removing depth tests does. The sharpened coverage (ruling R3) gives every bristle gap a 1 px a2c rim, and those rims re-dither as the view moves. Apple and Adreno lay out a2c sample masks differently, so this is the result most likely to differ in the headset.
+- **F5. The sky's remaining depth fight is the backdrop rank.** About 277 dome strokes share each of the 1024 ranks, and same-rank pairs tie at one NDC z (Sky dome strokes, above). The 0.25 m cap does not touch them.
+- `nosort` changes nothing, so the chunk sort is stable for a still eye. `nomip` is worse everywhere, and `mip` (anisotropy) changes nothing.
+
+### For the headset
+
+These URLs need a deployed build, which needs an approved push.
+
+- `?painting=starry-night&zdiag=nowrite`: no stroke-against-stroke depth tests, with the strokes still visible. If the shimmer drops, depth ties are the cause.
+- `?painting=starry-night&zdiag=noa2c`: tests F4.
+- `?painting=starry-night&zdiag=freeze`: the same pixels every frame. If the shimmer stays, it is the compositor's reprojection and not render-time jitter.
+- `?painting=starry-night&zdiag=strokeorder`: reproduces the live test, with the world strokes hidden. Reference only.
+- Add `&diag&hud` to any of them to read `__goghDiag().zdiag`.
+- Also worth reading: frame-to-frame deltas of `__goghDiag().camera` over CDP while Paul holds still. The real rotation noise decides how much of the shimmer F1 accounts for.
+
+### Gates
+
+`make checkall` exited 0. `E2E_PORT=4321 make e2e` exited 0, 37 of 37 passed. Neither the scatter nor the shipped shader path changed, so SCATTER_VERSION stays 11. Fidelity and coverage run inside the e2e suite.
+
 ## Governor sheds foveation first (2026-11-06, on e0eac54)
 
 ### Headset evidence

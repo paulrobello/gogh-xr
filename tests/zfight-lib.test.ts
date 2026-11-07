@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { FLIP_THRESHOLD, flipPercent } from '../scripts/zfight-lib.ts';
+import { FLIP_THRESHOLD, flipPercent, temporalFlicker } from '../scripts/zfight-lib.ts';
 
 function image(width: number, height: number, fill = 0): Uint8Array {
   return new Uint8Array(width * height * 3).fill(fill);
@@ -54,5 +54,37 @@ describe('flipPercent', () => {
 
   test('rejects buffers that do not match the size', () => {
     expect(() => flipPercent(image(2, 3), image(2, 2), 2, 3)).toThrow(RangeError);
+  });
+});
+
+describe('temporalFlicker', () => {
+  test('a still sequence flickers nowhere', () => {
+    const a = image(3, 3, 80);
+    expect(temporalFlicker([a, a.slice(), a.slice()], 3, 3)).toEqual({
+      flicker: 0,
+      perFrame: 0,
+      clustered: 0,
+    });
+  });
+
+  test('counts a pixel once however often it flips, and per frame each time', () => {
+    const a = image(2, 2);
+    const b = image(2, 2);
+    set(b, 2, 1, 1, [255, 0, 0]);
+    const r = temporalFlicker([a, b, a], 2, 2);
+    expect(r.flicker).toBeCloseTo(25, 10);
+    expect(r.perFrame).toBeCloseTo(25, 10);
+    expect(r.clustered).toBe(0);
+  });
+
+  test('a flipped patch is clustered except at its corners, which have 3 neighbours', () => {
+    const a = image(3, 3);
+    const b = image(3, 3, 200);
+    expect(temporalFlicker([a, b], 3, 3).clustered).toBeCloseTo(500 / 9, 10);
+  });
+
+  test('rejects a single frame or a wrong size', () => {
+    expect(() => temporalFlicker([image(2, 2)], 2, 2)).toThrow(RangeError);
+    expect(() => temporalFlicker([image(2, 2), image(2, 3)], 2, 2)).toThrow(RangeError);
   });
 });

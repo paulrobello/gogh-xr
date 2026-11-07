@@ -82,6 +82,18 @@ export interface StrokeBatchStats {
   bands: Record<StrokeBand, StrokeBandStats>;
 }
 
+/**
+ * How `update` sets the visible chunks' `renderOrder`. The default draws them front to back from
+ * 0. `base` offsets every rank, `reverse` draws back to front, and `freeze` keeps each chunk's
+ * first rank for good (a chunk first seen later takes `chunks.length` plus its rank then). The
+ * `?zdiag` modes use it (src/render/zdiag.ts).
+ */
+export interface StrokeOrderPolicy {
+  readonly base: number;
+  readonly reverse: boolean;
+  readonly freeze: boolean;
+}
+
 export interface StrokeBatch {
   readonly group: Group;
   readonly chunks: readonly StrokeChunk[];
@@ -127,6 +139,8 @@ export interface StrokeBatch {
    */
   visibleByBand(): Readonly<Record<StrokeBand, number>>;
   stats(): StrokeBatchStats;
+  /** Replaces the order policy from the next `update` on. */
+  setOrderPolicy(policy: StrokeOrderPolicy): void;
   /**
    * Releases every chunk geometry, the band materials and the atlas texture, and removes the
    * batch's own render hook, leaving any other hook on the scene in place.
@@ -327,6 +341,10 @@ export function createStrokeBatch(
   /** Cull output, reused every frame: kept chunk indices front to back, and their distances. */
   const cullOrder = new Uint32Array(chunks.length);
   const cullDistances = new Float64Array(chunks.length);
+  let policy: StrokeOrderPolicy = { base: 0, reverse: false, freeze: false };
+  /** Frozen ranks by chunk index, -1 until a chunk first passes the cull under `freeze`. */
+  const frozenRank = new Int32Array(chunks.length).fill(-1);
+  let frozenOnce = false;
 
   let detach: (() => void) | null = null;
 
@@ -369,11 +387,22 @@ export function createStrokeBatch(
         const index = cullOrder[rank];
         const { mesh } = chunks[index];
         mesh.visible = true;
-        mesh.renderOrder = rank;
+        if (policy.freeze) {
+          if (frozenRank[index] < 0) frozenRank[index] = frozenOnce ? chunks.length + rank : rank;
+          mesh.renderOrder = policy.base + frozenRank[index];
+        } else {
+          mesh.renderOrder = policy.base + (policy.reverse ? kept - 1 - rank : rank);
+        }
         const band = bandOf[index];
         if (band) bandVisible[band] += chunks[index].drawCount;
       }
       bandVisibleStale = false;
+      if (policy.freeze) frozenOnce = true;
+    },
+    setOrderPolicy(next: StrokeOrderPolicy) {
+      policy = { ...next };
+      frozenRank.fill(-1);
+      frozenOnce = false;
     },
     setDensity(band: StrokeBand, d: number) {
       checkBand(band);

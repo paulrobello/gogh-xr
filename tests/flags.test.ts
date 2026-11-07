@@ -28,12 +28,13 @@ test('defaults when search is empty', () => {
     painter: false,
     seated: false,
     turn: null,
+    zdiag: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth',
+    '?seed=42&noanim&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort',
   );
   expect(f).toEqual({
     seed: 42,
@@ -61,6 +62,7 @@ test('parses every flag', () => {
     painter: true,
     seated: true,
     turn: 'smooth',
+    zdiag: 'nosort',
   });
 });
 
@@ -228,4 +230,23 @@ test('turn is snap or smooth, trimmed and lower-cased, null when absent or unkno
   expect(parseFlags('?turn=spin').turn).toBeNull();
   expect(parseFlags('?turn').turn).toBeNull();
   expect(parseFlags('').turn).toBeNull();
+});
+
+test('zdiag is one of the diagnostic modes, trimmed and lower-cased, null otherwise', () => {
+  for (const mode of [
+    'nowrite',
+    'nosort',
+    'noa2c',
+    'nomip',
+    'mip',
+    'freeze',
+    'strokeorder',
+    'paintorder',
+  ]) {
+    expect(parseFlags(`?zdiag=${mode}`).zdiag).toBe(mode);
+  }
+  expect(parseFlags('?zdiag=%20StrokeOrder%20').zdiag).toBe('strokeorder');
+  expect(parseFlags('?zdiag=bogus').zdiag).toBeNull();
+  expect(parseFlags('?zdiag').zdiag).toBeNull();
+  expect(parseFlags('').zdiag).toBeNull();
 });

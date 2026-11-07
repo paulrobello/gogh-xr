@@ -30,6 +30,10 @@ void main() {
   // Ruling R3: sharpen coverage to ~0 or 1 except a one-pixel rim, so alpha-to-coverage does not
   // dither the stroke interior into flickering stripes.
   float alpha = clamp((cov - 0.5) / max(fwidth(cov), 1e-4) + 0.5, 0.0, 1.0);
+#ifdef ZDIAG_ALPHA_TEST
+  // `?zdiag=noa2c` (src/render/zdiag.ts): alpha-to-coverage is off, so cut the shape out instead.
+  if (alpha < 0.5) discard;
+#endif
 
   // Forward differences along the stroke frame (atlas u runs along the stroke, v across it). The
   // step follows the pixel footprint, so a distant stroke compares mip texels a pixel apart and

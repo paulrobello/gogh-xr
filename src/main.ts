@@ -12,6 +12,7 @@ import type { PainterCamera, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
+import { createZdiag } from './render/zdiag';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
@@ -122,6 +123,9 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+/** `?zdiag=<mode>`, honoured in production like `?slow` (src/render/zdiag.ts). */
+const zdiag = createZdiag(flags.zdiag, renderer);
+
 let hud: HudToggle | null = null;
 /**
  * The governed batch, which the HUD also counts. Every scene with a stroke batch runs the governor,
@@ -168,6 +172,7 @@ function renderFrame(time: number): void {
   world?.update(time / 1000, dt);
   if (!renderer.xr.isPresenting) desktop.update();
   if (runLocomotion) locomotion.frame(actions, renderer.xr.isPresenting);
+  zdiag.beforeRender(camera);
   renderer.render(scene, camera);
   drawCalls = renderer.info.render.calls;
   hud?.frame(time, leftButtonPressed(sources, BUTTON_X));
@@ -198,6 +203,7 @@ if (flags.diag) {
     selectstart: { ...counter.selectstart },
     actions: actions && structuredClone(actions),
   }));
+  registerDiag('zdiag', () => zdiag.diag());
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
   if (runLocomotion) registerDiag('rig', () => locomotion.diag());
   installPose(locomotion.setPose);
@@ -241,6 +247,7 @@ if (flags.bench === null) {
 
 /** With two stroke scenes at once, the first batch to load is the one bound. */
 function governStrokes(batch: StrokeBatch): Promise<void> {
+  zdiag.applyToBatch(batch);
   buildArc(batch.atlas);
   return strokes.batch ? Promise.resolve() : strokes.bind(batch);
 }

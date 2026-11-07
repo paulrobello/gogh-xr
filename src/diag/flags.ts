@@ -43,12 +43,25 @@ export interface Flags {
   readonly seated: boolean;
   /** `?turn=snap|smooth`: the turn mode. null means the settings default (snap). */
   readonly turn: TurnMode | null;
+  /** `?zdiag=<mode>`: a stroke depth and filtering diagnostic (src/render/zdiag.ts). null is off. */
+  readonly zdiag: ZdiagMode | null;
 }
 
 export type BenchMode = 'a2c' | 'blend';
 export type BenchOrder = 'sorted' | 'random';
 export type TargetHz = 72 | 90 | 120;
 export type DemoName = 'canvas';
+export const ZDIAG_MODES = [
+  'nowrite',
+  'nosort',
+  'noa2c',
+  'nomip',
+  'mip',
+  'freeze',
+  'strokeorder',
+  'paintorder',
+] as const;
+export type ZdiagMode = (typeof ZDIAG_MODES)[number];
 
 const TARGET_HZ: readonly number[] = [72, 90, 120];
 
@@ -108,6 +121,11 @@ function parseTurn(raw: string | null): TurnMode | null {
   return value === 'snap' || value === 'smooth' ? value : null;
 }
 
+function parseZdiag(raw: string | null): ZdiagMode | null {
+  const value = raw?.trim().toLowerCase();
+  return ZDIAG_MODES.find((mode) => mode === value) ?? null;
+}
+
 function parseId(raw: string | null): string | null {
   const value = raw?.trim().toLowerCase();
   return value ? value : null;
@@ -144,6 +162,7 @@ export function parseFlags(search: string): Flags {
     painter: parseBool(params, 'painter'),
     seated: parseBool(params, 'seated'),
     turn: parseTurn(params.get('turn')),
+    zdiag: parseZdiag(params.get('zdiag')),
   });
 }
 

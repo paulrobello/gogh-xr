@@ -46,3 +46,74 @@ export function flipPercent(
     bottom: pct(flipped[2], pixels[2]),
   };
 }
+
+export interface TemporalFlicker {
+  /** Pixels that change by more than FLIP_THRESHOLD between any two consecutive frames, % of frame. */
+  readonly flicker: number;
+  /** Mean share of the frame that changes between consecutive frames, %. */
+  readonly perFrame: number;
+  /**
+   * Flickering pixels with at least 4 of their 8 neighbours flickering too, % of frame: a depth
+   * fight flips patches, edge parallax 1 px lines.
+   */
+  readonly clustered: number;
+}
+
+/**
+ * Per-pixel temporal flicker over a sequence of captures of one view (the shimmer probe,
+ * `scripts/shimmer-probe.ts`). Same layout as `flipPercent`: 8-bit RGB, 3 bytes per pixel.
+ */
+export function temporalFlicker(
+  frames: readonly (Uint8Array | Uint8ClampedArray)[],
+  width: number,
+  height: number,
+): TemporalFlicker {
+  const size = width * height * 3;
+  if (frames.length < 2) throw new RangeError('temporalFlicker: needs at least two frames');
+  for (const f of frames) {
+    if (f.length !== size) {
+      throw new RangeError(
+        `temporalFlicker: buffers must hold ${size} bytes for ${width}x${height}`,
+      );
+    }
+  }
+  const pixels = width * height;
+  const mask = new Uint8Array(pixels);
+  let changes = 0;
+  for (let k = 1; k < frames.length; k++) {
+    const a = frames[k - 1];
+    const b = frames[k];
+    for (let p = 0; p < pixels; p++) {
+      const i = p * 3;
+      const d =
+        Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+      if (d > FLIP_THRESHOLD) {
+        changes++;
+        mask[p] = 1;
+      }
+    }
+  }
+  let flicker = 0;
+  let clustered = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!mask[y * width + x]) continue;
+      flicker++;
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx >= 0 && yy >= 0 && xx < width && yy < height && mask[yy * width + xx]) n++;
+        }
+      }
+      if (n >= 4) clustered++;
+    }
+  }
+  return {
+    flicker: (100 * flicker) / pixels,
+    perFrame: (100 * changes) / (pixels * (frames.length - 1)),
+    clustered: (100 * clustered) / pixels,
+  };
+}
