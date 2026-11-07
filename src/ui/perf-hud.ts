@@ -9,17 +9,15 @@
  * live frame stats the HUD reads, with the time of the last recorded frame.
  */
 import { Group, Mesh, MeshBasicMaterial, type Object3D, PlaneGeometry } from 'three';
-import { configureTextBuilder, Text } from 'troika-three-text';
+import { Text } from 'troika-three-text';
 import { FrameStats } from '../bench/stats';
 import { registerDiag, unregisterDiag } from '../diag/diag';
 import type { GovernorDiag } from '../render/governor-runtime';
 import type { ToggleableHud } from './hud-toggle';
 import { createHudUpdater, type PerfHudValues } from './perf-hud-text';
+import { TEXT_FONT_URL } from './troika-config';
 
-export const HUD_FONT_URL = `${import.meta.env.BASE_URL}fonts/NotoSans-Regular.ttf`;
-
-// Typesetting on the main thread keeps troika off blob workers; the local font keeps it off its CDN.
-configureTextBuilder({ defaultFontURL: HUD_FONT_URL, useWorker: false });
+export const HUD_FONT_URL = TEXT_FONT_URL;
 
 const PANEL_W = 0.3;
 const PAD = 0.01;

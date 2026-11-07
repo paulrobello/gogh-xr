@@ -2,7 +2,7 @@ import { expect, test } from './fixtures';
 import { gpuMode, isSoftwareRenderer } from './gpu';
 
 test('IWER Quest 3 enters immersive VR and reports a right-trigger press', async ({ xr }) => {
-  await xr.boot();
+  await xr.boot('scene=bare');
 
   const before = await xr.diag();
   const renderer = before.renderer.unmaskedRenderer ?? '';
@@ -27,7 +27,7 @@ test('IWER Quest 3 enters immersive VR and reports a right-trigger press', async
 });
 
 test('setPose moves the XR camera by the head offset', async ({ xr }) => {
-  await xr.boot();
+  await xr.boot('scene=bare');
   await xr.enterXR();
   const start = (await xr.diag()).camera.position;
   // IWER's default head sits at (0, 1.6, 0); move it by (+0.4, -0.4, -0.3).
@@ -39,7 +39,7 @@ test('setPose moves the XR camera by the head offset', async ({ xr }) => {
 });
 
 test('the input layer reports the controller and the keyboard in diag', async ({ xr, page }) => {
-  await xr.boot();
+  await xr.boot('scene=bare');
   await page.keyboard.down('KeyW');
   await expect.poll(async () => (await xr.diag()).input?.actions?.move.y).toBe(1);
   await page.keyboard.up('KeyW');
@@ -65,7 +65,7 @@ test('IWER trigger and squeeze reach select and grip at their xr-standard indice
       button,
       value,
     ] as const);
-  await xr.boot();
+  await xr.boot('scene=bare');
   await xr.enterXR();
   const actions = async () => (await xr.diag()).input?.actions;
 

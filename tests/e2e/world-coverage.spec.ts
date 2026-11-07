@@ -152,15 +152,19 @@ test('in XR the IWER head stands at the painter eye inside the world', async ({ 
   expect(await glErrors(page)).toEqual([]);
 });
 
-test('an unknown painting id warns and boots the bare scene', async ({ page, xr }) => {
+test('an unknown painting id warns once and opens the gallery', async ({ page, xr }) => {
+  test.setTimeout(120_000);
   const warnings: string[] = [];
   page.on('console', (m) => {
     if (m.type() === 'warning') warnings.push(m.text());
   });
   await xr.boot('painting=water-lilies');
-  await xr.waitFrames(5);
-  expect((await xr.diag()).world).toBeUndefined();
-  expect(warnings.some((w) => w.includes('water-lilies'))).toBe(true);
+  await expect
+    .poll(async () => ((await xr.diag()).world as { painting?: string } | undefined)?.painting, {
+      timeout: 90_000,
+    })
+    .toBe('gallery');
+  expect(warnings.filter((w) => w.includes('water-lilies'))).toHaveLength(1);
 });
 
 test('?bare calibrates the count: with the strokes hidden, the view is all magenta', async ({

@@ -38,6 +38,7 @@ import {
   traceArc,
 } from './teleport';
 import { type TurnInput, turn } from './turn';
+import { clampToWalkBounds, type WalkBounds } from './walk-bounds';
 
 /** The part of a P3.1 `Actions` frame locomotion reads. */
 export interface FrameActions extends FlightInput, TurnInput {
@@ -171,6 +172,8 @@ export interface Locomotion {
 export interface LocomotionWorld extends LandingWorld {
   /** Thickens the boundary haze, 0-1, 0 being the painting as built. Omitted: no haze. */
   setHaze?(thickness: number): void;
+  /** An indoor world's walls and ceiling for smooth movement and flight. Omitted: none. */
+  readonly walkBounds?: WalkBounds;
 }
 
 /** The haze thickening's easing time constant, seconds, so leaving flight at the edge never pops. */
@@ -402,6 +405,8 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       } else {
         step(state, actions, ground, settings, actions.dt, head);
       }
+      // A placed pose (`__goghPose`, `?painter`) stays where it was put until the next movement.
+      if (landing.walkBounds && !state.held) clampToWalkBounds(state, head, landing.walkBounds);
       teleport(actions, aiming, allowed, isPresenting);
       // The toggle takes effect from the next frame: the exit drop's 0.5 s starts at this one.
       if (actions.flightToggle) toggleFlight();

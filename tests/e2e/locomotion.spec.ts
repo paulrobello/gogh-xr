@@ -133,7 +133,7 @@ test('the vignette shader is compiled at boot, so the first move in XR compiles 
   test.setTimeout(120_000);
   // The bare scene: its ground and grid are in view from the first frame, so nothing else can
   // come into view and compile while moving.
-  await xr.boot('noanim');
+  await xr.boot('scene=bare&noanim');
   await xr.enterXR();
   await xr.waitFrames(5);
   const programs = (await xr.diag()).renderer.programs;
@@ -330,7 +330,7 @@ test('the bare scene builds the arc and its brush atlas on the first aim, not at
   xr,
 }) => {
   test.setTimeout(120_000);
-  await xr.boot('noanim');
+  await xr.boot('scene=bare&noanim');
   await xr.waitFrames(5);
   const boot = await xr.diag();
   await page.keyboard.down('KeyT');

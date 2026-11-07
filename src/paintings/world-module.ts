@@ -4,6 +4,7 @@
  */
 import type { Scene } from 'three';
 import type { Raster } from '../demo/canvas/field';
+import type { WalkBounds } from '../locomotion/walk-bounds';
 import type { StrokeBatch } from '../render/strokes/batch';
 import type { Vec3 } from '../render/strokes/frame';
 
@@ -47,6 +48,8 @@ export interface WorldDeps {
   readonly debug?: WorldDebug | null;
   /** `?nohalo` clears it: the world draws no halo pass. Default true. */
   readonly halo?: boolean;
+  /** The renderer's texture anisotropy cap, for a world's image textures. Default 1. */
+  readonly maxAnisotropy?: number;
 }
 
 /** The walkable ground: the surface a viewer stands on. */
@@ -74,6 +77,11 @@ export interface WorldHandle {
    * (P3.5). Omitted: a world without haze.
    */
   setHaze?(thickness: number): void;
+  /**
+   * An indoor world's walls and ceiling: smooth movement and flight keep the head inside them
+   * (src/locomotion/walk-bounds.ts). Omitted: an open world, never clamped.
+   */
+  readonly walkBounds?: WalkBounds;
 }
 
 export interface WorldModule {

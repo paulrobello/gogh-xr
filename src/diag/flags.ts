@@ -70,12 +70,15 @@ export interface Flags {
   readonly turn: TurnMode | null;
   /** `?zdiag=<mode>`: a stroke depth and filtering diagnostic (src/render/zdiag.ts). null is off. */
   readonly zdiag: ZdiagMode | null;
+  /** `?scene=bare`: boots the bare scene instead of the default gallery (src/boot-mode.ts). */
+  readonly scene: SceneName | null;
 }
 
 export type BenchMode = 'a2c' | 'blend';
 export type BenchOrder = 'sorted' | 'random';
 export type TargetHz = 72 | 90 | 120;
 export type DemoName = 'canvas';
+export type SceneName = 'bare';
 export const ZDIAG_MODES = [
   'nowrite',
   'nosort',
@@ -173,6 +176,10 @@ function parseDemo(raw: string | null): DemoName | null {
   return raw?.trim().toLowerCase() === 'canvas' ? 'canvas' : null;
 }
 
+function parseScene(raw: string | null): SceneName | null {
+  return raw?.trim().toLowerCase() === 'bare' ? 'bare' : null;
+}
+
 function parseTurn(raw: string | null): TurnMode | null {
   const value = raw?.trim().toLowerCase();
   return value === 'snap' || value === 'smooth' ? value : null;
@@ -225,6 +232,7 @@ export function parseFlags(search: string): Flags {
     seated: parseBool(params, 'seated'),
     turn: parseTurn(params.get('turn')),
     zdiag: parseZdiag(params.get('zdiag')),
+    scene: parseScene(params.get('scene')),
   });
 }
 

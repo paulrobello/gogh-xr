@@ -15,6 +15,10 @@ declare module 'troika-three-text' {
     whiteSpace: string;
     lineHeight: number | string;
     color: number | string | Color;
+    /** Colour from each character index on, until the next key. */
+    colorRanges: Record<number, number | string | Color> | null;
+    /** Sets the derived material's polygonOffset factor and units; troika owns those fields. */
+    depthOffset: number;
     sync(callback?: () => void): void;
     dispose(): void;
   }

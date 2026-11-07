@@ -71,7 +71,7 @@ test('without ?noanim the motion clock advances, scaled by ?calm', async ({ page
       return { time: diag.motion.time, wall: performance.now() / 1000 };
     });
 
-  await xr.boot('calm=0.5');
+  await xr.boot('scene=bare&calm=0.5');
   await xr.waitFrames(2);
   const state = await motion(xr);
   expect(state.calm).toBe(0.5);
@@ -85,7 +85,7 @@ test('without ?noanim the motion clock advances, scaled by ?calm', async ({ page
   expect(advanced).toBeGreaterThan(0);
   expect(advanced).toBeLessThanOrEqual(0.5 * (later.wall - start.wall) + 0.5 * MAX_MOTION_DT_S);
 
-  await xr.boot('calm=0');
+  await xr.boot('scene=bare&calm=0');
   await xr.waitFrames(2);
   const still = await motion(xr);
   await page.waitForTimeout(300);

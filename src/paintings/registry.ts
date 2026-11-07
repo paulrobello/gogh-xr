@@ -210,12 +210,13 @@ export function logRegistryProblems(entries: readonly PaintingEntry[] = PAINTING
 
 /**
  * The live entry with a world for `id`. Null for no id; an unknown or coming-soon id also logs a
- * warning and returns null, so the caller boots the bare scene.
+ * warning and returns null, so the boot ignores it and, with no other scene flag, opens the gallery
+ * (src/boot-mode.ts).
  */
 export function livePainting(id: string | null): PaintingEntry | null {
   if (id === null) return null;
   const entry = PAINTINGS.find((p) => p.id === id);
   if (entry?.status === 'live' && entry.world) return entry;
-  console.warn(`painting "${id}" is ${entry ? 'not live yet' : 'unknown'}; booting the bare scene`);
+  console.warn(`painting "${id}" is ${entry ? 'not live yet' : 'unknown'}; ignoring it`);
   return null;
 }

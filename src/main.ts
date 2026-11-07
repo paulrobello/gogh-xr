@@ -7,6 +7,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
+import { bootWorld, resolveBootMode } from './boot-mode';
 import { installDesktopControls } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
 import { installDiag, installPose, installShot, registerDiag } from './diag/diag';
@@ -98,9 +99,12 @@ renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
 
 logRegistryProblems();
-// An unknown or coming-soon `?painting` warns here and boots the bare scene.
-const painting = flags.bench === null ? livePainting(flags.painting) : null;
-const scene = createBareScene(painting === null);
+// An unknown or coming-soon `?painting` warns here and is otherwise ignored, so with no other scene
+// flag the gallery boots (src/boot-mode.ts).
+const bootMode = resolveBootMode(flags, livePainting);
+const painting = bootMode.kind === 'painting' ? bootMode.entry : null;
+const worldEntry = bootWorld(bootMode);
+const scene = createBareScene(worldEntry === null);
 // Near 0.1 m, not less: depth precision scales with the near plane, and coarser steps make
 // overlapping strokes flicker (docs/verification.md, stroke flicker). XR inherits it as depthNear.
 const camera = new PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -114,7 +118,7 @@ const runLocomotion = flags.bench === null;
 const vignette = runLocomotion ? createVignette(camera) : undefined;
 /** The teleport arc's strokes, built once by `buildArc`. */
 let arcStrokes: ArcMesh | null = null;
-const strokeScene = Boolean(painting?.world) || flags.strokesTest || flags.demo === 'canvas';
+const strokeScene = worldEntry !== null || flags.strokesTest || flags.demo === 'canvas';
 const arc: ArcTarget = {
   show: (aim, eye) => {
     if (!arcStrokes && !strokeScene) buildArc(createBrushAtlas());
@@ -386,13 +390,15 @@ if (flags.demo === 'canvas' && !painting) {
     .catch((error: unknown) => console.warn('canvas demo failed to start', error));
 }
 
-if (painting?.world) {
-  // Only a world moves: the canvas demo, test scene and bench share its stroke layers (R-P4f).
-  // `?motionlayers` (e2e builds only) can close layers, never open one.
-  const only = import.meta.env.MODE === 'e2e' ? flags.motionlayers : null;
-  motionClock.setLayerMask(only === null ? MOTION_LAYER_MASK : MOTION_LAYER_MASK & only);
+if (worldEntry) {
+  // Only a painting's world moves: the gallery, canvas demo, test scene and bench share its stroke
+  // layers (R-P4f). `?motionlayers` (e2e builds only) can close layers, never open one.
+  if (painting) {
+    const only = import.meta.env.MODE === 'e2e' ? flags.motionlayers : null;
+    motionClock.setLayerMask(only === null ? MOTION_LAYER_MASK : MOTION_LAYER_MASK & only);
+  }
   locomotion.awaitGround();
-  const load = painting.world;
+  const load = worldEntry.world;
   Promise.all([load(), import('./demo/canvas/demo')])
     .then(async ([module, { loadRaster }]) => {
       // Before build, which registers the `world` diag key that captures wait for.
@@ -411,6 +417,7 @@ if (painting?.world) {
         cache: flags.cache,
         debug: flags.diag ? (flags.bare ? 'bare' : flags.coverage ? 'coverage' : null) : null,
         halo: !flags.nohalo,
+        maxAnisotropy: renderer.capabilities.getMaxAnisotropy(),
       });
       world = module;
       locomotion.setWorld(handle);
@@ -418,7 +425,7 @@ if (painting?.world) {
     })
     .catch((error: unknown) => {
       locomotion.setWorld(null);
-      console.warn(`painting ${painting.id} failed to start`, error);
+      console.warn(`world ${worldEntry.id} failed to start`, error);
     });
 }
 

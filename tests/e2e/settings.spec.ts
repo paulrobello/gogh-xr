@@ -26,7 +26,7 @@ async function boot(page: Page, query: string, stored?: string): Promise<Record<
       [KEY, stored],
     );
   }
-  await page.goto(`/?diag&noanim&${query}`);
+  await page.goto(`/?diag&noanim&scene=bare&${query}`);
   await page.waitForFunction(() => {
     const diag = window.__goghDiag?.() as unknown as Record<string, unknown> | undefined;
     return Boolean(diag?.settings && diag.rig && diag.motion && diag.hud);
