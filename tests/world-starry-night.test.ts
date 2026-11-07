@@ -20,6 +20,7 @@ import { REGION } from '../src/demo/canvas/field.ts';
 import {
   BARE_COLOR,
   createBaseMeshes,
+  TINT_UNDERPAINT_SHADE,
   UNDERPAINT_SHADE,
   underpaintColor,
 } from '../src/paintings/starry-night/base-meshes.ts';
@@ -34,6 +35,13 @@ import {
   COLOR_BITS,
 } from '../src/paintings/starry-night/canvas-histogram.ts';
 import { painterSpot, spawnPose } from '../src/paintings/starry-night/index.ts';
+import {
+  pickTint,
+  splitTintBands,
+  type TintRole,
+  type TintTags,
+  tintSeed,
+} from '../src/paintings/starry-night/village-tint.ts';
 import {
   assembleWorldStrokes,
   createWorldGeometry,
@@ -452,6 +460,37 @@ describe('base meshes', () => {
   test('the debug paint is flat magenta on every surface', () => {
     for (const [, material] of materials('magenta'))
       expect(material.color.getHex()).toBe(BARE_COLOR);
+  });
+
+  test('with the scatter seed, each tinted village triangle takes its house tint, darkened less', () => {
+    const group = createBaseMeshes(WORLD.surfaces, SOURCE.histogram, 'underpaint', SEEDS.scatter);
+    const bands = splitTintBands(SOURCE.histogram);
+    let tinted = 0;
+    for (const child of group.children) {
+      const { geometry, material } = child as Mesh<BufferGeometry, MeshBasicMaterial>;
+      const tags = geometry.userData.tint as TintTags | undefined;
+      if (!tags) {
+        expect(material.vertexColors).toBe(false);
+        continue;
+      }
+      tinted++;
+      expect(material.vertexColors).toBe(true);
+      const source = WORLD.surfaces.find((g) => g.userData === geometry.userData);
+      expect(geometry.getAttribute('position')).toBe(source?.getAttribute('position'));
+      const layer = WORLD_LAYERS.indexOf(geometry.userData.layer);
+      const colors = geometry.getAttribute('color');
+      for (let t = 0; t < tags.owner.length; t++) {
+        const rgb = pickTint(
+          bands[tags.role[t] as TintRole],
+          tintSeed(SEEDS.scatter, layer, tags.owner[t], tags.role[t] as TintRole),
+        ).rgb;
+        const k = TINT_UNDERPAINT_SHADE / 255;
+        const expected = new Color().setRGB(rgb[0] * k, rgb[1] * k, rgb[2] * k, 'srgb');
+        const got = new Color(colors.getX(t * 3), colors.getY(t * 3), colors.getZ(t * 3));
+        expect(got.getHex()).toBe(expected.getHex());
+      }
+    }
+    expect(tinted).toBe(3);
   });
 });
 

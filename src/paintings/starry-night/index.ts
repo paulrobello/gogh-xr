@@ -123,7 +123,12 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   };
 
   const { scene } = deps;
-  const base = createBaseMeshes(world.surfaces, source.histogram, debug ? 'magenta' : 'underpaint');
+  const base = createBaseMeshes(
+    world.surfaces,
+    source.histogram,
+    debug ? 'magenta' : 'underpaint',
+    seeds.scatter,
+  );
   const background = scene.background;
   const sky = underpaintColor(source.histogram, 'sky');
   scene.background = debug

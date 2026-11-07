@@ -1,12 +1,14 @@
 /**
  * Base meshes (ruling P8): the world surfaces drawn flat and unlit under the strokes, so a gap
  * between strokes shows under-paint rather than the clear colour. Each takes its layer's region
- * mean from the canvas histogram, darkened; emissive meshes (the windows) keep their colour. In
- * the debug paint every base mesh is flat magenta, which the coverage sweep counts.
+ * mean from the canvas histogram, darkened; emissive meshes (the windows) keep their colour; a
+ * tinted village mesh (`userData.tint`) takes each triangle's house tint, darkened less. In the
+ * debug paint every base mesh is flat magenta, which the coverage sweep counts.
  */
 import {
-  type BufferGeometry,
+  BufferGeometry,
   Color,
+  Float32BufferAttribute,
   FrontSide,
   Group,
   Mesh,
@@ -14,13 +16,27 @@ import {
   SRGBColorSpace,
 } from 'three';
 import type { Vec3 } from '../../render/strokes/frame';
+import { WORLD_LAYERS } from '../../render/strokes/scatter';
 import { LAYER_REGION, type WorldLayer } from './canvas-camera';
 import { type CanvasHistogram, COLOR_BITS } from './canvas-histogram';
+import {
+  pickTint,
+  splitTintBands,
+  type TintBands,
+  type TintRole,
+  type TintTags,
+  tintSeed,
+} from './village-tint';
 
 /** The debug paint, and the clear colour in the debug modes. sRGB 1 and 0 survive the output encode. */
 export const BARE_COLOR: number = 0xff00ff;
 /** Under-paint is the region's mean colour times this. */
 export const UNDERPAINT_SHADE: number = 0.6;
+/**
+ * Under-paint on a tinted village triangle is its owner's tint (the strokes' own colour) times this,
+ * so a gap between pale wall strokes reads as a slightly deeper wall, not a dark hole.
+ */
+export const TINT_UNDERPAINT_SHADE: number = 0.85;
 /**
  * Base meshes draw after every stroke chunk (whose render orders are the cull ranks), so early
  * depth rejects their hidden fragments.
@@ -59,6 +75,45 @@ function baseColor(geometry: BufferGeometry, histogram: CanvasHistogram): Color 
 }
 
 /**
+ * A tinted village mesh with a per-vertex under-paint colour: each triangle its owner's tint for its
+ * role, picked as the scatter picks it (`tintSeed` with the scatter seed and the layer's
+ * WORLD_LAYERS index), times TINT_UNDERPAINT_SHADE. The position attribute is shared, not copied.
+ * Null for an untagged or indexed geometry.
+ */
+function tintedUnderpaint(
+  geometry: BufferGeometry,
+  bands: TintBands,
+  seed: number,
+): BufferGeometry | null {
+  const tags = geometry.userData.tint as TintTags | undefined;
+  if (!(tags?.owner instanceof Uint16Array && tags.role instanceof Uint8Array)) return null;
+  if (geometry.index) return null;
+  const position = geometry.getAttribute('position');
+  const layer = WORLD_LAYERS.indexOf(geometry.userData.layer as WorldLayer);
+  const colors = new Float32Array(position.count * 3);
+  const picked = new Map<number, Color>();
+  const color = new Color();
+  for (let t = 0; t * 3 < position.count; t++) {
+    const owner = tags.owner[t];
+    const role = tags.role[t] as TintRole;
+    const key = owner * 4 + role;
+    let c = picked.get(key);
+    if (!c) {
+      const rgb = pickTint(bands[role], tintSeed(seed, layer, owner, role)).rgb;
+      const k = TINT_UNDERPAINT_SHADE / 255;
+      c = color.setRGB(rgb[0] * k, rgb[1] * k, rgb[2] * k, SRGBColorSpace).clone();
+      picked.set(key, c);
+    }
+    for (let v = 0; v < 3; v++) colors.set([c.r, c.g, c.b], (t * 3 + v) * 3);
+  }
+  const tinted = new BufferGeometry();
+  tinted.setAttribute('position', position);
+  tinted.setAttribute('color', new Float32BufferAttribute(colors, 3));
+  tinted.userData = geometry.userData;
+  return tinted;
+}
+
+/**
  * One flat unlit mesh per surface, front faces only, pushed back in depth by a polygon offset so
  * strokes lying on the surface always win the depth test. Strokes are back-face culled, so a back
  * face is where no stroke can show: drawing it would only paint a gap. The world stays closed (the
@@ -66,25 +121,39 @@ function baseColor(geometry: BufferGeometry, histogram: CanvasHistogram): Color 
  * ground. A backdrop surface (`userData.backdrop`, the sky dome) gets no mesh: its strokes draw by
  * rank just in front of the far plane (src/render/strokes/backdrop-depth.ts), where a base mesh at
  * its true depth would cover them, and the scene's clear colour is its under-paint (magenta in the
- * debug paint, index.ts), so a gap between them shows the same colour.
+ * debug paint, index.ts), so a gap between them shows the same colour. With the scatter's `seed`, a
+ * tinted village mesh takes its triangles' house tints (`tintedUnderpaint`) instead of the region
+ * mean.
  */
 export function createBaseMeshes(
   surfaces: readonly BufferGeometry[],
   histogram: CanvasHistogram,
   paint: BaseMeshPaint,
+  seed?: number,
 ): Group {
   const group = new Group();
   group.name = 'base-meshes';
+  let bands: TintBands | null = null;
   for (const geometry of surfaces) {
     if (geometry.userData.backdrop === true) continue;
+    let tinted: BufferGeometry | null = null;
+    if (paint === 'underpaint' && seed !== undefined && geometry.userData.tint) {
+      bands ??= splitTintBands(histogram);
+      tinted = tintedUnderpaint(geometry, bands, seed);
+    }
     const material = new MeshBasicMaterial({
-      color: paint === 'magenta' ? new Color(BARE_COLOR) : baseColor(geometry, histogram),
+      color: tinted
+        ? new Color(1, 1, 1)
+        : paint === 'magenta'
+          ? new Color(BARE_COLOR)
+          : baseColor(geometry, histogram),
+      vertexColors: tinted !== null,
       side: FrontSide,
       polygonOffset: true,
       polygonOffsetFactor: 2,
       polygonOffsetUnits: 4,
     });
-    const mesh = new Mesh(geometry, material);
+    const mesh = new Mesh(tinted ?? geometry, material);
     mesh.name = `base-${String(geometry.userData.layer)}`;
     mesh.renderOrder = BASE_MESH_RENDER_ORDER;
     mesh.matrixAutoUpdate = false;

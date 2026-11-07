@@ -656,3 +656,86 @@ Flicker probe at the default density, 0.1 mm shift, all (top / mid / bottom), %,
 Cost: at the default far density 0.4 the drawn lights barely change (about 12,290 drawn of 30,729 stored before, all 12,294 now). At the far floor they rise from about 3,070 to 12,294, so a full shed saves about 9,200 fewer strokes than before. The before figures are scaled from the stored count by the density (a prefix of the chunk's order), not measured.
 
 Not done here: the P4.3 pulse and additive halo, and a headset run. The headset check is Paul's.
+
+## Building z-fighting report (dab260e)
+
+Paul reported "lots of z-fighting on buildings" in the headset on dab260e. The diagnosis was run on a649d39 (origin/main) against 6dbfc09, the strobe fix, with the scratch probes in `.superpowers/sdd/bz/` (not committed). It used 16 ground-level poses at 3 to 25 m from house 6, house 2 and the church: facing the walls and at grazing angles, headless Chromium on ANGLE Metal (Apple M4 Max), 1280 × 1014, seed 1, `?nogov&nocache&noanim`.
+
+### Diagnosis
+
+No systematic depth regression since 6dbfc09 was found, with one local exception at h6-face-3m, below:
+
+- 46eb08f (village colours) changes colour only, and placement is bit-identical.
+- The outline strokes never change winner under a shift, at any pose.
+- a649d39's pinned prefix in `batch.ts` holds only the star and moon strokes.
+- The `stroke.vert.glsl` changes since 6dbfc09 are the moon and star front tier inside the backdrop branch, and the sky-light cull behind `SKY_LIGHT_CULL_FLAG`, which only the boundary haze carries. Neither reaches a village stroke.
+
+An id build, each stroke coloured by its layer, shifts the camera 0.1 mm and counts the pixels whose winning surface changes. Its per-layer shares are the same on both commits to within 0.03 points of the frame at 14 of the 16 poses. The two exceptions are a649d39's wall share at h6-face-3m (0.329 against 0.255) and its ground share at h2-face-7m (0.361 against 0.166).
+
+The h6-face-3m rise reproduces exactly on two more runs of each build:
+
+- 0.260% of the frame flips on both commits.
+- 0.075% flips only on a649d39, and 0.001% only on 6dbfc09.
+- The a649d39-only flips sit in two small clusters about 30 px across, each the overlap of one wall stroke pair. A few wall pairs have become near-ties.
+
+Its cause was not found, and the fix below does not address it.
+
+The colour flicker under the same shift is lower on a649d39 at 15 of the 16 poses. The exception is h2-face-7m, whose rise (clustered 0.038 to 0.224) is a ground patch, not a building.
+
+The building fights that remain are the old residual: two wall strokes whose lift shares nearly match. These fights are smallest where the 0.25 m range cap binds, beyond about 14 m. A 4× range removes most of their clustered flips, but those flips are only 0.01 to 0.03% of the frame.
+
+What changed is what a gap between strokes looks like:
+
+- 46eb08f paints the house walls in pale tints, which measure Rec. 709 luma 111 against 63 before. Each stroke's colour is `jitterTint` around its owner's tint, mixed toward the scan by `SEEN_TINT_BLEND` where the face is turned toward the painter (a649d39 `src/render/strokes/scatter.ts:443-456`). The tags come from `src/world/village.ts:598-607`.
+- The base meshes under the strokes stayed at the region mean × `UNDERPAINT_SHADE` 0.6, luma 47 (a649d39 `src/paintings/starry-night/base-meshes.ts:23` and `baseColor` at `:53`).
+- A gap between wall strokes therefore reads as a dark speck where it used to read as a slightly darker wall.
+
+The gaps move whenever the stroke set changes, so they flash. That happens at a band switch, at 6 m on the 24 m chunks (`NEAR_BAND_MAX_M`, `src/render/strokes/bands.ts:11`; density 1 to 0.9, size × 1.05), and when the governor sheds near density in XR. The desktop probe forces the near band from 1 to 0.9 and counts the building pixels that go from light (luma > 90) to dark (< 60).
+
+The 6 m band switch, the governor's oscillation in the headset, and XR stereo were not measured. The depth buffer is 24-bit in XR, against the desktop default, which was not compared either.
+
+### Fix
+
+`createBaseMeshes` takes the scatter seed, and each tinted village triangle under-paints in its owner's tint (`pickTint`, the same pick its strokes jitter around) × `TINT_UNDERPAINT_SHADE` 0.85, as vertex colours. Other layers keep the region mean × 0.6. This is base mesh only, so the scatter output, its hash and `SCATTER_VERSION` do not change, and the debug paint stays flat magenta.
+
+### Measured
+
+Each cell is % of the frame, before (a649d39) and after.
+
+- Colour flips: 0.1 mm shift, summed RGB difference > 24.
+- Clustered: at least 4 of 8 neighbours flipped.
+- Id flips: the a649d39 id build's winner changes for wall, roof, church, outline and ground, with the 6dbfc09 values after the slash.
+- Density step: building pixels that go from light to dark between near density 1 and 0.9.
+
+| Pose | Colour flips 6dbf / a649 / fix | Clustered 6dbf / a649 / fix | Id flips a649 (wall, roof, church, outline, ground) / 6dbf | Density step light-to-dark 6dbf / a649 / fix |
+| --- | --- | --- | --- | --- |
+| h6-face-3m | 0.230 / 0.086 / 0.081 | 0.048 / 0.018 / 0.018 | 0.329, 0.038, 0, 0, 0.025 / 0.255, 0.037, 0, 0, 0.037 | 0.386 / 0.172 / 0.012 |
+| h6-face-7m | 0.319 / 0.166 / 0.165 | 0.025 / 0.012 / 0.012 | 0.015, 0.011, 0, 0, 0.066 / 0.015, 0.010, 0, 0, 0.074 | 0.028 / 0.007 / 0.003 |
+| h6-face-15m | 0.517 / 0.485 / 0.486 | 0.089 / 0.078 / 0.078 | 0.055, 0.019, 0.006, 0, 0.572 / same to 0.001 | 0.045 / 0.013 / 0.011 |
+| h6-face-25m | 0.186 / 0.177 / 0.177 | 0.023 / 0.016 / 0.016 | 0, 0, 0, 0, 0.235 / 0, 0, 0, 0, 0.238 | 0 / 0 / 0 |
+| h6-graze-6m | 0.211 / 0.112 / 0.110 | 0.047 / 0.025 / 0.025 | 0.160, 0.004, 0, 0, 0.070 / 0.146, 0.004, 0, 0, 0.070 | 0.230 / 0.071 / 0.001 |
+| h6-graze-15m | 0.269 / 0.228 / 0.227 | 0.051 / 0.032 / 0.032 | 0.052, 0.019, 0, 0, 0.257 / 0.066, 0.019, 0, 0, 0.256 | 0.098 / 0.028 / 0.009 |
+| h2-face-3m | 0.113 / 0.056 / 0.054 | 0.003 / 0.001 / 0.001 | 0.095, 0.081, 0, 0, 0.053 / 0.073, 0.054, 0, 0, 0.053 | 0.758 / 0.118 / 0.005 |
+| h2-face-7m | 0.190 / 0.357 / 0.354 | 0.038 / 0.224 / 0.224 | 0.072, 0.053, 0.002, 0, 0.361 / 0.054, 0.057, 0.002, 0, 0.166 | 0.220 / 0.073 / 0.038 |
+| h2-face-15m | 0.251 / 0.220 / 0.219 | 0.032 / 0.021 / 0.020 | 0.051, 0.032, 0.004, 0, 0.258 / same to 0.003 | 0.056 / 0.015 / 0.007 |
+| h2-face-25m | 0.325 / 0.283 / 0.283 | 0.066 / 0.052 / 0.052 | 0.062, 0.040, 0.004, 0, 0.298 / same to 0.003 | 0.023 / 0.006 / 0.003 |
+| h2-graze-6m | 0.196 / 0.178 / 0.177 | 0.018 / 0.017 / 0.017 | 0.048, 0.018, 0, 0, 0.164 / 0.031, 0.017, 0, 0, 0.164 | 0.077 / 0.058 / 0.000 |
+| h2-graze-15m | 0.189 / 0.179 / 0.179 | 0.026 / 0.022 / 0.022 | 0.011, 0.014, 0, 0, 0.184 / 0.017, 0.014, 0, 0, 0.186 | 0.027 / 0.037 / 0.007 |
+| church-face-7m | 0.086 / 0.081 / 0.079 | 0.001 / 0.001 / 0.001 | 0.035, 0.005, 0.045, 0, 0.041 / same to 0.001 | 0.073 / 0.351 / 0.278 |
+| church-face-15m | 0.088 / 0.083 / 0.083 | 0.007 / 0.007 / 0.007 | 0.110, 0.004, 0.012, 0, 0.049 / same | 0.200 / 0.202 / 0.186 |
+| church-face-25m | 0.174 / 0.114 / 0.112 | 0.038 / 0.017 / 0.017 | 0.148, 0.004, 0.004, 0, 0.074 / same to 0.001 | 0.194 / 0.071 / 0.040 |
+| church-graze-10m | 0.092 / 0.040 / 0.035 | 0.003 / 0.003 / 0.003 | 0.107, 0, 0.006, 0, 0.008 / 0.107, 0.001, 0.006, 0, 0.008 | 1.024 / 0.084 / 0.029 |
+
+The fix leaves the shift flicker where it was, which is expected, since the base meshes play no part in a fight between two strokes. The light-to-dark change falls at every house pose, 0.172 to 0.012 at h6-face-3m and 0.118 to 0.005 at h2-face-3m.
+
+The church front at 7 m is not fixed. It keeps most of its rise, 0.351 to 0.278 against 0.073 on 6dbfc09. By the id capture, those pixels are church (2,623), outline (627) and window (353) pixels whose replacement averages RGB (31, 39, 63). A gap to the church wall's new under-paint, RGB (119, 126, 133) at about luma 125, cannot pass the < 60 test. The result is consistent with dark church strokes showing under the lifted pale strokes painted toward the painter (ruling Q30). It is not settled, though. The nave roof's under-paint, RGB (24, 24, 31), could pass the test, and no `?coverage` capture was taken to rule it out.
+
+Painter-view fidelity (`scripts/fidelity.ts`, production build): SSIM 0.3573 to 0.3571 (limit ≥ 0.2643), mean ΔE2000 4.3370 to 4.3490 (limit ≤ 7.1961).
+
+The `E2E_PORT=4291 make e2e` run on the fix passed 37 of 37. Its `fidelity.spec.ts` read SSIM 0.3571 and mean ΔE2000 4.3490. Its `world-coverage.spec.ts` maximum bare share was 0.451% at hill west (weighted 0.604%), against the 0.5% limit. The coverage sweep paints the base magenta, so the fix cannot move it.
+
+The light-to-dark measure is the gap colour the fix changes, so it shows the gaps read less, not that the headset flicker is gone. The headset check is Paul's.
+
+`docs/shots/building-zfight.png` shows church-face-7m and h6-face-3m at near density 0.9, before on the left and after on the right, with the building pixels that went from light to dark marked red.
+
+![Church front at 7 m and house 6 at 3 m, before and after, light-to-dark pixels in red](shots/building-zfight.png)
