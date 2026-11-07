@@ -15,6 +15,7 @@ import sharp from 'sharp';
 import { Quaternion, Vector3 } from 'three';
 import { CONTROL_Z } from '../../src/ui/panel-core.ts';
 import { controlLayout } from '../../src/ui/panel-layout.ts';
+import { DEFAULT_OFFSET } from '../../src/ui/panel-pose.ts';
 import { expect, type Quat, test, type Vec3, type Xr } from './fixtures';
 
 const KEY = 'gogh-xr.settings.v1';
@@ -204,6 +205,64 @@ test('right A opens the panel; grip on a slider changes nothing; the trigger set
   const reloaded = await settings(xr);
   expect(reloaded.stored.vignette).toBe(0.5);
   expect(reloaded.effective.vignette).toBe(0.5);
+});
+
+test('ending the XR session with the panel open saves its moved pose', async ({ page, xr }) => {
+  test.setTimeout(120_000);
+  await xr.boot('noanim&scene=bare');
+  await xr.enterXR();
+  await aim(xr, new Vector3(0.2, 1.3, -0.3), new Vector3(2, 1.3, 0));
+  await xr.press('right', 'a-button');
+  await expect
+    .poll(
+      async () => {
+        const p = await panel(xr);
+        return p.open && p.typeset;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+  const opened = await panel(xr);
+
+  // Grab it by the vignette slider and hold the grip.
+  const grabAt = controlPoint(opened, 'vignette', 0.5);
+  const from = grabAt.clone().add(new Vector3(0.06, -0.12, 0.38));
+  await aim(xr, from, grabAt);
+  await expect.poll(async () => (await panel(xr)).hover?.right).toBe('vignette');
+  await setButton(page, 'squeeze', 1);
+  await xr.waitFrames(3);
+  expect((await xr.diag()).panel).toMatchObject({ grabbing: true });
+
+  // Carry the controller sideways and up. The panel follows it, off the default spawn.
+  const shift = new Vector3(0.3, 0.15, 0);
+  await aim(xr, from.clone().add(shift), grabAt.clone().add(shift));
+  await xr.waitFrames(5);
+  const moved = await panel(xr);
+  const travelled = new Vector3(...(moved.pose?.position ?? [0, 0, 0])).distanceTo(
+    new Vector3(...(opened.pose?.position ?? [0, 0, 0])),
+  );
+  expect(travelled).toBeGreaterThan(0.1);
+  // Nothing has released yet, so nothing has saved.
+  expect(await page.evaluate((k) => localStorage.getItem(k), POSE_KEY)).toBeNull();
+
+  // Release saves the pose. Clear that save, leaving the panel open and not held, so a close
+  // saves nothing by itself (close() saves only mid-grab) and only the XR exit save can set the key.
+  await setButton(page, 'squeeze', 0);
+  await xr.waitFrames(3);
+  expect((await xr.diag()).panel).toMatchObject({ open: true, grabbing: false });
+  expect(await page.evaluate((k) => localStorage.getItem(k), POSE_KEY)).not.toBeNull();
+  await page.evaluate((k) => localStorage.removeItem(k), POSE_KEY);
+
+  // End the session with the panel open.
+  await page.evaluate(() => window.__goghIwer?.activeSession?.end());
+  await expect.poll(async () => (await xr.diag()).xr.presenting).toBe(false);
+  const raw = await page.evaluate((k) => localStorage.getItem(k), POSE_KEY);
+  expect(raw).not.toBeNull();
+  const stored = JSON.parse(raw ?? '{}') as { offset: Vec3; version: number };
+  expect(stored.version).toBe(1);
+  // The saved offset is the moved pose, not the default spawn.
+  const offset = new Vector3(...stored.offset);
+  expect(offset.distanceTo(new Vector3(...DEFAULT_OFFSET))).toBeGreaterThan(0.1);
 });
 
 test("in a stroke scene the panel's strokes reuse the batch's program", async ({ xr }) => {
