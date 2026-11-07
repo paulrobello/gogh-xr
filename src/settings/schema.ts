@@ -200,16 +200,19 @@ export function saveSettings(
 export interface SettingsFlags {
   readonly beauty: boolean;
   readonly hz: number | null;
-  readonly seated: boolean;
+  /** null when absent; false (`?seated=0`) turns a stored true off. */
+  readonly seated: boolean | null;
   readonly turn: TurnMode | null;
-  readonly hud: boolean;
+  /** null when absent; false (`?hud=0`) turns a stored true off. */
+  readonly hud: boolean | null;
   readonly calm: number | null;
 }
 
 /**
  * The settings this session runs with: the stored ones with each URL flag laid over its field.
  * Never written back. `?beauty` selects max beauty and `?hz` selects the adaptive mode (the
- * stored max beauty yields to an explicit rate). A boolean flag can only turn its field on.
+ * stored max beauty yields to an explicit rate). `?seated` and `?hud` set their field either way:
+ * bare is on, `=0` is off, and absent leaves the stored value.
  */
 export function applyUrlFlags(stored: Settings, f: SettingsFlags): Settings {
   const quality: QualityMode = f.beauty
@@ -220,11 +223,29 @@ export function applyUrlFlags(stored: Settings, f: SettingsFlags): Settings {
   return Object.freeze({
     ...stored,
     quality,
-    seated: f.seated || stored.seated,
+    seated: f.seated ?? stored.seated,
     turnMode: f.turn ?? stored.turnMode,
-    hud: f.hud || stored.hud,
+    hud: f.hud ?? stored.hud,
     calm: f.calm ?? stored.calm,
   });
+}
+
+/** The settings a URL flag decides for this session, each with the flag that locks it. */
+export type SettingsLocks = Readonly<Partial<Record<keyof Settings, string>>>;
+
+/**
+ * The fields `applyUrlFlags` overrides for `f`, mapped to the flag that does it (for the panel's
+ * locked state and its hover help). A locked field is never written back.
+ */
+export function lockedSettings(f: SettingsFlags): SettingsLocks {
+  const locks: Partial<Record<keyof Settings, string>> = {};
+  if (f.beauty) locks.quality = '?beauty';
+  else if (f.hz !== null) locks.quality = `?hz=${f.hz}`;
+  if (f.seated !== null) locks.seated = f.seated ? '?seated' : '?seated=0';
+  if (f.turn !== null) locks.turnMode = `?turn=${f.turn}`;
+  if (f.hud !== null) locks.hud = f.hud ? '?hud' : '?hud=0';
+  if (f.calm !== null) locks.calm = `?calm=${f.calm}`;
+  return Object.freeze(locks);
 }
 
 /** The locomotion fields of `settings`. */

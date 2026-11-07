@@ -25,6 +25,15 @@ export function trackRightController(
   xr: ControllerSpaces,
   parent: Object3D,
 ): () => Object3D | null {
+  return trackController(xr, parent, 'right');
+}
+
+/** As `trackRightController`, for either hand (the settings panel's lasers use both, P5.3). */
+export function trackController(
+  xr: ControllerSpaces,
+  parent: Object3D,
+  hand: 'left' | 'right',
+): () => Object3D | null {
   const spaces: Object3D[] = [];
   const right: boolean[] = [];
   for (let i = 0; i < CONTROLLER_SLOTS; i += 1) {
@@ -33,7 +42,7 @@ export function trackRightController(
     spaces.push(space);
     right.push(false);
     space.addEventListener('connected', (event) => {
-      right[i] = event.data?.handedness === 'right';
+      right[i] = event.data?.handedness === hand;
     });
     space.addEventListener('disconnected', () => {
       right[i] = false;

@@ -71,8 +71,12 @@ export interface GovernorRuntimeDeps {
   /** GPU timing hooks on its `onBeforeRender` and `onAfterRender`, through `scene-hooks.ts`. */
   scene: Scene;
   batch: GovernedBatch;
+  /** Read at each session start and end, so a quality change applies at the next XR entry. */
   mode: GovernorMode;
-  /** The requested target; the budget uses the session's reported rate when it has one. */
+  /**
+   * The requested target; the budget uses the session's reported rate when it has one. Read with
+   * `mode` at each session start and end.
+   */
   targetHz: number;
   /** Shows the 72 Hz notice to the user. */
   notify?: (message: string) => void;
@@ -183,6 +187,8 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     session?.addEventListener('visibilitychange', onVisibility);
     session?.addEventListener('frameratechange', onFrameRate);
     scaler = xr.isPresenting ? installViewportScale(xr) : null;
+    config.mode = deps.mode;
+    config.targetHz = deps.targetHz;
     governor = createGovernor(config);
     requestedHz = deps.targetHz;
     lastTime = null;

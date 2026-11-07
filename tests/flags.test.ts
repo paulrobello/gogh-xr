@@ -12,7 +12,7 @@ test('defaults when search is empty', () => {
     nohalo: false,
     shot: false,
     diag: false,
-    hud: false,
+    hud: null,
     iwer: false,
     bench: null,
     benchMode: 'a2c',
@@ -31,7 +31,7 @@ test('defaults when search is empty', () => {
     bare: false,
     coverage: false,
     painter: false,
-    seated: false,
+    seated: null,
     turn: null,
     zdiag: null,
     scene: null,
@@ -311,4 +311,15 @@ test('?motionphase pins a phase fraction, wrapped to [0, 1); negative or malform
   expect(parseFlags('?motionphase=-0.1').motionphase).toBeNull();
   expect(parseFlags('?motionphase=x').motionphase).toBeNull();
   expect(parseFlags('?motionphase').motionphase).toBeNull();
+});
+
+test('?seated and ?hud are on bare, off with 0 or false, and null when absent', () => {
+  expect([parseFlags('?seated').seated, parseFlags('?hud').hud]).toEqual([true, true]);
+  expect([parseFlags('?seated=1').seated, parseFlags('?hud=1').hud]).toEqual([true, true]);
+  expect([parseFlags('?seated=0').seated, parseFlags('?hud=0').hud]).toEqual([false, false]);
+  expect([parseFlags('?seated=false').seated, parseFlags('?hud=FALSE').hud]).toEqual([
+    false,
+    false,
+  ]);
+  expect([parseFlags('?x').seated, parseFlags('?x').hud]).toEqual([null, null]);
 });

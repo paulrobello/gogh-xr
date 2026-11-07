@@ -24,10 +24,14 @@ import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
 import { pinMotionPhase } from './render/strokes/material';
 import { createZdiag } from './render/zdiag';
-import { applyUrlFlags, loadSettings, toLocomotionSettings } from './settings/schema';
+import { applySettingsChange, type HudLive } from './settings/apply';
+import { loadSettings, type QualityMode, toLocomotionSettings } from './settings/schema';
+import { createSettingsStore } from './settings/store';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
+import { clearPanelPose } from './ui/panel-pose';
+import { createPanelToggle, galleryReturnCallback } from './ui/panel-toggle';
 import { createVignette } from './ui/vignette';
 import { busyWait } from './util/busy-wait';
 import { version } from './version';
@@ -35,7 +39,7 @@ import { createBareScene } from './world/bare-scene';
 import { type Actions, createInput } from './xr/input';
 import { createInputCounter } from './xr/input-counter';
 import { installKeyboardInput } from './xr/input-keyboard';
-import { CONTROLLER_SLOTS, trackRightController } from './xr/right-controller';
+import { CONTROLLER_SLOTS, trackController, trackRightController } from './xr/right-controller';
 import { createSessionController, isVrSupported, resolveTargetFrameRate } from './xr/session';
 
 // Must run before any WebXR code reads navigator.xr. The MODE guard keeps IWER out of production.
@@ -59,9 +63,10 @@ const context = canvas.getContext('webgl2', {
 if (!context) throw new Error('WebGL2 is not available');
 const renderer = new WebGLRenderer({ canvas, context });
 // The stored settings, with each URL flag laid over its field for this session and never written
-// back (P5.2). The P5.3 panel will write the stored ones.
+// back (P5.2). The settings store is the one live copy: the P5.3 panels write it and it saves.
 const { settings: storedSettings, recovered: settingsRecovered } = loadSettings();
-const settings = applyUrlFlags(storedSettings, flags);
+const settingsStore = createSettingsStore({ stored: storedSettings, flags });
+const settings = settingsStore.effective;
 if (settingsRecovered) {
   console.warn(`settings: ${settingsRecovered}; using the defaults`);
 }
@@ -119,9 +124,17 @@ const vignette = runLocomotion ? createVignette(camera) : undefined;
 /** The teleport arc's strokes, built once by `buildArc`. */
 let arcStrokes: ArcMesh | null = null;
 const strokeScene = worldEntry !== null || flags.strokesTest || flags.demo === 'canvas';
+/** The bare scene's own atlas, built on first need and shared by the arc and the settings panel. */
+let bareAtlas: Texture | null = null;
+function strokeAtlas(): Texture {
+  const batchAtlas = reactiveBatch?.atlas;
+  if (batchAtlas) return batchAtlas;
+  bareAtlas ??= createBrushAtlas();
+  return bareAtlas;
+}
 const arc: ArcTarget = {
   show: (aim, eye) => {
-    if (!arcStrokes && !strokeScene) buildArc(createBrushAtlas());
+    if (!arcStrokes && !strokeScene) buildArc(strokeAtlas());
     arcStrokes?.show(aim, eye);
   },
   hide: () => arcStrokes?.hide(),
@@ -137,6 +150,8 @@ const locomotion = createLocomotion({
 });
 /** The XR teleport aim. Its controller slots must exist before a session starts. */
 const rightController = runLocomotion ? trackRightController(renderer.xr, locomotion.rig) : null;
+/** The settings panel's left laser (P5.3); the right one shares the teleport aim's space. */
+const leftController = runLocomotion ? trackController(renderer.xr, locomotion.rig, 'left') : null;
 /**
  * The reactive motion's disturbers (P4.5): the head, then both controller slots' target-ray
  * spaces, which trackRightController parented under the rig. The slots are read only while
@@ -208,15 +223,23 @@ function buildArc(atlas: Texture): void {
 }
 /** `?painter` (fidelity capture): the world's painter camera, applied before the world builds. */
 let painterView: PainterCamera | null = null;
-// Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls.
-const beauty = settings.quality === 'beauty-72' && flags.bench === null;
-const targetFrameRate = resolveTargetFrameRate(flags.hz, beauty);
+// Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls. The quality
+// setting applies at the next XR entry: the session request and the governor's reset at session
+// start read it then (P5.3).
+const isBeauty = (quality: QualityMode): boolean => quality === 'beauty-72' && flags.bench === null;
+/** The rate the next XR entry requests. */
+const nextTargetFrameRate = (): number =>
+  resolveTargetFrameRate(flags.hz, isBeauty(settingsStore.effective.quality));
+/** The quality the current or last XR session started with; the boot's until then. */
+let sessionQuality: QualityMode = settings.quality;
 const session = createSessionController({
   renderer,
   xr: navigator.xr,
   notify: (message) => showNotice(message),
   clearNotices: () => clearNotices(),
-  targetFrameRate,
+  get targetFrameRate() {
+    return nextTargetFrameRate();
+  },
 });
 
 window.addEventListener('resize', () => {
@@ -244,8 +267,12 @@ const strokes = createStrokeBinding({
               renderer,
               scene,
               batch,
-              mode: beauty ? 'beauty' : 'default',
-              targetHz: targetFrameRate,
+              get mode() {
+                return isBeauty(settingsStore.effective.quality) ? 'beauty' : 'default';
+              },
+              get targetHz() {
+                return nextTargetFrameRate();
+              },
               // The DOM notice is invisible in immersive mode, so the HUD carries it there, hidden
               // or not.
               notify: (message) => {
@@ -264,11 +291,94 @@ let actions: Actions | null = null;
 let lastTime = 0;
 /** Draw calls of the last animation frame's render, read right after it (`draw` diag key). */
 let drawCalls = 0;
+/** The world's spawn yaw: recenter turns the view back to it. The bare scene faces -Z. */
+let spawnYaw = 0;
+/**
+ * The HUD's live visibility for the settings panels. Left X and H toggle it for the session only:
+ * the panel's HUD toggle is the one owner of the stored setting.
+ */
+const hudLive: HudLive = {
+  visible: () => hud?.visible ?? false,
+  setVisible: (visible) => hud?.setVisible(visible),
+};
+/**
+ * Recenter (P5.3), from both stick clicks held 1 s, R, or the panel's button: the view turns to the
+ * world's spawn direction about the head, and the panel respawns in front of the head at its usable
+ * scale. The turn counts as a discontinuity, so the reactive wake does not trail it.
+ */
+function recenter(): void {
+  if (!runLocomotion) return;
+  // A mode switch: the trigger or keys that pressed it report nothing until released, so the
+  // panel button's trigger never reaches `select` once the panel resets its hands.
+  input.suppressHeld();
+  locomotion.faceYaw(spawnYaw);
+  panel?.recenter();
+}
+/** The settings panel: XR while presenting, DOM on the desktop. None in the bench. */
+const panel = runLocomotion
+  ? createPanelToggle({
+      locked: settingsStore.locks,
+      clearPose: () => clearPanelPose(),
+      onChange: () => input.suppressHeld(),
+      onError: (error) => console.warn('settings panel failed to start', error),
+      buildXr: async () => {
+        const { createSettingsPanel } = await import('./ui/settings-panel');
+        return createSettingsPanel({
+          rig: locomotion.rig,
+          camera,
+          controller: (hand) => (hand === 'right' ? rightController : leftController)?.() ?? null,
+          store: settingsStore,
+          atlas: strokeAtlas(),
+          recenter,
+          gallery: galleryReturnCallback,
+          sessionQuality: () => sessionQuality,
+          hud: hudLive,
+        });
+      },
+      buildDom: async () => {
+        const { createSettingsDom } = await import('./ui/settings-dom');
+        return createSettingsDom({
+          store: settingsStore,
+          recenter,
+          gallery: galleryReturnCallback,
+          sessionQuality: () => sessionQuality,
+          hud: hudLive,
+          onClose: () => input.suppressHeld(),
+        });
+      },
+    })
+  : null;
+// Live apply (P5.3): every change reaches the code that uses it at once; the store saves later.
+settingsStore.subscribe((effective, key) =>
+  applySettingsChange(effective, key, {
+    setLocomotion: (next) => locomotion.setSettings(next),
+    setCalm: (calm) => motionClock.setCalm(calm),
+    hud: hud ? hudLive : null,
+  }),
+);
+renderer.xr.addEventListener('sessionstart', () => {
+  sessionQuality = settingsStore.effective.quality;
+  panel?.sessionStart();
+});
+// XR exit saves the panel's pose against the last XR head pose, before the desktop look moves it.
+renderer.xr.addEventListener('sessionend', () => panel?.sessionEnd());
 function renderFrame(time: number): void {
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
   lastTime = time;
   const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
   actions = input.read(sources, keyboard, dt);
+  if (panel) {
+    const presenting = renderer.xr.isPresenting;
+    // The desktop toggles on keydown below, so a press between two frames still counts.
+    if (actions.menu && presenting) panel.toggle(true);
+    const held = panel.frame(presenting, actions, time);
+    // A hand the panel holds selects and grips nothing else this frame, and a grabbing hand's stick
+    // turns, pitches, rolls or pushes the panel instead of moving the rig.
+    input.claim(held.left, held.right);
+    input.holdSticks(held.sticks.left, held.sticks.right);
+    // The guide's recovery: not while a grip holds anything.
+    if (actions.recenter && !actions.grip.down && !held.left && !held.right) recenter();
+  }
   if (flags.slow > 0) busyWait(flags.slow);
   if (pinnedMotionTime === null) motionClock.frame(time);
   strokes.frame(time);
@@ -302,7 +412,10 @@ if (flags.diag) {
       quaternion: { toArray: () => decomposeView().quaternion.toArray() },
     },
     getXrState: () => session.state,
-    targetFrameRate,
+    // The rate the next XR entry requests: the quality setting applies then.
+    get targetFrameRate() {
+      return nextTargetFrameRate();
+    },
   });
   const counter = createInputCounter(renderer.xr);
   registerDiag('input', () => ({
@@ -313,10 +426,13 @@ if (flags.diag) {
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
   registerDiag('motion', () => motionClock.diag());
   registerDiag('settings', () => ({
-    stored: storedSettings,
-    effective: settings,
+    stored: settingsStore.stored,
+    effective: settingsStore.effective,
     recovered: settingsRecovered,
+    saves: settingsStore.saves,
+    pending: settingsStore.pending,
   }));
+  if (panel) registerDiag('panel', () => panel.diag());
   if (runLocomotion) {
     registerDiag('rig', () => locomotion.diag());
     registerDiag('reactive', () => ({
@@ -348,7 +464,12 @@ if (flags.bench === null) {
         camera,
         scene,
         xr: renderer.xr,
-        targetHz: targetFrameRate,
+        get targetHz() {
+          return resolveTargetFrameRate(
+            flags.hz,
+            isBeauty(renderer.xr.isPresenting ? sessionQuality : settingsStore.effective.quality),
+          );
+        },
         getGovernor: () => strokes.governorDiag(),
         getVisible: () => strokes.visibleCount(),
         getVisibleChunks: () => strokes.visibleChunkCount(),
@@ -362,6 +483,12 @@ if (flags.bench === null) {
     if (isHudToggleKey(event)) toggle.toggle();
   });
 }
+// M toggles the desktop DOM panel once per physical press (P5.3); in XR the `menu` action does.
+window.addEventListener('keydown', (event) => {
+  if (panel && event.code === 'KeyM' && !event.repeat && !renderer.xr.isPresenting) {
+    panel.toggle(false);
+  }
+});
 
 /** With two stroke scenes at once, the first batch to load is the one bound. */
 function governStrokes(batch: StrokeBatch): Promise<void> {
@@ -407,6 +534,7 @@ if (worldEntry) {
         applyPainterCamera(camera, locomotion.setPose, painterView);
       } else {
         const { position, yaw } = module.spawnPose();
+        spawnYaw = yaw;
         locomotion.spawn(position[0], position[1], position[2], yaw);
       }
       const handle = await module.build({

@@ -304,16 +304,19 @@ describe('createInput: buttons', () => {
     expect(read().flightToggle).toBe(true);
   });
 
-  it('does not map left X, left Y or right A', () => {
+  it('does not map left X or left Y; right A is menu (P5.3)', () => {
     const { xr, read } = setup();
     xr.button('left', 4, true);
     xr.button('left', 5, true);
-    xr.button('right', 4, true);
-    const a = read();
+    let a = read();
     expect(a.flightToggle).toBe(false);
     expect(a.menu).toBe(false);
     expect(a.select.down).toBe(false);
     expect(a.grip.down).toBe(false);
+    xr.button('right', XR_BUTTON.A, true);
+    a = read();
+    expect(a.menu).toBe(true);
+    expect(a.flightToggle).toBe(false);
   });
 
   it('edge-detects menu on the left controller button index 6', () => {

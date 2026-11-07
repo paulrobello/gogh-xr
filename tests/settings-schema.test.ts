@@ -9,6 +9,7 @@ import {
   applyUrlFlags,
   DEFAULT_SETTINGS,
   loadSettings,
+  lockedSettings,
   parseSettings,
   SETTINGS_KEY,
   type Settings,
@@ -30,9 +31,9 @@ function memoryStorage(initial?: string): SettingsStorage & { text: string | nul
 const noFlags: SettingsFlags = {
   beauty: false,
   hz: null,
-  seated: false,
+  seated: null,
   turn: null,
-  hud: false,
+  hud: null,
   calm: null,
 };
 
@@ -241,4 +242,30 @@ test('URL flags override the stored value field by field and the stored object i
     'smooth',
     0.8,
   ]);
+});
+
+test('?seated=0 and ?hud=0 turn a stored true off; bare flags turn it on; absent keeps it', () => {
+  const on: Settings = { ...DEFAULT_SETTINGS, seated: true, hud: true };
+  const off = applyUrlFlags(on, { ...noFlags, seated: false, hud: false });
+  expect([off.seated, off.hud]).toEqual([false, false]);
+  const bare = applyUrlFlags(DEFAULT_SETTINGS, { ...noFlags, seated: true, hud: true });
+  expect([bare.seated, bare.hud]).toEqual([true, true]);
+  const kept = applyUrlFlags(on, noFlags);
+  expect([kept.seated, kept.hud]).toEqual([true, true]);
+  // The stored object is never touched.
+  expect([on.seated, on.hud]).toEqual([true, true]);
+});
+
+test('the lock map names the flag that decides each overridden field', () => {
+  expect(lockedSettings(noFlags)).toEqual({});
+  expect(
+    lockedSettings({ beauty: true, hz: 120, seated: false, turn: 'smooth', hud: true, calm: 0.5 }),
+  ).toEqual({
+    quality: '?beauty',
+    seated: '?seated=0',
+    turnMode: '?turn=smooth',
+    hud: '?hud',
+    calm: '?calm=0.5',
+  });
+  expect(lockedSettings({ ...noFlags, hz: 90 })).toEqual({ quality: '?hz=90' });
 });

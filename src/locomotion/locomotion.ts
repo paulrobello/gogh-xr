@@ -37,7 +37,7 @@ import {
   teleportRig,
   traceArc,
 } from './teleport';
-import { type TurnInput, turn } from './turn';
+import { type TurnInput, turn, turnAboutHead } from './turn';
 import { clampToWalkBounds, type WalkBounds } from './walk-bounds';
 
 /** The part of a P3.1 `Actions` frame locomotion reads. */
@@ -158,6 +158,16 @@ export interface Locomotion {
   /** Recaptures the seated offset from the current XR head height. A no-op outside XR. */
   calibrate(): void;
   /**
+   * Live settings (the P5.3 panel). A change to `seated` or `standingHeight` recalibrates the
+   * seated offset on the next XR frame with a head pose.
+   */
+  setSettings(next: LocomotionSettings): void;
+  /**
+   * Recenter (P5.3): turns the rig about the head so the view's yaw, rig yaw plus head yaw, is
+   * `yaw` (a world's spawn direction), and counts a discontinuity. The head stays where it is.
+   */
+  faceYaw(yaw: number): void;
+  /**
    * Counts discontinuous rig and view moves: a teleport jump, a snap turn, `spawn`, `setPose`, and
    * each `markDiscontinuity` (main.ts calls it on an XR reference-space reset, the system
    * recenter). The reactive tracker restarts its wakes when it changes (P4.5).
@@ -191,7 +201,8 @@ const NO_TURN: TurnInput = Object.freeze({ turn: Object.freeze({ x: 0, snap: 0 a
 const LEVEL: Vec3 = Object.freeze([0, 1, 0]) as Vec3;
 
 export function createLocomotion(deps: LocomotionDeps): Locomotion {
-  const { scene, camera, look, settings, vignette, arc } = deps;
+  const { scene, camera, look, vignette, arc } = deps;
+  let settings = deps.settings;
   const now = deps.now ?? (() => performance.now());
   const rig = new Group();
   rig.name = 'rig';
@@ -458,6 +469,18 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     },
     discontinuities: () => discontinuities,
     markDiscontinuity() {
+      discontinuities += 1;
+    },
+    setSettings(next) {
+      if (next.seated !== settings.seated || next.standingHeight !== settings.standingHeight) {
+        calibrated = false;
+      }
+      settings = next;
+    },
+    faceYaw(yaw) {
+      readHead();
+      turnAboutHead(state, head, yaw - (state.yaw + head.yaw));
+      writeRig();
       discontinuities += 1;
     },
     calibrate() {

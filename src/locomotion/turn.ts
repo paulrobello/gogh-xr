@@ -26,7 +26,7 @@ export interface TurnInput {
 }
 
 /** Turns the rig by `delta` radians about the head's world XZ. */
-function turnAboutHead(state: LocomotionState, head: HeadPose, delta: number): void {
+export function turnAboutHead(state: LocomotionState, head: HeadPose, delta: number): void {
   const position = state.position;
   // The head's world XZ, as step.ts computes it for ground follow.
   let sin = Math.sin(state.yaw);

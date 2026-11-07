@@ -23,6 +23,12 @@ declare module 'troika-three-text' {
     dispose(): void;
   }
 
+  /** Renders every `Text` it holds in one draw call (troika 0.52, WebGL2). Members are not children. */
+  export class BatchedText extends Text {
+    addText(text: Text): void;
+    removeText(text: Text): void;
+  }
+
   export function configureTextBuilder(config: {
     defaultFontURL?: string;
     useWorker?: boolean;

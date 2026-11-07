@@ -31,7 +31,8 @@ export interface Flags {
   /** Enables `__goghShot()` in diag mode; carries no value. */
   readonly shot: boolean;
   readonly diag: boolean;
-  readonly hud: boolean;
+  /** `?hud` (or `?hud=1`) is true, `?hud=0` or `?hud=false` is false, absent is null. */
+  readonly hud: boolean | null;
   readonly iwer: boolean;
   readonly bench: string | null;
   readonly benchMode: BenchMode;
@@ -64,8 +65,11 @@ export interface Flags {
   readonly coverage: boolean;
   /** `?painter`, with `?diag` and a world only: the desktop camera becomes the painter camera. */
   readonly painter: boolean;
-  /** `?seated`: seated mode, calibrated from the head height on the first XR frame. */
-  readonly seated: boolean;
+  /**
+   * `?seated`: seated mode, calibrated from the head height on the first XR frame. Like `?hud`,
+   * `?seated=0` is false, which turns a stored true off, and absent is null.
+   */
+  readonly seated: boolean | null;
   /** `?turn=snap|smooth`: the turn mode. null means the settings default (snap). */
   readonly turn: TurnMode | null;
   /** `?zdiag=<mode>`: a stroke depth and filtering diagnostic (src/render/zdiag.ts). null is off. */
@@ -114,6 +118,11 @@ function parseBool(params: URLSearchParams, key: string): boolean {
   if (!params.has(key)) return false;
   const value = params.get(key)?.trim().toLowerCase();
   return value !== '0' && value !== 'false';
+}
+
+/** A boolean that can also say off: null when absent. */
+function parseOnOff(params: URLSearchParams, key: string): boolean | null {
+  return params.has(key) ? parseBool(params, key) : null;
 }
 
 function parseBenchMode(raw: string | null): BenchMode {
@@ -210,7 +219,7 @@ export function parseFlags(search: string): Flags {
     nohalo: parseBool(params, 'nohalo'),
     shot: parseBool(params, 'shot'),
     diag: parseBool(params, 'diag'),
-    hud: parseBool(params, 'hud'),
+    hud: parseOnOff(params, 'hud'),
     iwer: parseBool(params, 'iwer'),
     bench: bench ? bench : null,
     benchMode: parseBenchMode(params.get('mode')),
@@ -229,7 +238,7 @@ export function parseFlags(search: string): Flags {
     bare: parseBool(params, 'bare'),
     coverage: parseBool(params, 'coverage'),
     painter: parseBool(params, 'painter'),
-    seated: parseBool(params, 'seated'),
+    seated: parseOnOff(params, 'seated'),
     turn: parseTurn(params.get('turn')),
     zdiag: parseZdiag(params.get('zdiag')),
     scene: parseScene(params.get('scene')),

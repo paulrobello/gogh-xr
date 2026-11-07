@@ -3,8 +3,9 @@
  * animation frame. Pure: the caller passes the XR input sources (structurally typed, so tests can
  * fake them) and a keyboard/mouse snapshot (`input-keyboard.ts` captures it from the DOM).
  *
- * Not mapped here, by design (P3 ruling Q1): left X (perf HUD), left Y (XR frame-rate step),
- * right A (bench), and the desktop H key (HUD). Those keep their own handlers.
+ * Not mapped here, by design (P3 ruling Q1): left X (perf HUD), left Y (the bench's frame-rate
+ * step), and the desktop H key (HUD). Those keep their own handlers. Right A joins `menu` (P5.3):
+ * outside the bench it was free, and the bench, which steps foveation on it, never runs the panel.
  *
  * Ray convention for later ray helpers (vault Patterns/mux-xr-quest-interaction-patterns.md):
  * three's `Object3D.lookAt` on a Group points its +Z at the target, while a controller's
@@ -16,7 +17,7 @@ export const XR_BUTTON = {
   TRIGGER: 0,
   SQUEEZE: 1,
   THUMBSTICK: 3,
-  /** A on the right controller, X on the left. Not mapped (Q1). */
+  /** A on the right controller (`menu`, P5.3), X on the left (not mapped, Q1). */
   A: 4,
   /** B on the right controller, Y on the left. Right B toggles flight. */
   B: 5,
@@ -68,6 +69,8 @@ export interface KeyboardState {
   readonly mouseButtons: ReadonlySet<number>;
 }
 
+export type Hand = 'left' | 'right';
+
 export interface ButtonAction {
   /** Level: held this frame. */
   down: boolean;
@@ -110,12 +113,27 @@ export interface Actions {
    * reported; locomotion uses it only while flying.
    */
   vertical: number;
-  /** Edge: left button index 6 (`MENU_BUTTON`) or M pressed. */
+  /**
+   * Edge: left button index 6 (`MENU_BUTTON`), right A or M pressed. Right A is the panel's second
+   * XR open gesture (P5.3), since Quest's menu button is unverified and index 6 is a thumbrest in
+   * IWER.
+   */
   menu: boolean;
-  /** Either trigger, or the left mouse button on desktop. */
+  /**
+   * Either trigger, or the left mouse button on desktop. A hand the settings panel holds
+   * (`claim`) is left out, so a trigger on the panel selects nothing else.
+   */
   select: ButtonAction;
-  /** Either grip (squeeze), or the right mouse button on desktop. */
+  /** Either grip (squeeze), or the right mouse button on desktop. A claimed hand is left out. */
   grip: ButtonAction;
+  /**
+   * Each controller's own trigger and grip, after suppression and before any claim, and its stick
+   * after the radial deadzone (x right, y forward), before `holdSticks`.
+   */
+  hands: Record<
+    Hand,
+    { trigger: ButtonAction; grip: ButtonAction; stick: { x: number; y: number } }
+  >;
   /** Edge: once, when both stick clicks (or R) have been held for 1 s. */
   recenter: boolean;
 }
@@ -133,6 +151,18 @@ export interface Input {
    * edge) until released once. The continuous axes (move, turn, vertical) are not affected.
    */
   suppressHeld(): void;
+  /**
+   * Call after `read`, each frame the settings panel holds a hand's trigger or grip: recomputes
+   * this frame's `select` and `grip` without the claimed hands, so nothing else acts on them.
+   */
+  claim(left: boolean, right: boolean): void;
+  /**
+   * Call after `read`, each frame the settings panel grabs with a hand: that hand's stick drives
+   * the panel, so it stops feeding move (left) or turn, vertical and teleport aim (right). A held
+   * stick aim is dropped without a commit. The stick stays out until it is back inside the
+   * deadzone after the last held frame, so letting go mid-push starts nothing. `hands` keeps it.
+   */
+  holdSticks(left: boolean, right: boolean): void;
 }
 
 /** Applies the radial deadzone in place on `out`, rescaled to start at 0 and capped at 1. */
@@ -181,7 +211,8 @@ const KEY_M = 9;
 const KEY_R = 10;
 const MOUSE_L = 11;
 const MOUSE_R = 12;
-const SLOTS = 13;
+const R_A = 13;
+const SLOTS = 14;
 
 type Pad = NonNullable<InputSourceLike['gamepad']>;
 
@@ -216,11 +247,32 @@ export function createInput(): Input {
     menu: false,
     select: { down: false, fired: false },
     grip: { down: false, fired: false },
+    hands: {
+      left: {
+        trigger: { down: false, fired: false },
+        grip: { down: false, fired: false },
+        stick: { x: 0, y: 0 },
+      },
+      right: {
+        trigger: { down: false, fired: false },
+        grip: { down: false, fired: false },
+        stick: { x: 0, y: 0 },
+      },
+    },
     recenter: false,
   };
+  /** `select.down` and `grip.down` as last reported, before this frame's read. */
+  let selectWas = false;
+  let gripWas = false;
   const raw: boolean[] = new Array<boolean>(SLOTS).fill(false);
   const suppressed: boolean[] = new Array<boolean>(SLOTS).fill(false);
   const right = { x: 0, y: 0 };
+  /** Sticks the panel holds (`holdSticks`), out of locomotion until centred. */
+  const stickHeld: Record<Hand, boolean> = { left: false, right: false };
+  /** This frame's keyboard parts of move, turn and vertical, for `holdSticks`. */
+  const keyMove = { x: 0, y: 0 };
+  let keyTurnNow = 0;
+  let keyVerticalNow = 0;
   let snapArmed = true;
   let stickAim = false;
   let aimRaw = false;
@@ -253,6 +305,7 @@ export function createInput(): Input {
       raw[L_GRIP] = pressed(left, XR_BUTTON.SQUEEZE);
       raw[R_GRIP] = pressed(rightPad, XR_BUTTON.SQUEEZE);
       raw[R_B] = pressed(rightPad, XR_BUTTON.B);
+      raw[R_A] = pressed(rightPad, XR_BUTTON.A);
       raw[L_MENU] = pressed(left, MENU_BUTTON);
       raw[L_STICK] = pressed(left, XR_BUTTON.THUMBSTICK);
       raw[R_STICK] = pressed(rightPad, XR_BUTTON.THUMBSTICK);
@@ -267,21 +320,34 @@ export function createInput(): Input {
       }
 
       // Move: left stick (forward is -axes[3]) plus WASD, capped at 1.
+      const leftStick = actions.hands.left.stick;
+      deadzoneInto(leftStick, left?.axes[AXIS_X] ?? 0, -(left?.axes[AXIS_Y] ?? 0));
+      if (stickHeld.left && leftStick.x === 0 && leftStick.y === 0) stickHeld.left = false;
       const move = actions.move;
-      deadzoneInto(move, left?.axes[AXIS_X] ?? 0, -(left?.axes[AXIS_Y] ?? 0));
+      move.x = stickHeld.left ? 0 : leftStick.x;
+      move.y = stickHeld.left ? 0 : leftStick.y;
       const keyX = key(keyboard, 'KeyD') - key(keyboard, 'KeyA');
       const keyY = key(keyboard, 'KeyW') - key(keyboard, 'KeyS');
+      keyMove.x = 0;
+      keyMove.y = 0;
       if (keyX !== 0 || keyY !== 0) {
         const length = Math.hypot(keyX, keyY);
-        move.x += keyX / length;
-        move.y += keyY / length;
+        keyMove.x = keyX / length;
+        keyMove.y = keyY / length;
+        move.x += keyMove.x;
+        move.y += keyMove.y;
         capInto(move);
       }
       actions.sprint = keyboard.keys.has('ShiftLeft') || keyboard.keys.has('ShiftRight');
 
       // Turn and vertical: the right stick, forward/up positive, plus Q/E and Space/C.
-      deadzoneInto(right, rightPad?.axes[AXIS_X] ?? 0, -(rightPad?.axes[AXIS_Y] ?? 0));
+      const rightStick = actions.hands.right.stick;
+      deadzoneInto(rightStick, rightPad?.axes[AXIS_X] ?? 0, -(rightPad?.axes[AXIS_Y] ?? 0));
+      if (stickHeld.right && rightStick.x === 0 && rightStick.y === 0) stickHeld.right = false;
+      right.x = stickHeld.right ? 0 : rightStick.x;
+      right.y = stickHeld.right ? 0 : rightStick.y;
       const keyTurn = key(keyboard, 'KeyE') - key(keyboard, 'KeyQ');
+      keyTurnNow = keyTurn;
       const turnX = clamp1(right.x + keyTurn);
       actions.turn.x = turnX;
       actions.turn.snap = 0;
@@ -294,7 +360,8 @@ export function createInput(): Input {
         // The deadzoned vector is zero only inside the radial deadzone.
         snapArmed = true;
       }
-      actions.vertical = clamp1(right.y + key(keyboard, 'Space') - key(keyboard, 'KeyC'));
+      keyVerticalNow = key(keyboard, 'Space') - key(keyboard, 'KeyC');
+      actions.vertical = clamp1(right.y + keyVerticalNow);
 
       // Teleport: aim with hysteresis on the stick, or T; commit when the aim ends.
       if (!stickAim && right.y >= TELEPORT_AIM_THRESHOLD && right.y > Math.abs(right.x)) {
@@ -312,12 +379,18 @@ export function createInput(): Input {
       actions.flightToggle = flight && !flightDown;
       flightDown = flight;
 
-      const menu = level(L_MENU) || level(KEY_M);
+      const menu = level(L_MENU) || level(R_A) || level(KEY_M);
       actions.menu = menu && !menuDown;
       menuDown = menu;
 
+      selectWas = actions.select.down;
+      gripWas = actions.grip.down;
       button(actions.select, level(L_TRIGGER) || level(R_TRIGGER) || level(MOUSE_L));
       button(actions.grip, level(L_GRIP) || level(R_GRIP) || level(MOUSE_R));
+      button(actions.hands.left.trigger, level(L_TRIGGER));
+      button(actions.hands.left.grip, level(L_GRIP));
+      button(actions.hands.right.trigger, level(R_TRIGGER));
+      button(actions.hands.right.grip, level(R_GRIP));
 
       actions.recenter = false;
       if ((level(L_STICK) && level(R_STICK)) || level(KEY_R)) {
@@ -335,6 +408,35 @@ export function createInput(): Input {
       }
 
       return actions;
+    },
+    claim(left, right) {
+      if (!left && !right) return;
+      const select = (!left && level(L_TRIGGER)) || (!right && level(R_TRIGGER)) || level(MOUSE_L);
+      const grip = (!left && level(L_GRIP)) || (!right && level(R_GRIP)) || level(MOUSE_R);
+      actions.select.down = select;
+      actions.select.fired = select && !selectWas;
+      actions.grip.down = grip;
+      actions.grip.fired = grip && !gripWas;
+    },
+    holdSticks(left, right) {
+      // A newly held stick also leaves this frame's actions; later frames read it as centred.
+      if (left && !stickHeld.left) {
+        stickHeld.left = true;
+        actions.move.x = keyMove.x;
+        actions.move.y = keyMove.y;
+      }
+      if (right && !stickHeld.right) {
+        stickHeld.right = true;
+        actions.turn.x = clamp1(keyTurnNow);
+        if (keyTurnNow === 0) actions.turn.snap = 0;
+        actions.vertical = clamp1(keyVerticalNow);
+        if (stickAim) {
+          stickAim = false;
+          aimDown = false;
+          actions.teleportAim = false;
+          actions.teleportCommit = false;
+        }
+      }
     },
     suppressHeld() {
       for (let slot = 0; slot < SLOTS; slot += 1) {
