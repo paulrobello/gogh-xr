@@ -16,6 +16,7 @@ import {
 } from 'three';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { loadRealSource } from '../scripts/scatter-time.ts';
+import { REGION } from '../src/demo/canvas/field.ts';
 import {
   BARE_COLOR,
   createBaseMeshes,
@@ -27,7 +28,11 @@ import {
   projectToCanvas,
   type Vec2,
 } from '../src/paintings/starry-night/canvas-camera.ts';
-import type { CanvasHistogram } from '../src/paintings/starry-night/canvas-histogram.ts';
+import {
+  ANGLE_BINS,
+  type CanvasHistogram,
+  COLOR_BITS,
+} from '../src/paintings/starry-night/canvas-histogram.ts';
 import { painterSpot, spawnPose } from '../src/paintings/starry-night/index.ts';
 import {
   createWorldGeometry,
@@ -75,6 +80,7 @@ import {
   WORLD_LAYERS,
 } from '../src/render/strokes/scatter.ts';
 import { hashStrokeBuffers } from '../src/render/strokes/scatter-cache.ts';
+import { deltaE2000, srgb8ToLab } from '../src/util/cielab.ts';
 import { boundaryFactor } from '../src/world/boundary.ts';
 import { CYPRESS_OUTLINE } from '../src/world/cypress.ts';
 import { WINDOW_COLOR } from '../src/world/village.ts';
@@ -503,7 +509,7 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
         ground: 129_925,
         building: 87_369,
       },
-      hash: '5b9be613',
+      hash: '696165d1',
       haze: 30_000,
       hazeHash: '49bf0339',
     });
@@ -693,4 +699,30 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       expect(n, name).toBeGreaterThan(0);
     }
   });
+});
+
+test('the real cypress histogram keeps no colour nearer the hill or sky centre than its own', () => {
+  const { regions, centres } = SOURCE.histogram;
+  const h = regions[REGION.cypress];
+  const own = centres[REGION.cypress];
+  const hills = centres[REGION.hills];
+  const sky = centres[REGION.sky];
+  if (!own || !hills || !sky) throw new Error('the scan shows the cypress, the hills and the sky');
+  const all = h.angleCdf[ANGLE_BINS - 1];
+  // regions.json's polygon takes in about 11% sky and hill paint; the check drops it.
+  expect(h.count).toBeLessThan(0.95 * all);
+  expect(h.count).toBeGreaterThan(0.8 * all);
+  const step = 256 >> COLOR_BITS;
+  const mask = (1 << COLOR_BITS) - 1;
+  const outside: number[] = [];
+  for (const key of h.colorBins) {
+    const lab = srgb8ToLab(
+      (key >> (2 * COLOR_BITS)) * step + step / 2,
+      ((key >> COLOR_BITS) & mask) * step + step / 2,
+      (key & mask) * step + step / 2,
+    );
+    const d = deltaE2000(lab, own);
+    if (!(d < deltaE2000(lab, hills) && d < deltaE2000(lab, sky))) outside.push(key);
+  }
+  expect(outside).toEqual([]);
 });

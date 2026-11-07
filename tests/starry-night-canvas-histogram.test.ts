@@ -1,3 +1,4 @@
+import { BufferGeometry, Float32BufferAttribute } from 'three';
 import { expect, test } from 'vitest';
 import {
   type FlowField,
@@ -14,10 +15,13 @@ import {
   buildCanvasHistogram,
   type CanvasSource,
   COLOR_BITS,
+  REGION_PALETTE_RIVALS,
   sampleCanvas,
   sampleRegionHistogram,
 } from '../src/paintings/starry-night/canvas-histogram.ts';
 import type { Vec3 } from '../src/render/strokes/frame.ts';
+import { unpackInstance } from '../src/render/strokes/instance.ts';
+import { scatterSurfaces } from '../src/render/strokes/scatter.ts';
 import { mulberry32 } from '../src/util/prng.ts';
 
 type Rgb = readonly [number, number, number];
@@ -230,6 +234,109 @@ test('the histogram skips mat texels, so extrapolated samples never return the m
       expect(s.extrapolated).toBe(true);
       expect(s.rgb).not.toEqual(binned(MAT));
       expect(s.rgb[1]).toBe(binned([0, 120, 0])[1]);
+    }
+  }
+});
+
+/**
+ * A 16 × 16 frame and region map for the cypress palette check: sky above, the cypress (dark
+ * green) bottom-left and the hills bottom-right, with a block of sky paint inside the cypress
+ * region (columns 2–5, rows 10–13), as where regions.json's polygon overreaches the painted tree.
+ */
+const DARK: Rgb = [20, 40, 25];
+const SKY_PAINT: Rgb = [60, 90, 200];
+const HILL_PAINT: Rgb = [50, 60, 140];
+const inBlock = (x: number, y: number): boolean => x >= 2 && x <= 5 && y >= 10 && y <= 13;
+const CYP_IMAGE = raster(16, 16, (x, y) =>
+  y < 8 ? SKY_PAINT : x >= 8 ? HILL_PAINT : inBlock(x, y) ? SKY_PAINT : DARK,
+);
+const CYP_REGIONS = raster(16, 16, (x, y) => [
+  y < 8 ? REGION.sky : x >= 8 ? REGION.hills : REGION.cypress,
+  0,
+  0,
+]);
+const CYP_FLOW: FlowField = {
+  width: 1,
+  height: 1,
+  angle: new Float32Array([0.5]),
+  coherence: new Float32Array([1]),
+};
+const CYP_SOURCE: CanvasSource = {
+  image: CYP_IMAGE,
+  regions: CYP_REGIONS,
+  flow: CYP_FLOW,
+  histogram: buildCanvasHistogram(CYP_IMAGE, CYP_REGIONS, CYP_FLOW),
+};
+
+test('the cypress histogram drops the sky and hill paint inside its region, not its flow', () => {
+  expect(REGION_PALETTE_RIVALS[REGION.cypress]).toEqual([REGION.hills, REGION.sky]);
+  const h = CYP_SOURCE.histogram.regions[REGION.cypress];
+  expect(h.count).toBe(64 - 16);
+  expect([...h.colorBins].length).toBe(1);
+  expect(h.angleCdf[ANGLE_BINS - 1]).toBe(64);
+  const rng = mulberry32(5);
+  for (let i = 0; i < 200; i++) {
+    expect(sampleRegionHistogram(CYP_SOURCE.histogram, REGION.cypress, rng).rgb).toEqual(
+      binned(DARK),
+    );
+  }
+  // Regions without rivals keep every colour.
+  expect(CYP_SOURCE.histogram.regions[REGION.sky].count).toBe(128);
+});
+
+test('a cypress point on sky paint takes the histogram; on its own paint it reads the canvas', () => {
+  const rng = mulberry32(13);
+  const onSky = sampleCanvas(CYP_SOURCE, pointAt(0.25, 0.25), 'cypress', rng);
+  expect(onSky.extrapolated).toBe(true);
+  expect(onSky.rgb).toEqual(binned(DARK));
+  const onTree = sampleCanvas(CYP_SOURCE, pointAt(0.42, 0.4), 'cypress', rng);
+  expect(onTree.extrapolated).toBe(false);
+  expect(onTree.rgb.map(Math.round)).toEqual([...DARK]);
+  // Other layers are not checked: terrain on hill paint reads it directly.
+  expect(sampleCanvas(CYP_SOURCE, pointAt(0.75, 0.25), 'terrain', rng).extrapolated).toBe(false);
+});
+
+test('cypress strokes on sky paint take the histogram whichever way their face turns', () => {
+  const corners = [pointAt(0.17, 0.17), pointAt(0.33, 0.17), pointAt(0.25, 0.33)];
+  const eyeward = (g: BufferGeometry): number => {
+    const p = g.getAttribute('position');
+    const at = (i: number): Vec3 => [p.getX(i), p.getY(i), p.getZ(i)];
+    const [a, b, c] = [at(0), at(1), at(2)];
+    const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const n = [
+      ab[1] * ac[2] - ab[2] * ac[1],
+      ab[2] * ac[0] - ab[0] * ac[2],
+      ab[0] * ac[1] - ab[1] * ac[0],
+    ];
+    return (
+      n[0] * (PAINTER_EYE[0] - a[0]) +
+      n[1] * (PAINTER_EYE[1] - a[1]) +
+      n[2] * (PAINTER_EYE[2] - a[2])
+    );
+  };
+  const triangle = (order: readonly number[]): BufferGeometry => {
+    const g = new BufferGeometry();
+    g.setAttribute(
+      'position',
+      new Float32BufferAttribute(
+        order.flatMap((i) => [...corners[i]]),
+        3,
+      ),
+    );
+    g.userData.layer = 'cypress';
+    return g;
+  };
+  const front = triangle([0, 1, 2]);
+  const back = triangle([0, 2, 1]);
+  expect(Math.sign(eyeward(front))).toBe(-Math.sign(eyeward(back)));
+  for (const g of [front, back]) {
+    const buffers = scatterSurfaces([g], CYP_SOURCE, { seed: 1 });
+    expect(buffers.count).toBeGreaterThan(50);
+    for (let i = 0; i < buffers.count; i++) {
+      // The stored colour is the paint over the stroke shade (0.85–1.15): sky paint keeps blue
+      // above 170, the cypress paint below 40.
+      expect(unpackInstance(buffers, i).color[2]).toBeLessThan(40);
     }
   }
 });
