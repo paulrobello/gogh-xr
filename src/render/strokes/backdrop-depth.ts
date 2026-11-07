@@ -9,6 +9,11 @@
  * in stroke.vert.glsl, so its quad is flat in depth at `backdropNdc(rank)`, just in front of the far
  * plane. The rank is the top bits of the stroke's position hash, so two overlapping dome strokes
  * keep one order whatever the eye does, and every dome stroke sits behind the rest of the world.
+ * About 284k dome strokes share the 1024 ranks, about 277 per rank. Two overlapping strokes of the
+ * same rank sit at the same NDC z, and the GPU's rounding of `w × ndc` and the divide by w can
+ * still flip them under head motion. This residual is inherent to the scheme: at 4-step spacing
+ * about 2060 ranks fit between the far plane and the 169 m world reach (near 0.1, far 1000), and
+ * the front tier takes 256 of them, so the dome tier cannot double to 2048.
  * `w × ndc` keeps perspective-correct varyings, and behind the eye both clip planes reduce to
  * w ≥ 0, so clipping stays correct. The dome has no base mesh: the clear colour is its under-paint
  * (src/paintings/starry-night/base-meshes.ts).
@@ -17,7 +22,11 @@
  * get the 'front' tier: the next BACKDROP_FRONT_RANKS ranks, all nearer than every dome rank and
  * still behind the world (tests/strokes-backdrop-depth.test.ts checks the budget). Today the shader
  * puts every flagged stroke in the dome tier. When those layers land, their scatter sets
- * DEPTH_BACKDROP_FLAG and the shader offsets a star or moon stroke's rank by BACKDROP_DOME_RANKS.
+ * DEPTH_BACKDROP_FLAG, and the shader takes a star or moon stroke's rank from the top 8 bits of the
+ * hash (`h >> 24`, log2 BACKDROP_FRONT_RANKS bits) and then offsets it by BACKDROP_DOME_RANKS. The
+ * dome's 10-bit rank plus that offset would reach index 2047. That rank still sits behind the
+ * 168.7 m world reach the budget test asserts, at about 169.8 m, but ranks 1280-2047 fall outside
+ * the 256-rank front tier the test checks, and the real margin shrinks from about 78 m to about 1 m.
  */
 import { NDC_DEPTH_STEP } from './depth-tie-break';
 

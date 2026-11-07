@@ -23,6 +23,7 @@ import {
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import { BRUSHES } from '../src/render/strokes/brush-atlas-data.ts';
 import { DEPTH_TIE_BREAK_FRONT_FLAG } from '../src/render/strokes/depth-tie-break.ts';
+import { BRUSH_FOOTPRINT } from '../src/render/strokes/face-clamp.ts';
 import { strokeAxes, type Vec3 } from '../src/render/strokes/frame.ts';
 import {
   STROKE_LAYER,
@@ -30,9 +31,11 @@ import {
   unpackInstance,
 } from '../src/render/strokes/instance.ts';
 import {
+  FACE_CLAMPED_LAYERS,
   type GradedSize,
   LAYER_DENSITY,
   LAYER_SIZE,
+  OUTLINE_DARKEN,
   SCATTER_SIZE_JITTER,
   scatterDensityAt,
   scatterOverrides,
@@ -339,15 +342,29 @@ test('brush, stroke layer and size follow the layer region style', () => {
     const buffers = scatterSurfaces([mesh], MIXED, { seed: 1, density, size });
     expect(buffers.count).toBeGreaterThan(300);
     const style = REGION_STYLES[LAYER_REGION[layer]];
+    // A face-clamped stroke by the wall's edge may come out shorter or narrower (face-clamp.ts),
+    // never longer or wider; one away from the edges is whole.
+    const clamped = FACE_CLAMPED_LAYERS.includes(layer);
+    const base = size[layer].near;
+    let whole = 0;
     for (let i = 0; i < buffers.count; i++) {
       const s = unpackInstance(buffers, i);
       expect(s.layer).toBe(expectedLayer[layer]);
       expect(style.brushes).toContain(s.brush);
-      const base = size[layer].near;
-      expect(s.size[0]).toBeGreaterThanOrEqual(base * (1 - SCATTER_SIZE_JITTER) - 1e-6);
+      const aspect = BRUSHES[s.brush].aspect;
       expect(s.size[0]).toBeLessThanOrEqual(base * (1 + SCATTER_SIZE_JITTER) + 1e-6);
-      expect(s.size[1]).toBeCloseTo(s.size[0] * BRUSHES[s.brush].aspect, 5);
+      const isWhole =
+        s.size[0] >= base * (1 - SCATTER_SIZE_JITTER) - 1e-6 &&
+        Math.abs(s.size[1] - s.size[0] * aspect) < 1e-5;
+      if (isWhole) whole++;
+      if (clamped) {
+        const foot = BRUSH_FOOTPRINT[BRUSHES[s.brush].kind];
+        expect(s.size[1]).toBeLessThanOrEqual(base * (1 + SCATTER_SIZE_JITTER) * aspect + 1e-6);
+        // The painted footprint is never wider than it is long.
+        expect(s.size[1] * foot.width).toBeLessThanOrEqual(s.size[0] * foot.length + 1e-6);
+      } else expect(isWhole).toBe(true);
     }
+    expect(whole / buffers.count, layer).toBeGreaterThan(0.8);
   }
 });
 
@@ -405,11 +422,52 @@ test('only emissive (window) strokes carry the depth tie-break front flag', () =
   for (let i = 0; i < buffers.count; i++) {
     const s = unpackInstance(buffers, i);
     const onGlass = s.position[0] < 5;
-    expect(s.flags).toBe(onGlass ? DEPTH_TIE_BREAK_FRONT_FLAG : 0);
+    // Both are face-clamped layers, so the fit scale bits sit above the depth flags.
+    expect((s.flags ?? 0) & (DEPTH_TIE_BREAK_FRONT_FLAG | DEPTH_BACKDROP_FLAG)).toBe(
+      onGlass ? DEPTH_TIE_BREAK_FRONT_FLAG : 0,
+    );
     if (onGlass) front++;
   }
   expect(front).toBeGreaterThan(400);
   expect(buffers.count - front).toBeGreaterThan(400);
+});
+
+test('a zero-area triangle on an outlined layer is skipped on its own and keeps every outline', () => {
+  // One flat grey: plain strokes share one colour and outline strokes are OUTLINE_DARKEN of it.
+  const grey = raster(10, 8, () => [120, 120, 120]);
+  const regions = raster(4, 4, () => [REGION.village, 0, 0]);
+  const flow = constantFlow(0);
+  const uniform: CanvasSource = {
+    image: grey,
+    regions,
+    flow,
+    histogram: buildCanvasHistogram(grey, regions, flow),
+  };
+  const clean = wall(4, 3, [0, 2, -15], 'building');
+  const broken = wall(4, 3, [0, 2, -15], 'building');
+  const index = broken.getIndex();
+  if (!index) throw new Error('wall() is indexed');
+  // A repeated vertex: zero area, sharing an edge with the wall's first triangle.
+  broken.setIndex([...Array.from(index.array), 0, 0, 1]);
+  const options = { seed: 3, density: { building: 100 }, size: flat(0.3, 'building') };
+  const a = scatterSurfaces([clean], uniform, options);
+  const b = scatterSurfaces([broken], uniform, options);
+  const outlines = (buffers: StrokeBuffers): number => {
+    let brightest = 0;
+    for (let i = 0; i < buffers.count; i++) {
+      brightest = Math.max(brightest, buffers.color[i * 4]);
+    }
+    let dark = 0;
+    for (let i = 0; i < buffers.count; i++) {
+      if (buffers.color[i * 4] < brightest * ((1 + OUTLINE_DARKEN) / 2)) dark++;
+    }
+    return dark;
+  };
+  // One row along each of the wall's 4 sides.
+  expect(outlines(a)).toBeGreaterThanOrEqual(4);
+  expect(b.count).toBe(a.count);
+  expect(outlines(b)).toBe(outlines(a));
+  expect(hashStrokeBuffers(b)).toBe(hashStrokeBuffers(a));
 });
 
 test('only strokes on a backdrop surface carry the backdrop flag', () => {

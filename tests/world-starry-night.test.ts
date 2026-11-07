@@ -14,7 +14,7 @@ import {
   RGBAFormat,
   Vector3,
 } from 'three';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { loadRealSource } from '../scripts/scatter-time.ts';
 import {
   BARE_COLOR,
@@ -43,20 +43,128 @@ import {
   worldSeeds,
 } from '../src/paintings/starry-night/world.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
-import { STROKE_BUDGET } from '../src/render/strokes/bands.ts';
+import { DEFAULT_BAND_SIZE, STROKE_BUDGET } from '../src/render/strokes/bands.ts';
 import { createStrokeBatch, type StrokeBatch } from '../src/render/strokes/batch.ts';
+import {
+  ATLAS_SIZE,
+  BRUSH_CHANNEL,
+  BRUSH_COUNT,
+  BRUSHES,
+  brushTexelRect,
+  DEFAULT_BRUSH_SEED,
+  generateBrushAtlas,
+} from '../src/render/strokes/brush-atlas-data.ts';
+import { DEPTH_TIE_BREAK_FRONT_FLAG } from '../src/render/strokes/depth-tie-break.ts';
+import {
+  BRUSH_FOOTPRINT,
+  FACE_CLAMP_MARGIN,
+  FIT_SCALE_MAX,
+  fitScaleLimit,
+} from '../src/render/strokes/face-clamp.ts';
+import { strokeAxes, type Vec3 } from '../src/render/strokes/frame.ts';
 import {
   STROKE_ATTRIBUTES,
   STROKE_LAYER,
   type StrokeBuffers,
   unpackInstance,
 } from '../src/render/strokes/instance.ts';
-import { LAYER_DENSITY, LAYER_SIZE, WORLD_LAYERS } from '../src/render/strokes/scatter.ts';
+import {
+  FACE_CLAMPED_LAYERS,
+  LAYER_DENSITY,
+  LAYER_SIZE,
+  WORLD_LAYERS,
+} from '../src/render/strokes/scatter.ts';
 import { hashStrokeBuffers } from '../src/render/strokes/scatter-cache.ts';
 import { boundaryFactor } from '../src/world/boundary.ts';
 import { CYPRESS_OUTLINE } from '../src/world/cypress.ts';
 import { WINDOW_COLOR } from '../src/world/village.ts';
 import { COVERAGE_POSES } from './world-poses.ts';
+
+/** Painted footprint area into and out of the face fit, per world layer, while `on`. */
+const fitLog = vi.hoisted(() => ({
+  on: false,
+  layerOf: new WeakMap<object, string>(),
+  layers: new Map<string, { before: number; after: number; strokes: number; small: number }>(),
+}));
+
+vi.mock('../src/render/strokes/face-clamp.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../src/render/strokes/face-clamp.ts')>();
+  return {
+    ...real,
+    facePolygons: (...args: Parameters<typeof real.facePolygons>) => {
+      const set = real.facePolygons(...args);
+      for (const face of set.faces) fitLog.layerOf.set(face, String(args[0].userData.layer));
+      return set;
+    },
+    fitStrokeToFace: (...args: Parameters<typeof real.fitStrokeToFace>) => {
+      const fitted = real.fitStrokeToFace(...args);
+      const layer = fitLog.on ? fitLog.layerOf.get(args[0]) : undefined;
+      if (layer !== undefined) {
+        const entry = fitLog.layers.get(layer) ?? { before: 0, after: 0, strokes: 0, small: 0 };
+        const before = args[1].length * args[1].width;
+        const after = fitted.length * fitted.width;
+        entry.before += before;
+        entry.after += after;
+        entry.strokes++;
+        if (after < before / 4) entry.small++;
+        fitLog.layers.set(layer, entry);
+      }
+      return fitted;
+    },
+  };
+});
+
+const sub3 = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot3 = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross3 = (a: Vec3, b: Vec3): Vec3 => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0],
+];
+const unit3 = (a: Vec3): Vec3 => {
+  const l = Math.hypot(a[0], a[1], a[2]);
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+
+/** In-plane distance from `p` (projected onto the triangle's plane) to triangle abc, metres. */
+function distanceToTriangle(p: Vec3, t: { a: Vec3; b: Vec3; c: Vec3; n: Vec3 }): number {
+  const h = dot3(sub3(p, t.a), t.n);
+  const q: Vec3 = [p[0] - h * t.n[0], p[1] - h * t.n[1], p[2] - h * t.n[2]];
+  const corners = [t.a, t.b, t.c];
+  let inside = true;
+  for (let k = 0; k < 3; k++) {
+    const e = sub3(corners[(k + 1) % 3], corners[k]);
+    if (dot3(cross3(e, sub3(q, corners[k])), t.n) < 0) inside = false;
+  }
+  if (inside) return 0;
+  let best = Number.POSITIVE_INFINITY;
+  for (let k = 0; k < 3; k++) {
+    const a = corners[k];
+    const e = sub3(corners[(k + 1) % 3], a);
+    const f = Math.min(1, Math.max(0, dot3(sub3(q, a), e) / dot3(e, e)));
+    const closest: Vec3 = [a[0] + f * e[0], a[1] + f * e[1], a[2] + f * e[2]];
+    best = Math.min(best, Math.hypot(...sub3(q, closest)));
+  }
+  return best;
+}
+
+/** Each brush's opaque mask as a box centred in its quad: shares of the quad's length and width. */
+function paintBoxes(seed: number): { length: number; width: number }[] {
+  const atlas = generateBrushAtlas(seed);
+  return Array.from({ length: BRUSH_COUNT }, (_, i) => {
+    const r = brushTexelRect(i);
+    let halfU = 0;
+    let halfV = 0;
+    for (let y = r.y; y < r.y + r.height; y++) {
+      for (let x = r.x; x < r.x + r.width; x++) {
+        if (atlas[(y * ATLAS_SIZE + x) * 4 + BRUSH_CHANNEL.coverage] < 128) continue;
+        halfU = Math.max(halfU, Math.abs((x + 0.5 - r.x) / r.width - 0.5));
+        halfV = Math.max(halfV, Math.abs((y + 0.5 - r.y) / r.height - 0.5));
+      }
+    }
+    return { length: 2 * halfU, width: 2 * halfV };
+  });
+}
 
 const SOURCE = await loadRealSource();
 const SEEDS = worldSeeds(1);
@@ -350,7 +458,9 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
   let batch: StrokeBatch;
 
   beforeAll(() => {
+    fitLog.on = true;
     scattered = scatterWorld(WORLD, SOURCE, SEEDS);
+    fitLog.on = false;
     buffers = withHaze(scattered, WORLD, SOURCE, SEEDS);
     batch = createStrokeBatch(buffers, {
       cellSize: WORLD_CELL_SIZE,
@@ -384,16 +494,16 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       hazeHash: hashStrokeBuffers(haze),
     };
     expect(pins).toEqual({
-      total: 535_011,
+      total: 538_116,
       layers: {
         sky: 283_858,
         star: 0,
         moon: 0,
         cypress: 36_964,
         ground: 129_925,
-        building: 84_264,
+        building: 87_369,
       },
-      hash: 'bb6f674f',
+      hash: '177391e4',
       haze: 30_000,
       hazeHash: '49bf0339',
     });
@@ -410,6 +520,132 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       if (backdrop) dome++;
     }
     expect(dome).toBe(strokeLayerCounts(scattered).sky);
+  });
+
+  test('village and church strokes stay inside their host face plus 10% of their width', () => {
+    // Independent of the scatter's own face grouping: the village triangles are grouped into planes
+    // by normal and offset, panes apart from the rest, and a stroke's hosts are the planes it faces,
+    // lies within its lift in front of, and whose triangles hold its centre. A window stroke (the
+    // tie-break front flag) is hosted by panes only, since a pane sits 2 cm off its wall and the wall
+    // would absorb a stroke spilling past the pane; every other stroke by the rest only. Where a
+    // stroke still matches several planes its overhang is the least over its hosts: the furthest
+    // corner of its paint's distance outside that plane's triangles. The paint is the brush's opaque
+    // mask, measured from the default-seed atlas as a box centred in the quad, and the quad is decoded
+    // as the GPU draws it: at the default band size factors (bands.ts) capped by the stroke's fit
+    // scale, and at the fit cap itself, the largest factor the governor can grow it to. The margin is
+    // a share of the stroke's footprint width (the BRUSH_FOOTPRINT table, which bounds the paint).
+    const paint = paintBoxes(DEFAULT_BRUSH_SEED);
+    type Tri = { a: Vec3; b: Vec3; c: Vec3; n: Vec3; d: number };
+    type Plane = { n: Vec3; d: number; pane: boolean; tris: Tri[] };
+    const planes: Plane[] = [];
+    const { building, roof, window, church } = WORLD.village.geometries;
+    for (const g of [building, roof, window, church]) {
+      const pane = g === window;
+      const pos = g.getAttribute('position');
+      for (let i = 0; i < pos.count; i += 3) {
+        const [a, b, c] = [0, 1, 2].map(
+          (k) => [pos.getX(i + k), pos.getY(i + k), pos.getZ(i + k)] as Vec3,
+        );
+        const n = unit3(cross3(sub3(b, a), sub3(c, a)));
+        const t = { a, b, c, n, d: dot3(n, a) };
+        const plane = planes.find(
+          (q) => q.pane === pane && dot3(q.n, n) > 1 - 1e-6 && Math.abs(q.d - t.d) < 1e-4,
+        );
+        if (plane) plane.tris.push(t);
+        else planes.push({ n, d: t.d, pane, tris: [t] });
+      }
+    }
+    // The lift is at most SCATTER_DEPTH_JITTER of a stroke's length, under 3 cm on these layers.
+    const maxLift = 0.05;
+    const bands = ['near', 'mid', 'far', 'cap'] as const;
+    const scales = { near: 1, mid: DEFAULT_BAND_SIZE.mid, far: DEFAULT_BAND_SIZE.far };
+    const worst = { near: 0, mid: 0, far: 0, cap: 0 };
+    const over = { near: 0, mid: 0, far: 0, cap: 0 };
+    let checked = 0;
+    let panes = 0;
+    let unmatched = 0;
+    for (let i = 0; i < scattered.count; i++) {
+      if (scattered.meta[i * 4 + 1] !== STROKE_LAYER.building) continue;
+      const s = unpackInstance(scattered, i);
+      const n = s.normal;
+      const pane = ((s.flags ?? 0) & DEPTH_TIE_BREAK_FRONT_FLAG) !== 0;
+      const hosts = planes.filter((p) => {
+        if (p.pane !== pane || dot3(p.n, n) < 0.9999) return false;
+        const lift = dot3(p.n, s.position) - p.d;
+        if (lift < -1e-3 || lift > maxLift) return false;
+        return p.tris.some((t) => distanceToTriangle(s.position, t) < 1e-4);
+      });
+      if (hosts.length === 0) {
+        unmatched++;
+        continue;
+      }
+      checked++;
+      if (pane) panes++;
+      const { long, short } = strokeAxes(n, s.tangent);
+      const limit = fitScaleLimit(s.flags ?? 0);
+      for (const band of bands) {
+        // An unfitted stroke has no cap, so it is measured at the largest cap a fit can encode.
+        const cap = Number.isFinite(limit) ? limit : FIT_SCALE_MAX;
+        const k = band === 'cap' ? cap : Math.min(scales[band], limit);
+        const box = paint[s.brush];
+        const [l, w] = [s.size[0] * k * box.length, s.size[1] * k * box.width];
+        let least = Number.POSITIVE_INFINITY;
+        for (const host of hosts) {
+          let reach = 0;
+          for (const [sa, sb] of [
+            [1, 1],
+            [1, -1],
+            [-1, 1],
+            [-1, -1],
+          ]) {
+            const corner = [0, 1, 2].map(
+              (q) => s.position[q] + (sa * l * long[q]) / 2 + (sb * w * short[q]) / 2,
+            ) as unknown as Vec3;
+            let gap = Number.POSITIVE_INFINITY;
+            for (const t of host.tris) gap = Math.min(gap, distanceToTriangle(corner, t));
+            reach = Math.max(reach, gap);
+          }
+          least = Math.min(least, reach);
+        }
+        const ratio = least / (s.size[1] * k * BRUSH_FOOTPRINT[BRUSHES[s.brush].kind].width);
+        worst[band] = Math.max(worst[band], ratio);
+        if (ratio > FACE_CLAMP_MARGIN + 1e-3) over[band]++;
+      }
+    }
+    console.log(
+      `[world] village overhang / footprint width over ${checked} strokes (${panes} on panes, ${unmatched} unmatched): max ${JSON.stringify(worst)}, over 10% ${JSON.stringify(over)}`,
+    );
+    expect(unmatched).toBe(0);
+    expect(checked).toBeGreaterThan(50_000);
+    expect(panes).toBeGreaterThan(4000);
+    for (const band of bands) {
+      expect(worst[band], band).toBeLessThanOrEqual(FACE_CLAMP_MARGIN + 1e-3);
+    }
+  });
+
+  test('the face fit keeps most of the paint on each village layer and shrinks few strokes away', () => {
+    // Painted footprint area out of the fit over the area into it, outline strokes included, and
+    // the share of strokes left with under a quarter of their area. Measured on seed 1: building
+    // 99.55% kept, 187 of 54,681 under a quarter; roof 99.56%, 68 of 20,496; window 95.50%, 146 of
+    // 4,497; church 99.55%, 35 of 7,695. Panes are small, so window strokes lose the most.
+    const floors: Readonly<Record<string, { kept: number; small: number }>> = {
+      building: { kept: 0.98, small: 0.01 },
+      roof: { kept: 0.98, small: 0.01 },
+      window: { kept: 0.93, small: 0.05 },
+      church: { kept: 0.98, small: 0.01 },
+    };
+    const kept: Record<string, string> = {};
+    for (const layer of FACE_CLAMPED_LAYERS) {
+      const entry = fitLog.layers.get(layer);
+      expect(entry, layer).toBeDefined();
+      if (!entry) continue;
+      kept[layer] =
+        `${((100 * entry.after) / entry.before).toFixed(2)}% kept, ${entry.small} of ${entry.strokes} under a quarter`;
+      expect(entry.strokes, layer).toBeGreaterThan(1000);
+      expect(entry.after / entry.before, layer).toBeGreaterThanOrEqual(floors[layer].kept);
+      expect(entry.small / entry.strokes, layer).toBeLessThan(floors[layer].small);
+    }
+    console.log(`[world] face fit area ${JSON.stringify(kept)}`);
   });
 
   test('ground strokes lie in their triangle with its face normal, not the smooth one', () => {

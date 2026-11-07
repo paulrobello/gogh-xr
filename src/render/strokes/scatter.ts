@@ -28,13 +28,22 @@ import {
 import { type CanvasSource, sampleCanvas } from '../../paintings/starry-night/canvas-histogram';
 import { mulberry32 } from '../../util/prng';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
-import { BRUSHES } from './brush-atlas-data';
+import { BRUSHES, type BrushKind } from './brush-atlas-data';
 import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
-import type { Vec3 } from './frame';
+import {
+  BRUSH_FOOTPRINT,
+  encodeFitScale,
+  FACE_CLAMP_MARGIN,
+  type FacePolygon,
+  type FaceSet,
+  facePolygons,
+  fitStrokeToFace,
+} from './face-clamp';
+import { strokeAxes, surfaceBasis, type Vec3 } from './frame';
 import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
 
 /** Bump when the scatter's output changes for the same inputs; part of the cache key. */
-export const SCATTER_VERSION: number = 4;
+export const SCATTER_VERSION: number = 5;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -95,6 +104,41 @@ export const LAYER_DENSITY: Readonly<Record<WorldLayer, number>> = Object.freeze
   sky: 7.6,
   haze: 0,
 });
+
+/**
+ * Layers whose strokes are clamped into their host face (face-clamp.ts): the flat-faced village and
+ * church, where a stroke overhanging a face edge breaks the silhouette. Terrain, cypress and sky
+ * strokes may overhang: their surfaces continue past each triangle.
+ */
+export const FACE_CLAMPED_LAYERS: readonly WorldLayer[] = Object.freeze([
+  'building',
+  'roof',
+  'window',
+  'church',
+] as const);
+
+/**
+ * Layers whose face sides get a row of outline strokes: the walls, roofs and church, not the window
+ * panes. A clamped stroke's rounded ends keep its paint off the edges, and the base mesh showed
+ * through along them; Van Gogh draws the village in dark contours, which also cover that rim.
+ */
+export const OUTLINED_LAYERS: readonly WorldLayer[] = Object.freeze([
+  'building',
+  'roof',
+  'church',
+] as const);
+
+/** Outline strokes come to at most this share of the FACE_CLAMPED_LAYERS strokes. */
+export const OUTLINE_SHARE: number = 0.05;
+
+/** An outline stroke's colour is the canvas colour sampled at the edge times this. */
+export const OUTLINE_DARKEN: number = 0.75;
+
+/** Outline strokes sit this share of their graded length apart along a side, within the budget. */
+const OUTLINE_SPACING = 0.8;
+
+/** Brush kinds an outline stroke may use: the long, straight-sided ones, where the style has them. */
+const OUTLINE_KINDS: readonly BrushKind[] = ['ridge', 'bristle'];
 
 /** Stroke length varies uniformly by ± this share of the graded size. */
 export const SCATTER_SIZE_JITTER: number = 0.15;
@@ -329,6 +373,58 @@ interface Surface extends Ordered {
   readonly density: number;
   readonly size: GradedSize;
   readonly counts: Uint32Array;
+  /** The mesh's faces, on FACE_CLAMPED_LAYERS. */
+  readonly faces: FaceSet | null;
+  /** Outline strokes per face side, in face then side order, on OUTLINED_LAYERS. */
+  outline: Uint32Array | null;
+}
+
+/** The 3D position of a face-frame point. */
+function facePoint(face: FacePolygon, p: readonly [number, number]): Vec3 {
+  return [0, 1, 2].map(
+    (k) => face.origin[k] + p[0] * face.e1[k] + p[1] * face.e2[k],
+  ) as unknown as Vec3;
+}
+
+/**
+ * Outline strokes per side: one per OUTLINE_SPACING of the graded stroke length at the side's
+ * midpoint, at least one per side, all thinned evenly until they fit `budget`. None when the budget
+ * cannot give every side one.
+ */
+function planOutlines(surfaces: readonly Surface[], budget: number): void {
+  const raw: number[] = [];
+  for (const { faces, size, outline } of surfaces) {
+    if (!faces || !outline) continue;
+    for (const face of faces.faces) {
+      const n = face.vertices.length;
+      for (let i = 0; i < n; i++) {
+        const a = facePoint(face, face.vertices[i]);
+        const b = facePoint(face, face.vertices[(i + 1) % n]);
+        const mid: Vec3 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+        const span = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+        raw.push(span / (OUTLINE_SPACING * strokeSizeAt(size, eyeDistance(mid))));
+      }
+    }
+  }
+  const counts = new Uint32Array(raw.length);
+  if (raw.length > 0 && budget >= raw.length) {
+    let scale = Math.max(1, raw.reduce((sum, r) => sum + r, 0) / budget);
+    for (;;) {
+      let total = 0;
+      for (let i = 0; i < raw.length; i++) {
+        counts[i] = Math.max(1, Math.round(raw[i] / scale));
+        total += counts[i];
+      }
+      if (total <= budget) break;
+      scale *= 1.05;
+    }
+  }
+  let k = 0;
+  for (const surface of surfaces) {
+    if (!surface.faces || !surface.outline) continue;
+    surface.outline = counts.subarray(k, k + surface.outline.length);
+    k += surface.outline.length;
+  }
 }
 
 /**
@@ -342,10 +438,16 @@ interface Surface extends Ordered {
  * Per stroke: colour and flow from `sampleCanvas` (emissive meshes keep `userData.color`, linear
  * RGB, sRGB encoded), the colour divided by `strokeShade`; the flags (`DEPTH_TIE_BREAK_FRONT_FLAG` on
  * emissive meshes, `DEPTH_BACKDROP_FLAG` on meshes with `userData.backdrop`, the sky dome); the
- * interpolated vertex normal (the face
- * normal without one); the tangent laid into the surface plane through the painter's camera in
- * frame, or against `stableFrame` where the sample was extrapolated; brush and stroke layer from
- * the region style of `LAYER_REGION[layer]`; length from the graded size at the stroke's distance.
+ * interpolated vertex normal (the face normal without one); the tangent laid into the surface plane
+ * through the painter's camera in frame, or against `stableFrame` where the sample was
+ * extrapolated; brush and stroke layer from the region style of `LAYER_REGION[layer]`; length from
+ * the graded size at the stroke's distance.
+ *
+ * On FACE_CLAMPED_LAYERS the quad's painted footprint (BRUSH_FOOTPRINT) is then fitted into its
+ * host face (`fitStrokeToFace`): clamped, and turned to run along a side it reaches past. The quad
+ * and tangent follow it, and the fit scale is stored in the flags. After its own strokes, each
+ * OUTLINED_LAYERS mesh gets its outline strokes (`placeOutlines`), budgeted over all of them by
+ * `planOutlines` to at most OUTLINE_SHARE of the FACE_CLAMPED_LAYERS strokes.
  */
 export function scatterSurfaces(
   meshes: readonly BufferGeometry[],
@@ -374,13 +476,23 @@ export function scatterSurfaces(
       counts[t] = whole + (rng() < expected - whole ? 1 : 0);
       total += counts[t];
     }
-    surfaces.push({ ...ordered, density, size, counts });
+    const faces = FACE_CLAMPED_LAYERS.includes(layer) ? facePolygons(geometry) : null;
+    const sides = faces?.faces.reduce((sum, f) => sum + f.vertices.length, 0) ?? 0;
+    const outline = faces && OUTLINED_LAYERS.includes(layer) ? new Uint32Array(sides) : null;
+    surfaces.push({ ...ordered, density, size, counts, faces, outline });
   }
+  let clamped = 0;
+  for (const { layer, counts } of surfaces) {
+    if (FACE_CLAMPED_LAYERS.includes(layer)) clamped += counts.reduce((sum, c) => sum + c, 0);
+  }
+  planOutlines(surfaces, Math.floor(OUTLINE_SHARE * clamped));
+  for (const { outline } of surfaces) total += outline?.reduce((sum, c) => sum + c, 0) ?? 0;
 
   // Pass 2: placement, from each mesh's placement stream.
   const buffers = createStrokeBuffers(total);
   let index = 0;
-  for (const { geometry, layer, layerIndex, meshIndex, size, counts } of surfaces) {
+  for (const surface of surfaces) {
+    const { geometry, layer, layerIndex, meshIndex, size, counts, faces } = surface;
     const rand = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 1));
     const style = REGION_STYLES[LAYER_REGION[layer]];
     const emissive = emissiveColor(geometry);
@@ -441,23 +553,142 @@ export function scatterSurfaces(
         const angle = (along ? 0 : sample.flowAngle) + flip;
         const shade = strokeShade(decoded);
         const rgb = emissive ?? sample.rgb;
+        let tangent = canvasTangent(decoded, frame.right, frame.up, angle);
+        let centre: Vec3 = point;
+        let quad: [number, number] = [strokeLength, strokeLength * BRUSHES[brush].aspect];
+        let fitBits = 0;
+        if (faces) {
+          // The painted footprint of the quad as the GPU draws it: the decoded normal's basis
+          // turned by the tangent.
+          const foot = BRUSH_FOOTPRINT[BRUSHES[brush].kind];
+          const length = quad[0] * foot.length;
+          const width = quad[1] * foot.width;
+          const clamped = fitStrokeToFace(
+            faces.faces[faces.faceOf[t]],
+            { centre: point, long: strokeAxes(decoded, tangent).long, length, width },
+            FACE_CLAMP_MARGIN,
+          );
+          if (clamped.aligned) {
+            const { b1, b2 } = surfaceBasis(decoded);
+            const [x, y, z] = clamped.long;
+            tangent = Math.atan2(
+              x * b2[0] + y * b2[1] + z * b2[2],
+              x * b1[0] + y * b1[1] + z * b1[2],
+            );
+          }
+          centre = clamped.centre;
+          quad = [
+            clamped.length === length ? quad[0] : clamped.length / foot.length,
+            clamped.width === width ? quad[1] : clamped.width / foot.width,
+          ];
+          fitBits = encodeFitScale(clamped.fitScale);
+        }
         packInstance(buffers, index++, {
           position: [
-            point[0] + normal[0] * lift,
-            point[1] + normal[1] * lift,
-            point[2] + normal[2] * lift,
+            centre[0] + normal[0] * lift,
+            centre[1] + normal[1] * lift,
+            centre[2] + normal[2] * lift,
           ],
           normal,
-          tangent: canvasTangent(decoded, frame.right, frame.up, angle),
+          tangent,
           color: [rgb[0] / shade, rgb[1] / shade, rgb[2] / shade, 255],
-          size: [strokeLength, strokeLength * BRUSHES[brush].aspect],
+          size: quad,
           brush,
           layer: style.layer,
           phase,
-          flags: (emissive ? DEPTH_TIE_BREAK_FRONT_FLAG : 0) | (backdrop ? DEPTH_BACKDROP_FLAG : 0),
+          flags:
+            (emissive ? DEPTH_TIE_BREAK_FRONT_FLAG : 0) |
+            (backdrop ? DEPTH_BACKDROP_FLAG : 0) |
+            fitBits,
+        });
+      }
+    }
+    if (faces && surface.outline) {
+      index = placeOutlines(buffers, index, surface, faces, source, options.seed);
+    }
+  }
+  return buffers;
+}
+
+/**
+ * Places a surface's outline strokes, from its outline stream: along each face side, evenly with
+ * jitter, the long axis along the side, fitted flush inside it (`fitStrokeToFace`), coloured from
+ * the canvas at the edge darkened by OUTLINE_DARKEN, and lifted the most a stroke lifts so the
+ * contour tends to lie over its neighbours. Returns the next free index.
+ */
+function placeOutlines(
+  buffers: StrokeBuffers,
+  start: number,
+  surface: Surface,
+  faces: FaceSet,
+  source: CanvasSource,
+  seed: number,
+): number {
+  const { layer, layerIndex, meshIndex, size } = surface;
+  const outline = surface.outline;
+  if (!outline) return start;
+  const rand = mulberry32(streamSeed(seed, layerIndex, meshIndex, 2));
+  const style = REGION_STYLES[LAYER_REGION[layer]];
+  const straight = style.brushes.filter((b) => OUTLINE_KINDS.includes(BRUSHES[b].kind));
+  const brushes = straight.length > 0 ? straight : style.brushes;
+  let index = start;
+  let k = 0;
+  for (const face of faces.faces) {
+    const decoded = decodedNormal(face.normal);
+    const { b1, b2 } = surfaceBasis(decoded);
+    const shade = strokeShade(decoded);
+    const n = face.vertices.length;
+    for (let i = 0; i < n; i++, k++) {
+      const a = facePoint(face, face.vertices[i]);
+      const b = facePoint(face, face.vertices[(i + 1) % n]);
+      const span = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+      const along: Vec3 = [(b[0] - a[0]) / span, (b[1] - a[1]) / span, (b[2] - a[2]) / span];
+      for (let j = 0; j < outline[k]; j++) {
+        const at = (j + 0.25 + 0.5 * rand()) / outline[k];
+        const point: Vec3 = [
+          a[0] + at * (b[0] - a[0]),
+          a[1] + at * (b[1] - a[1]),
+          a[2] + at * (b[2] - a[2]),
+        ];
+        const sample = sampleCanvas(source, point, layer, rand);
+        const brush = brushes[Math.floor(rand() * brushes.length)];
+        const strokeLength =
+          strokeSizeAt(size, eyeDistance(point)) * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
+        const sign = rand() < 0.5 ? -1 : 1;
+        const phase = Math.floor(rand() * 256);
+        const foot = BRUSH_FOOTPRINT[BRUSHES[brush].kind];
+        const quad: [number, number] = [strokeLength, strokeLength * BRUSHES[brush].aspect];
+        const length = quad[0] * foot.length;
+        const width = quad[1] * foot.width;
+        const long: Vec3 = [sign * along[0], sign * along[1], sign * along[2]];
+        const fitted = fitStrokeToFace(
+          face,
+          { centre: point, long, length, width },
+          FACE_CLAMP_MARGIN,
+        );
+        const [x, y, z] = fitted.long;
+        const lift = SCATTER_DEPTH_JITTER * strokeLength;
+        const rgb = sample.rgb.map((c) => (c * OUTLINE_DARKEN) / shade);
+        packInstance(buffers, index++, {
+          position: [
+            fitted.centre[0] + face.normal[0] * lift,
+            fitted.centre[1] + face.normal[1] * lift,
+            fitted.centre[2] + face.normal[2] * lift,
+          ],
+          normal: face.normal,
+          tangent: Math.atan2(x * b2[0] + y * b2[1] + z * b2[2], x * b1[0] + y * b1[1] + z * b1[2]),
+          color: [rgb[0], rgb[1], rgb[2], 255],
+          size: [
+            fitted.length === length ? quad[0] : fitted.length / foot.length,
+            fitted.width === width ? quad[1] : fitted.width / foot.width,
+          ],
+          brush,
+          layer: style.layer,
+          phase,
+          flags: encodeFitScale(fitted.fitScale),
         });
       }
     }
   }
-  return buffers;
+  return index;
 }

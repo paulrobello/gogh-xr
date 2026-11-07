@@ -12,6 +12,7 @@ import {
   DEPTH_TIE_BREAK_STEPS,
   NDC_DEPTH_STEP,
 } from './depth-tie-break';
+import { FIT_SCALE_MASK, FIT_SCALE_SHIFT, FIT_SCALE_STEP } from './face-clamp';
 import fragmentShader from './stroke.frag.glsl?raw';
 import vertexShader from './stroke.vert.glsl?raw';
 
@@ -72,6 +73,9 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       BACKDROP_FAR_NDC: glslFloat(backdropNdc(0, 'dome')),
       BACKDROP_RANK_NDC: glslFloat(BACKDROP_RANK_SPACING * NDC_DEPTH_STEP),
       BACKDROP_RANK_SHIFT: `${BACKDROP_RANK_SHIFT}u`,
+      FIT_SCALE_SHIFT: `${FIT_SCALE_SHIFT}u`,
+      FIT_SCALE_MASK: `${FIT_SCALE_MASK}u`,
+      FIT_SCALE_STEP: glslFloat(FIT_SCALE_STEP),
     },
     transparent: false,
     depthWrite: true,

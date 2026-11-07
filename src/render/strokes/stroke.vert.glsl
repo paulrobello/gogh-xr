@@ -64,7 +64,13 @@ void main() {
   vec3 longAxis = cos(theta) * b1 + sin(theta) * b2;
   vec3 shortAxis = cross(n, longAxis);
 
-  vec2 size = iSize * uSizeScale;
+  // A face-clamped stroke caps the band's size factor at its fit level, so it stays inside its
+  // face at any band (src/render/strokes/face-clamp.ts). Level 0 is no cap.
+  uint fitLevel = (iMeta.w >> FIT_SCALE_SHIFT) & FIT_SCALE_MASK;
+  float sizeScale = fitLevel == 0u
+    ? uSizeScale
+    : min(uSizeScale, 1.0 + float(fitLevel - 1u) * FIT_SCALE_STEP);
+  vec2 size = iSize * sizeScale;
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));
   // Depth tie-break (src/render/strokes/depth-tie-break.ts): each stroke moves towards the eye by

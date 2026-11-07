@@ -114,9 +114,6 @@ describe('the backdrop draws behind the whole world', () => {
     const reach = BOUNDARY_RADIUS + farthest + 10;
     const nearest = backdropNdc(BACKDROP_FRONT_RANKS - 1, 'front');
     const depth = viewDepthAtNdc(nearest, NEAR, FAR);
-    console.log(
-      `[backdrop] nearest rank at ${depth.toFixed(1)} m, world reach ${reach.toFixed(1)} m`,
-    );
     expect(depth).toBeGreaterThan(reach);
   });
 
