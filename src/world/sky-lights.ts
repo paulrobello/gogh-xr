@@ -45,6 +45,7 @@ import {
 import type { SkyLightCone } from '../render/strokes/sky-light-cull';
 import { deltaE2000, type Lab, srgb8ToLab } from '../util/cielab';
 import { mulberry32 } from '../util/prng';
+import { drain, type Steps } from '../util/slicer';
 import { anchorReach, SKY_DOME_RADIUS, SKY_LIGHT_RIM, type SkyAnchor, skyAnchors } from './sky';
 import { type SkyScanCrop, sampleSkyScan, skyScanCrops } from './sky-scan';
 
@@ -339,6 +340,24 @@ export function createSkyLights(
   domeSize: GradedSize,
   anchors: readonly SkyAnchor[] = skyAnchors(),
 ): SkyLights {
+  return drain(createSkyLightsSteps(source, scan, seed, domeSize, anchors));
+}
+
+/** Strokes ranked between two yields of `createSkyLightsSteps`' final pass. */
+const SKY_LIGHT_SLICE = 256;
+
+/**
+ * `createSkyLights` as steps (P5.5): the same draws in the same order, yielding after every grid
+ * row of each anchor and every `SKY_LIGHT_SLICE` ranked strokes, so a portal build spreads it over
+ * frames.
+ */
+export function* createSkyLightsSteps(
+  source: CanvasSource,
+  scan: Raster,
+  seed: number,
+  domeSize: GradedSize,
+  anchors: readonly SkyAnchor[] = skyAnchors(),
+): Steps<SkyLights> {
   // Every stroke is placed first and ranked after, full size first, then half, then quarter: a
   // full-size stroke overlaps far more quarter-size ones than the 256 ranks, but each stroke only
   // needs a rank its already-ranked neighbours do not hold.
@@ -362,7 +381,7 @@ export function createSkyLights(
     skyLightHalfDiagonal(stored * (1 + SCATTER_SIZE_JITTER), maxAspect),
     SKY_RING_REACH,
   );
-  anchors.forEach((anchor, a) => {
+  for (const [a, anchor] of anchors.entries()) {
     const region = REGION_OF[anchor.kind];
     const layer = REGION_STYLES[region].layer;
     const crop = crops[a] ?? null;
@@ -534,8 +553,9 @@ export function createSkyLights(
     const n = Math.ceil(outer / cell);
     for (let j = -n; j < n; j++) {
       for (let i = -n; i < n; i++) place(i * cell, j * cell, cell, 0, i, j, 1);
+      yield;
     }
-    if (!moon) return;
+    if (!moon) continue;
     // The crescent's edges: finer strokes over the dome-size ones, on a jittered grid of their own
     // over the disc, kept only where their footprint straddles the gold.
     const fine = drawn * 0.5 ** SKY_LIGHT_MOON_EDGE_LEVEL;
@@ -549,19 +569,24 @@ export function createSkyLights(
         if (Math.hypot(x, y) >= radius || !straddles(x, y, fine)) continue;
         emit(x, y, SKY_LIGHT_MOON_EDGE_LEVEL, rand, true);
       }
+      yield;
     }
-  });
+  }
   const order = pending
     .map((_, i) => i)
     .sort((i, j) => pending[i].level - pending[j].level || i - j);
-  const strokes = order.map((i) => {
+  const strokes: StrokeInstance[] = [];
+  for (const i of order) {
+    if (strokes.length > 0 && strokes.length % SKY_LIGHT_SLICE === 0) yield;
     const p = pending[i];
-    return p.finish(
-      p.top
-        ? ranks.pick(p.p, p.half, BACKDROP_FRONT_RANKS - 1, -1, p.reach)
-        : ranks.pick(p.p, p.half, p.start, 1, p.reach),
+    strokes.push(
+      p.finish(
+        p.top
+          ? ranks.pick(p.p, p.half, BACKDROP_FRONT_RANKS - 1, -1, p.reach)
+          : ranks.pick(p.p, p.half, p.start, 1, p.reach),
+      ),
     );
-  });
+  }
   return { strokes, rankTies: ranks.ties };
 }
 

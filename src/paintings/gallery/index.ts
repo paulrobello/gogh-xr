@@ -17,13 +17,18 @@ import {
   PlaneGeometry,
   type Scene,
   SRGBColorSpace,
-  type Texture,
-  TextureLoader,
+  Texture,
 } from 'three';
 import { registerDiag, unregisterDiag } from '../../diag/diag';
-import { createStrokeBatch, type StrokeBatch } from '../../render/strokes/batch';
+import { createStrokeBatchSteps, type StrokeBatch } from '../../render/strokes/batch';
 import type { Vec3 } from '../../render/strokes/frame';
-import type { PainterCamera, WorldDeps, WorldHandle, WorldPose } from '../world-module';
+import {
+  buildSteps,
+  type PainterCamera,
+  type WorldDeps,
+  type WorldHandle,
+  type WorldPose,
+} from '../world-module';
 import {
   CROP_BIAS,
   coverCrop,
@@ -43,7 +48,7 @@ import {
   createBaseGeometry,
   DEFAULT_GALLERY_SEED,
   gallerySurfaces,
-  scatterGallery,
+  scatterGallerySteps,
 } from './surfaces';
 
 export const PAINTING_ID = 'gallery';
@@ -122,11 +127,24 @@ function scanGeometry(h: Hanging, crop: UvCrop): PlaneGeometry {
   return geometry;
 }
 
+/**
+ * A scan as an `ImageBitmap`, which the browser decodes off the main thread (P5.5), so a portal
+ * transition's upload of it is the copy alone. WebGL ignores `flipY` for a bitmap, so the decode
+ * flips it instead, which matches `TextureLoader`'s flipped image.
+ */
 async function loadScan(url: string, anisotropy: number): Promise<Texture | null> {
   try {
-    const texture = await new TextureLoader().loadAsync(url);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const bitmap = await createImageBitmap(await response.blob(), {
+      imageOrientation: 'flipY',
+      premultiplyAlpha: 'none',
+    });
+    const texture = new Texture(bitmap);
+    texture.flipY = false;
     texture.colorSpace = SRGBColorSpace;
     texture.anisotropy = anisotropy;
+    texture.needsUpdate = true;
     return texture;
   } catch (error) {
     console.warn(`gallery: scan ${url} failed to load`, error);
@@ -139,6 +157,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   const seed = deps.seed ?? DEFAULT_GALLERY_SEED;
   const debug = deps.debug ?? null;
   const anisotropy = Math.max(1, Math.min(SCAN_ANISOTROPY, deps.maxAnisotropy ?? 1));
+  const { run, nextFrame } = buildSteps(deps.slicer);
   const start = performance.now();
   const loads = HANGINGS.map((h) =>
     loadScan(`${import.meta.env.BASE_URL}${h.painting.frameImage}`, anisotropy),
@@ -146,9 +165,11 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
 
   const surfaces = gallerySurfaces();
   const generated = performance.now();
-  const { buffers, counts } = scatterGallery(surfaces, seed);
+  const { buffers, counts } = await run(scatterGallerySteps(surfaces, seed));
   const scattered = performance.now();
-  const batch = createStrokeBatch(buffers, { cellSize: GALLERY_CELL_SIZE });
+  const batch = await run(
+    createStrokeBatchSteps(buffers, { cellSize: GALLERY_CELL_SIZE, atlas: deps.atlas }),
+  );
   const batched = performance.now();
   const atlasMs = batch.stats().atlasMs;
   const textures = await Promise.all(loads);
@@ -183,9 +204,9 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   const scans: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
   HANGINGS.forEach((h, i) => {
     const texture = textures[i];
-    const image = texture?.image as HTMLImageElement | undefined;
-    const naturalWidth = image?.naturalWidth ?? 0;
-    const naturalHeight = image?.naturalHeight ?? 0;
+    const image = texture?.image as ImageBitmap | undefined;
+    const naturalWidth = image?.width ?? 0;
+    const naturalHeight = image?.height ?? 0;
     const crop = texture
       ? coverCrop(naturalWidth, naturalHeight, h.width, h.height, CROP_BIAS[h.painting.id] ?? 0)
       : { u0: 0, u1: 1, v0: 0, v1: 1 };
@@ -249,10 +270,11 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   let plaqueState: 'pending' | 'built' | 'failed' | 'skipped' =
     debug === 'bare' ? 'skipped' : 'pending';
   let plaqueMs = 0;
+  let ready: Promise<void> = Promise.resolve();
   if (debug !== 'bare') {
     const plaqueStart = performance.now();
-    void import('./plaques')
-      .then(({ createPlaques }) => createPlaques(HANGINGS))
+    ready = import('./plaques')
+      .then(({ createPlaques }) => createPlaques(HANGINGS, deps.plaqueFrame ?? nextFrame))
       .then((plaques) => {
         if (state.disposed) {
           plaques.dispose();
@@ -301,6 +323,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
       maxZ: ROOM.maxZ - WALK_MARGIN,
       maxY: ROOM.height - WALK_MARGIN,
     },
+    ready,
   };
 }
 
@@ -320,7 +343,10 @@ export function dispose(): void {
     scan.geometry.dispose();
     scan.material.dispose();
   }
-  for (const texture of built.textures) texture.dispose();
+  for (const texture of built.textures) {
+    texture.dispose();
+    (texture.image as ImageBitmap).close();
+  }
   built.scene.background = built.background;
   built = null;
 }

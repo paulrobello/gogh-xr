@@ -20,14 +20,15 @@ import {
   type ScatterOptions,
   type ScatterOverride,
   scatterOverrides,
-  scatterSurfaces,
+  scatterSurfacesSteps,
 } from '../../render/strokes/scatter';
 import type { ScatterKeyInputs } from '../../render/strokes/scatter-cache';
 import { SKY_LIGHT_CULL_FLAG, type SkyLightCone } from '../../render/strokes/sky-light-cull';
-import { createBoundaryHaze, HAZE_STROKE_DEFAULT } from '../../world/boundary';
+import { drain, type Steps } from '../../util/slicer';
+import { createBoundaryHazeSteps, HAZE_STROKE_DEFAULT } from '../../world/boundary';
 import { type Cypress, createCypress } from '../../world/cypress';
 import { createSkyDome } from '../../world/sky';
-import { createSkyLights, skyLightCones } from '../../world/sky-lights';
+import { createSkyLightsSteps, skyLightCones } from '../../world/sky-lights';
 import { createTerrain, type Terrain } from '../../world/terrain';
 import { createVillage, type Village } from '../../world/village';
 import type { WorldLayer } from './canvas-camera';
@@ -134,9 +135,17 @@ export interface WorldGeometry {
 
 /** Runs the generators; the ridge carries `RIDGE_SCATTER` in `userData.scatter`. */
 export function createWorldGeometry(seeds: WorldSeeds): WorldGeometry {
+  return drain(createWorldGeometrySteps(seeds));
+}
+
+/** `createWorldGeometry` as steps (P5.5): one generator per step. */
+export function* createWorldGeometrySteps(seeds: WorldSeeds): Steps<WorldGeometry> {
   const terrain = createTerrain(seeds.terrain);
+  yield;
   const village = createVillage(seeds.village, terrain);
+  yield;
   const cypress = createCypress(seeds.cypress, terrain);
+  yield;
   const dome = createSkyDome();
   terrain.ridge.userData.scatter = RIDGE_SCATTER;
   const { building, roof, window, church } = village.geometries;
@@ -201,19 +210,32 @@ export function scatterWorld(
   source: CanvasSource,
   seeds: WorldSeeds,
 ): StrokeBuffers {
+  return drain(scatterWorldSteps(world, source, seeds));
+}
+
+/** `scatterWorld` as steps (P5.5), for a build behind a portal transition. */
+export function* scatterWorldSteps(
+  world: WorldGeometry,
+  source: CanvasSource,
+  seeds: WorldSeeds,
+): Steps<StrokeBuffers> {
   const flat = world.surfaces.map(faceNormalSurface);
-  const strokes = scatterSurfaces(flat, source, { ...WORLD_SCATTER_OPTIONS, seed: seeds.scatter });
+  yield;
+  const strokes = yield* scatterSurfacesSteps(flat, source, {
+    ...WORLD_SCATTER_OPTIONS,
+    seed: seeds.scatter,
+  });
   for (const g of flat) g.dispose();
   return strokes;
 }
 
-/** The boundary haze, clipped to the terrain. */
-function worldHaze(
+/** The boundary haze, clipped to the terrain, as steps. */
+function worldHazeSteps(
   world: WorldGeometry,
   source: CanvasSource,
   seeds: WorldSeeds,
-): StrokeInstance[] {
-  return createBoundaryHaze(source, {
+): Steps<StrokeInstance[]> {
+  return createBoundaryHazeSteps(source, {
     seed: seeds.haze,
     count: WORLD_HAZE_COUNT,
     groundHeight: world.terrain.heightAt,
@@ -251,17 +273,31 @@ export function assembleWorldStrokes(
   scan: Raster,
   seeds: WorldSeeds,
 ): WorldStrokes {
-  const { strokes: lights, rankTies } = createSkyLights(
+  return drain(assembleWorldStrokesSteps(scattered, world, source, scan, seeds));
+}
+
+/** `assembleWorldStrokes` as steps (P5.5): the lights and the haze in slices, then the append. */
+export function* assembleWorldStrokesSteps(
+  scattered: StrokeBuffers,
+  world: WorldGeometry,
+  source: CanvasSource,
+  scan: Raster,
+  seeds: WorldSeeds,
+): Steps<WorldStrokes> {
+  const { strokes: lights, rankTies } = yield* createSkyLightsSteps(
     source,
     scan,
     seeds.lights,
     WORLD_DOME_SIZE,
   );
-  const haze = worldHaze(world, source, seeds).map((s) => ({
+  yield;
+  const haze = (yield* worldHazeSteps(world, source, seeds)).map((s) => ({
     ...s,
     flags: (s.flags ?? 0) | SKY_LIGHT_CULL_FLAG,
   }));
+  yield;
   const buffers = appendStrokes(scattered, [...lights, ...haze]);
+  yield;
   const hazeStart = scattered.count + lights.length;
   const counts = { ...strokeLayerCounts(buffers), haze: haze.length };
   // Haze strokes are on the sky stroke layer: count them once, under haze.

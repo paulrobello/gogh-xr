@@ -22,6 +22,7 @@ import {
 import { COLOR_INSET } from '../../demo/canvas/placement';
 import type { Vec3 } from '../../render/strokes/frame';
 import { deltaE2000, type Lab, srgb8ToLab } from '../../util/cielab';
+import { drain, type Steps } from '../../util/slicer';
 import { LAYER_REGION, projectToCanvas, type WorldLayer } from './canvas-camera';
 
 /** Bits per channel of a colour bin: 5 gives 32³ bins, at most 4/255 off the texel. */
@@ -134,12 +135,25 @@ export function buildCanvasHistogram(
   regions: Raster,
   flow: FlowField,
 ): CanvasHistogram {
+  return drain(buildCanvasHistogramSteps(image, regions, flow));
+}
+
+/** Image rows binned between two yields of `buildCanvasHistogramSteps`. */
+const HISTOGRAM_SLICE_ROWS = 48;
+
+/** `buildCanvasHistogram` as steps (P5.5): the same counts, yielding every few rows and regions. */
+export function* buildCanvasHistogramSteps(
+  image: Raster,
+  regions: Raster,
+  flow: FlowField,
+): Steps<CanvasHistogram> {
   const { width, height, data } = image;
   const colors = new Uint32Array(REGION_COUNT * COLOR_BIN_COUNT);
   const angles = new Uint32Array(REGION_COUNT * ANGLE_BINS);
   const counts = new Uint32Array(REGION_COUNT);
   const [iu, iv] = COLOR_INSET;
   for (let y = 0; y < height; y++) {
+    if (y > 0 && y % HISTOGRAM_SLICE_ROWS === 0) yield;
     const v = (1 - (y + 0.5) / height - iv) / (1 - 2 * iv);
     if (v < 0 || v > 1) continue;
     for (let x = 0; x < width; x++) {
@@ -179,6 +193,7 @@ export function buildCanvasHistogram(
 
   const out: RegionHistogram[] = [];
   for (let r = 0; r < REGION_COUNT; r++) {
+    yield;
     const base = r * COLOR_BIN_COUNT;
     const checked = REGION_PALETTE_RIVALS[r as RegionId] !== undefined;
     const keep = (k: number): boolean =>

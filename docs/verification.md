@@ -1378,3 +1378,55 @@ Draw calls, drawn strokes and visible chunks are identical to base for both vari
 
 - No headset run: the variants were judged in desktop captures only, so how `fade`, `half` and `wind` read in the Quest is Paul's A/B call. In the headset, `half` differs from base in two ways at once: the shrink stops at half size, and the whole swirl also moves at 2/3 of base's speed (the same arc over 12 s), so a preference for `half` may be a preference for the slower swirl.
 - Quest GPU cost: not measured. The desktop cost is below.
+
+## P5.5 portal and return (2026-11-07)
+
+`tests/e2e/portal.spec.ts`, M4 Max, headless Chromium on ANGLE Metal at 60 Hz. At 60 Hz a frame that misses one vsync reads 33.3 ms, so 16.8 ms means no frame was missed. The first runs had a load average of 8.9 to 10.8. At 0b3ae3e the portal spec ran twice: alone, load-affected (the load stayed above 15 through a 15 minute wait, and read 31.86 before and 21.73 after), and inside the full `make e2e` run (108 passed, 2 skipped), at a load of 12.13 before and 11.40 after.
+
+- Walk: W from 1.2 m in front of Starry Night enters its world (`lastTrigger.cause` `walk`), the rig lands on the painter's spot, G returns it 1.2 m before the frame facing it, and it does not re-trigger there.
+- Memory: after a gallery to world to gallery round trip, `renderer.info.memory` reads the baseline plus one geometry at 0b3ae3e. That geometry is the vignette sphere, which the first veil uploads and which is then reused for the rest of the session. Since fix round 2 the spec shows the veil once before it reads the baseline (`__goghVeil`, e2e builds only), and the counts then match the baseline exactly after each trip: 64 geometries, 9 textures and 20 draw calls on the desktop, and 64, 9 and 46 under IWER with the rig at the origin. The vignette is therefore the only geometry a trip adds.
+- Longest frame entering Starry Night on the desktop, against the 27.8 ms bar:
+
+| Build | Longest frame | Longest step |
+| --- | --- | --- |
+| 3522ec0, stroke assembly in one step | 83.3 ms (runs of 83, 117 and 133 ms) | the stroke assembly, 123 to 132 ms |
+| 58de723, sky lights and haze sliced | 50 ms | `flow`, the flow field build |
+| 0b3ae3e, flow field and canvas histogram sliced | 16.8 ms in all four runs | `geometry` and `batch` |
+
+- Longest frame returning to the gallery at 0b3ae3e: on the desktop 16.8 ms in three of four runs and 33.4 ms in one, and under IWER 30.3 and 30.8 ms. At 58de723 one of the two desktop returns read 33.3 ms.
+- Wall time with the e2e build, which bypasses the scatter cache: enter 5.26 to 5.42 s, return 2.49 to 2.54 s.
+- Wall time with a production build (`vite build`, then `vite preview`), two round trips from an empty scatter cache, load 16.83 before and 15.56 after:
+
+| Transition | Scatter cache | Duration | Build | Longest frame | Longest step |
+| --- | --- | --- | --- | --- | --- |
+| enter | miss | 5.24 s | 1.99 s | 16.8 ms | 16.2 ms, `geometry` |
+| return | bypass | 2.53 s | 0.27 s | 33.3 ms | 12.1 ms |
+| enter | hit | 4.17 s | 0.92 s | 16.8 ms | 13.7 ms, `batch` |
+| return | bypass | 2.48 s | 0.25 s | 33.3 ms | 9.0 ms |
+
+The fly style's out and in phases take 2.0 s by themselves, so an entry is at least that plus the build and the upload.
+
+### Fix round 2
+
+The return built the gallery in view: the scans drew under the veil before their programs compiled, and each scan's WebP decoded on the main thread inside `initTexture`, at 16 to 24 ms of work in one frame. Now the incoming world stays hidden until `compileAsync` and the texture queue finish, the scans decode off the main thread with `createImageBitmap`, and the chunks that fail the cull draw once under the veil. The `portal` diag records every transition frame's `phase`, interval, `workMs` (the CPU time of `renderFrame`), slicer and render ms, and a task label, so a 17 ms frame and a 30 ms frame tell apart at 60 Hz vsync.
+
+With that, the IWER entry still read 27 to 35 ms over eight runs. The frame records put the cost in the `bind` frame, with no slicer work in it: 21 to 26 ms spent sampling the world for the strokes' second leg. That sampler drew a random stroke from every chunk with a linear scan and kept only those in view, up to 40 tries each. It now draws only from chunks whose bounds the view intersects, with a binary search over the running counts, and the bind frame's work fell to 2.7 to 3.6 ms.
+
+Full `make e2e` after that change, 108 passed, 2 skipped, load 6.13 before and 9.31 after:
+
+| Run | Transition | Longest frame | Longest work | Duration |
+| --- | --- | --- | --- | --- |
+| desktop | enter | 16.8 ms, 16.8 ms | 17.3 ms, 15.3 ms | 5.31 s, 5.41 s |
+| desktop | return | 16.8 ms, 16.8 ms | 18.5 ms, 15.7 ms | 2.63 s, 2.64 s |
+| IWER | enter | 23.1 ms, 17.8 ms | 22.0 ms, 15.8 ms | 5.29 s, 5.33 s |
+| IWER | return | 25.6 ms, 19.6 ms | 19.9 ms, 14.7 ms | 2.61 s, 2.60 s |
+
+The spec asserts the 27.8 ms bar for both transitions on the desktop and under IWER. The longest work of every transition lands in the `wait` phase. Under IWER, where the records were read, the three intervals over 19 ms each follow one slicer step of 14 to 22 ms (`geometry` on entry, the gallery build on return).
+
+Default boot capture (F13): a production build at 1600 × 1200 with `?diag&shot`, captured once the plaques are built and 30 more frames have drawn, hashes its raw RGB to sha256 `73a8bf35fba2db6e3ecb15257d3ca525b75e7380aa0ccd5e7b06f863fa1de7b0` on both 09ace7f and this branch, two captures each.
+
+### Not verified
+
+- Single slicer steps of 14 to 22 ms remain the longest work on an M4 Max, which leaves little margin under the bar on the slower Quest. Splitting them is F5, parked for the P5.8 headset check.
+- In XR the return pose places the rig origin, not the head, so a head away from the local-floor origin lands off the return spot (F10). The disarm guard still prevents a re-trigger. Left for P5.8.
+- The Quest: no headset run yet (P5.8).

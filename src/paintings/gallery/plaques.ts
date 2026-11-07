@@ -130,8 +130,15 @@ function textMesh(
   return mesh;
 }
 
-/** Builds and typesets the seven plaques; resolves once every text mesh has synced. */
-export async function createPlaques(hangings: readonly Hanging[]): Promise<Plaques> {
+/**
+ * Builds and typesets the seven plaques; resolves once every text mesh has synced. Each plaque
+ * typesets on its own frame after `nextFrame` resolves (P5.5, review M5): one troika typeset of all
+ * seven took 89-164 ms in one go. Omitted, they typeset together.
+ */
+export async function createPlaques(
+  hangings: readonly Hanging[],
+  nextFrame?: () => Promise<void>,
+): Promise<Plaques> {
   const group = new Group();
   group.name = 'plaques';
   const textMaterial = new MeshBasicMaterial();
@@ -202,7 +209,15 @@ export async function createPlaques(hangings: readonly Hanging[]): Promise<Plaqu
   const cardMesh = new Mesh(merged, cardMaterial);
   cardMesh.name = 'plaque-cards';
   group.add(cardMesh);
-  await Promise.all(meshes.map((mesh) => new Promise<void>((resolve) => mesh.sync(resolve))));
+  const sync = (mesh: Text): Promise<void> => new Promise<void>((resolve) => mesh.sync(resolve));
+  if (nextFrame) {
+    for (const [heading, detail] of blocks) {
+      await nextFrame();
+      await Promise.all([sync(heading), sync(detail)]);
+    }
+  } else {
+    await Promise.all(meshes.map(sync));
+  }
   // The title, the gap and the details as one block, centred on the card. Moving a synced mesh
   // needs no new typeset.
   for (const [heading, detail] of blocks) {

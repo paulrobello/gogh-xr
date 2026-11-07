@@ -25,6 +25,7 @@ import {
 } from '../../render/strokes/instance';
 import { SCATTER_DEPTH_JITTER } from '../../render/strokes/scatter';
 import { mulberry32 } from '../../util/prng';
+import { drain, type Steps } from '../../util/slicer';
 import {
   BENCHES,
   FRAME_CENTRE_Y,
@@ -536,9 +537,23 @@ export interface GalleryStrokes {
 
 /** Paints every surface: deterministic for `seed`. */
 export function scatterGallery(surfaces: readonly Surface[], seed: number): GalleryStrokes {
+  return drain(scatterGallerySteps(surfaces, seed));
+}
+
+/** Strokes placed between two yields of `scatterGallerySteps`. */
+const GALLERY_SLICE = 4096;
+
+/** `scatterGallery` as steps (P5.5): the same draws in the same order, yielding as it goes. */
+export function* scatterGallerySteps(
+  surfaces: readonly Surface[],
+  seed: number,
+): Steps<GalleryStrokes> {
   const rand = mulberry32(seed >>> 0);
   const placements: Placement[] = [];
-  for (const surface of surfaces) gridOf(surface, rand, placements);
+  for (const surface of surfaces) {
+    gridOf(surface, rand, placements);
+    yield;
+  }
   const kept: Placement[] = [];
   for (const p of placements) {
     const point = pointOf(p.surface, p.a, p.b);
@@ -556,6 +571,7 @@ export function scatterGallery(surfaces: readonly Surface[], seed: number): Gall
   };
   const normals = new Map<Surface, Vec3>();
   for (let i = 0; i < kept.length; i++) {
+    if (i > 0 && i % GALLERY_SLICE === 0) yield;
     const { surface, a, b } = kept[i];
     let decoded = normals.get(surface);
     if (!decoded) {

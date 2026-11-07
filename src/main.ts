@@ -7,7 +7,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
-import { bootWorld, resolveBootMode } from './boot-mode';
+import { bootWorld, GALLERY_WORLD, resolveBootMode } from './boot-mode';
 import { installDesktopControls } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
 import {
@@ -27,9 +27,10 @@ import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { skyWrapLoop } from './motion/sky-swirl';
 import { motionVariants } from './motion/variant-uniforms';
 import type { SkyBaseStrokes } from './motion/variants';
-import { livePainting, logRegistryProblems } from './paintings/registry';
+import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
 import { PAINTER_EYE } from './paintings/starry-night/canvas-camera';
-import type { PainterCamera, WorldHandle, WorldModule } from './paintings/world-module';
+import type { PainterCamera, WorldDeps, WorldHandle, WorldModule } from './paintings/world-module';
+import { createSwitcher, GALLERY_ID, type LiveWorld } from './portal/switcher';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
@@ -43,9 +44,15 @@ import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
 import { clearPanelPose } from './ui/panel-pose';
-import { createPanelToggle, galleryReturnCallback } from './ui/panel-toggle';
+import {
+  createPanelToggle,
+  galleryReturnCallback,
+  onGalleryReturnChange,
+  registerGalleryReturn,
+} from './ui/panel-toggle';
 import { createVignette } from './ui/vignette';
 import { busyWait } from './util/busy-wait';
+import { createSlicer } from './util/slicer';
 import { version } from './version';
 import { createBareScene } from './world/bare-scene';
 import { type Actions, createInput } from './xr/input';
@@ -136,16 +143,41 @@ const desktop = installDesktopControls(renderer.domElement, camera);
  */
 const runLocomotion = flags.bench === null;
 const vignette = runLocomotion ? createVignette(camera) : undefined;
+/**
+ * The portal's veil (P5.5) shares the vignette's full-view fade with the teleport blink: the mesh
+ * shows the larger of the two. Unlike the blink it also shows on the desktop.
+ */
+let portalVeil = 0;
+let blinkFade = 0;
+const vignetteTarget = vignette && {
+  setAlpha: (alpha: number) => vignette.setAlpha(alpha),
+  setFade: (fade: number) => {
+    blinkFade = fade;
+    vignette.setFade(Math.max(blinkFade, portalVeil));
+  },
+};
+function setPortalVeil(alpha: number): void {
+  portalVeil = alpha;
+  vignette?.setFade(Math.max(blinkFade, portalVeil));
+}
+/** Frame-budgeted work: a world built behind a portal transition, and the gallery's plaques. */
+const slicer = createSlicer(6);
 /** The teleport arc's strokes, built once by `buildArc`. */
 let arcStrokes: ArcMesh | null = null;
 const strokeScene = worldEntry !== null || flags.strokesTest || flags.demo === 'canvas';
-/** The bare scene's own atlas, built on first need and shared by the arc and the settings panel. */
-let bareAtlas: Texture | null = null;
+/**
+ * The app's one brush atlas, built on first need: the worlds' batches (which never dispose it), the
+ * arc, the settings panel and the portal's strokes share it, so a world switch never leaves one of
+ * them on a disposed atlas. The test scenes' batches own theirs.
+ */
+let sharedAtlas: Texture | null = null;
 function strokeAtlas(): Texture {
-  const batchAtlas = reactiveBatch?.atlas;
-  if (batchAtlas) return batchAtlas;
-  bareAtlas ??= createBrushAtlas();
-  return bareAtlas;
+  if (!worldEntry) {
+    const batchAtlas = reactiveBatch?.atlas;
+    if (batchAtlas) return batchAtlas;
+  }
+  sharedAtlas ??= createBrushAtlas();
+  return sharedAtlas;
 }
 const arc: ArcTarget = {
   show: (aim, eye) => {
@@ -159,7 +191,7 @@ const locomotion = createLocomotion({
   camera,
   look: desktop,
   settings: toLocomotionSettings(settings),
-  vignette,
+  vignette: vignetteTarget,
   aimSource: () => rightController?.() ?? null,
   arc,
 });
@@ -417,7 +449,8 @@ const hudLive: HudLive = {
  * scale. The turn counts as a discontinuity, so the reactive wake does not trail it.
  */
 function recenter(): void {
-  if (!runLocomotion) return;
+  // A portal transition holds the rig still, its fly strokes and spawn heading included.
+  if (!runLocomotion || switcher.busy) return;
   // A mode switch: the trigger or keys that pressed it report nothing until released, so the
   // panel button's trigger never reaches `select` once the panel resets its hands.
   input.suppressHeld();
@@ -451,6 +484,7 @@ const panel = runLocomotion
           store: settingsStore,
           recenter,
           gallery: galleryReturnCallback,
+          onGalleryChange: onGalleryReturnChange,
           sessionQuality: () => sessionQuality,
           hud: hudLive,
           onClose: () => input.suppressHeld(),
@@ -476,9 +510,46 @@ renderer.xr.addEventListener('sessionstart', () => {
 });
 // XR exit saves the panel's pose against the last XR head pose, before the desktop look moves it.
 renderer.xr.addEventListener('sessionend', () => panel?.sessionEnd());
+/** A frame with no movement, turn, aim or toggle: what locomotion reads during a transition. */
+function frozenActions(a: Actions): Actions {
+  return {
+    ...a,
+    move: { x: 0, y: 0 },
+    sprint: false,
+    turn: { x: 0, snap: 0 },
+    teleportAim: false,
+    teleportCommit: false,
+    flightToggle: false,
+    vertical: 0,
+  };
+}
+const headScratch = new Vector3();
+let lastJump: unknown = null;
+let lastHeadJumps = 0;
+/** The head's world position after locomotion, and this frame's teleport, for the portals. */
+function detectPortals(): void {
+  camera.updateWorldMatrix(true, false);
+  headScratch.setFromMatrixPosition(camera.matrixWorld);
+  const rig = locomotion.diag();
+  const jump = rig.lastTeleport;
+  const teleported = jump !== null && jump !== lastJump;
+  lastJump = jump;
+  // A turn about the head leaves it in place, so a step on a snap turn's frame still tests.
+  const count = locomotion.headJumps();
+  const jumped = count !== lastHeadJumps;
+  lastHeadJumps = count;
+  switcher.detect({
+    head: [headScratch.x, headScratch.y, headScratch.z],
+    teleportTo: teleported && jump ? jump.to : null,
+    jumped,
+  });
+}
 function renderFrame(time: number): void {
+  const workStart = performance.now();
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
+  const dtMs = lastTime === 0 ? 0 : time - lastTime;
   lastTime = time;
+  slicer.frame();
   const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
   actions = input.read(sources, keyboard, dt);
   if (panel) {
@@ -511,17 +582,23 @@ function renderFrame(time: number): void {
   world?.update(time / 1000, dt);
   if (!renderer.xr.isPresenting) desktop.update();
   if (runLocomotion) {
-    locomotion.frame(actions, renderer.xr.isPresenting);
+    switcher.frame(dtMs);
+    const busy = switcher.busy;
+    locomotion.frame(busy ? frozenActions(actions) : actions, renderer.xr.isPresenting);
+    if (!busy) detectPortals();
     trackDisturbers(time, renderer.xr.isPresenting);
   }
   zdiag.beforeRender(camera);
+  const renderStart = performance.now();
   renderer.render(scene, camera);
+  const renderMs = performance.now() - renderStart;
   drawCalls = renderer.info.render.calls;
   if (abSwitchStart !== null && abSwitch) {
     abSwitch.frameMs = performance.now() - abSwitchStart;
     abSwitchStart = null;
   }
   hud?.frame(time, leftButtonPressed(sources, BUTTON_X));
+  if (runLocomotion) switcher.endFrame(performance.now() - workStart, renderMs);
 }
 renderer.setAnimationLoop(renderFrame);
 
@@ -660,13 +737,120 @@ if (flags.demo === 'canvas' && !painting) {
     .catch((error: unknown) => console.warn('canvas demo failed to start', error));
 }
 
-if (worldEntry) {
+/** The registry's world loader for `id`: the gallery's, or a live painting's. */
+function worldLoader(id: string): (() => Promise<WorldModule>) | null {
+  if (id === GALLERY_ID) return GALLERY_WORLD.world;
+  return PAINTINGS.find((p) => p.id === id)?.world ?? null;
+}
+
+/** The deps every world build gets; a transition's build also gets the slicer. */
+function worldDeps(sliced: boolean, loadRaster: WorldDeps['loadRaster']): WorldDeps {
+  return {
+    scene,
+    seed: flags.seed,
+    loadRaster,
+    nocache: flags.nocache,
+    cache: flags.cache,
+    debug: flags.diag ? (flags.bare ? 'bare' : flags.coverage ? 'coverage' : null) : null,
+    halo: haloOn,
+    maxAnisotropy: renderer.capabilities.getMaxAnisotropy(),
+    atlas: strokeAtlas(),
+    slicer: sliced ? slicer : undefined,
+    plaqueFrame: () => slicer.nextFrame(),
+  };
+}
+
+/** Binds a built world to everything that follows the active world, at boot and on a switch. */
+function bindWorld({ id, module, handle }: LiveWorld): void {
   // Only a painting's world moves: the gallery, canvas demo, test scene and bench share its stroke
   // layers (R-P4f). `?motionlayers` (e2e builds only) can close layers, never open one.
-  if (painting) {
-    const only = import.meta.env.MODE === 'e2e' ? flags.motionlayers : null;
-    motionClock.setLayerMask(only === null ? MOTION_LAYER_MASK : MOTION_LAYER_MASK & only);
+  const only = import.meta.env.MODE === 'e2e' ? flags.motionlayers : null;
+  const mask = only === null ? MOTION_LAYER_MASK : MOTION_LAYER_MASK & only;
+  motionClock.setLayerMask(id === GALLERY_ID ? 0 : mask);
+  haloWorld = handle;
+  handle.setHalo?.(haloOn);
+  if (abActive?.group === 'halo') {
+    // A hidden halo has never drawn, so its program would link on the first switch to on.
+    if (handle.halo) renderer.compile(handle.halo, camera, scene);
+    if (!handle.setHalo) {
+      console.warn(`A/B halo: world ${id} has no halo pass, so the halo group does nothing`);
+    }
   }
+  world = module;
+  locomotion.setWorld(handle);
+  const { batch } = handle;
+  zdiag.applyToBatch(batch);
+  skyBatch = batch;
+  // The sky base map is the bound world's own sky (empty for the gallery), so each world rebuilds
+  // it rather than keep the first bound batch's.
+  if (skyFadeLive) {
+    motionVariants.buildSkyBase(skyBaseStrokes(batch), STROKE_LAYER.sky, PAINTER_EYE, true);
+  }
+  buildArc(batch.atlas);
+  reactiveBatch = batch;
+  void strokes.bind(batch);
+  registerGalleryReturn(id === GALLERY_ID ? null : () => void switcher.go(GALLERY_ID, 'return'));
+}
+
+/** Releases every binding to the active world, before its module disposes it. */
+function unbindWorld(): void {
+  registerGalleryReturn(null);
+  if (strokes.batch) void strokes.bind(null);
+  world = null;
+  haloWorld = null;
+  reactiveBatch = null;
+  skyBatch = null;
+  // Drops the old world's handle, then holds the rig's height until the next world's ground binds.
+  locomotion.setWorld(null);
+  locomotion.awaitGround();
+}
+
+const switcher = createSwitcher({
+  renderer,
+  scene,
+  camera,
+  rig: locomotion.rig,
+  slicer,
+  atlas: strokeAtlas,
+  build: async (id) => {
+    const load = worldLoader(id);
+    if (!load) throw new Error(`no world for ${id}`);
+    const [module, { loadRaster }] = await Promise.all([load(), import('./demo/canvas/demo')]);
+    const handle = await module.build(worldDeps(true, loadRaster));
+    return { id, module, handle };
+  },
+  bind: bindWorld,
+  unbind: unbindWorld,
+  spawn: ({ position, yaw }) => {
+    spawnYaw = yaw;
+    locomotion.spawn(position[0], position[1], position[2], yaw);
+  },
+  bare: () => locomotion.setWorld(null),
+  suppressInput: () => input.suppressHeld(),
+  setVeil: setPortalVeil,
+  calm: () => settingsStore.effective.calm,
+  loadRaster: async (url) => (await import('./demo/canvas/demo')).loadRaster(url, false),
+  now: () => performance.now(),
+});
+if (flags.diag) {
+  registerDiag('painting', () => switcher.active?.id ?? null);
+  registerDiag('portal', () => switcher.diag());
+  window.__goghPortal = (id: string) => switcher.go(id, 'api');
+  if (import.meta.env.MODE === 'e2e') {
+    // Lets a spec draw the vignette sphere once, so its geometry uploads before a GPU baseline.
+    window.__goghVeil = (alpha: number) => {
+      if (!switcher.busy) setPortalVeil(alpha);
+    };
+  }
+}
+// G returns to the gallery from a world on the desktop, as the panel's button does (P5.5).
+window.addEventListener('keydown', (event) => {
+  if (event.code === 'KeyG' && !event.repeat && !renderer.xr.isPresenting) {
+    galleryReturnCallback()?.();
+  }
+});
+
+if (worldEntry) {
   locomotion.awaitGround();
   const load = worldEntry.world;
   Promise.all([load(), import('./demo/canvas/demo')])
@@ -680,30 +864,8 @@ if (worldEntry) {
         spawnYaw = yaw;
         locomotion.spawn(position[0], position[1], position[2], yaw);
       }
-      const handle = await module.build({
-        scene,
-        seed: flags.seed,
-        loadRaster,
-        nocache: flags.nocache,
-        cache: flags.cache,
-        debug: flags.diag ? (flags.bare ? 'bare' : flags.coverage ? 'coverage' : null) : null,
-        halo: haloOn,
-        maxAnisotropy: renderer.capabilities.getMaxAnisotropy(),
-      });
-      haloWorld = handle;
-      handle.setHalo?.(haloOn);
-      if (abActive?.group === 'halo') {
-        // A hidden halo has never drawn, so its program would link on the first switch to on.
-        if (handle.halo) renderer.compile(handle.halo, camera, scene);
-        if (!handle.setHalo) {
-          console.warn(
-            `A/B halo: world ${worldEntry.id} has no halo pass, so the halo group does nothing`,
-          );
-        }
-      }
-      world = module;
-      locomotion.setWorld(handle);
-      await governStrokes(handle.batch);
+      const handle = await module.build(worldDeps(false, loadRaster));
+      switcher.adopt({ id: worldEntry.id, module, handle });
     })
     .catch((error: unknown) => {
       locomotion.setWorld(null);

@@ -184,11 +184,22 @@ export function createPanelToggle(deps: PanelToggleDeps): PanelToggle {
   };
 }
 
-/** P5.5 registers the return-to-gallery transition here; until then the button is disabled. */
+/**
+ * main.ts registers the return-to-gallery transition here while a painting's world is active
+ * (P5.5), and null otherwise, which hides the button.
+ */
 let galleryReturn: (() => void) | null = null;
+const galleryListeners = new Set<() => void>();
 
 export function registerGalleryReturn(callback: (() => void) | null): void {
   galleryReturn = callback;
+  for (const listener of galleryListeners) listener();
+}
+
+/** Calls `listener` on every registration, so an open DOM panel shows or hides its button. */
+export function onGalleryReturnChange(listener: () => void): () => void {
+  galleryListeners.add(listener);
+  return () => galleryListeners.delete(listener);
 }
 
 export function galleryReturnCallback(): (() => void) | null {

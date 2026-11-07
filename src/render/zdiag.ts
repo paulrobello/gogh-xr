@@ -199,6 +199,14 @@ export function createZdiag(
   let prepared: (ZdiagMode | null)[] = [];
   let precompiled = 0;
   let precompileMs: number | null = null;
+  /**
+   * Each atlas's own filtering, read the first time a batch on it binds. Worlds share one atlas
+   * (P5.5), so a later batch would otherwise read a diagnostic mode's filter as its default.
+   */
+  const atlasDefaults = new WeakMap<
+    Texture,
+    { minFilter: number; generateMipmaps: boolean; anisotropy: number }
+  >();
   // three then leaves the XR camera alone inside render, and beforeRender updates it instead.
   if (mode === 'freeze') renderer.xr.cameraAutoUpdate = false;
 
@@ -266,6 +274,15 @@ export function createZdiag(
   return {
     applyToBatch(batch) {
       const { atlas } = batch;
+      let defaults = atlasDefaults.get(atlas);
+      if (!defaults) {
+        defaults = {
+          minFilter: atlas.minFilter,
+          generateMipmaps: atlas.generateMipmaps,
+          anisotropy: atlas.anisotropy,
+        };
+        atlasDefaults.set(atlas, defaults);
+      }
       const entry: Bound = {
         batch,
         materials: Object.values(batch.materials).map((material) => ({
@@ -275,9 +292,7 @@ export function createZdiag(
           alphaToCoverage: material.alphaToCoverage,
         })),
         atlas,
-        minFilter: atlas.minFilter,
-        generateMipmaps: atlas.generateMipmaps,
-        anisotropy: atlas.anisotropy,
+        ...defaults,
         order: batch.defaultOrder,
       };
       bound = entry;

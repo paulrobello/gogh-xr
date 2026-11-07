@@ -5,6 +5,7 @@
  * UV convention (painting space): u runs left to right, v bottom to top, so v = 1 is image row 0.
  * flow.png and regions.png squash the painting into a square; sampling by uv undoes that.
  */
+import { drain, type Steps } from '../../util/slicer';
 
 /** Decoded RGBA8 pixels, row 0 at the top of the image. */
 export interface Raster {
@@ -88,22 +89,27 @@ export interface FlowField {
 export const FLOW_SMOOTH_RADIUS = 12;
 
 /** Separable box blur with an edge-normalised window, in place via `scratch`. */
-function boxBlur(
+/** Texels of work between two yields of the flow field's steps. */
+const FLOW_SLICE = 1 << 17;
+
+function* boxBlurSteps(
   values: Float32Array,
   width: number,
   height: number,
   radius: number,
   scratch: Float32Array,
-): void {
-  const pass = (
+): Steps<void> {
+  function* pass(
     from: Float32Array,
     to: Float32Array,
     length: number,
     lines: number,
     step: number,
     stride: number,
-  ): void => {
+  ): Steps<void> {
+    const linesPerSlice = Math.max(1, Math.floor(FLOW_SLICE / length));
     for (let line = 0; line < lines; line++) {
+      if (line > 0 && line % linesPerSlice === 0) yield;
       const base = line * stride;
       let sum = 0;
       for (let i = 0; i <= Math.min(radius, length - 1); i++) sum += from[base + i * step];
@@ -115,9 +121,9 @@ function boxBlur(
         to[base + i * step] = sum / (Math.min(hi, length - 1) - Math.max(lo, -1));
       }
     }
-  };
-  pass(values, scratch, width, height, 1, width);
-  pass(scratch, values, height, width, width, 1);
+  }
+  yield* pass(values, scratch, width, height, 1, width);
+  yield* pass(scratch, values, height, width, width, 1);
 }
 
 /**
@@ -128,6 +134,14 @@ function boxBlur(
  * every π, so they are averaged as doubled angles, never as θ.
  */
 export function buildFlowField(flow: Raster, radius: number = FLOW_SMOOTH_RADIUS): FlowField {
+  return drain(buildFlowFieldSteps(flow, radius));
+}
+
+/** `buildFlowField` as steps (P5.5): the same arithmetic, yielding every `FLOW_SLICE` texels. */
+export function* buildFlowFieldSteps(
+  flow: Raster,
+  radius: number = FLOW_SMOOTH_RADIUS,
+): Steps<FlowField> {
   const { width, height, data } = flow;
   const n = width * height;
   const lx = new Float32Array(n);
@@ -136,6 +150,7 @@ export function buildFlowField(flow: Raster, radius: number = FLOW_SMOOTH_RADIUS
   const sx = new Float32Array(n);
   const sy = new Float32Array(n);
   for (let i = 0; i < n; i++) {
+    if (i > 0 && i % FLOW_SLICE === 0) yield;
     const c = data[i * 4 + 2] / 255;
     lx[i] = (2 * data[i * 4]) / 255 - 1;
     ly[i] = (2 * data[i * 4 + 1]) / 255 - 1;
@@ -144,10 +159,11 @@ export function buildFlowField(flow: Raster, radius: number = FLOW_SMOOTH_RADIUS
     sy[i] = c * ly[i];
   }
   const scratch = new Float32Array(n);
-  boxBlur(sx, width, height, radius, scratch);
-  boxBlur(sy, width, height, radius, scratch);
+  yield* boxBlurSteps(sx, width, height, radius, scratch);
+  yield* boxBlurSteps(sy, width, height, radius, scratch);
   const angle = new Float32Array(n);
   for (let i = 0; i < n; i++) {
+    if (i > 0 && i % FLOW_SLICE === 0) yield;
     const c = coherence[i];
     const s = Math.hypot(sx[i], sy[i]);
     const fx = s > 1e-6 ? c * lx[i] + ((1 - c) * sx[i]) / s : lx[i];

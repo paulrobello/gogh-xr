@@ -51,6 +51,10 @@ declare global {
     __goghMoonDisc?: (points: number) => [number, number][] | null;
     /** e2e builds only, with `?motiont`: moves the pinned motion time to `t` seconds (main.ts). */
     __goghMotionT?: (t: number) => void;
+    /** Starts a portal transition to world `id` (P5.5); false while one runs. `?diag` only. */
+    __goghPortal?: (id: string) => boolean;
+    /** e2e builds only, with `?diag`: the portal veil at `alpha` while no transition runs. */
+    __goghVeil?: (alpha: number) => void;
   }
 }
 

@@ -40,12 +40,14 @@ export interface MotionVariants {
    * Builds the base map from the `layer` strokes of `sets`, by direction from `eye`, unless one is
    * built already, and says whether it built. main.ts calls it for the first bound stroke batch of
    * any scene (a world, the canvas demo or the test scene), so `fade` never samples the empty
-   * texture where a batch has sky strokes.
+   * texture where a batch has sky strokes. `replace` rebuilds it from a new world's batch after a
+   * portal switch (P5.5).
    */
   buildSkyBase(
     sets: readonly SkyBaseStrokes[],
     layer: number,
     eye: readonly [number, number, number],
+    replace?: boolean,
   ): boolean;
   diag(): { wrap: SkyWrap; flame: FlameSway; skyBase: boolean };
 }
@@ -76,8 +78,8 @@ export function createMotionVariants(): MotionVariants {
       uniforms.uCypressSway.value = flameSwayCode(sway);
     },
     setSkyBase,
-    buildSkyBase(sets, layer, eye) {
-      if (built) return false;
+    buildSkyBase(sets, layer, eye, replace = false) {
+      if (built && !replace) return false;
       setSkyBase(skyBaseMap(sets, layer, eye), SKY_BASE_SIZE);
       return true;
     },

@@ -22,6 +22,8 @@ export interface SettingsDomDeps {
   store: SettingsStore;
   recenter(): void;
   gallery(): (() => void) | null;
+  /** Calls its listener when `gallery()` changes; returns the unsubscribe. */
+  onGalleryChange?(listener: () => void): () => void;
   sessionQuality(): Settings['quality'];
   /** The perf HUD's live visibility: the HUD toggle shows it and sets it with the setting. */
   hud: HudLive;
@@ -222,7 +224,9 @@ export function createSettingsDom(deps: SettingsDomDeps): SettingsDom {
     actions.appendChild(b);
     updaters.push(() => {
       b.title = helpFor(def);
-      b.disabled = def.action === 'gallery' && deps.gallery() === null;
+      // Return to gallery shows only inside a painting's world (P5.5).
+      b.hidden = def.action === 'gallery' && deps.gallery() === null;
+      b.disabled = b.hidden;
     });
   }
   panel.appendChild(actions);
@@ -232,6 +236,8 @@ export function createSettingsDom(deps: SettingsDomDeps): SettingsDom {
     for (const update of updaters) update();
   };
   const unsubscribe = store.subscribe(refresh);
+  // A world switch while the panel is open shows or hides Return to gallery at once.
+  const unsubscribeGallery = deps.onGalleryChange?.(refresh) ?? (() => {});
 
   function setOpen(next: boolean): void {
     if (next) {
@@ -257,6 +263,7 @@ export function createSettingsDom(deps: SettingsDomDeps): SettingsDom {
     setOpen,
     dispose() {
       unsubscribe();
+      unsubscribeGallery();
       doc.removeEventListener('pointerlockchange', onLock);
       panel.remove();
       style.remove();

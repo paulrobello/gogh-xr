@@ -2,11 +2,12 @@
  * The contract every painting world implements (PRD D14). A registry entry's `world()` resolves to
  * one; the gallery (P5) and the boot path only ever see this interface.
  */
-import type { Object3D, Scene } from 'three';
+import type { Object3D, Scene, Texture } from 'three';
 import type { Raster } from '../demo/canvas/field';
 import type { WalkBounds } from '../locomotion/walk-bounds';
 import type { StrokeBatch } from '../render/strokes/batch';
 import type { Vec3 } from '../render/strokes/frame';
+import { drain, type Slicer, type Steps } from '../util/slicer';
 
 /** A standing pose: a floor position and a heading. Yaw 0 faces -Z, positive turns left. */
 export interface WorldPose {
@@ -50,6 +51,34 @@ export interface WorldDeps {
   readonly halo?: boolean;
   /** The renderer's texture anisotropy cap, for a world's image textures. Default 1. */
   readonly maxAnisotropy?: number;
+  /**
+   * Spreads the build's CPU work over frames (P5.5), for a build behind a portal transition.
+   * Omitted (the boot): the build runs its steps at once, with the same result.
+   */
+  readonly slicer?: Slicer;
+  /**
+   * The brush atlas the caller owns and shares across worlds (P5.5); the world's batch uses it and
+   * never disposes it. Omitted: the batch builds and owns its own.
+   */
+  readonly atlas?: Texture;
+  /**
+   * Resolves at the next animation frame: the gallery typesets one plaque per frame on it (P5.5,
+   * review M5), at boot too. Omitted: the slicer's frame, or no wait without one.
+   */
+  readonly plaqueFrame?: () => Promise<void>;
+}
+
+/** `deps.slicer`'s `step` and `run`, or the same work at once without one. */
+export function buildSteps(slicer: Slicer | undefined): {
+  step<T>(work: () => T, label?: string): Promise<T>;
+  run<T>(steps: Steps<T>, label?: string): Promise<T>;
+  nextFrame(): Promise<void>;
+} {
+  return {
+    step: (work, label) => (slicer ? slicer.step(work, label) : Promise.resolve(work())),
+    run: (steps, label) => (slicer ? slicer.run(steps, label) : Promise.resolve(drain(steps))),
+    nextFrame: () => (slicer ? slicer.nextFrame() : Promise.resolve()),
+  };
 }
 
 /** The walkable ground: the surface a viewer stands on. */
@@ -89,6 +118,12 @@ export interface WorldHandle {
    * (src/locomotion/walk-bounds.ts). Omitted: an open world, never clamped.
    */
   readonly walkBounds?: WalkBounds;
+  /**
+   * Resolves once the parts the world adds after `build` resolves (the gallery's plaques) are in
+   * the scene, or have failed or been skipped; never rejects. A portal transition waits on it to
+   * compile them before the world shows. Omitted: nothing comes after the build.
+   */
+  readonly ready?: Promise<void>;
 }
 
 export interface WorldModule {

@@ -173,6 +173,12 @@ export interface Locomotion {
    * recenter). The reactive tracker restarts its wakes when it changes (P4.5).
    */
   discontinuities(): number;
+  /**
+   * Counts the discontinuities that carry the head: a teleport jump, `spawn`, `setPose` and
+   * `markDiscontinuity`. A snap turn and `faceYaw` turn about the head and leave it in place, so
+   * they are not counted: the portals test a walk across a turn's frame as one segment (P5.5).
+   */
+  headJumps(): number;
   markDiscontinuity(): void;
   /** The rig, in one object reused across calls. */
   diag(): RigDiag;
@@ -229,6 +235,8 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
   let lastTeleport: TeleportRecord | null = null;
   /** Discontinuous moves so far (`discontinuities`). */
   let discontinuities = 0;
+  /** Those of them that moved the head (`headJumps`). */
+  let headJumps = 0;
   const aimOrigin: [number, number, number] = [0, 0, 0];
   const aimDirection: [number, number, number] = [0, 0, 0];
   const eye: [number, number, number] = [0, 0, 0];
@@ -287,6 +295,7 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     teleportRig(state, head, hit, settings);
     lastTeleport = { from, to: [hit[0], hit[1], hit[2]], t: now() };
     discontinuities += 1;
+    headJumps += 1;
   }
 
   /** Traces the aim from `source`'s -Z in world space, the rig as written this frame. */
@@ -458,6 +467,7 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       look.update();
       writeRig();
       discontinuities += 1;
+      headJumps += 1;
     },
     setPose(x, y, z, yaw, pitch) {
       cancelTeleport();
@@ -466,10 +476,13 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       look.update();
       writeRig();
       discontinuities += 1;
+      headJumps += 1;
     },
     discontinuities: () => discontinuities,
+    headJumps: () => headJumps,
     markDiscontinuity() {
       discontinuities += 1;
+      headJumps += 1;
     },
     setSettings(next) {
       if (next.seated !== settings.seated || next.standingHeight !== settings.standingHeight) {

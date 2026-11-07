@@ -7,7 +7,13 @@ import { applySettingsChange } from '../src/settings/apply.ts';
 import { DEFAULT_SETTINGS, type Settings, toLocomotionSettings } from '../src/settings/schema.ts';
 import { createSettingsStore, SAVE_DELAY_MS } from '../src/settings/store.ts';
 import { createPanelPose } from '../src/ui/panel-core.ts';
-import { controlLayout, hitControl, sliderValue } from '../src/ui/panel-layout.ts';
+import {
+  controlLayout,
+  controlRect,
+  hitControl,
+  setControlHidden,
+  sliderValue,
+} from '../src/ui/panel-layout.ts';
 import {
   clearPanelPose,
   DEFAULT_OFFSET,
@@ -263,6 +269,25 @@ test('slider values sit on their step, and hits map to the control and segment',
   const s1 = turn?.segments[1];
   if (!s1) throw new Error('no segment');
   expect(hitControl(s1.x, s1.y)).toMatchObject({ id: 'turnMode', segment: 1 });
+});
+
+test('a hidden Return to gallery takes no hits and Recenter moves to the row centre (P5.5)', () => {
+  const gallery = controlLayout('gallery');
+  const recenter = controlLayout('recenter');
+  if (!gallery || !recenter) throw new Error('missing buttons');
+  expect(hitControl(gallery.rect.x, gallery.rect.y)).toMatchObject({ id: 'gallery' });
+  expect(controlRect(recenter)).toEqual(recenter.rect);
+  setControlHidden('gallery', true);
+  try {
+    // No hover and so no tooltip over the empty slot, and the lone button sits centred.
+    const centred = controlRect(recenter);
+    expect(centred.x).toBe(0);
+    expect(hitControl(gallery.rect.x, gallery.rect.y)?.id ?? null).not.toBe('gallery');
+    expect(hitControl(centred.x, centred.y)).toMatchObject({ id: 'recenter' });
+  } finally {
+    setControlHidden('gallery', false);
+  }
+  expect(controlRect(recenter)).toEqual(recenter.rect);
 });
 
 const keys: KeyboardState = { keys: new Set(), mouseButtons: new Set() };

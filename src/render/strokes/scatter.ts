@@ -56,6 +56,7 @@ import {
   trimBand,
 } from '../../paintings/starry-night/village-tint';
 import { mulberry32 } from '../../util/prng';
+import { drain, type Steps } from '../../util/slicer';
 import { CYPRESS_HEIGHT_ATTRIBUTE, CYPRESS_LOBE_ATTRIBUTE } from '../../world/cypress';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import { BRUSHES, type BrushKind } from './brush-atlas-data';
@@ -608,6 +609,21 @@ export function scatterSurfaces(
   source: CanvasSource,
   options: ScatterOptions,
 ): StrokeBuffers {
+  return drain(scatterSurfacesSteps(meshes, source, options));
+}
+
+/** Strokes placed between two yields of `scatterSurfacesSteps`: a few ms of work. */
+export const SCATTER_SLICE = 1024;
+
+/**
+ * `scatterSurfaces` as steps (P5.5): the same work in the same order, yielding after each mesh's
+ * counts and every `SCATTER_SLICE` placed strokes, so a slicer can spread it over frames.
+ */
+export function* scatterSurfacesSteps(
+  meshes: readonly BufferGeometry[],
+  source: CanvasSource,
+  options: ScatterOptions,
+): Steps<StrokeBuffers> {
   // Pass 1: stratified counts per triangle, from each mesh's count stream.
   const tables = resolveScatterTables(options);
   const surfaces: Surface[] = [];
@@ -634,6 +650,7 @@ export function scatterSurfaces(
     const sides = faces?.faces.reduce((sum, f) => sum + f.vertices.length, 0) ?? 0;
     const outline = faces && OUTLINED_LAYERS.includes(layer) ? new Uint32Array(sides) : null;
     surfaces.push({ ...ordered, density, size, counts, faces, outline });
+    yield;
   }
   let clamped = 0;
   for (const { layer, counts } of surfaces) {
@@ -649,6 +666,7 @@ export function scatterSurfaces(
     : null;
   const buffers = createStrokeBuffers(total);
   let index = 0;
+  let sliceStart = 0;
   for (const surface of surfaces) {
     const { geometry, layer, layerIndex, meshIndex, size, counts, faces } = surface;
     const rand = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 1));
@@ -666,6 +684,10 @@ export function scatterSurfaces(
     const flame = heightAttr && lobeAttr ? { height: heightAttr, lobe: lobeAttr } : null;
     for (let t = 0; t < counts.length; t++) {
       if (counts[t] === 0) continue;
+      if (index - sliceStart >= SCATTER_SLICE) {
+        sliceStart = index;
+        yield;
+      }
       const ia = vertexIndex(geometry, t, 0);
       const ib = vertexIndex(geometry, t, 1);
       const ic = vertexIndex(geometry, t, 2);

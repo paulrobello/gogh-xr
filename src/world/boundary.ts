@@ -12,6 +12,7 @@ import { BRUSHES } from '../render/strokes/brush-atlas-data';
 import type { Vec3 } from '../render/strokes/frame';
 import { STROKE_LAYER, type StrokeInstance } from '../render/strokes/instance';
 import { mulberry32 } from '../util/prng';
+import { drain, type Steps } from '../util/slicer';
 
 /** Radial distance from the spot at which `boundaryFactor` reaches 1, metres. */
 export const BOUNDARY_RADIUS: number = 50;
@@ -90,6 +91,17 @@ export function createBoundaryHaze(
   source: CanvasSource,
   options: BoundaryHazeOptions = {},
 ): StrokeInstance[] {
+  return drain(createBoundaryHazeSteps(source, options));
+}
+
+/** Candidates drawn between two yields of `createBoundaryHazeSteps`. */
+const HAZE_SLICE = 2048;
+
+/** `createBoundaryHaze` as steps (P5.5): the same draws, yielding every `HAZE_SLICE` candidates. */
+export function* createBoundaryHazeSteps(
+  source: CanvasSource,
+  options: BoundaryHazeOptions = {},
+): Steps<StrokeInstance[]> {
   const count = options.count ?? HAZE_STROKE_DEFAULT;
   const rand = mulberry32(options.seed ?? DEFAULT_HAZE_SEED);
   const span = HAZE_RADIUS.max - HAZE_RADIUS.min;
@@ -98,6 +110,7 @@ export function createBoundaryHaze(
   // Guard: if the rejection tests starve the loop (for example a ground above the whole shell),
   // it stops after maxDraws candidates and returns fewer than `count` strokes.
   for (let draws = 0; out.length < count && draws < maxDraws; draws++) {
+    if (draws > 0 && draws % HAZE_SLICE === 0) yield;
     const r = HAZE_RADIUS.min + span * rand();
     const accept = rand();
     const dy = 2 * rand() - 1;

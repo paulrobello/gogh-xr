@@ -153,7 +153,7 @@ export interface LoadOrScatterOptions {
   readonly storage: ScatterCacheStorage | null;
   readonly key: string;
   readonly bypass: boolean;
-  readonly scatter: () => StrokeBuffers;
+  readonly scatter: () => StrokeBuffers | Promise<StrokeBuffers>;
   /** Read timeout; defaults to SCATTER_CACHE_TIMEOUT_MS. */
   readonly timeoutMs?: number;
 }
@@ -185,7 +185,7 @@ export async function loadOrScatter(options: LoadOrScatterOptions): Promise<Scat
       // Unavailable or failed read: scatter instead.
     }
   }
-  const buffers = scatter();
+  const buffers = await scatter();
   const saved =
     storage && !bypass
       ? Promise.resolve()

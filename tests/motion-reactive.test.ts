@@ -683,6 +683,21 @@ describe('a snap turn leaves no wake (M1)', () => {
     locomotion.markDiscontinuity();
     expect(locomotion.discontinuities()).toBe(start + 3);
   });
+
+  test('only the moves that carry the head count as head jumps, not turns about it (P5.5)', () => {
+    const { desktop, locomotion } = rigWithControls();
+    desktop.update();
+    const turns = locomotion.discontinuities();
+    const jumps = locomotion.headJumps();
+    locomotion.frame(SNAP, false);
+    locomotion.faceYaw(1);
+    expect(locomotion.discontinuities()).toBe(turns + 2);
+    expect(locomotion.headJumps()).toBe(jumps);
+    locomotion.spawn(1, 0, -2, 0.5);
+    locomotion.setPose(3, 2, -4, 0.5, 0);
+    locomotion.markDiscontinuity();
+    expect(locomotion.headJumps()).toBe(jumps + 3);
+  });
 });
 
 describe('velocity is relative to the rig (Q41)', () => {

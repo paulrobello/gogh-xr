@@ -806,6 +806,43 @@ describe('update', () => {
   });
 });
 
+describe('reveal (P5.5)', () => {
+  test('draws each newly revealed chunk once whatever the cull, then only what the cull keeps', () => {
+    // Four chunks along z = +7 to -8, two of them behind a camera at the origin looking -z.
+    const batch = createStrokeBatch(row(16, 7.5), { cellSize: 4, createAtlas: tinyAtlas });
+    const camera = new PerspectiveCamera(70, 1, 0.05, 100);
+    camera.position.set(0, 1.6, 0);
+    render(batch, camera);
+    const inView = batch.chunks.map((c) => c.mesh.visible);
+    expect(inView.filter(Boolean).length).toBeGreaterThan(0);
+    expect(inView.filter((v) => !v).length).toBeGreaterThan(0);
+
+    batch.reveal(0);
+    render(batch, camera);
+    expect(batch.chunks.every((c) => !c.mesh.visible)).toBe(true);
+
+    const all = batch.chunks.length;
+    batch.reveal(all);
+    render(batch, camera);
+    // Every chunk the reveal opened draws, in view or not, so its buffers upload this frame.
+    expect(batch.chunks.every((c) => c.mesh.visible)).toBe(true);
+    render(batch, camera);
+    expect(batch.chunks.map((c) => c.mesh.visible)).toEqual(inView);
+
+    // Lowering the cap warms nothing; raising it warms only the chunks it newly opens.
+    batch.reveal(1);
+    render(batch, camera);
+    batch.reveal(2);
+    render(batch, camera);
+    expect(batch.chunks.map((c) => c.mesh.visible)).toEqual([inView[0], true, false, false]);
+    // Infinity warms nothing either.
+    batch.reveal(Number.POSITIVE_INFINITY);
+    render(batch, camera);
+    expect(batch.chunks.map((c) => c.mesh.visible)).toEqual(inView);
+    batch.dispose();
+  });
+});
+
 describe('per-frame cull buffers (M3)', () => {
   test('update passes the same order and distance arrays to cullAndSortInto every frame', () => {
     const batch = bandedBatch();

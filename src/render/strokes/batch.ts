@@ -18,6 +18,7 @@ import { motionGate, REACTIVE_MOTION_BIT, reactiveGate } from '../../motion/laye
 import { REACTIVE_MAX_GAIN, REACTIVE_REACH } from '../../motion/reactive';
 import { ringOf, skyRingReach } from '../../motion/sky-rings';
 import { skySwirlReach } from '../../motion/sky-swirl';
+import { drain, type Steps } from '../../util/slicer';
 import { addBeforeRender } from '../scene-hooks';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import {
@@ -241,6 +242,13 @@ export interface StrokeBatch {
    */
   visibleByBand(): Readonly<Record<StrokeBand, number>>;
   stats(): StrokeBatchStats;
+  /**
+   * Only chunks below index `n` may show from the next `update` on; Infinity (the default) shows
+   * every chunk the cull keeps. A portal transition raises it a few chunks per frame under its
+   * veil (P5.5). The next `update` also draws the newly revealed chunks the cull drops, once, so
+   * three uploads every chunk's buffers over those frames instead of on the first turn after.
+   */
+  reveal(n: number): void;
   /** Replaces the order policy from the next `update` on. */
   setOrderPolicy(policy: StrokeOrderPolicy): void;
   /** The policy the batch starts with: DEFAULT_ORDER_POLICY, or WRITE_ORDER_POLICY with `depthWrite`. */
@@ -252,7 +260,8 @@ export interface StrokeBatch {
    */
   orderBeforeClass(drawClass: StrokeDrawClass): number;
   /**
-   * Releases every chunk geometry, the band materials and the atlas texture, and removes the
+   * Releases every chunk geometry, the band materials and the atlas texture (unless the caller
+   * owns it, `StrokeBatchOptions.atlas`), and removes the
    * batch's own render hook, leaving any other hook on the scene in place.
    */
   dispose(): void;
@@ -263,6 +272,11 @@ export interface StrokeBatchOptions {
   readonly cellSize?: number;
   /** Builds the atlas the batch owns; defaults to `createBrushAtlas()`. */
   readonly createAtlas?: () => Texture;
+  /**
+   * A shared atlas the caller owns (P5.5): the batch uses it, ignores `createAtlas`, and its
+   * `dispose` leaves it alone, so a world switch keeps one atlas for every batch and the arc.
+   */
+  readonly atlas?: Texture;
   /** Seed of the per-chunk importance order; defaults to `STROKE_ORDER_SEED`. */
   readonly seed?: number;
   /**
@@ -278,6 +292,9 @@ export interface StrokeBatchOptions {
    */
   readonly cypressChunk?: boolean;
 }
+
+/** Strokes partitioned between two yields of `createStrokeBatchSteps`' cell loop. */
+const BATCH_SLICE = 16_384;
 
 /** Unit quad corners in [-0.5, 0.5]², counter-clockwise seen from +z (the instance normal). */
 function createQuadAttributes(): { position: BufferAttribute; index: BufferAttribute } {
@@ -489,9 +506,22 @@ export function createStrokeBatch(
   buffers: StrokeBuffers,
   options: StrokeBatchOptions = {},
 ): StrokeBatch {
+  return drain(createStrokeBatchSteps(buffers, options));
+}
+
+/**
+ * `createStrokeBatch` as steps (P5.5): the same work in the same order, yielding after the atlas,
+ * after the partition, every few cells and after each chunk, so a slicer can spread it over
+ * frames.
+ */
+export function* createStrokeBatchSteps(
+  buffers: StrokeBuffers,
+  options: StrokeBatchOptions = {},
+): Steps<StrokeBatch> {
   const start = performance.now();
-  const atlas = (options.createAtlas ?? createBrushAtlas)();
+  const atlas = options.atlas ?? (options.createAtlas ?? createBrushAtlas)();
   const atlasMs = performance.now() - start;
+  yield;
   const depthWrite = options.depthWrite ?? BATCH_DEPTH_WRITE;
   const defaultOrder = depthWrite ? WRITE_ORDER_POLICY : DEFAULT_ORDER_POLICY;
   const densities: Record<StrokeBand, number> = { ...DEFAULT_BAND_DENSITY };
@@ -511,6 +541,7 @@ export function createStrokeBatch(
     buffers,
     options.cellSize ?? DEFAULT_CELL_SIZE,
   );
+  yield;
   const chunks: StrokeChunk[] = [];
   const bandOf: (StrokeBand | null)[] = [];
   const bandVisible: Record<StrokeBand, number> = { near: 0, mid: 0, far: 0 };
@@ -566,7 +597,12 @@ export function createStrokeBatch(
   }[] = [];
   const cypress: { stroke: number; key: number; cell: number }[] = [];
   let cypressCell = -1;
+  let sliceStart = 0;
   for (let c = 0; c + 1 < offsets.length; c++) {
+    if (offsets[c] - sliceStart >= BATCH_SLICE) {
+      sliceStart = offsets[c];
+      yield;
+    }
     const indices = order.subarray(offsets[c], offsets[c + 1]);
     const classOf = Array.from(indices, (i) => drawClassOf(buffers, i));
     for (const drawClass of STROKE_DRAW_CLASSES) {
@@ -606,6 +642,7 @@ export function createStrokeBatch(
   const reactiveNear = new Uint8Array(parts.length);
   const classRank = new Uint8Array(parts.length);
   for (const { cell: c, drawClass, indices, order: preset } of parts) {
+    yield;
     const { order: chunkIndices, pinned } = preset
       ? { order: preset, pinned: 0 }
       : chunkOrder(buffers, indices, chunkSeed(seed, cells, c));
@@ -716,6 +753,10 @@ export function createStrokeBatch(
   let frozenOnce = false;
 
   let detach: (() => void) | null = null;
+  /** Chunks below this index may show (`reveal`). */
+  let revealed = Number.POSITIVE_INFINITY;
+  /** Chunks in [warmFrom, revealed) draw on the next `update` whatever the cull (`reveal`). */
+  let warmFrom = Number.POSITIVE_INFINITY;
 
   const batch: StrokeBatch = {
     group,
@@ -726,6 +767,11 @@ export function createStrokeBatch(
     orderBeforeClass(drawClass: StrokeDrawClass) {
       const rank = STROKE_DRAW_CLASSES.indexOf(drawClass);
       return STROKES_AFTER_BASE + rank * 2 * chunks.length - 0.5;
+    },
+    reveal(n: number) {
+      const next = Math.max(0, n);
+      warmFrom = Number.isFinite(next) && next > revealed ? revealed : Number.POSITIVE_INFINITY;
+      revealed = next;
     },
     attach(scene: Scene) {
       if (detach) throw new Error('stroke batch is already attached to a scene');
@@ -773,6 +819,7 @@ export function createStrokeBatch(
       for (let rank = 0; rank < kept; rank++) {
         const index = cullOrder[rank];
         const { mesh } = chunks[index];
+        if (index >= revealed) continue;
         mesh.visible = true;
         // A frozen rank is below 2 * chunks.length, so each class block spans that many ranks.
         const block = policy.layered ? classRank[index] * 2 * chunks.length : 0;
@@ -791,6 +838,13 @@ export function createStrokeBatch(
       }
       bandVisibleStale = false;
       if (policy.freeze) frozenOnce = true;
+      // Newly revealed chunks out of view draw this once, uncounted, so their buffers upload now.
+      // A chunk beyond every band has no material to draw with and waits for its first band.
+      const warmTo = Math.min(revealed, chunks.length);
+      for (let i = warmFrom; i < warmTo; i++) {
+        if (bandOf[i] !== null) chunks[i].mesh.visible = true;
+      }
+      warmFrom = Number.POSITIVE_INFINITY;
     },
     setOrderPolicy(next: StrokeOrderPolicy) {
       policy = { ...next };
@@ -886,7 +940,7 @@ export function createStrokeBatch(
       halfDiagonals.length = 0;
       centreBoxes.length = 0;
       for (const band of STROKE_BANDS) materials[band].dispose();
-      atlas.dispose();
+      if (!options.atlas) atlas.dispose();
     },
   };
   return batch;

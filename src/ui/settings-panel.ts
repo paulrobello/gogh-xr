@@ -63,6 +63,8 @@ import {
 import {
   activeSegment,
   type ControlLayout,
+  controlHidden,
+  controlRect,
   formatValue,
   GALLERY_HELP_DISABLED,
   HEADER_Y,
@@ -71,6 +73,7 @@ import {
   PANEL_H,
   PANEL_W,
   qualityNote,
+  setControlHidden,
   sliderFraction,
   sliderPosition,
   sliderValue,
@@ -630,8 +633,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       BORDER_W * 0.7,
       PANEL_COLORS.track,
     );
+    // Return to gallery shows only inside a painting's world (P5.5); hidden, it takes no hits.
+    setControlHidden('gallery', !gallery);
     for (const ct of controlTexts) {
-      const { def, rect, segments } = ct.layout;
+      const { def, segments } = ct.layout;
+      const hidden = controlHidden(def.id);
+      ct.label.visible = !hidden;
+      if (hidden) continue;
+      const rect = controlRect(ct.layout);
+      if (def.kind === 'button') ct.label.position.x = rect.x;
       const locked = def.field ? locks[def.field] : undefined;
       const disabled =
         Boolean(def.disabled) || (def.action === 'gallery' && !gallery) || Boolean(locked);

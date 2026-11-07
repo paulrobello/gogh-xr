@@ -290,3 +290,19 @@ test('prepare compiles each distinct program once per batch, then restores the c
   expect(batch.materials.near.defines).toEqual({ BRUSH_COUNT: 8 });
   expect(zdiag.diag().precompiled).toBe(4);
 });
+
+test('a batch bound while a filter mode holds the shared atlas keeps the atlas defaults (P5.5)', () => {
+  const zdiag = createZdiag(null, fakeRenderer());
+  const first = realishBatch();
+  zdiag.applyToBatch(first as unknown as StrokeBatch);
+  const defaults = { ...first.atlas };
+  zdiag.setMode('nomip');
+  expect(first.atlas.generateMipmaps).toBe(false);
+  // A world switch binds the next world's batch on the same atlas, still under `nomip`.
+  const second = { ...realishBatch(), atlas: first.atlas };
+  zdiag.applyToBatch(second as unknown as StrokeBatch);
+  zdiag.setMode(null);
+  expect(first.atlas.minFilter).toBe(defaults.minFilter);
+  expect(first.atlas.generateMipmaps).toBe(true);
+  expect(first.atlas.anisotropy).toBe(defaults.anisotropy);
+});

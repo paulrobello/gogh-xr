@@ -5,10 +5,10 @@
  * lazy `import()` resolves straight to it; it holds one built world at a time.
  */
 import { Color, type Group, type Scene, SRGBColorSpace } from 'three';
-import { buildFlowField } from '../../demo/canvas/field';
+import { buildFlowFieldSteps } from '../../demo/canvas/field';
 import { registerDiag, unregisterDiag } from '../../diag/diag';
 import { createSkyHalo, type SkyHalo } from '../../render/sky-halo';
-import { createStrokeBatch, type StrokeBatch } from '../../render/strokes/batch';
+import { createStrokeBatchSteps, type StrokeBatch } from '../../render/strokes/batch';
 import {
   BUILD_SHA,
   createIndexedDbStorage,
@@ -18,7 +18,13 @@ import {
 } from '../../render/strokes/scatter-cache';
 import { skyLightConeUniforms, skyLightFeatherUniforms } from '../../render/strokes/sky-light-cull';
 import { boundaryFactor } from '../../world/boundary';
-import type { PainterCamera, WorldDeps, WorldHandle, WorldPose } from '../world-module';
+import {
+  buildSteps,
+  type PainterCamera,
+  type WorldDeps,
+  type WorldHandle,
+  type WorldPose,
+} from '../world-module';
 import { BARE_COLOR, createBaseMeshes, disposeBaseMeshes, underpaintColor } from './base-meshes';
 import {
   CANVAS_ASPECT,
@@ -27,13 +33,13 @@ import {
   PAINTER_EYE,
   PAINTER_SPOT,
 } from './canvas-camera';
-import { buildCanvasHistogram, type CanvasSource } from './canvas-histogram';
+import { buildCanvasHistogramSteps, type CanvasSource } from './canvas-histogram';
 import { createFootprintTest } from './footprints';
 import {
-  assembleWorldStrokes,
-  createWorldGeometry,
+  assembleWorldStrokesSteps,
+  createWorldGeometrySteps,
   DEFAULT_WORLD_SEED,
-  scatterWorld,
+  scatterWorldSteps,
   WORLD_CELL_SIZE,
   worldScatterKeyInputs,
   worldSeeds,
@@ -70,6 +76,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   if (built) throw new Error('the Starry Night world is already built; dispose it first');
   const seed = deps.seed ?? DEFAULT_WORLD_SEED;
   const debug = deps.debug ?? null;
+  const { step, run } = buildSteps(deps.slicer);
   const start = performance.now();
   const [image, flowRaster, regions, scan] = await Promise.all([
     deps.loadRaster(`${PAINTING_DIR}frame.webp`, false),
@@ -77,17 +84,17 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     deps.loadRaster(`${PAINTING_DIR}regions.png`, true),
     deps.loadRaster(`${PAINTING_DIR}lights.webp`, false),
   ]);
-  const flow = buildFlowField(flowRaster);
+  const flow = await run(buildFlowFieldSteps(flowRaster), 'flow');
   const source: CanvasSource = {
     image,
     regions,
     flow,
-    histogram: buildCanvasHistogram(image, regions, flow),
+    histogram: await run(buildCanvasHistogramSteps(image, regions, flow), 'histogram'),
   };
   const decoded = performance.now();
 
   const seeds = worldSeeds(seed);
-  const world = createWorldGeometry(seeds);
+  const world = await run(createWorldGeometrySteps(seeds), 'geometry');
   const generated = performance.now();
 
   const bypass = shouldBypassScatterCache(
@@ -98,18 +105,22 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     storage: bypass ? null : createIndexedDbStorage(),
     key: scatterCacheKey(BUILD_SHA, worldScatterKeyInputs(world, seeds)),
     bypass,
-    scatter: () => scatterWorld(world, source, seeds),
+    scatter: () => run(scatterWorldSteps(world, source, seeds), 'scatter'),
   });
-  const { buffers, counts, cones, lightRankTies } = assembleWorldStrokes(
-    load.buffers,
-    world,
-    source,
-    scan,
-    seeds,
+  const { buffers, counts, cones, lightRankTies } = await run(
+    assembleWorldStrokesSteps(load.buffers, world, source, scan, seeds),
+    'assemble',
   );
   const scattered = performance.now();
 
-  const batch = createStrokeBatch(buffers, { cellSize: WORLD_CELL_SIZE, cypressChunk: true });
+  const batch = await run(
+    createStrokeBatchSteps(buffers, {
+      cellSize: WORLD_CELL_SIZE,
+      cypressChunk: true,
+      atlas: deps.atlas,
+    }),
+    'batch',
+  );
   const coneUniforms = skyLightConeUniforms(cones);
   const featherUniforms = skyLightFeatherUniforms(cones);
   for (const material of Object.values(batch.materials)) {
@@ -127,11 +138,15 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   };
 
   const { scene } = deps;
-  const base = createBaseMeshes(
-    world.surfaces,
-    source.histogram,
-    debug ? 'magenta' : 'underpaint',
-    seeds.scatter,
+  const base = await step(
+    () =>
+      createBaseMeshes(
+        world.surfaces,
+        source.histogram,
+        debug ? 'magenta' : 'underpaint',
+        seeds.scatter,
+      ),
+    'base',
   );
   const background = scene.background;
   const sky = underpaintColor(source.histogram, 'sky');

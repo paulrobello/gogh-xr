@@ -281,6 +281,32 @@ export function controlLayout(id: string): ControlLayout | undefined {
   return LAYOUT.find((c) => c.def.id === id);
 }
 
+/**
+ * Controls the panel hides (P5.5: Return to gallery outside a painting's world). A hidden control
+ * takes no hits, so it has no hover or tooltip, and a button left alone on the button row moves to
+ * the row's centre.
+ */
+const hiddenControls = new Set<string>();
+
+export function setControlHidden(id: string, hidden: boolean): void {
+  if (hidden) hiddenControls.add(id);
+  else hiddenControls.delete(id);
+}
+
+export function controlHidden(id: string): boolean {
+  return hiddenControls.has(id);
+}
+
+/** Where `layout` draws and takes hits now: its own rect, or the row's centre for a lone button. */
+export function controlRect(layout: ControlLayout): Rect {
+  const { def, rect } = layout;
+  if (def.kind !== 'button') return rect;
+  const alone = LAYOUT.every(
+    (other) => other === layout || other.def.kind !== 'button' || hiddenControls.has(other.def.id),
+  );
+  return alone ? { ...rect, x: 0 } : rect;
+}
+
 function inside(rect: Rect, x: number, y: number): boolean {
   return Math.abs(x - rect.x) <= rect.w / 2 && Math.abs(y - rect.y) <= rect.h / 2;
 }
@@ -302,7 +328,7 @@ export function sliderFraction(layout: ControlLayout, x: number): number {
 /** The control under panel-local (x, y), or null for the bare backing. */
 export function hitControl(x: number, y: number): ControlHit | null {
   for (const layout of LAYOUT) {
-    if (!inside(layout.rect, x, y)) continue;
+    if (hiddenControls.has(layout.def.id) || !inside(controlRect(layout), x, y)) continue;
     const segment = layout.segments.findIndex((s) => inside(s, x, y));
     const fraction = layout.def.kind === 'slider' ? sliderFraction(layout, x) : -1;
     return { id: layout.def.id, segment, fraction };
@@ -360,7 +386,8 @@ export function qualityNote(selected: QualityMode, active: QualityMode): string 
   return selected === active ? null : QUALITY_NOTE;
 }
 
-export const GALLERY_HELP_DISABLED = 'Gallery arrives with the portal';
+/** The help of Return to gallery outside a painting's world, where the button is hidden. */
+export const GALLERY_HELP_DISABLED = 'Only inside a painting';
 
 export function lockedHelp(flag: string): string {
   return `Set by ${flag} for this session`;

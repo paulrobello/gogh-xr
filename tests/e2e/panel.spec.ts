@@ -14,7 +14,7 @@ import type { Page } from '@playwright/test';
 import sharp from 'sharp';
 import { Quaternion, Vector3 } from 'three';
 import { CONTROL_Z } from '../../src/ui/panel-core.ts';
-import { controlLayout } from '../../src/ui/panel-layout.ts';
+import { controlLayout, controlRect, setControlHidden } from '../../src/ui/panel-layout.ts';
 import { DEFAULT_OFFSET } from '../../src/ui/panel-pose.ts';
 import { expect, type Quat, test, type Vec3, type Xr } from './fixtures';
 
@@ -38,6 +38,10 @@ interface SettingsDiag {
   saves: number;
 }
 
+// No test here enters a painting's world, so the page always hides Return to gallery and centres
+// Recenter. The layout module mirrors that, so `controlPoint` aims where the page draws.
+setControlHidden('gallery', true);
+
 async function panel(xr: Xr): Promise<PanelDiag> {
   return (await xr.diag()).panel as PanelDiag;
 }
@@ -50,8 +54,9 @@ async function settings(xr: Xr): Promise<SettingsDiag> {
 function controlPoint(p: PanelDiag, id: string, fraction = 0.5): Vector3 {
   const layout = controlLayout(id);
   if (!layout || !p.pose || p.scale === null) throw new Error(`no ${id} or no pose`);
-  const x = layout.rect.x - layout.rect.w / 2 + layout.rect.w * fraction;
-  return new Vector3(x, layout.rect.y, CONTROL_Z)
+  const rect = controlRect(layout);
+  const x = rect.x - rect.w / 2 + rect.w * fraction;
+  return new Vector3(x, rect.y, CONTROL_Z)
     .multiplyScalar(p.scale)
     .applyQuaternion(new Quaternion(...p.pose.quaternion))
     .add(new Vector3(...p.pose.position));
@@ -325,7 +330,7 @@ test('M opens the desktop DOM panel, which releases pointer lock and writes the 
   await expect(dom).toBeHidden();
 });
 
-test('in the gallery the panel opens and operates, and Return to gallery does nothing yet', async ({
+test('in the gallery the panel opens and operates, and Return to gallery is hidden', async ({
   page,
   xr,
 }) => {
@@ -371,10 +376,13 @@ test('in the gallery the panel opens and operates, and Return to gallery does no
   await xr.waitFrames(3);
   expect((await settings(xr)).effective.turnMode).toBe('smooth');
 
-  // Return to gallery has no callback until P5.5: its trigger leaves the panel open in the gallery.
-  const back = controlPoint(await panel(xr), 'gallery');
+  // Return to gallery shows only inside a painting's world. In the gallery its place takes no hit,
+  // so it has no hover or tooltip, and its trigger leaves the panel open in the gallery.
+  // Its outer half lies clear of the centred Recenter.
+  const back = controlPoint(await panel(xr), 'gallery', 0.75);
   await aim(xr, back.clone().add(new Vector3(-0.04, -0.1, 0.35)), back);
-  await expect.poll(async () => (await panel(xr)).hover?.right).toBe('gallery');
+  await xr.waitFrames(4);
+  expect((await panel(xr)).hover?.right).toBeNull();
   await setButton(page, 'trigger', 1);
   await xr.waitFrames(3);
   expect((await xr.diag()).input?.actions?.select.down).toBe(false);
