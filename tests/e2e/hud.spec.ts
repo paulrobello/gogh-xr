@@ -26,6 +26,7 @@ interface GovernorDiag {
   fbScaleApplied: number | null;
   gpuMs: number | null;
   notice: string | null;
+  history: unknown[];
 }
 
 interface Sample {
@@ -150,13 +151,17 @@ test('the HUD matches diag within one update while the governor sheds, notice in
   await bootHud(page, xr, '');
   await xr.enterXR();
 
-  // Headless Chromium's 60 Hz vsync overruns the 90 Hz budget, so the governor moves.
-  await expect
-    .poll(async () => ((await xr.diag()).governor as GovernorDiag).level, { timeout: 15_000 })
-    .toBeGreaterThan(0);
-  const first = await alignedSample(page);
+  // Headless Chromium's 60 Hz vsync overruns the 90 Hz budget, so the governor moves. Vsync fixes
+  // the interval, so each shed buys nothing and is undone as no-gain a window later. A shed level
+  // lasts one 0.5 s window, about two HUD updates, so step through the updates until one lands
+  // while a step is shed: that sample proves the HUD shows a level other than 0.
+  let first = await alignedSample(page);
+  const deadline = Date.now() + 20_000;
+  while (!(first.governor?.judging && first.governor.level > 0) && Date.now() < deadline) {
+    first = await alignedSample(page, first.hud.updatedAt);
+  }
+  expect(first.governor?.level, 'a HUD update while a step is shed').toBeGreaterThan(0);
   expectHudMatches(first);
-  expect(first.governor).toBeDefined();
 
   // The next update comes one 250 ms interval later, give or take a frame.
   const next = await alignedSample(page, first.hud.updatedAt);

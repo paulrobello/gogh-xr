@@ -92,14 +92,17 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
   - Shed in this order:
     1. Far density, then mid, then near, down to the minimums in the budget table.
     2. Framebuffer scale, from 1.0 down to 0.85.
-    3. Foveation, from 0 up to 0.5. P0.8 found 1.0 too blocky and saw no frame-time gain from foveation on the bench, so this step is a last resort.
+    3. Foveation is not a step. It stays at the app default of 0. P0.8 found 1.0 too blocky and saw no frame-time gain from foveation on the bench, and the headset reading of the Starry Night world at e018c2f (55 to 68 fps at governor level 9, foveation 0.5) showed the world is CPU-bound on per-chunk draws, which foveation does not touch. The step was removed after that reading.
     4. After 3 s of continuous overrun at minimum quality, call `updateTargetFrameRate(72)` and show a HUD notice.
+  - No-gain rule (added after the e018c2f headset reading): the first window after a shed is compared with the window that triggered it. If it still overruns and is not at least 3% faster, the shed is undone at once and that step is held for 30 s, or until the reported frame rate changes or the session is interrupted. A held step counts as nothing left to shed, so the 72 Hz request still follows.
+  - Overrun recovery (ruling Q26, after the review of the no-gain rule): once the frame has overrun for 5 s with nothing left to shed, restore the top shed step. If the next 2 s overrun more than 3% worse than that overrun stretch, shed it again and hold it from recovery for 30 s. Otherwise keep the restore and hold the step from shedding for 30 s.
   - Restore in reverse order, with hysteresis.
   - The "Max beauty" mode targets 72 Hz with the higher budget.
   - Add a `?slow=<ms>` flag that busy-waits on the CPU each frame. It exists only for testing the governor.
 - **Verify:**
   - Unit tests: a scripted timing trace drives the exact shed and restore sequence, with no oscillation on a trace that sits right at the budget.
-  - The e2e test uses `?iwer&slow=14`. It asserts that the governor reaches density-minimum, then requests 72, and the diag shows the sequence.
+  - Unit tests also drive a 72 Hz vsync-locked trace with window noise over several seeds: a CPU-bound frame recovers its stuck sheds to near the start levels, and a GPU-bound frame reverts its recovery restores and keeps its shed level.
+  - The e2e test uses `?iwer&demo=canvas&count=325000&slow=40`. It asserts that the governor sheds only near density and fb scale, undoes at least one as no-gain, and then requests 72, and the diag shows the sequence. A second test at `count=180000&slow=40` asserts that the first near shed stops at the 150k drawn floor.
 
 ### P1.7: Perf HUD
 - **Depends on:** P1.6.
@@ -135,7 +138,7 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
     - Record the OVR Metrics frame times and the look.
   - **Governor behaviour on the device:** `?demo=canvas&hud&slow=N`.
     - Raise N until the frame overruns the budget.
-    - The HUD shows the shed order as it happens: band density first, then fb scale, then foveation.
+    - The HUD shows the shed order as it happens: band density first, then fb scale. Foveation is no longer a step and stays at 0.
     - The HUD shows the 72 Hz notice once the rate drops. The notice also shows the HUD if it was hidden.
     - Record the sequence and the time it took.
   - **Checklist from the Phase 1 review:**

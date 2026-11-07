@@ -33,11 +33,14 @@ import type { CanvasSource } from './canvas-histogram';
 export const DEFAULT_WORLD_SEED: number = 1;
 /**
  * Stroke chunk edge, metres. The world spans the 120 m sky dome, so the 4 m default makes thousands
- * of chunks, one draw call each. Over the 24 coverage poses with a Quest-wide frustum (P2.7 report):
- * 8 m gives 5049 chunks and up to 2158 visible, 16 m 1300 and up to 591 with at most 224k drawn,
- * 24 m 543 and 265 but up to 272k drawn, near the 325k budget.
+ * of chunks, one draw call each per eye. The headset frame is CPU-bound on those draws (e018c2f:
+ * 55 fps at the painter's spot with 339 visible chunks), so ruling Q5 takes 24 m over 16 m. Over
+ * the 24 coverage poses with a Quest-wide frustum, 16 m gives 1299 chunks and up to 597 visible
+ * with at most 229k drawn, 24 m 543 and up to 267 with at most 273k drawn, inside the 325k budget.
+ * At the painter's spot 24 m cuts the visible chunks from 420 to 189 for 14% more drawn strokes
+ * (228k to 259k). 8 m gave 5049 chunks and up to 2158 visible (P2.7 report).
  */
-export const WORLD_CELL_SIZE: number = 16;
+export const WORLD_CELL_SIZE: number = 24;
 /** Boundary haze strokes. */
 export const WORLD_HAZE_COUNT: number = HAZE_STROKE_DEFAULT;
 /**

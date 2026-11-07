@@ -9,6 +9,9 @@ import {
   MAX_PROBE_WAIT_MS,
   MIN_BAND_DENSITY,
   MIN_SHED_YIELD,
+  NO_GAIN_HOLD_MS,
+  NO_GAIN_SHARE,
+  RECOVER_AFTER_MS,
   RESTORE_HOLD_MS,
   WARMUP_MS,
 } from '../src/render/governor.ts';
@@ -28,6 +31,16 @@ type Drawn = Record<StrokeBand, number>;
 const PLENTY: Drawn = { near: 1_000_000, mid: 1_000_000, far: 1_000_000 };
 const OVER = 16;
 const CLEAN = 8;
+/** Each step shed takes this share off the interval in `shedding`, a gain over `NO_GAIN_SHARE`. */
+const SHED_GAIN = 0.95;
+
+/**
+ * An overrun that each shed step helps: the interval falls 5% per step shed and still overruns the
+ * 72 Hz budget at all 13 steps (32 × 0.95^13 = 16.4 ms), so every shed sticks.
+ */
+function shedding(gov: Governor, start = 32): () => number {
+  return () => start * SHED_GAIN ** gov.snapshot().level;
+}
 
 interface Trace {
   /** Frame interval for the next frame, from the governor's current levels and the time. */
@@ -94,35 +107,39 @@ function summary(events: readonly GovernorEvent[]): string[] {
 
 const SHED_SEQUENCE = [
   'shed far-density x4',
-  'shed mid-density x5',
+  // Mid's fifth step, 0.22 to the 0.2 minimum, cuts under 3% of the drawn total and is skipped.
+  'shed mid-density x4',
   'shed near-density x4',
   'shed fb-scale x1',
-  'shed foveation x1',
 ];
 
 describe('governor shedding', () => {
-  test('a sustained overrun sheds far, mid, near, fb scale, foveation, then requests 72 Hz', () => {
+  test('a sustained overrun sheds far, mid, near, fb scale, then requests 72 Hz; never foveation', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
-    const { events } = drive(gov, 0, 60_000, { interval: () => OVER });
+    const { events, t } = drive(gov, 0, 60_000, {
+      interval: shedding(gov),
+      until: (e) => e.action === 'rate',
+    });
     expect(summary(events)).toEqual([...SHED_SEQUENCE, 'rate frame-rate x1']);
     const levels = gov.levels;
-    expect(levels.density).toEqual(MIN_BAND_DENSITY);
+    expect(levels.density).toEqual({ ...MIN_BAND_DENSITY, mid: expect.closeTo(0.216, 3) });
     expect(levels.fbScale).toBe(0.85);
-    expect(levels.foveation).toBe(0.5);
-    const foveation = events.find((e) => e.step === 'foveation');
+    expect(gov.snapshot().foveation).toBe(0);
+    const fbScale = events.find((e) => e.step === 'fb-scale');
     const rate = events.find((e) => e.action === 'rate');
     expect(rate).toMatchObject({ from: 90, to: FALLBACK_HZ });
     // 3 s of continuous overrun at minimum quality, judged on 0.5 s windows.
-    const wait = (rate?.t ?? 0) - (foveation?.t ?? 0);
+    const wait = (rate?.t ?? 0) - (fbScale?.t ?? 0);
     expect(wait).toBeGreaterThanOrEqual(3000);
     expect(wait).toBeLessThan(3000 + 2 * 500 + OVER * 2);
     const snap = gov.snapshot();
     expect(snap.targetHz).toBe(72);
     expect(snap.budgetMs).toBeCloseTo(1000 / 72, 6);
     expect(snap.notice).toMatch(/72 Hz/);
-    // Still overrunning at 72 with nothing left to shed: terminal, the history stops growing.
-    expect(snap.exhausted).toBe(true);
-    expect(snap.history.at(-1)?.action).toBe('rate');
+    // Still overrunning at 72 with nothing left to shed; recovery waits 5 s (tested below).
+    expect(drive(gov, t, 5000, { interval: shedding(gov) }).events).toEqual([]);
+    expect(gov.snapshot().exhausted).toBe(true);
+    expect(gov.snapshot().history.at(-1)?.action).toBe('rate');
   });
 
   test('the first shed waits out the warm-up and one full 0.5 s window', () => {
@@ -158,8 +175,9 @@ describe('governor shedding', () => {
     far: Math.floor((4_000 * levels.density.far) / DEFAULT_BAND_DENSITY.far),
   });
 
-  test('a band whose shed would save under 2% of the drawn strokes is skipped (M5)', () => {
-    expect(MIN_SHED_YIELD).toBe(0.02);
+  test('a band whose shed would save under the no-gain bar (3%) of the drawn strokes is skipped', () => {
+    // One constant: a step that cuts less than the bar cannot pass the no-gain check.
+    expect(MIN_SHED_YIELD).toBe(NO_GAIN_SHARE);
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     const { events } = drive(gov, 0, 5000, {
       interval: () => OVER,
@@ -174,14 +192,14 @@ describe('governor shedding', () => {
   test('skipping a sparse band keeps the full shed and restore exactly reversible (M5)', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     const shed = drive(gov, 0, 60_000, {
-      interval: () => OVER,
+      interval: shedding(gov),
       drawn: sparseFar,
-      until: (e) => e.step === 'foveation',
+      until: (e) => e.step === 'fb-scale',
     });
     const sheds = summary(shed.events);
     expect(sheds.some((s) => s.includes('far-density'))).toBe(false);
-    expect(sheds.at(-2)).toBe('shed fb-scale x1');
-    expect(sheds.at(-1)).toBe('shed foveation x1');
+    expect(sheds.at(-2)).toMatch(/^shed near-density x\d+$/);
+    expect(sheds.at(-1)).toBe('shed fb-scale x1');
     const restore = drive(gov, shed.t, 200_000, { interval: () => CLEAN, drawn: sparseFar });
     expect(restore.events.map((e) => e.step)).toEqual(shed.events.map((e) => e.step).reverse());
     for (let i = 0; i < restore.events.length; i++) {
@@ -212,11 +230,14 @@ describe('governor floor (ruling R10)', () => {
       mid: 0,
       far: 0,
     });
-    const { events } = drive(gov, 0, 30_000, { interval: () => OVER, drawn });
+    const { events } = drive(gov, 0, 30_000, {
+      interval: shedding(gov),
+      drawn,
+      until: (e) => e.action === 'rate',
+    });
     expect(summary(events)).toEqual([
       'shed near-density x1',
       'shed fb-scale x1',
-      'shed foveation x1',
       'rate frame-rate x1',
     ]);
     // 0.7 would draw 140k; the step clamps to the floor instead.
@@ -238,7 +259,7 @@ describe('governor floor (ruling R10)', () => {
 
   test('per-band minimum densities hold even with an unlimited view', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
-    drive(gov, 0, 60_000, { interval: () => OVER });
+    drive(gov, 0, 60_000, { interval: shedding(gov) });
     for (const band of ['near', 'mid', 'far'] as const) {
       expect(gov.levels.density[band]).toBeGreaterThanOrEqual(MIN_BAND_DENSITY[band]);
       expect(MIN_BAND_DENSITY[band]).toBeGreaterThan(0);
@@ -250,16 +271,15 @@ describe('governor restore', () => {
   test('restores step by step in the exact reverse order, back to the start levels', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     const shed = drive(gov, 0, 60_000, {
-      interval: () => OVER,
-      until: (e) => e.step === 'foveation',
+      interval: shedding(gov),
+      until: (e) => e.step === 'fb-scale',
     });
     expect(summary(shed.events)).toEqual(SHED_SEQUENCE);
     const restore = drive(gov, shed.t, 120_000, { interval: () => CLEAN });
     expect(summary(restore.events)).toEqual([
-      'restore foveation x1',
       'restore fb-scale x1',
       'restore near-density x4',
-      'restore mid-density x5',
+      'restore mid-density x4',
       'restore far-density x4',
     ]);
     // Each probe needs 3 s of clean windows after the previous change.
@@ -272,7 +292,7 @@ describe('governor restore', () => {
     expect(levels.density).toEqual(DEFAULT_BAND_DENSITY);
     expect(levels.size).toEqual(DEFAULT_BAND_SIZE);
     expect(levels.fbScale).toBe(1);
-    expect(levels.foveation).toBe(0);
+    expect(gov.snapshot().foveation).toBe(0);
     expect(gov.snapshot().level).toBe(0);
     expect(gov.snapshot().step).toBe('none');
   });
@@ -285,7 +305,7 @@ describe('governor restore', () => {
 
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     let sheds = 0;
-    const shed = drive(gov, 0, 10_000, { interval: () => OVER, until: () => ++sheds === 6 });
+    const shed = drive(gov, 0, 10_000, { interval: shedding(gov), until: () => ++sheds === 6 });
     expect(gov.snapshot().level).toBe(6);
     const { events } = drive(gov, shed.t, 60_000, { interval: atBudget });
     expect(events).toHaveLength(6);
@@ -322,7 +342,7 @@ describe('governor restore', () => {
   test('a long clean run after a failure resets the probe wait to 3 s', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     let sheds = 0;
-    const shed = drive(gov, 0, 10_000, { interval: () => OVER, until: () => ++sheds === 3 });
+    const shed = drive(gov, 0, 10_000, { interval: shedding(gov), until: () => ++sheds === 3 });
     // The first probe fails, doubling the wait.
     let failed = false;
     const fail = drive(gov, shed.t, 20_000, {
@@ -340,28 +360,29 @@ describe('governor restore', () => {
   test('a clean window between overruns at minimum quality restarts the 3 s rate count', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     const shed = drive(gov, 0, 60_000, {
-      interval: () => OVER,
-      until: (e) => e.step === 'foveation',
+      interval: shedding(gov),
+      until: (e) => e.step === 'fb-scale',
     });
     // 2.5 s overrun, one clean window, then overrun again: the request waits 3 s from the restart.
+    const over = shedding(gov);
     const { events } = drive(gov, shed.t, 20_000, {
-      interval: (_l, t) => (t > shed.t + 2500 && t < shed.t + 3050 ? CLEAN : OVER),
+      interval: (_l, t) => (t > shed.t + 2500 && t < shed.t + 3050 ? CLEAN : over()),
       until: (e) => e.action === 'rate',
     });
     expect(events.map((e) => e.action)).toEqual(['rate']);
-    // Without the restart it would fire about 3 s after the foveation shed.
+    // Without the restart it would fire about 3 s after the fb-scale shed.
     expect(events[0].t - shed.t).toBeGreaterThan(2500 + 3000);
   });
 
   test('after the 72 Hz drop, quality restores at 72 and the rate stays at 72', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     const shed = drive(gov, 0, 60_000, {
-      interval: () => OVER,
+      interval: shedding(gov),
       until: (e) => e.action === 'rate',
     });
     // 13 ms fits the 72 Hz budget (13.9 ms) but not 90's.
     const { events } = drive(gov, shed.t, 120_000, { interval: () => 13 });
-    expect(events.length).toBe(15);
+    expect(events.length).toBe(13);
     expect(events.every((e) => e.action === 'restore')).toBe(true);
     expect(gov.snapshot().targetHz).toBe(72);
     expect(gov.levels.density).toEqual(DEFAULT_BAND_DENSITY);
@@ -397,11 +418,11 @@ describe('governor inputs', () => {
   test('80 and 120 Hz also fall back to 72; a 72 Hz target has no lower rate to request', () => {
     for (const hz of [80, 120]) {
       const gov = createGovernor({ mode: 'default', targetHz: hz });
-      const { events } = drive(gov, 0, 60_000, { interval: () => 40 });
-      expect(events.at(-1)).toMatchObject({ action: 'rate', from: hz, to: 72 });
+      const { events } = drive(gov, 0, 60_000, { interval: shedding(gov, 40) });
+      expect(events.find((e) => e.action === 'rate')).toMatchObject({ from: hz, to: 72 });
     }
     const gov = createGovernor({ mode: 'beauty', targetHz: 72 });
-    const { events } = drive(gov, 0, 60_000, { interval: () => 40 });
+    const { events } = drive(gov, 0, 60_000, { interval: shedding(gov, 40) });
     expect(events.some((e) => e.action === 'rate')).toBe(false);
     expect(gov.snapshot().exhausted).toBe(true);
   });
@@ -444,20 +465,21 @@ describe('governor inputs', () => {
 });
 
 describe('governor pauses and real frame rates (fix round 1)', () => {
-  /** Sheds to minimum quality at 90 Hz and returns the time of the foveation shed. */
+  /** Sheds to minimum quality at 90 Hz and returns the time of the fb-scale shed, the last step. */
   function toMinimum(gov: Governor): number {
-    return drive(gov, 0, 60_000, { interval: () => OVER, until: (e) => e.step === 'foveation' }).t;
+    return drive(gov, 0, 60_000, { interval: shedding(gov), until: (e) => e.step === 'fb-scale' })
+      .t;
   }
 
   test('a 2.5 s stall does not count toward the 3 s overrun before the 72 Hz request', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
-    const before = drive(gov, toMinimum(gov), 1200, { interval: () => OVER });
+    const before = drive(gov, toMinimum(gov), 1200, { interval: shedding(gov) });
     expect(before.events).toEqual([]);
     // One paused interval, then overrun frames again.
     const resume = before.t + 2500;
     expect(gov.sample({ t: resume, intervalMs: 2500, drawn: PLENTY })).toBeNull();
     const { events } = drive(gov, resume, 10_000, {
-      interval: () => OVER,
+      interval: shedding(gov),
       until: (e) => e.action === 'rate',
     });
     expect(events.map((e) => e.action)).toEqual(['rate']);
@@ -478,10 +500,10 @@ describe('governor pauses and real frame rates (fix round 1)', () => {
 
   test('interrupt() (a hidden session) restarts the windows and both timers', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
-    const before = drive(gov, toMinimum(gov), 2000, { interval: () => OVER });
+    const before = drive(gov, toMinimum(gov), 2000, { interval: shedding(gov) });
     gov.interrupt();
     const { events } = drive(gov, before.t, 10_000, {
-      interval: () => OVER,
+      interval: shedding(gov),
       until: (e) => e.action === 'rate',
     });
     expect(events[0].t - before.t).toBeGreaterThanOrEqual(3000);
@@ -499,7 +521,7 @@ describe('governor pauses and real frame rates (fix round 1)', () => {
   test('already running at 72 Hz there is no rate step to request', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     gov.setFrameRate(72);
-    const { events } = drive(gov, 0, 60_000, { interval: () => 40 });
+    const { events } = drive(gov, 0, 60_000, { interval: shedding(gov, 40) });
     expect(events.some((e) => e.action === 'rate')).toBe(false);
     expect(gov.snapshot().exhausted).toBe(true);
   });
@@ -507,7 +529,7 @@ describe('governor pauses and real frame rates (fix round 1)', () => {
   test('the 72 Hz budget and notice wait for the request to resolve', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
     const { events, t } = drive(gov, toMinimum(gov), 10_000, {
-      interval: () => OVER,
+      interval: shedding(gov),
       rate: 'pending',
     });
     expect(events.map((e) => e.action)).toEqual(['rate']);
@@ -521,14 +543,23 @@ describe('governor pauses and real frame rates (fix round 1)', () => {
     gov.rateApplied(72);
     expect(gov.snapshot()).toMatchObject({ targetHz: 72, frameRate: 72, rateRequest: 'applied' });
     expect(gov.snapshot().notice).toMatch(/72 Hz/);
-    expect(drive(gov, t, 5000, { interval: () => OVER }).events).toEqual([]);
+    expect(drive(gov, t, 5000, { interval: shedding(gov) }).events).toEqual([]);
     expect(gov.snapshot().exhausted).toBe(true);
   });
 
   test('a failed rate request marks the step unavailable: exhausted, no notice, no retry', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });
-    const { events } = drive(gov, toMinimum(gov), 30_000, { interval: () => OVER, rate: 'fail' });
-    expect(summary(events)).toEqual(['rate frame-rate x1', 'rate-failed frame-rate x1']);
+    const { events } = drive(gov, toMinimum(gov), 30_000, {
+      interval: shedding(gov),
+      rate: 'fail',
+    });
+    // After the failure only recovery acts (tested below); the rate is never asked again.
+    expect(summary(events).slice(0, 2)).toEqual([
+      'rate frame-rate x1',
+      'rate-failed frame-rate x1',
+    ]);
+    expect(events.filter((e) => e.action === 'rate')).toHaveLength(1);
+    expect(events.slice(2).every((e) => e.action.startsWith('recover'))).toBe(true);
     expect(events[1]).toMatchObject({ from: 90, to: 90 });
     expect(gov.snapshot()).toMatchObject({
       targetHz: 90,
@@ -559,5 +590,339 @@ describe('governor pauses and real frame rates (fix round 1)', () => {
     expect(events[1].to).toBeCloseTo(0.36, 10);
     expect(gov.levels.density.far).toBeCloseTo(0.36, 10);
     expect(gov.levels.size.far).toBeCloseTo(DEFAULT_BAND_SIZE.far * Math.sqrt(0.4 / 0.36), 10);
+  });
+});
+
+describe('governor no-gain rule', () => {
+  const UNDONE = [
+    'shed far-density x1',
+    'no-gain far-density x1',
+    'shed mid-density x1',
+    'no-gain mid-density x1',
+    'shed near-density x1',
+    'no-gain near-density x1',
+    'shed fb-scale x1',
+    'no-gain fb-scale x1',
+  ];
+
+  test('a shed that does not help is undone at once and not retried within the hold', () => {
+    expect(NO_GAIN_SHARE).toBe(0.03);
+    expect(NO_GAIN_HOLD_MS).toBe(30_000);
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    // A CPU-bound frame: shedding changes nothing. The rate request stays pending, so the frame
+    // rate never changes and the holds can only lapse by time.
+    const { events } = drive(gov, 0, 25_000, { interval: () => OVER, rate: 'pending' });
+    expect(summary(events)).toEqual([...UNDONE, 'rate frame-rate x1']);
+    for (let i = 0; i < UNDONE.length; i += 2) {
+      const shed = events[i];
+      const undo = events[i + 1];
+      // Undone on the first window after the shed, back to the exact level it shed from.
+      expect(undo).toMatchObject({
+        action: 'no-gain',
+        step: shed.step,
+        from: shed.to,
+        to: shed.from,
+      });
+      expect(undo.t - shed.t).toBeGreaterThanOrEqual(500);
+      expect(undo.t - shed.t).toBeLessThan(500 + 2 * OVER);
+    }
+    expect(gov.levels.density).toEqual(DEFAULT_BAND_DENSITY);
+    expect(gov.levels.size).toEqual(DEFAULT_BAND_SIZE);
+    expect(gov.levels.fbScale).toBe(1);
+    const snap = gov.snapshot();
+    expect(snap.level).toBe(0);
+    expect(snap.densityMin).toBe(true);
+    expect(snap.noGainHeld).toEqual(['far-density', 'mid-density', 'near-density', 'fb-scale']);
+  });
+
+  test('the hold lapses after 30 s and the step is tried again', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const { events } = drive(gov, 0, 40_000, { interval: () => OVER, rate: 'pending' });
+    const first = events.find((e) => e.action === 'no-gain' && e.step === 'far-density');
+    const retry = events.filter((e) => e.action === 'shed' && e.step === 'far-density')[1];
+    expect(retry).toBeDefined();
+    expect((retry?.t ?? 0) - (first?.t ?? 0)).toBeGreaterThanOrEqual(NO_GAIN_HOLD_MS);
+    expect((retry?.t ?? 0) - (first?.t ?? 0)).toBeLessThan(NO_GAIN_HOLD_MS + 600);
+  });
+
+  test('a shed that helps sticks', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    // Each step takes 5% off the interval: over the 3% bar, and still overrunning.
+    const { events } = drive(gov, 0, 8000, { interval: shedding(gov) });
+    expect(events.length).toBeGreaterThanOrEqual(5);
+    expect(events.every((e) => e.action === 'shed')).toBe(true);
+    expect(gov.snapshot().level).toBe(events.length);
+    expect(gov.snapshot().noGainHeld).toEqual([]);
+  });
+
+  test('a gain just under 3% is undone; one just over sticks', () => {
+    const run = (gain: number) => {
+      const gov = createGovernor({ mode: 'default', targetHz: 90 });
+      const interval = () => (gov.snapshot().level === 0 ? 20 : 20 * (1 - gain));
+      return summary(drive(gov, 0, 2600, { interval, until: (e) => e.action !== 'shed' }).events);
+    };
+    expect(run(0.025)).toEqual(['shed far-density x1', 'no-gain far-density x1']);
+    // The first shed sticks; the second gains nothing more and is undone.
+    expect(run(0.035)).toEqual(['shed far-density x2', 'no-gain far-density x1']);
+  });
+
+  test('a shed that brings the window under budget sticks, even with a small gain', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    // 11.9 ms overruns the 11.67 ms shed line; 11.6 ms is 2.5% better and under it.
+    const interval = () => (gov.snapshot().level === 0 ? 11.9 : 11.6);
+    const { events } = drive(gov, 0, 4000, { interval });
+    expect(summary(events)).toEqual(['shed far-density x1']);
+    expect(gov.snapshot().level).toBe(1);
+  });
+
+  test('with every step held, the 72 Hz request still fires after 3 s of overrun', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const { events } = drive(gov, 0, 20_000, {
+      interval: () => OVER,
+      until: (e) => e.action === 'rate',
+    });
+    expect(summary(events)).toEqual([...UNDONE, 'rate frame-rate x1']);
+    const rate = events.at(-1);
+    const lastUndo = events.at(-2);
+    expect(rate).toMatchObject({ action: 'rate', from: 90, to: FALLBACK_HZ });
+    expect((rate?.t ?? 0) - (lastUndo?.t ?? 0)).toBeGreaterThanOrEqual(3000);
+    expect((rate?.t ?? 0) - (lastUndo?.t ?? 0)).toBeLessThan(3000 + 2 * 500 + 2 * OVER);
+    // The applied 72 Hz rate is a frame-rate change: it clears the holds, so 72 Hz tries again.
+    expect(gov.snapshot().noGainHeld).toEqual([]);
+    const after = drive(gov, events.at(-1)?.t ?? 0, 3000, { interval: () => OVER });
+    expect(summary(after.events).slice(0, 2)).toEqual([
+      'shed far-density x1',
+      'no-gain far-density x1',
+    ]);
+  });
+
+  test.each([
+    ['interrupt()', (gov: Governor) => gov.interrupt()],
+    ['a reported frame-rate change', (gov: Governor) => gov.setFrameRate(80)],
+  ])('%s clears the holds', (_name, clear) => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const held = drive(gov, 0, 10_000, {
+      interval: () => OVER,
+      until: (e) => e.action === 'no-gain',
+    });
+    expect(gov.snapshot().noGainHeld).toEqual(['far-density']);
+    clear(gov);
+    expect(gov.snapshot().noGainHeld).toEqual([]);
+    const { events } = drive(gov, held.t, 5000, { interval: () => OVER, until: () => true });
+    expect(events[0]).toMatchObject({ action: 'shed', step: 'far-density' });
+  });
+
+  test('an unchanged reported frame rate keeps the holds', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    drive(gov, 0, 10_000, { interval: () => OVER, until: (e) => e.action === 'no-gain' });
+    gov.setFrameRate(90);
+    expect(gov.snapshot().noGainHeld).toEqual(['far-density']);
+  });
+
+  test('a shed-back after a failed probe is never undone as no-gain', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const shed = drive(gov, 0, 5000, { interval: () => 20, until: () => true });
+    // Level 1 is clean and level 0 overruns, so the probe fails; then everything overruns alike.
+    let shedBack = false;
+    const { events } = drive(gov, shed.t, 10_000, {
+      interval: () => (shedBack || gov.snapshot().level === 0 ? 20 : CLEAN),
+      until: (e) => {
+        if (e.action === 'shed-back') shedBack = true;
+        return shedBack && e.action !== 'shed-back';
+      },
+    });
+    expect(summary(events)).toEqual([
+      'restore far-density x1',
+      'shed-back far-density x1',
+      'shed far-density x1',
+    ]);
+  });
+
+  test('a restore and a no-gain undo leave the shed stack consistent', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    // Far helps (level 0 -> 1); a further shed does not.
+    const interval = () => (gov.snapshot().level === 0 ? 20 : 18);
+    const { events } = drive(gov, 0, 3000, { interval, until: (e) => e.action === 'no-gain' });
+    expect(summary(events)).toEqual(['shed far-density x2', 'no-gain far-density x1']);
+    expect(gov.snapshot().level).toBe(1);
+    expect(gov.levels.density.far).toBeCloseTo(DEFAULT_BAND_DENSITY.far * 0.7, 10);
+    expect(gov.snapshot().noGainHeld).toEqual(['far-density']);
+    const restore = drive(gov, events.at(-1)?.t ?? 0, 10_000, { interval: () => CLEAN });
+    expect(summary(restore.events)).toEqual(['restore far-density x1']);
+    expect(gov.levels.density).toEqual(DEFAULT_BAND_DENSITY);
+  });
+});
+
+describe('governor overrun recovery (ruling Q26)', () => {
+  const VSYNC = 1000 / 72;
+  /** The reviewer's 24 m painter-spot split at the default densities (216k drawn). */
+  const SPLIT = { near: 60_000, mid: 110_000, far: 46_000 };
+  const splitDrawn = (levels: GovernorLevels): Drawn => ({
+    near: Math.floor(SPLIT.near * levels.density.near),
+    mid: Math.floor((SPLIT.mid * levels.density.mid) / DEFAULT_BAND_DENSITY.mid),
+    far: Math.floor((SPLIT.far * levels.density.far) / DEFAULT_BAND_DENSITY.far),
+  });
+
+  interface Run {
+    gov: Governor;
+    events: GovernorEvent[];
+    /** Steps shed, averaged over frame time from 30 s on. */
+    meanLevel: number;
+    /** The lowest level seen from 30 s on: 0 once every stuck step has come back. */
+    minLevel: number;
+  }
+
+  /**
+   * A 72 Hz vsync-locked frame: each frame takes 1 or 2 vsyncs, missing with `miss(level)`. A
+   * constant miss rate is a fully CPU-bound frame (0.31 is about 55 fps, 0.06 about 68), where
+   * half-second window means vary by 4-7%, more than the 3% bar, so useless sheds stick by chance
+   * (governor review I1).
+   */
+  function vsyncTrace(miss: (level: number) => number, seed: number, ms: number): Run {
+    const gov = createGovernor({ mode: 'default', targetHz: 72 });
+    const rand = mulberry32(seed);
+    const events: GovernorEvent[] = [];
+    let t = 0;
+    let levelTime = 0;
+    let total = 0;
+    let minLevel = Number.POSITIVE_INFINITY;
+    while (t < ms) {
+      const interval = rand() < miss(gov.snapshot().level) ? 2 * VSYNC : VSYNC;
+      t += interval;
+      const event = gov.sample({ t, intervalMs: interval, drawn: splitDrawn(gov.levels) });
+      if (event) events.push(event);
+      if (t >= 30_000) {
+        const level = gov.snapshot().level;
+        total += interval;
+        levelTime += interval * level;
+        minLevel = Math.min(minLevel, level);
+      }
+    }
+    return { gov, events, meanLevel: levelTime / total, minLevel };
+  }
+
+  const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
+
+  test.each([0.31, 0.15, 0.06])(
+    'CPU-bound at miss rate %s with window noise: stuck sheds come back, no ratchet',
+    (miss) => {
+      const meanLevels: number[] = [];
+      for (const seed of SEEDS) {
+        const { events, meanLevel, minLevel } = vsyncTrace(() => miss, seed, 120_000);
+        // Some useless sheds stick by chance; recovery restores them.
+        expect(
+          events.some((e) => e.action === 'recover'),
+          `seed ${seed}`,
+        ).toBe(true);
+        // Back at or next to the start levels after 30 s, and on average within three steps.
+        expect(minLevel, `seed ${seed} lowest level after 30 s`).toBeLessThanOrEqual(1);
+        expect(meanLevel, `seed ${seed} mean level, 30-120 s`).toBeLessThan(3);
+        meanLevels.push(meanLevel);
+      }
+      // Without recovery the same traces stick at a median of 4 steps (governor review I1).
+      const mean = meanLevels.reduce((a, b) => a + b, 0) / meanLevels.length;
+      expect(mean).toBeLessThan(2);
+    },
+  );
+
+  test('GPU-bound: restores that cost time are reverted and held, and the shed level stands', () => {
+    // Each step shed takes 8 points off the miss rate (about 5% of the mean interval): 0.9 at full
+    // quality, and still over the 72 Hz budget at the 150k floor.
+    const miss = (level: number) => Math.max(0.1, 0.9 - 0.08 * level);
+    for (const seed of [1, 2, 3, 4]) {
+      const { events, meanLevel } = vsyncTrace(miss, seed, 120_000);
+      const recovers = events.filter((e) => e.action === 'recover').length;
+      const backs = events.filter((e) => e.action === 'recover-back').length;
+      expect(recovers, `seed ${seed}`).toBeGreaterThan(0);
+      expect(backs, `seed ${seed}`).toBeGreaterThanOrEqual(recovers / 2);
+      expect(meanLevel, `seed ${seed} mean level, 30-120 s`).toBeGreaterThan(2.5);
+    }
+  });
+
+  test('a deterministic GPU-bound frame: every restore is reverted and held for 30 s', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const shed = drive(gov, 0, 60_000, {
+      interval: shedding(gov),
+      until: (e) => e.action === 'rate',
+    });
+    expect(gov.snapshot().level).toBe(13);
+    // At 72 Hz with every step shed, 15.6 ms still overruns; a restore costs 5%.
+    const { events } = drive(gov, shed.t, 70_000, { interval: shedding(gov) });
+    expect(summary(events)[0]).toBe('recover fb-scale x1');
+    expect(summary(events)[1]).toBe('recover-back fb-scale x1');
+    expect(events.every((e) => e.action === 'recover' || e.action === 'recover-back')).toBe(true);
+    const recovers = events.filter((e) => e.action === 'recover');
+    // The first after 5 s of overrun with nothing to shed; then one per hold lapse.
+    expect(recovers[0].t - shed.t).toBeGreaterThanOrEqual(RECOVER_AFTER_MS);
+    for (let i = 1; i < recovers.length; i++) {
+      expect(recovers[i].t - recovers[i - 1].t).toBeGreaterThanOrEqual(NO_GAIN_HOLD_MS);
+    }
+    expect(recovers.length).toBeLessThanOrEqual(3);
+    expect(gov.snapshot().level).toBe(13);
+  });
+
+  test('a deterministic CPU-bound frame: recovery restores every stuck step in reverse order', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    // A scene that sheds well, then turns CPU-bound: 20 ms whatever the level.
+    const shed = drive(gov, 0, 60_000, {
+      interval: shedding(gov),
+      until: (e) => e.action === 'rate',
+    });
+    const { events } = drive(gov, shed.t, 180_000, { interval: () => 20 });
+    const recovers = events.filter((e) => e.action === 'recover');
+    expect(recovers.map((e) => e.step)).toEqual(
+      shed.events
+        .filter((e) => e.action === 'shed')
+        .map((e) => e.step)
+        .reverse(),
+    );
+    expect(events.some((e) => e.action === 'recover-back')).toBe(false);
+    expect(gov.levels.density).toEqual(DEFAULT_BAND_DENSITY);
+    expect(gov.levels.size).toEqual(DEFAULT_BAND_SIZE);
+    expect(gov.levels.fbScale).toBe(1);
+    // One restore per 5 s (plus the check window) while nothing is left to shed.
+    for (let i = 1; i < recovers.length; i++) {
+      expect(recovers[i].t - recovers[i - 1].t).toBeGreaterThanOrEqual(RECOVER_AFTER_MS);
+    }
+  });
+
+  test('a kept restore holds that step, so it is not shed straight back', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const shed = drive(gov, 0, 60_000, {
+      interval: shedding(gov),
+      until: (e) => e.action === 'rate',
+    });
+    const { events } = drive(gov, shed.t, 7000, {
+      interval: () => 20,
+      until: (e) => e.action === 'recover',
+    });
+    const recovered = events.at(-1);
+    expect(recovered).toMatchObject({ action: 'recover', step: 'fb-scale', from: 0.85, to: 1 });
+    const after = drive(gov, events.at(-1)?.t ?? 0, 3000, { interval: () => 20 });
+    expect(after.events).toEqual([]);
+    expect(gov.snapshot().noGainHeld).toContain('fb-scale');
+  });
+
+  test('recovery also runs after a failed 72 Hz request', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const shed = drive(gov, 0, 60_000, {
+      interval: shedding(gov),
+      until: (e) => e.action === 'rate',
+      rate: 'fail',
+    });
+    expect(gov.snapshot().rateRequest).toBe('unavailable');
+    const { events } = drive(gov, shed.t, 10_000, { interval: () => 20 });
+    expect(events.map((e) => e.action)).toContain('recover');
+  });
+
+  test('no recovery while the 72 Hz request is still to come or pending', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90 });
+    const shed = drive(gov, 0, 60_000, {
+      interval: shedding(gov),
+      until: (e) => e.action === 'rate',
+      rate: 'pending',
+    });
+    const { events } = drive(gov, shed.t, 20_000, { interval: () => 20 });
+    expect(events).toEqual([]);
   });
 });

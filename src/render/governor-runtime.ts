@@ -1,9 +1,11 @@
 /**
  * Runs the quality governor (`governor.ts`) for a stroke batch while an XR session presents, and
  * applies its changes through adapters: band density and size on the batch, framebuffer scale
- * through `XRView.requestViewportScale` (ruling R4), foveation on three's XR manager, and the
- * 72 Hz fallback through `XRSession.updateTargetFrameRate`. Desktop frames are not judged: the
- * page's own refresh rate says nothing about the headset budget.
+ * through `XRView.requestViewportScale` (ruling R4), and the 72 Hz fallback through
+ * `XRSession.updateTargetFrameRate`. A 'no-gain' undo, a 'recover' and a 'recover-back' go through
+ * the same density and fb-scale adapters. Foveation is left at the session default that
+ * `xr/session.ts` sets at session start. Desktop frames are not judged: the page's own refresh rate
+ * says nothing about the headset budget.
  *
  * The machine's budget follows the session's reported `frameRate`, read every judged frame (so it
  * picks up the rate once session settings apply) and on `frameratechange`. The requested rate is
@@ -44,7 +46,6 @@ export interface GovernorXr {
   addEventListener(type: 'sessionstart' | 'sessionend', listener: () => void): void;
   removeEventListener(type: 'sessionstart' | 'sessionend', listener: () => void): void;
   getSession(): GovernorSession | null;
-  setFoveation(value: number): void;
   getBaseLayer(): unknown;
   getBinding(): unknown;
 }
@@ -105,13 +106,12 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   const timer = new GpuTimer(renderer.getContext() as TimerGl);
 
   function applyLevels(): void {
-    const { density, size, foveation } = governor.levels;
+    const { density, size } = governor.levels;
     for (const band of STROKE_BANDS) {
       batch.setDensity(band, density[band]);
       batch.setSizeMultiplier(band, size[band]);
     }
     if (scaler) scaler.scale = governor.levels.fbScale;
-    if (xr.isPresenting) xr.setFoveation(foveation);
   }
 
   function readFrameRate(): void {
@@ -151,8 +151,6 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       batch.setSizeMultiplier(band, levels.size[band]);
     } else if (event.step === 'fb-scale') {
       if (scaler) scaler.scale = levels.fbScale;
-    } else if (event.step === 'foveation') {
-      xr.setFoveation(levels.foveation);
     } else if (event.action === 'rate') {
       requestRate(event);
     }

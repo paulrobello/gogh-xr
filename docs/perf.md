@@ -65,7 +65,7 @@ One more stored record is discarded: blend at 100,000 and 90 Hz, recorded before
 | `supportedFrameRates` (OQ1) | 72, 80, 90, 120, read from `__goghDiag()` over adb. An earlier hand reading of "70" was a misread, so the 72 Hz max-beauty mode stands. |
 | GPU timer query available (OQ2) | Unavailable on Quest Browser. The governor must work from frame intervals alone. |
 | a2c vs blend visual verdict (OQ4) | Blend looks slightly brighter but not better. Small strokes show flickering transparent stripes, a screen-door effect that is worse with head movement. The likely cause is the bench shader's bristle term modulating alpha, which alpha-to-coverage turns into a coverage dither. P1.3 should keep bristle variation in colour and give a2c a sharpened alpha edge. |
-| Foveation artifacts at 0.5 and 1.0 (OQ5) | At 1.0 there is too much blocky shimmer at the edges. At 0.5 the shimmer is still visible but less blocky. Foveation also buys no headroom here: blend at 325,000 and 90 Hz reads 90 to 91 fps with a p95 of 11.8 ms at 0, 0.5 and 1 alike. The bench is therefore not fill-bound at these settings, and the per-stroke vertex cost sets the budget, so stroke count and LOD (P1.4) matter more than foveation. Lowering the default to 0 would remove the artifacts at no measured cost. That should be rechecked with the real scene, whose larger strokes will add fill. |
+| Foveation artifacts at 0.5 and 1.0 (OQ5) | At 1.0 there is too much blocky shimmer at the edges. At 0.5 the shimmer is still visible but less blocky. Foveation also buys no headroom here: blend at 325,000 and 90 Hz reads 90 to 91 fps with a p95 of 11.8 ms at 0, 0.5 and 1 alike. The bench is therefore not fill-bound at these settings, and the per-stroke vertex cost sets the budget, so stroke count and LOD (P1.4) matter more than foveation. Lowering the default to 0 would remove the artifacts at no measured cost. That should be rechecked with the real scene, whose larger strokes will add fill. The default is now 0. The governor shed foveation to 0.5 until the e018c2f headset reading of the Starry Night world at the painter's spot: 55 to 68 fps against a 72 Hz target at governor level 9 (foveation 0.5, fb scale 0.84), with 151,475 strokes in 339 visible chunks. That frame is CPU-bound on per-chunk draws, so foveation was dropped from the shed order and stays at 0 in XR. Only the bench still steps it. |
 
 ### Foveation results
 
@@ -91,6 +91,19 @@ Blend, 90 Hz, full sphere, recorded 2026-11-06 05:24–05:28Z (9:24–9:28 PM PS
 | --- | --- | --- | --- | --- | --- |
 | 2026-11-06 | 535,114 (P2.6 `scatterSurfaces`, SCATTER_VERSION 2) | not measured (host load 42.03), superseded by the next row | 42.03 | | bun 1.4.4, darwin/arm64 |
 | 2026-11-06 | 535,011 world scatter (commit c121951), plus 30,000 haze for 565,011 stored | 367 ms | 2.43 | 2.43 | minimac, Apple M4, bun 1.4.4, darwin/arm64 |
+
+## World chunk size (ruling Q5)
+
+The e018c2f headset reading at the painter's spot (55 to 68 fps against 72 Hz, 151,475 strokes in 339 visible chunks) is CPU-bound on per-chunk draws: without multiview each visible chunk draws once per eye. `WORLD_CELL_SIZE` (src/paintings/starry-night/world.ts) went from 16 m to 24 m. Measured on 2026-11-06 at the four `scripts/zfight-probe.ts` poses, all at the painter's eye, with the governor off (`?nogov`) and the default densities. Desktop is the 70° viewer at 1280 × 1014 in the e2e build. XR is IWER's Quest 3 through `setPose`, where draw calls cover both eyes. Quest frustum is the unit-test cull with a 96° vertical frustum, no renderer. Each cell reads visible chunks / draw calls / drawn strokes, or visible chunks / drawn strokes for the Quest frustum.
+
+| Pose | Desktop 16 m | Desktop 24 m | IWER XR 16 m | IWER XR 24 m | Quest frustum 16 m | Quest frustum 24 m |
+| --- | --- | --- | --- | --- | --- | --- |
+| painter-level | 288 / 292 / 213,312 | 142 / 148 / 248,778 | 324 / 642 / 168,076 | 150 / 306 / 215,577 | 420 / 227,841 | 189 / 259,160 |
+| painter-down | 288 / 292 / 213,210 | 131 / 137 / 242,451 | 307 / 620 / 166,703 | 142 / 290 / 212,660 | 407 / 225,781 | 190 / 260,507 |
+| village-look | 260 / 265 / 204,450 | 124 / 130 / 243,673 | 313 / 618 / 166,809 | 141 / 286 / 214,433 | 386 / 226,893 | 179 / 258,613 |
+| back | 220 / 223 / 156,378 | 106 / 109 / 204,093 | 376 / 754 / 222,894 | 175 / 362 / 255,927 | 352 / 171,350 | 157 / 217,198 |
+
+The world has 1,299 chunks at 16 m and 543 at 24 m. Over the 24 coverage poses with the Quest frustum, the maximum is 597 visible chunks and 228,787 drawn at 16 m, and 267 and 272,986 at 24 m, inside the 325k default budget. 24 m halves the draw calls for about 14 to 31% more drawn strokes. The IWER rows look turned 180° against the others: its painter-level matches the Quest-frustum back pose, so its poses are compared only between cell sizes. The headset frame time at 24 m is not measured yet.
 
 ## History: upper-hemisphere readings
 

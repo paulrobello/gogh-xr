@@ -87,11 +87,14 @@ function shedDensity(
   const gov = createGovernor({ mode: 'default', targetHz: 90 });
   const events: GovernorEvent[] = [];
   let drawn = viewFrom(batch, x, z, yaw);
-  for (let t = 16; t < 60_000; t += 16) {
+  for (let t = 0; t < 60_000; ) {
+    // Each shed takes 5% off the interval, so none is undone as no-gain, and every level overruns.
+    const intervalMs = 32 * 0.95 ** gov.snapshot().level;
+    t += intervalMs;
     const { bands } = batch.stats();
     const event = gov.sample({
       t,
-      intervalMs: 16,
+      intervalMs,
       drawn: { near: bands.near.visible, mid: bands.mid.visible, far: bands.far.visible },
     });
     if (!event) continue;

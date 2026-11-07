@@ -3,14 +3,22 @@ import { gpuArgs } from './gpu';
 
 // Headless Chromium vsyncs requestAnimationFrame at 60 Hz, and IWER drives XR frames from it, so
 // every interval would be 16.7 ms: past the 90 Hz shed line (11.7 ms) with no `?slow` at all.
-// Uncapped, the canvas frame takes about 5 ms and `?slow=14` is what pushes it over.
+// Uncapped, the canvas frame takes about 5 ms and `?slow` is what pushes it over.
 test.use({
   launchOptions: { args: [...gpuArgs, '--disable-frame-rate-limit', '--disable-gpu-vsync'] },
 });
 
 interface HistoryEntry {
   t: number;
-  action: 'shed' | 'restore' | 'shed-back' | 'rate';
+  action:
+    | 'shed'
+    | 'restore'
+    | 'shed-back'
+    | 'no-gain'
+    | 'recover'
+    | 'recover-back'
+    | 'rate'
+    | 'rate-failed';
   step: string;
   from: number;
   to: number;
@@ -37,12 +45,6 @@ interface GovernorDiag {
   history: HistoryEntry[];
 }
 
-interface CanvasStrokes {
-  total: number;
-  visible: number;
-  visibleChunks: number;
-}
-
 async function governor(xr: Xr): Promise<GovernorDiag> {
   // The canvas builds, then the governor attaches, after async chunk imports.
   await expect
@@ -51,11 +53,16 @@ async function governor(xr: Xr): Promise<GovernorDiag> {
   return (await xr.diag()).governor as GovernorDiag;
 }
 
-test('slow=14 sheds density to its minimum, then fb scale and foveation, then requests 72 Hz', async ({
+test('slow=40: sheds only near density and fb scale, undoes at least one as no-gain, then asks 72 Hz', async ({
   page,
   xr,
 }) => {
-  await xr.boot('demo=canvas&slow=14');
+  // Under host load, headless window means at slow=14 (about 19 ms) move 1-3% from one window to
+  // the next and sometimes over 3%, so a shed can read as a gain by chance. At slow=40 (about
+  // 47 ms) the busy-wait dominates and they mostly move under 1%. 325k strokes put the 150k floor
+  // three near steps away, so a chance gain leads to another check, and the spec fails only if
+  // every check before the rate request reads as a gain.
+  await xr.boot('demo=canvas&count=325000&slow=40');
   await governor(xr);
   // No ?hud: the HUD starts hidden and unbuilt, so only the notice can show it.
   expect((await xr.diag()).hud).toEqual({ visible: false, built: false });
@@ -70,29 +77,34 @@ test('slow=14 sheds density to its minimum, then fb scale and foveation, then re
   console.log(`[e2e] governor history ${JSON.stringify(gov.history)}`);
   test.info().annotations.push({ type: 'governor', description: sequence.join(', ') });
 
-  // The canvas is all near band, so only near density can shed, and only down to the 150k floor.
-  const steps = gov.history.map((e) => e.step);
-  const firstOther = steps.findIndex((s) => !s.endsWith('-density'));
-  expect(firstOther).toBeGreaterThan(0);
-  expect(steps.slice(0, firstOther).every((s) => s === 'near-density')).toBe(true);
-  expect(steps.slice(firstOther)).toEqual(['fb-scale', 'foveation', 'frame-rate']);
-  expect(gov.history.every((e) => e.action === 'shed' || e.action === 'rate')).toBe(true);
-  const rate = gov.history.at(-1);
+  // Once 72 Hz applies, the frame-rate change clears the holds and the governor may try again at
+  // 72, so only the history up to the rate request is the 90 Hz sequence.
+  const rateAt = gov.history.findIndex((e) => e.action === 'rate');
+  const rate = gov.history[rateAt];
   expect(rate).toMatchObject({ action: 'rate', from: 90, to: 72 });
-  const foveation = gov.history.at(-2);
-  expect((rate?.t ?? 0) - (foveation?.t ?? 0)).toBeGreaterThanOrEqual(3000);
+  const before = gov.history.slice(0, rateAt);
+  const pairs = before.map((e) => `${e.action} ${e.step}`);
+  // `?slow` busy-waits on the CPU, which no shed touches. The canvas is all near band, so near
+  // density is the only density step, and an undo holds it. IWER ignores requestViewportScale, so
+  // the fb-scale step cannot gain either. Window noise can still make a step read as a gain, so
+  // the spec needs one undo, not one per step.
+  expect(pairs[0]).toBe('shed near-density');
+  expect(pairs).toContain('shed fb-scale');
+  expect(pairs.every((p) => /^(shed|no-gain) (near-density|fb-scale)$/.test(p))).toBe(true);
+  expect(before.some((e) => e.action === 'no-gain')).toBe(true);
+  // Each no-gain undoes the shed just before it, back to the level it shed from.
+  before.forEach((e, i) => {
+    if (e.action !== 'no-gain') return;
+    expect(before[i - 1]).toMatchObject({ action: 'shed', step: e.step, from: e.to, to: e.from });
+  });
+  // Nothing left to shed: the request waits out 3 s of overrun after the last undo.
+  expect(rate.t - (before.at(-1)?.t ?? 0)).toBeGreaterThanOrEqual(3000);
 
-  expect(gov.densityMin).toBe(true);
-  expect(gov.densities.near).toBeLessThan(1);
-  const strokes = ((await xr.diag()).canvas as { strokes: CanvasStrokes }).strokes;
-  expect(strokes.visible).toBeLessThan(strokes.total);
-  expect(strokes.visible).toBeGreaterThanOrEqual(150_000 - strokes.visibleChunks);
-
-  expect(gov.fbScale).toBe(0.85);
   expect(gov.fbScalePath).toBe('base-layer');
   // IWER's getViewport ignores requestViewportScale, so the measured scale stays 1.
   expect(gov.fbScaleApplied).toBe(1);
-  expect(gov.foveation).toBe(0.5);
+  // Foveation is not a shed step: it stays at the app default.
+  expect(gov.foveation).toBe(0);
   // The 72 Hz budget and notice commit only once updateTargetFrameRate resolves.
   await expect.poll(async () => (await governor(xr)).rateRequest).toBe('applied');
   expect(gov.targetHz).toBe(72);
@@ -111,6 +123,44 @@ test('slow=14 sheds density to its minimum, then fb scale and foveation, then re
   expect(gov.meanMs ?? 0).toBeGreaterThan(14);
   // IWER implements updateTargetFrameRate and reports the new nominal rate.
   await expect.poll(async () => (await xr.diag()).xr).toMatchObject({ frameRate: 72 });
+  expect(await glErrors(page)).toEqual([]);
+});
+
+test('slow=40 at 180k strokes: the first near shed stops at the 150k drawn floor (ruling R10)', async ({
+  page,
+  xr,
+}) => {
+  // From the origin the whole canvas is in view, so 180k drawn puts the floor (150k) above the
+  // 0.75 near step: the shed must clamp to it. The shed lasts one window before its no-gain undo,
+  // so an in-page loop reads every frame rather than polling from the test.
+  await xr.boot('demo=canvas&count=180000&slow=40');
+  await governor(xr);
+  await xr.enterXR();
+  const sample = await page.evaluate(async () => {
+    interface Read {
+      governor: { densities: { near: number } };
+      canvas: { strokes: { visible: number; total: number; visibleChunks: number } };
+    }
+    const deadline = performance.now() + 30_000;
+    while (performance.now() < deadline) {
+      const diag = window.__goghDiag?.() as unknown as Read | undefined;
+      const strokes = diag?.canvas?.strokes;
+      // The cull runs in the frame after a density change, so wait for it to show.
+      if (diag?.governor && strokes && diag.governor.densities.near < 1) {
+        if (strokes.visible < strokes.total) return { near: diag.governor.densities.near, strokes };
+      }
+      await new Promise<void>((resolve) => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => resolve();
+        channel.port2.postMessage(null);
+      });
+    }
+    throw new Error('no near-density shed showed in the stroke counts within 30 s');
+  });
+  console.log(`[e2e] governor floor sample ${JSON.stringify(sample)}`);
+  expect(sample.near).toBeGreaterThan(0.75);
+  expect(sample.strokes.visible).toBeGreaterThanOrEqual(150_000 - sample.strokes.visibleChunks);
+  expect(sample.strokes.visible).toBeLessThan(160_000);
   expect(await glErrors(page)).toEqual([]);
 });
 

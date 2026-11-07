@@ -130,13 +130,20 @@ function start(xr: FakeXr, batch: GovernedBatch, notify = vi.fn()) {
   return { runtime, scene, notify };
 }
 
-function frames(rt: GovernorRuntime, from: number, ms: number, interval: number): number {
+type Interval = number | (() => number);
+
+function frames(rt: GovernorRuntime, from: number, ms: number, interval: Interval): number {
   let t = from;
   while (t < from + ms) {
-    t += interval;
+    t += typeof interval === 'number' ? interval : interval();
     rt.frame(t);
   }
   return t;
+}
+
+/** An overrun each shed step helps: 5% off per step, so no shed is undone as no-gain. */
+function shedding(rt: GovernorRuntime): () => number {
+  return () => 32 * 0.95 ** rt.diag().level;
 }
 
 function diagOf(): GovernorDiag {
@@ -179,23 +186,27 @@ test('the diag says whether the governor judges frames: only in a visible XR ses
   expect(diagOf().judging).toBe(true);
 });
 
-/** Enters XR and runs overrun frames to the 72 Hz request, then lets its promise settle. */
-async function toRateRequest(xr: FakeXr, batch = fakeBatch(200_000)) {
+/**
+ * Enters XR and runs overrun frames to the 72 Hz request, then lets its promise settle. By default
+ * each shed helps; `cpuBound` runs fixed 16 ms frames that no shed can help.
+ */
+async function toRateRequest(xr: FakeXr, batch = fakeBatch(200_000), cpuBound = false) {
   const started = start(xr, batch);
   xr.isPresenting = true;
   xr.emit('sessionstart');
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const interval = cpuBound ? 16 : shedding(started.runtime);
   let t = 0;
   while (!diagOf().history.some((e) => e.action === 'rate') && t < 20_000) {
-    t = frames(started.runtime, t, 16, 16);
+    t = frames(started.runtime, t, 16, interval);
   }
   await Promise.resolve();
   await Promise.resolve();
   return { ...started, batch, t };
 }
 
-test('in XR an overrun drives batch density, viewport scale, foveation and the 72 Hz request', async () => {
+test('in XR an overrun drives batch density, viewport scale and the 72 Hz request, never foveation', async () => {
   const xr = new FakeXr();
   const { batch, notify } = await toRateRequest(xr);
   expect(diagOf().fbScalePath).toBe('base-layer');
@@ -203,7 +214,6 @@ test('in XR an overrun drives batch density, viewport scale, foveation and the 7
   expect(diag.history.map((e) => `${e.action} ${e.step}`)).toEqual([
     'shed near-density',
     'shed fb-scale',
-    'shed foveation',
     'rate frame-rate',
   ]);
   expect(batch.densities.near).toBeCloseTo(0.75, 10);
@@ -212,7 +222,9 @@ test('in XR an overrun drives batch density, viewport scale, foveation and the 7
   const view = { requestViewportScale: vi.fn() };
   (xr.layer.getViewport as (v: unknown) => unknown)(view);
   expect(view.requestViewportScale).toHaveBeenCalledWith(0.85);
-  expect(xr.setFoveation).toHaveBeenLastCalledWith(0.5);
+  // Foveation stays at the session default that xr/session.ts sets; the governor never touches it.
+  expect(xr.setFoveation).not.toHaveBeenCalled();
+  expect(diag.foveation).toBe(0);
   expect(xr.session.updateTargetFrameRate).toHaveBeenCalledWith(72);
   expect(notify).toHaveBeenCalledWith(RATE_NOTICE);
   expect(diag).toMatchObject({
@@ -223,6 +235,52 @@ test('in XR an overrun drives batch density, viewport scale, foveation and the 7
     gpuTimer: 'unavailable',
   });
   expect(diag.budgetMs).toBeCloseTo(1000 / 72, 10);
+});
+
+test('a CPU-bound overrun: each shed buys nothing and is undone through the adapters', async () => {
+  const xr = new FakeXr();
+  const { batch } = await toRateRequest(xr, fakeBatch(200_000), true);
+  const diag = diagOf();
+  expect(diag.history.map((e) => `${e.action} ${e.step}`)).toEqual([
+    'shed near-density',
+    'no-gain near-density',
+    'shed fb-scale',
+    'no-gain fb-scale',
+    'rate frame-rate',
+  ]);
+  // Back to full quality on the batch and the viewport.
+  expect(batch.densities.near).toBe(1);
+  expect(batch.sizes.near).toBe(1);
+  expect(diag).toMatchObject({ level: 0, fbScale: 1 });
+  const view = { requestViewportScale: vi.fn() };
+  (xr.layer.getViewport as (v: unknown) => unknown)(view);
+  expect(view.requestViewportScale).toHaveBeenCalledWith(1);
+  // The 72 Hz request still went out, and its frame-rate change cleared the holds.
+  expect(xr.session.updateTargetFrameRate).toHaveBeenCalledWith(72);
+  expect(diag).toMatchObject({ rateRequest: 'applied', frameRate: 72, noGainHeld: [] });
+});
+
+test('a stuck overrun: recovery restores the top shed through the adapters, and reverts it', async () => {
+  const xr = new FakeXr();
+  const { runtime: rt } = await toRateRequest(xr);
+  const scaleNow = (): unknown => {
+    const view = { requestViewportScale: vi.fn() };
+    (xr.layer.getViewport as (v: unknown) => unknown)(view);
+    return view.requestViewportScale.mock.calls.at(-1)?.[0];
+  };
+  expect(scaleNow()).toBe(0.85);
+  // Still overrunning at 72 Hz with nothing left to shed: the top step comes back.
+  let t = diagOf().history.at(-1)?.t ?? 0;
+  const recovered = () => diagOf().history.some((e) => e.action === 'recover');
+  const deadline = t + 20_000;
+  while (!recovered() && t < deadline) t = frames(rt, t, 100, 20);
+  expect(diagOf().history.at(-1)).toMatchObject({ action: 'recover', step: 'fb-scale' });
+  expect(scaleNow()).toBe(1);
+  // The restore costs time: the check reverts it through the same adapter.
+  t = frames(rt, t, 2500, 30);
+  expect(diagOf().history.at(-1)).toMatchObject({ action: 'recover-back', step: 'fb-scale' });
+  expect(scaleNow()).toBe(0.85);
+  expect(diagOf()).toMatchObject({ fbScale: 0.85, recoverHeld: ['fb-scale'] });
 });
 
 test('fbScaleApplied reports the measured width ratio, not the requested scale', () => {
@@ -290,9 +348,10 @@ test('frames are not judged while the session is hidden, and a pause restarts th
   xr.isPresenting = true;
   xr.emit('sessionstart');
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
-  // 100k near is under the floor: fb-scale and foveation shed, then the 3 s rate count runs.
+  // 100k near is under the floor: fb-scale sheds, is undone as no-gain at fixed 16 ms frames, then
+  // the 3 s rate count runs.
   let t = 0;
-  while (!diagOf().history.some((e) => e.step === 'foveation')) t = frames(rt, t, 16, 16);
+  while (!diagOf().history.some((e) => e.step === 'fb-scale')) t = frames(rt, t, 16, 16);
   t = frames(rt, t, 2000, 16);
   xr.session.visibilityState = 'visible-blurred';
   xr.session.emit('visibilitychange');
@@ -314,7 +373,7 @@ test('a new session starts from full quality again', () => {
   const { runtime: rt } = start(xr, batch);
   xr.isPresenting = true;
   xr.emit('sessionstart');
-  frames(rt, 0, 3000, 16);
+  frames(rt, 0, 3000, shedding(rt));
   expect(batch.densities.near).toBeLessThan(1);
   xr.isPresenting = false;
   xr.emit('sessionend');
@@ -526,10 +585,15 @@ describe('stroke binding (M2)', () => {
     return { strokes, started };
   }
 
-  function drive(strokes: { frame(t: number): void }, from: number, ms: number): number {
+  /** Overrun frames that each shed helps, read from the bound governor's level. */
+  function drive(
+    strokes: { frame(t: number): void; governorDiag(): { level: number } | null },
+    from: number,
+    ms: number,
+  ): number {
     let t = from;
     while (t < from + ms) {
-      t += 16;
+      t += 32 * 0.95 ** (strokes.governorDiag()?.level ?? 0);
       strokes.frame(t);
     }
     return t;
