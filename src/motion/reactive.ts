@@ -267,6 +267,8 @@ export interface DisturberDiag {
   strength: number;
   /** Wake samples held. */
   wake: number;
+  /** The sum of this disturber's wake weights in `uWake`, as the shader reads them. */
+  wakeWeight: number;
   /** History resets on a step past REACTIVE_JUMP_SPEED since boot. */
   jumps: number;
 }
@@ -472,6 +474,9 @@ export function createReactiveTracker(): ReactiveTracker {
           velocity: [...track.velocity],
           strength: uniforms.uDisturbers.value[j].w,
           wake: track.history.length,
+          wakeWeight: uniforms.uWake.value
+            .slice(j * WAKE_SAMPLES, (j + 1) * WAKE_SAMPLES)
+            .reduce((sum, w) => sum + w.w, 0),
           jumps: track.jumps,
         })),
         box:

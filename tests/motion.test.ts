@@ -38,7 +38,7 @@ const strokeGlsl = readFileSync('src/render/strokes/stroke.vert.glsl', 'utf8');
 describe('motion clock', () => {
   test('defaults: calm 1, not frozen, time 0, gate the live layers', () => {
     const clock = createMotionClock({ layerMask: ALL_MASK });
-    expect(clock.diag()).toEqual({ time: 0, calm: 1, frozen: false, layers: ALL_MASK });
+    expect(clock.diag()).toEqual({ time: 0, delta: 0, calm: 1, frozen: false, layers: ALL_MASK });
     expect(clock.uniforms.uTime.value).toBe(0);
     expect(clock.uniforms.uCalm.value).toBe(1);
     expect(clock.uniforms.uFreeze.value).toBe(0);
@@ -55,6 +55,24 @@ describe('motion clock', () => {
     clock.frame(1100);
     expect(clock.uniforms.uTime.value).toBeCloseTo(0.075, 12);
     expect(clock.diag().time).toBe(clock.uniforms.uTime.value);
+  });
+
+  test('diag reports the last frame step of the motion time: calm times dt, 0 at calm 0 and frozen (P4.6)', () => {
+    const clock = createMotionClock();
+    clock.frame(1000);
+    expect(clock.diag().delta).toBe(0);
+    clock.frame(1020);
+    expect(clock.diag().delta).toBeCloseTo(0.02, 12);
+    clock.setCalm(0.5);
+    clock.frame(1040);
+    expect(clock.diag().delta).toBeCloseTo(0.01, 12);
+    clock.setCalm(0);
+    clock.frame(1060);
+    expect(clock.diag().delta).toBe(0);
+    clock.setCalm(1);
+    clock.setFrozen(true);
+    clock.frame(1080);
+    expect(clock.diag().delta).toBe(0);
   });
 
   test('a calm change never jumps the time: speed scales on the CPU', () => {

@@ -16,6 +16,7 @@ import { expect, glErrors, test, type Xr } from './fixtures';
 
 interface MotionDiag {
   time: number;
+  delta: number;
   calm: number;
   frozen: boolean;
   layers: number;
@@ -53,7 +54,7 @@ test('?noanim holds the motion clock and two world shots 500 ms apart match', as
   const second = await shot();
   const after = await motion(xr);
 
-  expect(before).toEqual({ time: 0, calm: 1, frozen: true, layers: MOTION_LAYER_MASK });
+  expect(before).toEqual({ time: 0, delta: 0, calm: 1, frozen: true, layers: MOTION_LAYER_MASK });
   expect(after).toEqual(before);
   const [a, b] = await Promise.all([rawPixels(first), rawPixels(second)]);
   expect(a.length).toBeGreaterThan(0);
@@ -174,10 +175,22 @@ test.describe('sky swirl (P4.2)', () => {
     const { width, height } = CAPTURE_SIZE;
     const rest = await painterShot(page, xr, 'noanim');
     const still = await painterShot(page, xr, `calm=0&motiont=${PINNED}`);
-    expect(await motion(xr)).toEqual({ time: PINNED, calm: 0, frozen: false, layers: SKY_ONLY });
+    expect(await motion(xr)).toEqual({
+      time: PINNED,
+      delta: 0,
+      calm: 0,
+      frozen: false,
+      layers: SKY_ONLY,
+    });
     const half = await painterShot(page, xr, `calm=0.5&motiont=${PINNED}`);
     const full = await painterShot(page, xr, `calm=1&motiont=${PINNED}`);
-    expect(await motion(xr)).toEqual({ time: PINNED, calm: 1, frozen: false, layers: SKY_ONLY });
+    expect(await motion(xr)).toEqual({
+      time: PINNED,
+      delta: 0,
+      calm: 1,
+      frozen: false,
+      layers: SKY_ONLY,
+    });
     expect(((await xr.diag()).halo as { visible: boolean }).visible).toBe(false);
     // Pinned: the time holds while frames run.
     await xr.waitFrames(10);
@@ -428,6 +441,411 @@ test.describe('star and moon rings (P4.3)', () => {
     expect(await glErrors(page)).toEqual([]);
   });
 
+  /** The moon's ring: the last of SKY_RINGS (SKY_MOON_RING). Its still inner radius is 2/3 of the rim. */
+  const MOON = 11;
+  const MOON_INNER = 2 / 3;
+  /**
+   * The rim fraction past which the painter view shows no moon stroke the ring brightens: measured,
+   * the lift is 0 past about 0.79 of the rim (1.19 moon radii), where the dome shows through and
+   * its layer is closed here. The measured band stops there.
+   */
+  const MOON_OUTER = 0.79;
+  /**
+   * A frame-geometry guard, not the P4.3 colour clip (that is the moon-disc test below): bounds on
+   * the share of the moon's band, its radius to its rim, that falls outside the painter frame at its
+   * top edge (measured 16.7%), so a moved moon or camera fails.
+   */
+  const FRAME_OUT_SHARE: readonly [number, number] = [0.15, 0.19];
+
+  /** A shot of the running page after moving the `?motiont` pin to `t` (`__goghMotionT`). */
+  async function shotAt(page: Page, xr: Xr, t: number): Promise<Buffer> {
+    await page.evaluate((time) => {
+      if (!window.__goghMotionT) throw new Error('__goghMotionT is e2e-only and needs ?motiont');
+      window.__goghMotionT(time);
+    }, t);
+    await xr.waitFrames(3);
+    expect((await motion(xr)).time).toBeCloseTo(t, 9);
+    const url = await page.evaluate(() => {
+      if (!window.__goghShot) throw new Error('__goghShot is not installed; boot with ?diag&shot');
+      return window.__goghShot();
+    });
+    return rawPixels(url);
+  }
+
+  /** Canvas pixel indices of the annulus r0..r1 (fractions of `rim` px) round (cx, cy), in frame. */
+  function annulusOf(
+    cx: number,
+    cy: number,
+    rim: number,
+    r0: number,
+    r1: number,
+  ): { inside: number[]; total: number } {
+    const { width, height } = CAPTURE_SIZE;
+    const inside: number[] = [];
+    let total = 0;
+    for (let y = Math.floor(cy - rim); y <= Math.ceil(cy + rim); y++) {
+      for (let x = Math.floor(cx - rim); x <= Math.ceil(cx + rim); x++) {
+        const r = Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / rim;
+        if (r < r0 || r > r1) continue;
+        total++;
+        if (x >= 0 && y >= 0 && x < width && y < height) inside.push(y * width + x);
+      }
+    }
+    return { inside, total };
+  }
+
+  test('the moon ring travels outward over time, as the TS mirror predicts (P4.3 a)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(300_000);
+    // The moon layer alone and no halo, so only the moon's ring strokes differ from the rest shot.
+    const flags = 'motionlayers=moon&nohalo';
+    const rest = await lightsShot(page, xr, `noanim&${flags}`);
+    await expect.poll(() => page.evaluate(() => window.__goghRingShift !== undefined)).toBe(true);
+    const { width, height } = CAPTURE_SIZE;
+    // The crest's ringBump spans a whole wavelength, the rim, and the band only an eighth of it, so
+    // the band's brightening centroid barely moves. The balance does: the outer half's share of the
+    // band's brightening less the inner half's, which rises as the crest crosses the band outward.
+    // The pair of times 1 s apart over which the mirror's balance rises the most, with at least 30%
+    // of the most brightening in the band at both.
+    const plan = await page.evaluate(
+      ([k, inner, outerEdge, w, h]) => {
+        const probe = window.__goghRingShift;
+        if (!probe) throw new Error('__goghRingShift is e2e-only');
+        const base = probe(k, 0.5, 0.3, 0);
+        if (!base) throw new Error(`ring ${k} is off the painter view`);
+        const rim = base.rim * w;
+        const mid = (inner + outerEdge) / 2;
+        const profile = (t: number): { balance: number; mass: number } => {
+          let outer = 0;
+          let near = 0;
+          for (let i = 0; i <= 16; i++) {
+            const r = inner + ((outerEdge - inner) * (i + 0.5)) / 17;
+            for (let a = 0; a < 24; a++) {
+              const th = (a / 24) * 2 * Math.PI;
+              const u = base.centre[0] + (r * rim * Math.cos(th)) / w;
+              const v = base.centre[1] + (r * rim * Math.sin(th)) / h;
+              if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+              const m = probe(k, u, v, t);
+              if (!m) continue;
+              if (r >= mid) outer += m.bright;
+              else near += m.bright;
+            }
+          }
+          const mass = outer + near;
+          return { balance: mass > 0 ? (outer - near) / mass : 0, mass };
+        };
+        const profiles = Array.from({ length: 200 }, (_, i) => ({
+          t: i * 0.05,
+          ...profile(i * 0.05),
+        }));
+        const most = Math.max(...profiles.map((p) => p.mass));
+        let best = { t1: 0, t2: 1, b1: 0, b2: 0, gain: -Infinity };
+        for (const p of profiles) {
+          const q = { t: p.t + 1, ...profile(p.t + 1) };
+          if (p.mass < 0.3 * most || q.mass < 0.3 * most) continue;
+          if (q.balance - p.balance > best.gain) {
+            best = {
+              t1: p.t,
+              t2: q.t,
+              b1: p.balance,
+              b2: q.balance,
+              gain: q.balance - p.balance,
+            };
+          }
+        }
+        return { centre: [base.centre[0] * w, base.centre[1] * h], rim, ...best };
+      },
+      [MOON, MOON_INNER, MOON_OUTER, width, height] as const,
+    );
+    await xr.boot(
+      `painting=starry-night&seed=1&shot&painter&nogov&motionphase=0&motiont=${plan.t1}&${flags}`,
+    );
+    await expect
+      .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+      .toBe(true);
+    await xr.waitFrames(5);
+    const early = await shotAt(page, xr, plan.t1);
+    const late = await shotAt(page, xr, plan.t2);
+
+    const [cx, cy] = plan.centre;
+    const band = annulusOf(cx, cy, plan.rim, MOON_INNER, MOON_OUTER);
+    const whole = annulusOf(cx, cy, plan.rim, MOON_INNER, 1);
+    // The share of the moon's band, its radius to its rim, that falls outside the painter frame.
+    const clip = 1 - whole.inside.length / whole.total;
+    const restL = lumaOf(rest);
+    const mid = (MOON_INNER + MOON_OUTER) / 2;
+    // The mean lift over the whole band in eight radial bins, logged.
+    const bins = (shot: Buffer): string => {
+      const l = lumaOf(shot);
+      const sum = new Array(8).fill(0);
+      const n = new Array(8).fill(0);
+      for (const i of whole.inside) {
+        const r = Math.hypot((i % width) + 0.5 - cx, Math.floor(i / width) + 0.5 - cy) / plan.rim;
+        const k = Math.min(7, Math.floor(((r - MOON_INNER) / (1 - MOON_INNER)) * 8));
+        sum[k] += Math.max(l[i] - restL[i], 0);
+        n[k]++;
+      }
+      return sum.map((v, k) => (v / Math.max(n[k], 1)).toFixed(2)).join(' ');
+    };
+    const balance = (shot: Buffer): { balance: number; lift: number } => {
+      const l = lumaOf(shot);
+      let outer = 0;
+      let near = 0;
+      for (const i of band.inside) {
+        const lift = Math.max(l[i] - restL[i], 0);
+        const r = Math.hypot((i % width) + 0.5 - cx, Math.floor(i / width) + 0.5 - cy) / plan.rim;
+        if (r >= mid) outer += lift;
+        else near += lift;
+      }
+      const mass = outer + near;
+      return { balance: (outer - near) / mass, lift: mass / band.inside.length };
+    };
+    const a = balance(early);
+    const b = balance(late);
+    console.log(
+      `moon ring lift by radius, ${MOON_INNER.toFixed(3)}-1 of the rim: early ${bins(early)}; late ${bins(late)}`,
+    );
+    console.log(
+      `moon ring: centre (${cx.toFixed(1)}, ${cy.toFixed(1)}) px, rim ${plan.rim.toFixed(1)} px, band clipped ${(clip * 100).toFixed(1)}%; t ${plan.t1.toFixed(2)} to ${plan.t2.toFixed(2)} s: predicted outer-less-inner balance ${plan.b1.toFixed(3)} to ${plan.b2.toFixed(3)}, measured ${a.balance.toFixed(3)} to ${b.balance.toFixed(3)} (mean lift ${a.lift.toFixed(2)}, ${b.lift.toFixed(2)})`,
+    );
+    // The mirror's crest moves outward, and so does the GPU's, by at least a third as much. Only the
+    // rise is held, not the balance itself: the mirror weights every radius evenly, while the moon
+    // strokes thin out towards 0.79 of the rim (they stop at about 1.19 moon radii, and the halo
+    // carries the travel past that), so the measured balance sits far below the predicted one.
+    expect(plan.gain).toBeGreaterThan(0.1);
+    expect(a.lift).toBeGreaterThan(0.2);
+    expect(b.lift).toBeGreaterThan(0.2);
+    expect(b.balance - a.balance).toBeGreaterThan(plan.gain / 3);
+    expect(clip).toBeGreaterThanOrEqual(FRAME_OUT_SHARE[0]);
+    expect(clip).toBeLessThanOrEqual(FRAME_OUT_SHARE[1]);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
+  /**
+   * The moon disc in painter-view pixels, as P4.3 measured its clip (the crescent clipping to flat
+   * lemon): the moon anchor's `anchorReach(anchor, 1)` circle on the dome's tangent plane at the
+   * ring centre, projected through the painter camera as a 128-point polygon (`__goghMoonDisc`,
+   * because Playwright cannot load sky.ts, which imports regions.json). Pixel centres inside.
+   */
+  async function moonDisc(page: Page): Promise<number[]> {
+    const { width, height } = CAPTURE_SIZE;
+    await expect.poll(() => page.evaluate(() => window.__goghMoonDisc !== undefined)).toBe(true);
+    const uv = await page.evaluate(() => {
+      if (!window.__goghMoonDisc) throw new Error('__goghMoonDisc is e2e-only');
+      return window.__goghMoonDisc(128);
+    });
+    if (!uv) throw new Error('the moon disc is behind the painter camera');
+    const rim = uv.map(([u, v]) => [u * width, v * height] as const);
+    const inside = (x: number, y: number): boolean => {
+      let hit = false;
+      for (let i = 0, j = rim.length - 1; i < rim.length; j = i++) {
+        const [xi, yi] = rim[i];
+        const [xj, yj] = rim[j];
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+      }
+      return hit;
+    };
+    const xs = rim.map((p) => p[0]);
+    const ys = rim.map((p) => p[1]);
+    const out: number[] = [];
+    for (
+      let y = Math.max(0, Math.floor(Math.min(...ys)));
+      y <= Math.min(height - 1, Math.ceil(Math.max(...ys)));
+      y++
+    ) {
+      for (
+        let x = Math.max(0, Math.floor(Math.min(...xs)));
+        x <= Math.min(width - 1, Math.ceil(Math.max(...xs)));
+        x++
+      ) {
+        if (inside(x + 0.5, y + 0.5)) out.push(y * width + x);
+      }
+    }
+    return out;
+  }
+
+  /** The share of `pixels` whose R or G is clipped, 254 or more. */
+  function clippedShare(raw: Buffer, pixels: readonly number[]): number {
+    const channels = raw.length / (CAPTURE_SIZE.width * CAPTURE_SIZE.height);
+    let clipped = 0;
+    for (const i of pixels) {
+      const k = i * channels;
+      if (raw[k] >= 254 || raw[k + 1] >= 254) clipped++;
+    }
+    return clipped / pixels.length;
+  }
+
+  /** The brightest R and G over `pixels`, logged as the clip's headroom. */
+  function peakRG(raw: Buffer, pixels: readonly number[]): string {
+    const channels = raw.length / (CAPTURE_SIZE.width * CAPTURE_SIZE.height);
+    let r = 0;
+    let g = 0;
+    for (const i of pixels) {
+      r = Math.max(r, raw[i * channels]);
+      g = Math.max(g, raw[i * channels + 1]);
+    }
+    return `R ${r}, G ${g}`;
+  }
+
+  test('the moon disc does not clip to flat lemon: under 1% R or G at 254 or more at its crest, none at rest (P4.3 clip)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(300_000);
+    // At rest: every layer open, the halo drawn.
+    const rest = await lightsShot(page, xr, 'noanim');
+    const disc = await moonDisc(page);
+    expect(disc.length).toBeGreaterThan(1000);
+    const restShare = clippedShare(rest, disc);
+    await expect.poll(() => page.evaluate(() => window.__goghRingShift !== undefined)).toBe(true);
+    // The crest: the time in the first 20 s (two moon periods) at which the mirror's mean
+    // brightening over the moon's band, its radius to its rim, peaks.
+    const crest = await page.evaluate(
+      ([k, inner, span, w, h]) => {
+        const probe = window.__goghRingShift;
+        if (!probe) throw new Error('__goghRingShift is e2e-only');
+        const base = probe(k, 0.5, 0.3, 0);
+        if (!base) throw new Error(`ring ${k} is off the painter view`);
+        const rim = base.rim * w;
+        let best = { t: 0, bright: -1 };
+        for (let s = 0; s < span * 20; s++) {
+          const t = s * 0.05;
+          let sum = 0;
+          let n = 0;
+          for (let i = 0; i < 12; i++) {
+            const r = inner + ((1 - inner) * (i + 0.5)) / 12;
+            for (let a = 0; a < 24; a++) {
+              const th = (a / 24) * 2 * Math.PI;
+              const u = base.centre[0] + (r * rim * Math.cos(th)) / w;
+              const v = base.centre[1] + (r * rim * Math.sin(th)) / h;
+              if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+              const m = probe(k, u, v, t);
+              if (!m) continue;
+              sum += m.bright;
+              n++;
+            }
+          }
+          if (n > 0 && sum / n > best.bright) best = { t, bright: sum / n };
+        }
+        return { ...best, centre: [base.centre[0] * w, base.centre[1] * h], rim };
+      },
+      [MOON, MOON_INNER, 20, CAPTURE_SIZE.width, CAPTURE_SIZE.height] as const,
+    );
+    const shot = await lightsShot(page, xr, `motiont=${crest.t}`);
+    expect((await motion(xr)).time).toBeCloseTo(crest.t, 9);
+    const crestShare = clippedShare(shot, disc);
+    // The crest is live: the moon band's mean luma, from its radius to 0.79 of its rim, is above the
+    // rest shot's, so a 0% clip is read at a lit crest and not at a still ring.
+    const band = annulusOf(crest.centre[0], crest.centre[1], crest.rim, MOON_INNER, MOON_OUTER);
+    const meanLuma = (raw: Buffer): number => {
+      const l = lumaOf(raw);
+      return band.inside.reduce((s, i) => s + l[i], 0) / band.inside.length;
+    };
+    const lift = meanLuma(shot) - meanLuma(rest);
+    console.log(
+      `[e2e] moon disc ${disc.length} px: R or G clipped ${(restShare * 100).toFixed(2)}% at rest (peak ${peakRG(rest, disc)}), ${(crestShare * 100).toFixed(2)}% at the crest (peak ${peakRG(shot, disc)}; motiont ${crest.t.toFixed(2)} s, predicted band brightening ${crest.bright.toFixed(3)}, band mean luma lift ${lift.toFixed(2)})`,
+    );
+    expect(crest.bright).toBeGreaterThan(0);
+    expect(lift).toBeGreaterThan(1);
+    expect(restShare).toBe(0);
+    expect(crestShare).toBeLessThan(0.01);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
+  test('the halo brightens and dims between two pinned times by the TS mirror, and calm 0 draws the rest halo (P4.3 b, c)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(360_000);
+    // (c) Calm 0 with the halo drawn is the frozen world, byte for byte.
+    const rest = await lightsShot(page, xr, 'noanim');
+    expect(((await xr.diag()).halo as HaloDiag).visible).toBe(true);
+    const still = await lightsShot(page, xr, 'calm=0&motiont=3.3');
+    expect(((await xr.diag()).halo as HaloDiag).visible).toBe(true);
+    expect((await motion(xr)).time).toBe(3.3);
+    expect(still.equals(rest)).toBe(true);
+
+    // (b) The star 10 halo's mean predicted glow over its disc, 0.6 of the rim: the pinned times
+    // on a 0.1 s grid over 10 s at which the mirror's glow is highest and lowest.
+    await expect.poll(() => page.evaluate(() => window.__goghHaloGlow !== undefined)).toBe(true);
+    const { width, height } = CAPTURE_SIZE;
+    const plan = await page.evaluate(
+      ([k, w, h]) => {
+        const ring = window.__goghRingShift;
+        const glow = window.__goghHaloGlow;
+        if (!ring || !glow) throw new Error('the ring and halo probes are e2e-only');
+        const base = ring(k, 0.5, 0.3, 0);
+        if (!base) throw new Error(`ring ${k} is off the painter view`);
+        const rim = base.rim * w;
+        const cx = base.centre[0] * w;
+        const cy = base.centre[1] * h;
+        const pixels: number[] = [];
+        for (let y = Math.floor(cy - 0.6 * rim); y <= Math.ceil(cy + 0.6 * rim); y += 2) {
+          for (let x = Math.floor(cx - 0.6 * rim); x <= Math.ceil(cx + 0.6 * rim); x += 2) {
+            if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= 0.6 * rim) pixels.push(y * w + x);
+          }
+        }
+        const mean = (t: number): number => {
+          let sum = 0;
+          for (const i of pixels) {
+            sum += glow(k, ((i % w) + 0.5) / w, (Math.floor(i / w) + 0.5) / h, t) ?? 0;
+          }
+          return sum / pixels.length;
+        };
+        let hi = { t: 0, glow: -Infinity };
+        let lo = { t: 0, glow: Infinity };
+        for (let i = 0; i < 100; i++) {
+          const t = Math.round(i * 10) / 100;
+          const g = mean(t);
+          if (g > hi.glow) hi = { t, glow: g };
+          if (g < lo.glow) lo = { t, glow: g };
+        }
+        return { pixels, hi, lo };
+      },
+      [STAR, width, height] as const,
+    );
+    const pair = async (extra: string): Promise<[Buffer, Buffer]> => {
+      await xr.boot(`painting=starry-night&seed=1&shot&painter&nogov&motiont=${plan.hi.t}${extra}`);
+      await expect
+        .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+        .toBe(true);
+      await xr.waitFrames(5);
+      return [await shotAt(page, xr, plan.hi.t), await shotAt(page, xr, plan.lo.t)];
+    };
+    const [hi, lo] = await pair('');
+    expect(((await xr.diag()).halo as HaloDiag).visible).toBe(true);
+    const [hiBare, loBare] = await pair('&nohalo');
+    expect(((await xr.diag()).halo as HaloDiag).visible).toBe(false);
+    // The halo's own light: the shot less the no-halo shot at the same time, so the moving
+    // strokes cancel. A pixel with a saturated channel in any of the four shots is left out of
+    // both times, so the brighter time does not lose its brightest pixels alone.
+    const channels = hi.length / (width * height);
+    const kept = plan.pixels.filter((i) =>
+      [hi, lo, hiBare, loBare].every((shot) =>
+        [0, 1, 2].every((c) => shot[i * channels + c] < 250),
+      ),
+    );
+    const haloLight = (on: Buffer, off: Buffer): number => {
+      const onL = lumaOf(on);
+      const offL = lumaOf(off);
+      let sum = 0;
+      for (const i of kept) sum += onL[i] - offL[i];
+      return sum / kept.length;
+    };
+    const atHi = haloLight(hi, hiBare);
+    const atLo = haloLight(lo, loBare);
+    console.log(
+      `halo ${STAR}: predicted mean glow ${plan.hi.glow.toFixed(4)} at ${plan.hi.t.toFixed(1)} s, ${plan.lo.glow.toFixed(4)} at ${plan.lo.t.toFixed(1)} s; measured halo light ${atHi.toFixed(3)} and ${atLo.toFixed(3)} luma over ${kept.length} of ${plan.pixels.length} px`,
+    );
+    expect(plan.hi.glow).toBeGreaterThan(plan.lo.glow);
+    // The halo adds light at both times, and more where the mirror says it is brighter.
+    expect(atLo).toBeGreaterThan(0);
+    expect(atHi - atLo).toBeGreaterThan(0.5);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
   test('the halo is the one additive pass: 1 draw per desktop frame, 2 per XR frame', async ({
     page,
     xr,
@@ -618,6 +1036,7 @@ test.describe('cypress flame (P4.4)', () => {
     const still = await cypressShot(page, xr, `calm=0&motiont=${TIMES[0]}`);
     expect(await motion(xr)).toEqual({
       time: TIMES[0],
+      delta: 0,
       calm: 0,
       frozen: false,
       layers: CYPRESS_ONLY,
@@ -625,6 +1044,7 @@ test.describe('cypress flame (P4.4)', () => {
     const a = await cypressShot(page, xr, `motiont=${TIMES[0]}`);
     expect(await motion(xr)).toEqual({
       time: TIMES[0],
+      delta: 0,
       calm: 1,
       frozen: false,
       layers: CYPRESS_ONLY,

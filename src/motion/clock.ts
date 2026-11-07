@@ -37,6 +37,11 @@ export interface MotionUniforms {
 export interface MotionState {
   /** `uTime`, seconds. */
   readonly time: number;
+  /**
+   * Seconds the last `frame` advanced `uTime` by: the frame step times calm, 0 while frozen, at
+   * calm 0, on the first frame and while the e2e pins the time (main.ts skips `frame` then).
+   */
+  readonly delta: number;
   readonly calm: number;
   readonly frozen: boolean;
   /** The layers the clock opens when not frozen and calm is above 0 (`setLayerMask`). */
@@ -77,6 +82,7 @@ export function createMotionClock(options: MotionClockOptions = {}): MotionClock
   let calm = 1;
   let frozen = false;
   let lastMs: number | null = null;
+  let delta = 0;
   const sync = (): void => {
     uniforms.uCalm.value = calm;
     uniforms.uFreeze.value = frozen ? 1 : 0;
@@ -88,8 +94,10 @@ export function createMotionClock(options: MotionClockOptions = {}): MotionClock
       const dt =
         lastMs === null ? 0 : Math.min(MAX_MOTION_DT_S, Math.max(0, (timeMs - lastMs) / 1000));
       lastMs = timeMs;
+      delta = 0;
       if (frozen || dt === 0 || calm <= 0) return;
-      uniforms.uTime.value = (uniforms.uTime.value + dt * calm) % MOTION_TIME_WRAP_S;
+      delta = dt * calm;
+      uniforms.uTime.value = (uniforms.uTime.value + delta) % MOTION_TIME_WRAP_S;
     },
     setCalm(value) {
       calm = clampCalm(value);
@@ -103,7 +111,7 @@ export function createMotionClock(options: MotionClockOptions = {}): MotionClock
       layerMask = mask >>> 0;
       sync();
     },
-    diag: () => ({ time: uniforms.uTime.value, calm, frozen, layers: layerMask }),
+    diag: () => ({ time: uniforms.uTime.value, delta, calm, frozen, layers: layerMask }),
   };
   clock.setCalm(options.calm ?? 1);
   clock.setFrozen(options.frozen ?? false);

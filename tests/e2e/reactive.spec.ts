@@ -15,6 +15,7 @@
  */
 import type { Page } from '@playwright/test';
 import sharp from 'sharp';
+import { MAX_MOTION_DT_S } from '../../src/motion/clock.ts';
 import { REACTIVE_MOTION_BIT } from '../../src/motion/layers.ts';
 import {
   HAND_STRENGTH,
@@ -41,6 +42,7 @@ interface DisturberDiag {
   velocity: Vec3;
   strength: number;
   wake: number;
+  wakeWeight: number;
   jumps: number;
 }
 interface ReactiveDiag {
@@ -483,6 +485,138 @@ test.describe('reactive strokes (P4.5)', () => {
     );
     expect(still.boxStrokes ?? 0).toBeGreaterThan(0);
     expect(swept.most).toBeGreaterThan(still.boxStrokes ?? 0);
+    expect(await glErrors(page)).toEqual([]);
+  });
+  test('motion integration: a controller swept through the cypress updates the reactive uniforms, the motion time steps at calm 1 and holds at calm 0 (P4.6)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(300_000);
+    /** Motion time steps over the next `frames` animation frames, read in the page. */
+    const deltas = (frames: number): Promise<{ delta: number; time: number }[]> =>
+      page.evaluate(
+        (n) =>
+          new Promise((done) => {
+            const out: { delta: number; time: number }[] = [];
+            const step = (): void => {
+              const diag = window.__goghDiag;
+              if (!diag) throw new Error('boot with ?diag');
+              const m = (diag() as { motion: { delta: number; time: number } }).motion;
+              out.push({ delta: m.delta, time: m.time });
+              if (out.length < n) requestAnimationFrame(step);
+              else done(out);
+            };
+            requestAnimationFrame(step);
+          }),
+        frames,
+      );
+    /**
+     * Sweeps the right controller rig-local along x from -0.4 to 0.4 m at 1.5 m/s, `ahead` metres
+     * in front of the eye at eye height, and reads the reactive diag every frame of the sweep.
+     */
+    const sweep = (
+      ahead: number,
+    ): Promise<
+      { box: { min: Vec3; max: Vec3 } | null; hand: DisturberDiag; boxStrokes: number | null }[]
+    > =>
+      page.evaluate(
+        ([z, eyeHeight]) =>
+          new Promise((done) => {
+            const device = window.__goghIwer;
+            const diag = window.__goghDiag;
+            if (!device || !diag) throw new Error('boot with ?iwer&diag');
+            const right = device.controllers.right;
+            if (!right) throw new Error('no right controller');
+            const out: {
+              box: { min: Vec3; max: Vec3 } | null;
+              hand: DisturberDiag;
+              boxStrokes: number | null;
+            }[] = [];
+            const t0 = performance.now();
+            const step = (now: number): void => {
+              const t = (now - t0) / 1000;
+              right.position.set(-0.4 + 1.5 * Math.min(t, 0.8 / 1.5), eyeHeight, -z);
+              const r = diag().reactive as ReactiveDiag;
+              // The swept slot: the other one is parked 60 m under the floor.
+              const hand = r.disturbers
+                .slice(1)
+                .reduce((a, b) => (b.position[1] > a.position[1] ? b : a));
+              out.push({ box: r.box, hand, boxStrokes: r.boxStrokes });
+              if (t < 0.8 / 1.5) requestAnimationFrame(step);
+              else done(out);
+            };
+            requestAnimationFrame(step);
+          }),
+        [ahead, EYE_HEIGHT] as const,
+      );
+
+    // Calm 1, every motion layer open, as shipped.
+    await bootXr(page, xr, '');
+    const view = cypressView(2.4);
+    // The controller 0.1 m inside the hull: the sweep runs through the cypress strokes.
+    const inside = 2.5;
+    await place(page, xr, view, PARKED, PARKED);
+    await settle(page, xr);
+    const live = await deltas(12);
+    console.log(
+      `[e2e] integration calm 1 motion deltas ${live.map((d) => d.delta.toFixed(4)).join(' ')}`,
+    );
+    expect(live.some((d) => d.delta > 0)).toBe(true);
+    for (const d of live) expect(d.delta).toBeLessThanOrEqual(MAX_MOTION_DT_S + 1e-9);
+    expect(live.at(-1)?.time ?? 0).toBeGreaterThan(live[0].time);
+    const before = await reactive(xr);
+    await place(page, xr, view, PARKED, [-0.4, EYE_HEIGHT, -inside]);
+    const frames = await sweep(inside);
+    const after = await reactive(xr);
+
+    // The uniforms follow the sweep: the hand's strength and velocity, its wake weights and the
+    // box round it, frame by frame.
+    expect(after.frames).toBeGreaterThan(before.frames + frames.length - 1);
+    expect(frames.length).toBeGreaterThan(5);
+    const moving = frames.filter((f) => Math.hypot(...f.hand.velocity) > 1);
+    expect(moving.length).toBeGreaterThan(frames.length / 2);
+    expect(moving.every((f) => f.hand.strength === HAND_STRENGTH)).toBe(true);
+    expect(Math.max(...frames.map((f) => f.hand.wakeWeight))).toBeGreaterThan(0);
+    for (const f of frames) {
+      if (!f.box) throw new Error('the reactive box is empty during the sweep');
+      // The box holds the hand grown by the radius on every axis.
+      for (let a = 0; a < 3; a++) {
+        expect(f.hand.position[a] - REACTIVE_RADIUS).toBeGreaterThan(f.box.min[a] - 1e-4);
+        expect(f.hand.position[a] + REACTIVE_RADIUS).toBeLessThan(f.box.max[a] + 1e-4);
+      }
+    }
+    const first = frames[0].box as { min: Vec3; max: Vec3 };
+    const last = frames.at(-1)?.box as { min: Vec3; max: Vec3 };
+    // The box moves with the hand between the first and the last frame.
+    const moves = Math.max(
+      ...[0, 1, 2].flatMap((a) => [
+        Math.abs(last.min[a] - first.min[a]),
+        Math.abs(last.max[a] - first.max[a]),
+      ]),
+    );
+    expect(moves).toBeGreaterThan(0.2);
+    expect(Math.max(...frames.map((f) => f.boxStrokes ?? 0))).toBeGreaterThan(0);
+    console.log(
+      `[e2e] integration sweep: ${frames.length} frames, hand wake weight up to ${Math.max(...frames.map((f) => f.hand.wakeWeight)).toFixed(3)}, box moved up to ${moves.toFixed(2)} m, box strokes up to ${Math.max(...frames.map((f) => f.boxStrokes ?? 0))}`,
+    );
+    expect(await glErrors(page)).toEqual([]);
+
+    // Calm 0 closes the gate: the motion time holds, the tracker still writes its uniforms, and a
+    // controller inside the cypress moves nothing.
+    await bootXr(page, xr, 'calm=0');
+    await place(page, xr, view, PARKED, PARKED);
+    await settle(page, xr);
+    const still = await deltas(12);
+    expect(still.every((d) => d.delta === 0)).toBe(true);
+    expect(still.every((d) => d.time === still[0].time)).toBe(true);
+    const parkedStill = await canvasPixels(page);
+    const quiet = await reactive(xr);
+    await place(page, xr, view, PARKED, [-0.4, EYE_HEIGHT, -inside]);
+    const framesStill = await sweep(inside);
+    const sweptStill = await canvasPixels(page);
+    expect((await reactive(xr)).frames).toBeGreaterThan(quiet.frames);
+    expect(Math.max(...framesStill.map((f) => f.hand.wakeWeight))).toBeGreaterThan(0);
+    expect(sweptStill.equals(parkedStill)).toBe(true);
     expect(await glErrors(page)).toEqual([]);
   });
 });

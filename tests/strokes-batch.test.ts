@@ -10,7 +10,12 @@ import {
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { motionClock } from '../src/motion/clock.ts';
 import { MOTION_LAYER_MASK, REACTIVE_MOTION_BIT } from '../src/motion/layers.ts';
-import { REACTIVE_MAX_GAIN, REACTIVE_REACH } from '../src/motion/reactive.ts';
+import {
+  insideReactiveBox,
+  REACTIVE_MAX_GAIN,
+  REACTIVE_REACH,
+  reactiveTracker,
+} from '../src/motion/reactive.ts';
 import { SKY_RINGS, skyRingReach } from '../src/motion/sky-rings.ts';
 import { skySwirlReach } from '../src/motion/sky-swirl.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
@@ -44,6 +49,12 @@ vi.mock('../src/render/strokes/chunks.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/render/strokes/chunks.ts')>();
   return { ...actual, cullAndSortInto: vi.fn(actual.cullAndSortInto) };
 });
+
+/** Sets the app's reactive box, the uniforms every stroke material shares with the tracker. */
+function setReactiveBox(centre: [number, number, number], half: [number, number, number]): void {
+  reactiveTracker.uniforms.uReactiveCentre.value.set(...centre);
+  reactiveTracker.uniforms.uReactiveHalf.value.set(...half);
+}
 
 function tinyAtlas(): DataTexture {
   return new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat);
@@ -425,12 +436,27 @@ describe('bands', () => {
       motionClock.setCalm(1);
       const all = radii();
       expect(all[starChunk]).toBeCloseTo(rest[starChunk] + starReach, 4);
-      // The reactive bit grows every chunk by calm times the reactive reach on top (P4.5, R-P4a),
-      // and its half-diagonal term by the stretch growth's cap. Each chunk holds one stroke, so its
-      // rest radius is that stroke's half-diagonal times the band size.
+      // The reactive bit grows a chunk whose rest centres the reactive box reaches by calm times
+      // the reactive reach on top (P4.5, R-P4a), and its half-diagonal term by the stretch growth's
+      // cap (P4.6). Each chunk holds one stroke, so its rest radius is that stroke's half-diagonal
+      // times the band size. An empty box grows none of them.
       const grown = (i: number): number => REACTIVE_MAX_GAIN * rest[i];
       motionClock.setLayerMask(MOTION_LAYER_MASK);
       const reactiveReach = SKY_REACH_MARGIN * REACTIVE_REACH;
+      setReactiveBox([0, 0, 0], [-1, -1, -1]);
+      const empty = radii();
+      expect(empty[starChunk]).toBeCloseTo(rest[starChunk] + starReach, 4);
+      expect(empty[skyChunk]).toBeCloseTo(rest[skyChunk] + skyReach, 9);
+      // A box round the sky stroke alone grows its chunk and leaves the star chunk as it was.
+      setReactiveBox([60, 40, -60], [0.6, 0.6, 0.6]);
+      const skyOnly = radii();
+      expect(skyOnly[starChunk]).toBeCloseTo(rest[starChunk] + starReach, 4);
+      expect(skyOnly[skyChunk]).toBeCloseTo(
+        rest[skyChunk] + skyReach + reactiveReach + grown(skyChunk),
+        9,
+      );
+      // A box round both grows both.
+      setReactiveBox([0, 0, 0], [1e4, 1e4, 1e4]);
       const live = radii();
       expect(live[starChunk]).toBeCloseTo(
         rest[starChunk] + starReach + reactiveReach + grown(starChunk),
@@ -459,7 +485,118 @@ describe('bands', () => {
       motionClock.setFrozen(false);
       motionClock.setCalm(1);
       motionClock.setLayerMask(0);
+      setReactiveBox([0, 0, 0], [-1, -1, -1]);
     }
+    batch.dispose();
+  });
+
+  test('every chunk holding a stroke the reactive box reaches grows, at random boxes (P4.6)', () => {
+    // 2000 strokes scattered over a 40 m cube in 4 m cells: about 900 chunks of a few strokes each.
+    const random = mulberry32(46);
+    const count = 2000;
+    const buffers = createStrokeBuffers(count);
+    for (let i = 0; i < count; i++) {
+      const position: [number, number, number] = [
+        40 * random() - 20,
+        40 * random() - 20,
+        40 * random() - 20,
+      ];
+      packInstance(buffers, i, {
+        position,
+        normal: [0, 0, 1],
+        tangent: 0,
+        color: [255, 255, 255, 255],
+        size: [0.4, 0.2],
+        brush: 0,
+        layer: STROKE_LAYER.ground,
+        phase: 0,
+      });
+    }
+    const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    const cull = vi.mocked(cullAndSortInto);
+    const radii = (): number[] => {
+      batch.update(originCamera());
+      return (cull.mock.calls.at(-1)?.[0] ?? []).map((sphere) => sphere.radius);
+    };
+    const rest = radii();
+    const reactiveReach = SKY_REACH_MARGIN * REACTIVE_REACH;
+    // A ground chunk has no layer reach, so a grown sphere is the rest one plus the reactive reach
+    // and the stretch cap times the half-diagonal term (every stroke is 0.4 x 0.2 m).
+    const halfDiagonal = 0.5 * Math.hypot(0.4, 0.2);
+    const stretch = (c: number): number => {
+      const band = batch.chunks[c].band;
+      if (!band) throw new Error(`chunk ${c} has no band`);
+      return REACTIVE_MAX_GAIN * halfDiagonal * batch.sizeMultiplier(band);
+    };
+    const grownBy = (c: number): number => reactiveReach + stretch(c);
+    // Each chunk's own rest centres, from its instance attribute.
+    const strokesOf = batch.chunks.map((chunk) => {
+      const attribute = chunk.geometry.getAttribute('iPosition') as InstancedBufferAttribute;
+      return Array.from({ length: chunk.count }, (_, k): [number, number, number] => [
+        attribute.array[k * 3],
+        attribute.array[k * 3 + 1],
+        attribute.array[k * 3 + 2],
+      ]);
+    });
+    expect(strokesOf.reduce((n, list) => n + list.length, 0)).toBe(count);
+    let reached = 0;
+    let spared = 0;
+    try {
+      motionClock.setLayerMask(MOTION_LAYER_MASK);
+      for (let trial = 0; trial < 60; trial++) {
+        const centre: [number, number, number] = [
+          30 * random() - 15,
+          30 * random() - 15,
+          30 * random() - 15,
+        ];
+        const half: [number, number, number] = [
+          1 + 4 * random(),
+          1 + 4 * random(),
+          1 + 4 * random(),
+        ];
+        setReactiveBox(centre, half);
+        const live = radii();
+        const inside = new Set<number>();
+        strokesOf.forEach((list, c) => {
+          if (list.some((p) => insideReactiveBox(reactiveTracker.uniforms, p))) inside.add(c);
+        });
+        for (const c of inside) {
+          expect(live[c], `trial ${trial} chunk ${c}`).toBeCloseTo(rest[c] + grownBy(c), 6);
+        }
+        reached += inside.size;
+        // A chunk the box misses by more than its own extent keeps its rest sphere.
+        batch.chunks.forEach((chunk, c) => {
+          const gap = [0, 1, 2].map(
+            (k) =>
+              Math.abs(
+                [chunk.bounds.center.x, chunk.bounds.center.y, chunk.bounds.center.z][k] -
+                  centre[k],
+              ) -
+              half[k] -
+              chunk.bounds.radius,
+          );
+          if (Math.max(...gap) > 0) {
+            expect(live[c], `trial ${trial} chunk ${c}`).toBe(rest[c]);
+            spared++;
+          }
+        });
+      }
+      // The calm scales the reactive reach, and calm 0 closes the gate.
+      setReactiveBox([0, 0, 0], [1e4, 1e4, 1e4]);
+      motionClock.setCalm(0.5);
+      const half = radii();
+      batch.chunks.forEach((_, c) => {
+        expect(half[c]).toBeCloseTo(rest[c] + 0.5 * reactiveReach + stretch(c), 6);
+      });
+      motionClock.setCalm(0);
+      expect(radii()).toEqual(rest);
+    } finally {
+      motionClock.setCalm(1);
+      motionClock.setLayerMask(0);
+      setReactiveBox([0, 0, 0], [-1, -1, -1]);
+    }
+    expect(reached).toBeGreaterThan(100);
+    expect(spared).toBeGreaterThan(1000);
     batch.dispose();
   });
 

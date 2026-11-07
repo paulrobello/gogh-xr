@@ -4,10 +4,10 @@
  * `--mode e2e` builds, where the e2e spec can call it: Playwright cannot load sky-swirl.ts itself,
  * which imports regions.json.
  */
-import { SKY_RINGS, skyRing } from '../motion/sky-rings';
+import { SKY_MOON_RING, SKY_RINGS, skyHaloGlow, skyHaloState, skyRing } from '../motion/sky-rings';
 import { skySwirl } from '../motion/sky-swirl';
 import { canvasRay, PAINTER_EYE, projectToCanvas } from '../paintings/starry-night/canvas-camera';
-import { SKY_DOME_RADIUS } from '../world/sky';
+import { anchorReach, SKY_DOME_RADIUS, skyAnchors } from '../world/sky';
 
 /**
  * The canvas shift, [du, dv] with v down, of the dome point at canvas (u, vDown) under the sky
@@ -84,4 +84,53 @@ export function predictRingShift(
     shift: [moved[0] - u, 1 - moved[1] - vDown],
     bright: m.bright,
   };
+}
+
+/**
+ * e2e only (P4.6): the TS mirror's additive halo brightness, before the tint, that halo `k` of
+ * SKY_RINGS adds at canvas (u, vDown) of the painter view at motion time `time` and calm 1. The
+ * halo lies on the dome's tangent plane at its anchor (sky-halo.vert.glsl), so the point is where
+ * the canvas ray meets that plane. Null when the ray misses it.
+ */
+export function predictHaloGlow(k: number, u: number, vDown: number, time: number): number | null {
+  const ring = SKY_RINGS[k];
+  const ray = canvasRay(u, 1 - vDown);
+  const c = ring.centre;
+  const n = [c[0] - PAINTER_EYE[0], c[1] - PAINTER_EYE[1], c[2] - PAINTER_EYE[2]];
+  const along = ray[0] * n[0] + ray[1] * n[1] + ray[2] * n[2];
+  if (!(along > 0)) return null;
+  const s = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) / along;
+  const rho = Math.hypot(
+    PAINTER_EYE[0] + s * ray[0] - c[0],
+    PAINTER_EYE[1] + s * ray[1] - c[1],
+    PAINTER_EYE[2] + s * ray[2] - c[2],
+  );
+  return skyHaloGlow(ring, skyHaloState(ring, time, 1), rho);
+}
+
+/**
+ * The moon disc's rim in the painter view, as P4.3 measured the crescent's colour clip: the moon
+ * anchor's `anchorReach(anchor, 1)` circle on the dome's tangent plane at the ring centre,
+ * projected through the painter camera at `points` points, each canvas [u, vDown]. Null when a
+ * point falls behind the eye.
+ */
+export function moonDiscRim(points: number): [number, number][] | null {
+  const c = SKY_RINGS[SKY_MOON_RING].centre;
+  const radius = anchorReach(skyAnchors()[SKY_MOON_RING], 1);
+  const n = [c[0] - PAINTER_EYE[0], c[1] - PAINTER_EYE[1], c[2] - PAINTER_EYE[2]];
+  const nl = Math.hypot(n[0], n[1], n[2]);
+  for (let i = 0; i < 3; i++) n[i] /= nl;
+  const ul = Math.hypot(n[2], n[0]);
+  const u = [-n[2] / ul, 0, n[0] / ul];
+  const v = [u[1] * n[2] - u[2] * n[1], u[2] * n[0] - u[0] * n[2], u[0] * n[1] - u[1] * n[0]];
+  const rim: [number, number][] = [];
+  for (let k = 0; k < points; k++) {
+    const a = (k / points) * 2 * Math.PI;
+    const p: [number, number, number] = [0, 0, 0];
+    for (let i = 0; i < 3; i++) p[i] = c[i] + radius * (Math.cos(a) * u[i] + Math.sin(a) * v[i]);
+    const uv = projectToCanvas(p).uv;
+    if (!uv) return null;
+    rim.push([uv[0], 1 - uv[1]]);
+  }
+  return rim;
 }

@@ -278,3 +278,63 @@ test('with the cypress flame pinned, the painter view and the pose under the cyp
   }
   expect(await glErrors(page)).toEqual([]);
 });
+
+test('spot ahead stays within 0.5% bare over a full 12 s cypress sway period, and the reactive growth adds no drawn stroke there (P4.6)', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(300_000);
+  const [ahead] = COVERAGE_POSES;
+  expect(ahead.name).toBe('spot ahead');
+  // The sway's two sines (2.4 s and 1.5 s) repeat every 12 s, and the 4 s rise loop divides it.
+  // One boot, every motion layer open, the pin moved by __goghMotionT: 24 phases 0.5 s apart from
+  // 0.5 s, so 0.5 s and the 3.5 s next to the pinned 3.7 s are among them. 0.5 s still samples the
+  // 1.5 s sine at only three of its phases; the 2.4 s sine gets all 24.
+  await xr.boot('painting=starry-night&seed=1&shot&coverage&motiont=0.5');
+  expect((await world(xr)).debug).toBe('coverage');
+  expect(((await xr.diag()).motion as { layers: number }).layers & REACTIVE_MOTION_BIT).not.toBe(0);
+  await visit(page, xr, ahead);
+  const rows: { time: number; bare: number; weighted: number; drawn: number }[] = [];
+  for (let k = 0; k < 24; k++) {
+    const time = 0.5 + 0.5 * k;
+    await page.evaluate((t) => {
+      if (!window.__goghMotionT) throw new Error('__goghMotionT is e2e-only and needs ?motiont');
+      window.__goghMotionT(t);
+    }, time);
+    await xr.waitFrames(3);
+    expect(((await xr.diag()).motion as { time: number }).time).toBe(time);
+    const { binary, weighted } = await bareShare(page);
+    const drawn = ((await xr.diag()).world as WorldDiag).strokes.visible;
+    rows.push({ time, bare: binary, weighted, drawn });
+    console.log(
+      `[e2e] coverage spot ahead sweep at motiont ${time}: bare ${(binary * 100).toFixed(3)}%, weighted ${(weighted * 100).toFixed(3)}%, drawn ${drawn}`,
+    );
+  }
+  const worst = rows.reduce((a, b) => (b.bare > a.bare ? b : a));
+  test.info().annotations.push({
+    type: 'worst phase',
+    description: `${(worst.bare * 100).toFixed(3)}% at motiont ${worst.time}`,
+  });
+  console.log(
+    `[e2e] coverage spot ahead sweep worst phase: bare ${(worst.bare * 100).toFixed(3)}% at motiont ${worst.time}`,
+  );
+  for (const r of rows) expect(r.bare, `motiont ${r.time}`).toBeLessThanOrEqual(MAX_BARE);
+
+  // The same view with the reactive bit closed is the P4.4 cull (sky, star, moon and cypress
+  // growth only). The desktop eye is the only disturber, and no stroke of spot ahead is within
+  // its radius, so the per-chunk reactive growth draws exactly as many strokes.
+  await xr.boot(
+    'painting=starry-night&seed=1&shot&coverage&motiont=0.5&motionlayers=sky,star,moon,cypress',
+  );
+  expect((await world(xr)).debug).toBe('coverage');
+  const layers = ((await xr.diag()).motion as { layers: number }).layers;
+  expect(layers & REACTIVE_MOTION_BIT).toBe(0);
+  expect(layers & (1 << STROKE_LAYER.cypress)).not.toBe(0);
+  await visit(page, xr, ahead);
+  const baseline = ((await xr.diag()).world as WorldDiag).strokes.visible;
+  console.log(
+    `[e2e] spot ahead drawn: every layer ${rows[0].drawn}, reactive bit closed ${baseline}`,
+  );
+  for (const r of rows) expect(r.drawn, `motiont ${r.time}`).toBe(baseline);
+  expect(await glErrors(page)).toEqual([]);
+});

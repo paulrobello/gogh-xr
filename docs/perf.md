@@ -105,6 +105,110 @@ The e018c2f headset reading at the painter's spot (55 to 68 fps against 72 Hz, 1
 
 The world has 1,299 chunks at 16 m and 543 at 24 m. Over the 24 coverage poses with the Quest frustum, the maximum is 597 visible chunks and 228,787 drawn at 16 m, and 267 and 272,986 at 24 m, inside the 325k default budget. 24 m halves the draw calls for about 14 to 31% more drawn strokes. The IWER rows look turned 180° against the others: its painter-level matches the Quest-frustum back pose, so its poses are compared only between cell sizes. The headset frame time at 24 m is not measured yet.
 
+## Motion (P4.6)
+
+Desktop GPU frame time of the Starry Night world with motion frozen and running, recorded 2026-11-07 (early morning PST). The runner was `bun scripts/motion-perf.ts --base <preview URL> --seconds 5 --repeats 5 --out <file>` against a `vite preview --mode e2e` of the build, because `?motionlayers` and IWER exist only in `--mode e2e`. The stroke shader is the production one, because `MOTION_PHASE_PIN` is unset. The build was made at 05:32 PST from the tree at c66bc88. The later commits change no render path: 36971ea edits a `motion.glsl` comment, and 137b5ef adds the e2e-only `__goghMoonDisc` probe.
+
+- Host: Apple M4 Max, headless Chromium (new headless) on the GPU. `UNMASKED_RENDERER_WEBGL` reads `ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Max, Unspecified Version)`.
+- `EXT_disjoint_timer_query_webgl2` is available. Each animation frame gets one `TIME_ELAPSED` query, begun at the frame's first rAF callback and ended at the next frame's, so it covers every GPU command of the frame. Disjoint results are dropped.
+- Each run is one boot and one view. It is the mean and p95 over 5 s (about 300 frames) after 30 settle frames. The rAF interval reads 16.67 ms in every run because it is vsync-capped, so only the GPU time can show the motion's cost.
+- The desktop configurations ran 5 times, interleaved: every configuration and view once per pass, then the next pass. The IWER rows ran once, on the first pass, because their timings are not a cost.
+- Setup: 1280 × 1014 viewport, seed 1, `?nogov`, so the densities stay fixed.
+- Views:
+  - "painter" on the desktop boots with `?painter`: the 60° painter camera of the fidelity capture, framing canvas uv [0, 1]².
+  - "spot ahead" is the eye at (0, 1.6, 0) facing -Z at pitch 0, with the 70° desktop field of view.
+  - The IWER rows put the head at the same poses, pitched by `CANVAS_PITCH` for "painter", with IWER's own field of view.
+- Configurations:
+  - (a) `?noanim`.
+  - (b) Every layer moving, on the running clock.
+  - (c) `?motionlayers=reactive`. On the desktop the eye is the only disturber, and no stroke lies within its 0.6 m radius at these views.
+  - (d1) and (d2) are IWER only. See the box section below.
+- Load: every kept run had a 1-minute load average at or below 15 before and after, and the highest was 13.6. One run ended at 16.0 and was discarded and re-run: (c) spot ahead, pass 1.
+
+### Desktop
+
+| Configuration | View | Runs | GPU median ms | Spread (min-max) ms | p95 median ms | vs (a), medians | Draw calls | Drawn strokes | Load range |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| (a) noanim | painter | 5 | 3.62 | 3.50-3.64 | 4.25 |  | 127 | 249,207 | 6.2-13.1 |
+| (a) noanim | spot ahead | 5 | 3.84 | 3.69-3.86 | 4.48 |  | 148 | 256,276 | 6.2-12.3 |
+| (b) motion, every layer | painter | 5 | 3.56 | 2.74-3.61 | 3.98 | -1.7% | 127 | 249,207 | 6.7-11.3 |
+| (b) motion, every layer | spot ahead | 5 | 3.86 | 2.97-4.11 | 4.73 | +0.7% | 150 | 257,238 | 6.8-10.9 |
+| (c) motion, reactive only | painter | 5 | 3.63 | 3.59-3.66 | 4.20 | +0.2% | 127 | 249,207 | 6.5-10.4 |
+| (c) motion, reactive only | spot ahead | 5 | 3.86 | 2.94-4.40 | 4.54 | +0.6% | 148 | 256,276 | 6.3-13.6 |
+
+Motion is within noise, under 15%. The motion medians sit between -1.7% and +0.7% of `?noanim`, inside the run-to-run spread of about ±0.1 ms for the steady runs. Three runs read 2.7-3.0 ms against 3.5-4.4 ms for the rest, which is why some spreads are wide. A single 5 s run per row, as in the first record, cannot resolve a 2-4% difference.
+
+The wake loop's cost is not in this table. On the desktop the eye is the only disturber, so the reactive box is a 1.2 m cube round it, and at these views no stroke is inside it (0 box strokes).
+
+### Reactive box (IWER)
+
+No row measures the wake-loop GPU cost. The IWER GPU timings are not a cost. In an earlier single-run record, motion read 8% to 23% cheaper than `?noanim` in IWER, which no shader change can do. These rows therefore record only the counts.
+
+"Box strokes" counts the drawn strokes whose rest centre is inside the reactive box, which are the strokes that run the reactive loops. The box is one axis-aligned box round every weighted disturber and its wake samples, grown by `REACTIVE_RADIUS`. The head is always one of the disturbers.
+
+| Configuration | View | GPU ms | Draw calls | Drawn strokes | Box strokes (end / most) | Box min | Box max | Tracked (head, slot 0, slot 1) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| XR (a) noanim | painter | IWER, not a cost | 378 | 265,603 | 2,681 / 2,681 | (-0.60, -60.60, -0.60) | (0.60, 2.19, 0.62) | yes, yes, yes |
+| XR (a) noanim | spot ahead | IWER, not a cost | 366 | 265,113 | 2,682 / 2,682 | (-0.60, -60.60, -0.60) | (0.60, 2.20, 0.62) | yes, yes, yes |
+| XR (b) motion, every layer | painter | IWER, not a cost | 382 | 266,404 | 2,681 / 2,681 | (-0.60, -60.60, -0.60) | (0.60, 2.19, 0.62) | yes, yes, yes |
+| XR (b) motion, every layer | spot ahead | IWER, not a cost | 366 | 265,113 | 2,682 / 2,682 | (-0.60, -60.60, -0.60) | (0.60, 2.20, 0.62) | yes, yes, yes |
+| XR (c) motion, reactive only | painter | IWER, not a cost | 378 | 265,603 | 2,681 / 2,681 | (-0.60, -60.60, -0.60) | (0.60, 2.19, 0.62) | yes, yes, yes |
+| XR (c) motion, reactive only | spot ahead | IWER, not a cost | 366 | 265,113 | 2,682 / 2,682 | (-0.60, -60.60, -0.60) | (0.60, 2.20, 0.62) | yes, yes, yes |
+| XR (d1) far-reach union box | painter | IWER, not a cost | 382 | 266,404 | 22,098 / 22,098 | (-3.79, -60.60, -8.92) | (0.60, 2.19, 0.62) | yes, yes, yes |
+| XR (d1) far-reach union box | spot ahead | IWER, not a cost | 366 | 265,113 | 22,045 / 22,092 | (-3.78, -60.60, -8.92) | (0.60, 2.20, 0.62) | yes, yes, yes |
+| XR (d2) hand at reach in the cypress | at the cypress | IWER, not a cost | 316 | 215,321 | 1,100 / 1,108 | (-3.78, -2.35, -8.98) | (-2.18, -0.77, -7.14) | yes, no, yes |
+
+- Rows (a) to (c) and (d1) park both controllers 60 m under the floor, rig-local, and both stay tracked. The union box therefore runs from the head down to y -60.6. That column holds about 2,700 ground strokes under the painter's spot, which run the loops even with no hand near anything.
+- (d1) is the far-reach union-box pose. The rig stands at the painter's spot, and the right controller circles 0.2 m at 1.5 m/s, 0.2 m inside the main cypress's hull, about 9 m from the head. The box spans the head, that far hand and the parked controller: 4.4 × 62.8 × 9.5 m. No arm reaches 9 m, so its 22,000 box strokes overstate any real pose. It is an upper-bound pose, not a hand in the cypress.
+- (d2) is a realistic reach. The rig puts the head 0.4 m out from the cypress hull, facing its axis. The right hand circles the same way 0.6 m ahead, so it is 0.2 m inside the hull. The left controller is disconnected, so it is untracked with strength 0. The box is 1.60 × 1.58 × 1.85 m and holds about 1,100 box strokes, 0.5% of those drawn.
+
+**Quest wake-loop cost, estimate carried to P4.7 (not measured).** The loop costs about 470 scalar operations per vertex for a stroke inside the box (`src/motion/motion.glsl`).
+
+- At (d1): 22,098 box strokes × 4 vertices × 2 views × 470 is about 83 M operations per frame, or about 166 M if Adreno's binning pass also runs the position path.
+  - From ALU throughput it is about 0.2-0.7 ms.
+  - Scaled from the headset's measured vertex time in this file, it is about 2.4-4.0 ms. That is out of the 13.9 ms budget at 72 Hz, on a frame that already misses 72 Hz.
+- A realistic reach of 1,000-5,000 box strokes, (d2) included, scales this down to about 0.01-0.9 ms.
+
+The P4.7 headset A/B measures it at a realistic reach. If it is too slow, the levers, in order, are:
+
+1. Test the rest centre against up to three per-disturber boxes (the head and each hand, each grown by its own wake) in place of the one union box. That costs a few operations per vertex and removes the empty volume between the head and a reaching hand, and the parked-controller column.
+2. A uniform count of active wake samples, so a still hand's zero-weight samples skip the 24-sample wake loop.
+3. A per-chunk wake budget, if 1 and 2 are not enough.
+
+None of them is implemented.
+
+### Per-chunk reactive cull growth
+
+At f783588 the reactive bit grew every chunk's cull sphere while it was open. It now grows only a chunk whose box round its strokes' rest centres overlaps the reactive box (`src/render/strokes/batch.ts`). These drawn counts come from the first, single-run record, whose desktop "painter" view used the 70° desktop field of view rather than `?painter`:
+
+| Configuration | View | Drawn at f783588 (every chunk grows) | Drawn now (per-chunk growth) |
+| --- | --- | --- | --- |
+| (a) noanim | painter pose, 70° | 256,222 | 256,222 |
+| (a) noanim | spot ahead | 256,276 | 256,276 |
+| (b) motion, every layer | painter pose, 70° | 259,572 | 256,995 |
+| (b) motion, every layer | spot ahead | 258,787 | 257,238 |
+| (c) motion, reactive only | painter pose, 70° | 259,572 | 256,222 |
+| (c) motion, reactive only | spot ahead | 258,172 | 256,276 |
+| XR (b) motion, every layer | painter | 268,735 | 266,404 |
+| XR (b) motion, every layer | spot ahead | 267,567 | 265,113 |
+| XR (d1) far-reach union box | painter | 268,735 | 266,404 |
+| XR (d1) far-reach union box | spot ahead | 267,567 | 265,113 |
+
+With no stroke near a disturber, reactive-only motion now draws exactly the `?noanim` strokes. With every layer moving, it draws exactly what the layer growth alone draws.
+
+At spot ahead in the e2e's 1280 × 720 view it draws 260,604 strokes with every layer open and 260,604 with the reactive bit closed (`?motionlayers=sky,star,moon,cypress`, the P4.4 cull). f783588 drew 262,478 there (+1,874). `tests/e2e/world-coverage.spec.ts` holds that equality at 24 phases, 0.5 s apart over the 12 s sway period.
+
+### Quest (pending owner, P4.7)
+
+| Row | Result |
+| --- | --- |
+| Default-path A/B of the motion shader, `?noanim` against motion on (P4.2 M3) | pending owner (P4.7) |
+| Global reactive growth against per-chunk growth, drawn strokes and frame time | pending owner (P4.7) |
+| Box stroke count and wake-loop cost with a hand at reach in the cypress, against the estimate above and levers 1-3 | pending owner (P4.7) |
+| XR recenter resets the reactive wake (no drag across the jump) | pending owner (P4.7) |
+
+If the Quest shows motion costing more than 15% GPU time over `?noanim`, the first lever for the layer motion is P4.2 M3: bake each sky stroke's swirl rotation vector Omega at build instead of summing the four vortices per vertex. The reactive levers are above. Neither is implemented.
+
 ## History: upper-hemisphere readings
 
 Taken earlier the same evening with the original upper-hemisphere layout, looking straight up as the worst case. They are not comparable with the full-sphere table, because at the same N a view held about twice as many strokes on screen.

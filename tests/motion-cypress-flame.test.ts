@@ -11,6 +11,7 @@ import {
   CYPRESS_FLAME_HALF_ARC,
   CYPRESS_FLAME_NONE,
   CYPRESS_FLAME_PERIOD,
+  CYPRESS_FLAME_TIP,
   CYPRESS_FLICKER_MAX,
   CYPRESS_FLICKER_WAVES,
   CYPRESS_HEIGHT_LEVELS,
@@ -341,9 +342,11 @@ describe('hull', () => {
     [...a].sort((x, y) => x - y)[Math.floor(q * (a.length - 1))];
   /**
    * The climb runs in each stroke's own face plane, and the faceted, lobed hull bends away from
-   * it, so a moved centre can leave the hull. Bounds: 99% of the strokes stay within a quarter of
-   * their own stroke length of the hull and every one within one stroke length, so no stroke comes
-   * free of the tree. The excursions are recorded.
+   * it, so a moved centre can leave the hull. Bounds: 99% of the moved centres stay within a
+   * quarter of their own stroke length of the hull and every one within one stroke length. That
+   * bounds how far a stroke strays; it does not prove every stroke still overlaps the tree, since a
+   * centre more than half a stroke length out leaves its quad clear of the hull. The excursions are
+   * recorded.
    */
   test('the rise arc, wrap included, keeps 99% of strokes within a quarter stroke length of the hull and every one within one', () => {
     const excess: number[] = [];
@@ -452,6 +455,48 @@ describe('GLSL', () => {
       'Motion cypressMotion(vec3 p, vec3 n, float phase, float flame, float t) {',
     );
     expect(material.vertexShader).toContain('m = cypressMotion(p, n, phase, flame, t);');
+  });
+
+  test('cypressMotion decodes the alpha byte and tapers the sway by the height squared, as cypressFlame does (P4.4 N1)', () => {
+    const glsl = createStrokeMaterial(new Texture()).vertexShader;
+    // The alpha byte: rounded from the normalised alpha, 255 is no flame data, the low five bits
+    // the height level over CYPRESS_HEIGHT_LEVELS, the top three the lobe id (decodeFlame).
+    for (const line of [
+      'uint b = uint(flame * 255.0 + 0.5);',
+      'if (b == CYPRESS_FLAME_NONE) return Motion(vec3(0.0), 0.0, 0.0, 0.0);',
+      'float h = float(b & 31u) * CYPRESS_INV_HEIGHT_LEVELS;',
+      'float lobe = float(b >> 5u);',
+      // The rise arc tapers to 0 over the top CYPRESS_FLAME_TIP of each mass (flameTaper).
+      'float taper = smoothstep(0.0, CYPRESS_FLAME_TIP, 1.0 - h);',
+      'float s = (2.0 * f - 1.0) * CYPRESS_FLAME_HALF_ARC * taper;',
+      // The sway: CYPRESS_FLICKER_MAX times the height squared times the two sines.
+      'float a = CYPRESS_FLICKER_MAX * h * h * w;',
+      'return Motion(s * up + a * side, 0.0, gain, 0.0);',
+    ]) {
+      expect(glsl, line).toContain(line);
+    }
+    const defines = cypressFlameGlslDefines();
+    expect(defines.CYPRESS_FLAME_NONE).toBe(`${CYPRESS_FLAME_NONE}u`);
+    // The amplitudes and the decode scale are the TS constants, so a wrong one fails here.
+    expect(CYPRESS_HEIGHT_LEVELS).toBeLessThanOrEqual(31);
+    expect(Number(defines.CYPRESS_INV_HEIGHT_LEVELS)).toBeCloseTo(1 / CYPRESS_HEIGHT_LEVELS, 8);
+    expect(Number(defines.CYPRESS_FLICKER_MAX)).toBeCloseTo(CYPRESS_FLICKER_MAX, 8);
+    expect(Number(defines.CYPRESS_FLAME_HALF_ARC)).toBeCloseTo(CYPRESS_FLAME_HALF_ARC, 8);
+    expect(Number(defines.CYPRESS_FLAME_TIP)).toBeCloseTo(CYPRESS_FLAME_TIP, 8);
+    // The GLSL decode, run in TS on every byte, matches decodeFlame.
+    for (let byte = 0; byte < 256; byte++) {
+      const b = Math.trunc((byte / 255) * 255 + 0.5);
+      const decoded = decodeFlame(byte);
+      if (b === CYPRESS_FLAME_NONE) {
+        expect(decoded).toBeNull();
+        continue;
+      }
+      expect((decoded as { lobe: number }).lobe).toBe(b >> 5);
+      expect((decoded as { height: number }).height).toBeCloseTo(
+        (b & 31) * Number(defines.CYPRESS_INV_HEIGHT_LEVELS),
+        6,
+      );
+    }
   });
 });
 

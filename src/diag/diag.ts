@@ -45,6 +45,12 @@ declare global {
     ) => [number, number] | null;
     /** e2e builds only: `predictRingShift` (src/diag/swirl-probe.ts). */
     __goghRingShift?: (k: number, u: number, vDown: number, time: number) => RingShift | null;
+    /** e2e builds only: `predictHaloGlow` (src/diag/swirl-probe.ts). */
+    __goghHaloGlow?: (k: number, u: number, vDown: number, time: number) => number | null;
+    /** e2e builds only: `moonDiscRim` (src/diag/swirl-probe.ts). */
+    __goghMoonDisc?: (points: number) => [number, number][] | null;
+    /** e2e builds only, with `?motiont`: moves the pinned motion time to `t` seconds (main.ts). */
+    __goghMotionT?: (t: number) => void;
   }
 }
 

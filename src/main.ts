@@ -13,7 +13,7 @@ import { installDiag, installPose, installShot, registerDiag } from './diag/diag
 import { flags } from './diag/flags';
 import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
 import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
-import { motionClock } from './motion/clock';
+import { MOTION_TIME_WRAP_S, motionClock } from './motion/clock';
 import { MOTION_LAYER_MASK } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { livePainting, logRegistryProblems } from './paintings/registry';
@@ -71,15 +71,26 @@ motionClock.setFrozen(flags.noanim);
  * `?motiont` pins the motion time for the e2e (R-P4g). `import.meta.env.MODE` is replaced at build
  * time, so a production build drops this and keeps calling `motionClock.frame`.
  */
-const pinnedMotionTime = import.meta.env.MODE === 'e2e' ? flags.motiont : null;
+let pinnedMotionTime = import.meta.env.MODE === 'e2e' ? flags.motiont : null;
 if (pinnedMotionTime !== null) motionClock.uniforms.uTime.value = pinnedMotionTime;
 // `?motionphase` pins every stroke's phase and installs the swirl's TS prediction, e2e builds only.
 if (import.meta.env.MODE === 'e2e') {
   pinMotionPhase(flags.motionphase);
-  void import('./diag/swirl-probe').then(({ predictRingShift, predictSkyShift }) => {
-    window.__goghSkyShift = predictSkyShift;
-    window.__goghRingShift = predictRingShift;
-  });
+  void import('./diag/swirl-probe').then(
+    ({ moonDiscRim, predictHaloGlow, predictRingShift, predictSkyShift }) => {
+      window.__goghSkyShift = predictSkyShift;
+      window.__goghRingShift = predictRingShift;
+      window.__goghHaloGlow = predictHaloGlow;
+      window.__goghMoonDisc = moonDiscRim;
+    },
+  );
+  // Moves a `?motiont` pin to another time without a reload (P4.6), so one boot sweeps many.
+  window.__goghMotionT = (t: number) => {
+    if (pinnedMotionTime === null) throw new Error('__goghMotionT needs a ?motiont pin');
+    if (!Number.isFinite(t) || t < 0) throw new RangeError(`motion time ${t} must be at least 0`);
+    pinnedMotionTime = t % MOTION_TIME_WRAP_S;
+    motionClock.uniforms.uTime.value = pinnedMotionTime;
+  };
 }
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);

@@ -273,6 +273,30 @@ export function motionReachOf(buffers: StrokeBuffers): number {
   return Math.max(sky, star, moon, cypress);
 }
 
+/** The box round the rest centres of `buffers`' strokes: min xyz, then max xyz. */
+export function centreBox(
+  buffers: StrokeBuffers,
+): [number, number, number, number, number, number] {
+  const p = buffers.position;
+  if (buffers.count === 0) return [0, 0, 0, 0, 0, 0];
+  const box: [number, number, number, number, number, number] = [
+    p[0],
+    p[1],
+    p[2],
+    p[0],
+    p[1],
+    p[2],
+  ];
+  for (let i = 0; i < buffers.count; i++) {
+    for (let k = 0; k < 3; k++) {
+      const v = p[i * 3 + k];
+      if (v < box[k]) box[k] = v;
+      if (v > box[k + 3]) box[k + 3] = v;
+    }
+  }
+  return box;
+}
+
 /** Headroom for the shader's float32 motion over the float64 reach. */
 export const SKY_REACH_MARGIN = 1.001;
 
@@ -375,9 +399,11 @@ export function createStrokeBatch(
    * a chunk holding boundary haze also by the haze's full growth (`HAZE_GROWTH`), so a thickened
    * haze stroke never reaches past its sphere. A chunk holding moving strokes also grows by calm
    * times the largest motion reach (`motionReachesOf`) of the layers whose gate is open, unscaled by
-   * the band. While the reactive bit is open every chunk grows by calm times `REACTIVE_REACH` on
-   * top, as the reactive offset adds to the layer motion's (P4.5, ruling R-P4a), and its
-   * half-diagonal by 1 + `REACTIVE_MAX_GAIN`, the reactive stretch growth's cap.
+   * the band. While the reactive bit is open, a chunk whose rest-centre box overlaps the reactive
+   * box (`uReactiveCentre`, `uReactiveHalf`) grows by calm times `REACTIVE_REACH` on top, as the
+   * reactive offset adds to the layer motion's (P4.5, ruling R-P4a), and its half-diagonal by
+   * 1 + `REACTIVE_MAX_GAIN`, the reactive stretch growth's cap. The shader moves a stroke only when
+   * its rest centre is inside the reactive box, so no other chunk can hold a moved stroke (P4.6).
    */
   const cullSpheres: Sphere[] = [];
   const reaches: number[] = [];
@@ -396,6 +422,10 @@ export function createStrokeBatch(
     REACTIVE_MOTION_BIT;
   const motionUniforms = materials.near.uniforms;
   const halfDiagonals: number[] = [];
+  /** Per chunk, the box round its strokes' rest centres: min xyz then max xyz, six per chunk. */
+  const centreBoxes: number[] = [];
+  /** Per chunk, 1 while its cull sphere carries the reactive growth. */
+  const reactiveNear = new Uint8Array(offsets.length - 1);
   for (let c = 0; c + 1 < offsets.length; c++) {
     const indices = order.subarray(offsets[c], offsets[c + 1]);
     const { order: chunkIndices, pinned } = chunkOrder(buffers, indices, chunkSeed(seed, cells, c));
@@ -418,6 +448,7 @@ export function createStrokeBatch(
     reaches.push(box.reach);
     motionReaches.push(motionReachesOf(data));
     halfDiagonals.push(box.halfDiagonal * (holdsHaze(data) ? 1 + HAZE_GROWTH : 1));
+    centreBoxes.push(...centreBox(data));
     chunks.push({
       mesh,
       geometry,
@@ -444,7 +475,7 @@ export function createStrokeBatch(
 
   /**
    * Calm times the largest reach of chunk `i`'s layers whose gate is open, plus the reactive reach
-   * while the reactive bit is open, metres.
+   * while chunk `i` carries the reactive growth, metres.
    */
   function motionGrowth(i: number): number {
     if (motionBits === 0) return 0;
@@ -454,14 +485,35 @@ export function createStrokeBatch(
     if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);
     if (motionGate(motionBits, STROKE_LAYER.moon)) reach = Math.max(reach, r.moon);
     if (motionGate(motionBits, STROKE_LAYER.cypress)) reach = Math.max(reach, r.cypress);
-    if (reactiveGate(motionBits)) reach += REACTIVE_REACH * SKY_REACH_MARGIN;
+    if (reactiveNear[i]) reach += REACTIVE_REACH * SKY_REACH_MARGIN;
     return motionCalm * reach;
   }
 
-  /** While the reactive bit is open, a stretched stroke grows by up to REACTIVE_MAX_GAIN. */
+  /** While chunk `i` carries the reactive growth, a stretched stroke grows by REACTIVE_MAX_GAIN. */
   function applySize(i: number, band: StrokeBand): void {
-    const grow = motionCalm > 0 && reactiveGate(motionBits) ? 1 + REACTIVE_MAX_GAIN : 1;
+    const grow = reactiveNear[i] ? 1 + REACTIVE_MAX_GAIN : 1;
     cullSpheres[i].radius = reaches[i] + motionGrowth(i) + halfDiagonals[i] * sizes[band] * grow;
+  }
+
+  /**
+   * Whether chunk `i` can hold a stroke the reactive motion moves this frame: the reactive bit is
+   * open at a calm above 0 and the chunk's rest-centre box overlaps the reactive box. Closed
+   * bounds, so it holds every stroke reactiveGate in motion.glsl passes, whose test is strict.
+   */
+  function reactiveReaches(i: number): boolean {
+    if (motionCalm <= 0 || !reactiveGate(motionBits)) return false;
+    const c = motionUniforms.uReactiveCentre.value;
+    const h = motionUniforms.uReactiveHalf.value;
+    if (h.x < 0 || h.y < 0 || h.z < 0) return false;
+    const b = i * 6;
+    return (
+      centreBoxes[b] <= c.x + h.x &&
+      centreBoxes[b + 3] >= c.x - h.x &&
+      centreBoxes[b + 1] <= c.y + h.y &&
+      centreBoxes[b + 4] >= c.y - h.y &&
+      centreBoxes[b + 2] <= c.z + h.z &&
+      centreBoxes[b + 5] >= c.z - h.z
+    );
   }
 
   const frustum = new Frustum();
@@ -496,12 +548,15 @@ export function createStrokeBatch(
       motionCalm = calm;
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
+        const near = reactiveReaches(i) ? 1 : 0;
+        const regrow = rescale || near !== reactiveNear[i];
+        reactiveNear[i] = near;
         const band = nextBand(
           bandOf[i],
           chunkDistance(chunk.bounds.center, chunk.bounds.radius, eye),
         );
         if (band === bandOf[i]) {
-          if (rescale && band) applySize(i, band);
+          if (regrow && band) applySize(i, band);
           continue;
         }
         bandOf[i] = band;
@@ -624,6 +679,7 @@ export function createStrokeBatch(
       reaches.length = 0;
       motionReaches.length = 0;
       halfDiagonals.length = 0;
+      centreBoxes.length = 0;
       for (const band of STROKE_BANDS) materials[band].dispose();
       atlas.dispose();
     },

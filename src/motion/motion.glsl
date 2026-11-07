@@ -145,9 +145,10 @@ Motion cypressMotion(vec3 p, vec3 n, float phase, float flame, float t) {
 // tr M = calm 4 G / R² Σ s f |t|² (t the tangent part of p - d), as a size factor √J, never below
 // 1 and capped at 1 + REACTIVE_MAX_GAIN: strokes spread apart grow to keep covering the surface
 // (R-P4o). No phase: it is a pure function of p and the field.
-// Cost per vertex inside the box, counted in scalar ALU operations (P4.6 holds to this count until
-// it measures): 3 disturbers of about 25, 24 wake samples of about 15, then a tail of about 37
-// (swirl cross product, normal removal, reach clamp, stretch), about 470 in all.
+// Cost per vertex inside the box, counted in scalar ALU operations: 3 disturbers of about 25, 24
+// wake samples of about 15, then a tail of about 37 (swirl cross product, normal removal, reach
+// clamp, stretch), about 470 in all. The P4.6 desktop record (docs/perf.md, Motion) measures the
+// frame with a controller sweeping inside the cypress; the Quest cost is pending the owner (P4.7).
 Motion reactiveMotion(vec3 p, vec3 n) {
   vec3 offset = vec3(0.0);
   float spread = 0.0;
