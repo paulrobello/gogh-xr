@@ -510,15 +510,23 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
   });
 
   test('every dome stroke, and nothing else, carries the backdrop flag', () => {
+    // One assertion over the whole buffer: a per-stroke expect over ~540k strokes runs past the
+    // 5 s test timeout on the CI runner.
     let dome = 0;
+    let wrong = 0;
+    let firstWrong = -1;
     for (let i = 0; i < buffers.count; i++) {
       const flags = buffers.meta[i * 4 + 3];
       const layer = buffers.meta[i * 4 + 1];
       const backdrop = (flags & DEPTH_BACKDROP_FLAG) !== 0;
       // Haze is appended after the scattered strokes and keeps its normal depth.
-      expect(backdrop, `stroke ${i}`).toBe(i < scattered.count && layer === STROKE_LAYER.sky);
+      if (backdrop !== (i < scattered.count && layer === STROKE_LAYER.sky)) {
+        wrong++;
+        if (firstWrong < 0) firstWrong = i;
+      }
       if (backdrop) dome++;
     }
+    expect({ wrong, firstWrong }).toEqual({ wrong: 0, firstWrong: -1 });
     expect(dome).toBe(strokeLayerCounts(scattered).sky);
   });
 
