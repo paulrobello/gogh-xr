@@ -237,6 +237,8 @@ test('zdiag is one of the diagnostic modes, trimmed and lower-cased, null otherw
     'nowrite',
     'nosort',
     'noa2c',
+    'sharp',
+    'sharp4',
     'nomip',
     'mip',
     'freeze',

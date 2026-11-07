@@ -819,6 +819,8 @@ Paul saw a lot of z-fight on the ground, the buildings and the sky on the Quest 
   - `paintorder`: `strokeorder` with the chunks drawn back to front.
   - `nosort`: each chunk keeps its first frame's render order.
   - `noa2c`: strokes drop alpha-to-coverage and discard below alpha 0.5.
+  - `sharp`: strokes keep alpha-to-coverage, and the R3 coverage sharpening runs at twice its gain, so the rim is half a pixel wide (Sharper alpha-to-coverage, below).
+  - `sharp4`: `sharp` at four times the R3 gain, a quarter-pixel rim.
   - `nomip`: the brush atlas samples mip 0 only.
   - `mip`: trilinear mips plus the GPU's largest anisotropy.
   - `freeze`: XR only. Every frame renders with the first presenting frame's eye poses and projections. Not yet run in a headset or IWER.
@@ -891,12 +893,55 @@ Depth separation sweeps on base, with rotation (shader constants only, reverted)
 - **F5. The sky's remaining depth fight is probably the backdrop rank (hypothesis, not tested).** About 277 dome strokes share each of the 1024 ranks, and same-rank pairs tie at one NDC z (Sky dome strokes, above). The 0.25 m cap does not touch them.
 - `nosort` changes nothing, so the chunk sort is stable for a still eye. `nomip` is worse everywhere, and `mip` (anisotropy) changes nothing.
 
+### Sharper alpha-to-coverage (`?zdiag=sharp` and `sharp4`, 2026-11-06, on e5c1cf0)
+
+The brief for this run proposed Ben Golus's sharpened alpha-to-coverage, `alpha = (a − 0.5) / max(fwidth(a), 1e-4) + 0.5`, as the middle ground between base and `noa2c`. Base already is that formula. `stroke.frag.glsl` has computed it since the stroke core (a29943d, ruling R3), so base is sharpened a2c with a rim 1 px wide on an axis-aligned edge and √2 px on a diagonal (`fwidth` is |dx| + |dy|). `sharp` therefore tests the next step: the same formula at twice the gain (`… * float(ZDIAG_SHARP_GAIN) + 0.5` with the define at 2), which halves the rim. `sharp4` sets it to 4, a quarter-pixel rim. Raising the gain further tends to `noa2c`'s cut-out, still with a2c on.
+
+No `sharpmip` mode was added, because the atlas mips do not thin the coverage. A CPU model of the mip chain (a 2 × 2 box filter of the coverage channel, which is what `generateMipmap` usually does, although WebGL leaves the filter to the implementation) keeps the area above coverage 0.5, summed over the 16 brushes, within 1.2% of mip 0 through mip 5, and the mean coverage within 0.1% at every level. Per brush the area stays within 4% through mip 4 and spreads to 0.86-1.07 of mip 0 at mip 5 (about a 15 px stroke), in both directions, so it does not thin systematically. The brushes are solid shape masks, not thin bristles, so the 0.5 contour survives the box filter. Mip 6 is the first level where nearly every brush thins, by 12% on average and 27% at worst (brush 5), and a stroke reaches it only when its 480-texel brush is drawn about 7.5 px long.
+
+Flicker / per frame / clustered (% of frame), 8 frames, the same poses, URL and build path as above (production build, `vite preview`, headless Chromium on ANGLE Metal, Apple M4 Max). The `sharp4` rows were first measured from a temporary shader edit, and the committed mode reproduced them to three decimals. The 1-minute load average was 20-35, over the 15 bar, but the metric is pixel content at fixed poses rather than timing, and base reproduced the earlier table to three decimals.
+
+With rotation and translation jitter:
+
+| Mode | ground | paul-strobe1 | village | wall | ridge | sky |
+| --- | --- | --- | --- | --- | --- | --- |
+| base (R3, gain 1) | 10.09 / 4.32 / 2.83 | 10.83 / 4.56 / 2.88 | 10.35 / 4.22 / 2.88 | 3.56 / 1.37 / 0.71 | 9.47 / 3.71 / 2.22 | 6.93 / 2.54 / 1.16 |
+| sharp (gain 2) | 8.70 / 4.04 / 1.35 | 9.26 / 4.30 / 1.48 | 9.08 / 3.98 / 1.55 | 3.25 / 1.34 / 0.44 | 8.09 / 3.52 / 1.12 | 6.20 / 2.45 / 0.48 |
+| sharp4 (gain 4) | 7.71 / 3.61 / 0.84 | 8.03 / 3.83 / 0.93 | 8.11 / 3.61 / 1.00 | 3.05 / 1.26 / 0.36 | 7.04 / 3.16 / 0.70 | 5.59 / 2.28 / 0.32 |
+| noa2c | 6.61 / 2.64 / 0.57 | 6.60 / 2.64 / 0.62 | 6.91 / 2.64 / 0.63 | 2.76 / 1.01 / 0.31 | 5.83 / 2.17 / 0.46 | 4.73 / 1.65 / 0.24 |
+
+With translation jitter only (`norot`):
+
+| Mode | ground | paul-strobe1 | village | wall | ridge | sky |
+| --- | --- | --- | --- | --- | --- | --- |
+| base | 4.92 / 2.14 / 0.99 | 3.98 / 1.66 / 0.80 | 2.82 / 1.29 / 0.61 | 0.76 / 0.34 / 0.17 | 1.28 / 0.55 / 0.19 | 0.58 / 0.27 / 0.14 |
+| sharp | 4.31 / 2.02 / 0.60 | 3.53 / 1.59 / 0.49 | 2.60 / 1.24 / 0.47 | 0.74 / 0.33 / 0.17 | 1.24 / 0.54 / 0.17 | 0.56 / 0.27 / 0.14 |
+| sharp4 | 3.72 / 1.81 / 0.44 | 3.13 / 1.45 / 0.37 | 2.36 / 1.16 / 0.38 | 0.73 / 0.34 / 0.17 | 1.21 / 0.53 / 0.15 | 0.57 / 0.27 / 0.14 |
+| noa2c | 2.86 / 1.22 / 0.36 | 2.33 / 0.94 / 0.28 | 1.80 / 0.81 / 0.30 | 0.64 / 0.29 / 0.17 | 0.82 / 0.35 / 0.13 | 0.46 / 0.22 / 0.13 |
+
+- `sharp` cuts the clustered flicker, the patch flips that read as z-fight, by about half: ground 2.83 to 1.35 and sky 1.16 to 0.48 with rotation. `sharp4` takes it to 0.84 and 0.32, against `noa2c`'s 0.57 and 0.24.
+- Per-frame flicker falls much less (ground 4.32 to 4.04), so most of F1's single-pixel edge resampling stays while a2c is on.
+- With translation only, `sharp` leaves the wall, ridge and sky clustered flicker where base has it. Those patches are F2's depth ties, which coverage does not touch.
+- Fidelity (`scripts/fidelity.ts --url` with `?painting=starry-night&diag&shot&noanim&seed=1&painter&zdiag=sharp`): SSIM 0.3415 and mean ΔE2000 5.4522, and with `zdiag=sharp4` SSIM 0.3412 and 5.4514, all inside SSIM ≥ 0.2643 and ΔE ≤ 7.1961. Base on the same build read 0.3420 and 5.4495.
+
+Stills at the ground and sky poses. The rows are base, `noa2c`, `sharp` and `sharp4`. Each row shows the full frame at half size on the left, and a 4x nearest-neighbour crop of the 160 × 128 px at the view centre on the right. `sharp` keeps anti-aliased edges, slightly crisper than base with faint steps on shallow edges. `sharp4` shows steps on most edges, close to `noa2c`'s hard staircase.
+
+![zdiag base, noa2c, sharp and sharp4 at the ground pose](shots/shimmer-sharp-ground.jpg)
+
+![zdiag base, noa2c, sharp and sharp4 at the sky pose](shots/shimmer-sharp-sky.jpg)
+
+Gates: `make checkall` exited 0, and `E2E_PORT=4297 make e2e` exited 0 with 37 of 37 passed. Without `ZDIAG_SHARP_GAIN` the shader compiles the same alpha line as before, so the default output is unchanged, and SCATTER_VERSION stays 11.
+
+Recommendation: compare base, `sharp`, `sharp4` and `noa2c` in one headset session. On the desktop `sharp` halves the patch flicker, stays within 0.001 SSIM and 0.003 ΔE of base, and keeps anti-aliased edges. `sharp4` comes closer to `noa2c`'s flicker, at the cost of visible steps. If the headset agrees, raising the default R3 gain to the lowest one that clears the shimmer is the cheapest fix, and that is Paul's call.
+
 ### For the headset
 
 These URLs need a deployed build, which needs an approved push.
 
 - `?painting=starry-night&zdiag=nowrite`: no stroke-against-stroke depth tests, with the strokes still visible. If the shimmer drops, depth ties are the cause.
 - `?painting=starry-night&zdiag=noa2c`: tests F4.
+- `?painting=starry-night&zdiag=sharp`: the half-pixel a2c rim. If it cuts the shimmer about as much as `noa2c`, a higher default R3 gain can fix it without losing anti-aliased edges.
+- `?painting=starry-night&zdiag=sharp4`: the quarter-pixel a2c rim, between `sharp` and `noa2c`.
 - `?painting=starry-night&zdiag=freeze`: the same pixels every frame. If the shimmer stays, that points to the compositor's reprojection (or the MSAA / alpha-to-coverage resolve) and not render-time jitter. Leave this mode with the Quest button, because the frozen view makes the in-app Exit VR control hard to reach.
 - `?painting=starry-night&zdiag=strokeorder`: reproduces the live test, with the world strokes hidden. Reference only.
 - Add `&diag&hud` to any of them to read `__goghDiag().zdiag`.

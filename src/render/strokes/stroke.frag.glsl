@@ -29,7 +29,14 @@ void main() {
   float cov = t.r;
   // Ruling R3: sharpen coverage to ~0 or 1 except a one-pixel rim, so alpha-to-coverage does not
   // dither the stroke interior into flickering stripes.
+#ifdef ZDIAG_SHARP_GAIN
+  // `?zdiag=sharp` and `sharp4` (src/render/zdiag.ts): the R3 gain times 2 or 4, so the rim is a
+  // half or a quarter of a pixel wide.
+  float alpha =
+    clamp((cov - 0.5) / max(fwidth(cov), 1e-4) * float(ZDIAG_SHARP_GAIN) + 0.5, 0.0, 1.0);
+#else
   float alpha = clamp((cov - 0.5) / max(fwidth(cov), 1e-4) + 0.5, 0.0, 1.0);
+#endif
 #ifdef ZDIAG_ALPHA_TEST
   // `?zdiag=noa2c` (src/render/zdiag.ts): alpha-to-coverage is off, so cut the shape out instead.
   if (alpha < 0.5) discard;

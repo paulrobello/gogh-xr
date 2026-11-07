@@ -55,6 +55,8 @@ export const ZDIAG_MODES = [
   'nowrite',
   'nosort',
   'noa2c',
+  'sharp',
+  'sharp4',
   'nomip',
   'mip',
   'freeze',

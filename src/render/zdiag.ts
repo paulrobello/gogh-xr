@@ -15,6 +15,9 @@
  *   draw last and the world strokes stay visible, ordered by draw order instead of depth.
  * - `nosort`: each chunk keeps the render order of the first frame it was drawn in.
  * - `noa2c`: stroke materials drop alphaToCoverage and cut the shape out at alpha 0.5 instead.
+ * - `sharp`: alphaToCoverage stays on, and the coverage sharpening (ruling R3, already Golus's
+ *   sharpened alpha-to-coverage) runs at twice its gain, so each edge's rim is half a pixel wide.
+ * - `sharp4`: `sharp` at four times the R3 gain, a quarter-pixel rim.
  * - `nomip`: the brush atlas samples mip 0 only, with linear filtering.
  * - `mip`: the brush atlas keeps its trilinear mips and adds the GPU's largest anisotropy.
  * - `freeze`: in XR, every frame renders with the first presenting frame's camera poses and
@@ -67,6 +70,10 @@ export function createZdiag(mode: ZdiagMode | null, renderer: WebGLRenderer): Zd
         if (mode === 'noa2c') {
           material.alphaToCoverage = false;
           material.defines.ZDIAG_ALPHA_TEST = 1;
+          material.needsUpdate = true;
+        }
+        if (mode === 'sharp' || mode === 'sharp4') {
+          material.defines.ZDIAG_SHARP_GAIN = mode === 'sharp' ? 2 : 4;
           material.needsUpdate = true;
         }
       }
