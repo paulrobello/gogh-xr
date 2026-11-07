@@ -134,6 +134,10 @@ export function createArcMesh(parent: Object3D, atlas: Texture): ArcMesh {
   geometry.instanceCount = 0;
   const material = createStrokeMaterial(atlas);
   material.name = 'teleport-arc';
+  // Its own motion gate, always closed: the reactive motion (P4.5) runs on every layer and would
+  // push the arc away from the controller it starts at. The defines are the batch's, so the arc
+  // still shares the batch's program.
+  material.uniforms.uMotionLayers = { value: 0 };
   const mesh = new Mesh(geometry, material);
   mesh.name = 'teleport-arc';
   // The geometry's bounds are the unit quad, not the instances.

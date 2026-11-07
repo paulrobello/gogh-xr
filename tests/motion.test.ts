@@ -17,7 +17,9 @@ import {
   motionGate,
   motionLayerMask,
   motionOffset,
+  REACTIVE_MOTION_BIT,
   REST,
+  reactiveGate,
   STUB_MOTION,
 } from '../src/motion/motion.ts';
 import { STROKE_LAYER, type StrokeLayer } from '../src/render/strokes/instance.ts';
@@ -122,15 +124,21 @@ describe('motion clock', () => {
       STROKE_LAYER.cypress,
     ];
     expect(MOTION_LAYERS).toEqual(live);
+    // P4.5 adds the reactive bit, above the six layer bits, which opens no layer's own motion.
+    expect(REACTIVE_MOTION_BIT).toBe(1 << 6);
     expect(MOTION_LAYER_MASK).toBe(
       (1 << STROKE_LAYER.sky) |
         (1 << STROKE_LAYER.star) |
         (1 << STROKE_LAYER.moon) |
-        (1 << STROKE_LAYER.cypress),
+        (1 << STROKE_LAYER.cypress) |
+        REACTIVE_MOTION_BIT,
     );
     for (const layer of ALL_LAYERS) {
       expect(motionGate(MOTION_LAYER_MASK, layer)).toBe(live.includes(layer));
+      expect(motionGate(REACTIVE_MOTION_BIT, layer)).toBe(false);
     }
+    expect(reactiveGate(MOTION_LAYER_MASK)).toBe(true);
+    expect(reactiveGate(ALL_MASK)).toBe(false);
     expect(motionClock.uniforms.uMotionLayers.value).toBe(0);
     expect(motionClock.diag().layers).toBe(0);
   });
@@ -187,17 +195,24 @@ describe('uniform plumbing', () => {
   });
 
   test('the vertex shader gates motion once, after the rest quad and the haze thin', () => {
-    const gate = strokeGlsl.indexOf('if (motionGate(iMeta.y) && thin > 0.0) {');
+    // The two gates are read once each, before the haze thin, and only these two read the
+    // uniforms: the layer's own bit and the reactive bit with the box (P4.5).
+    const gates = strokeGlsl.indexOf('bool layerMoves = motionGate(iMeta.y);');
+    expect(gates).toBeGreaterThan(0);
+    expect(strokeGlsl.indexOf('bool reacts = reactiveGate(iPosition);')).toBeGreaterThan(gates);
+    expect(strokeGlsl.match(/motionGate\(/g)).toHaveLength(1);
+    expect(strokeGlsl.match(/reactiveGate\(/g)).toHaveLength(1);
+    const gate = strokeGlsl.indexOf('if ((layerMoves || reacts) && thin > 0.0) {');
     expect(gate).toBeGreaterThan(strokeGlsl.indexOf('vec3 local = iPosition'));
     expect(gate).toBeGreaterThan(strokeGlsl.indexOf('thin = skyLightThin('));
     expect(gate).toBeLessThan(strokeGlsl.indexOf('gl_Position = projectionMatrix'));
     expect(strokeGlsl).toContain(
-      'Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a);',
+      'Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts);',
     );
     expect(strokeGlsl.match(/motionOffset\(/g)).toHaveLength(1);
-    // The haze thin widens by the reach only behind the gate (R-P4b).
+    // The haze thin widens by each reach only behind its own gate (R-P4b).
     expect(strokeGlsl).toContain(
-      'float reach = motionGate(iMeta.y) ? motionReach(iMeta.y, iPosition) : 0.0;',
+      'float reach = (layerMoves ? motionReach(iMeta.y, iPosition) : 0.0) +\n      (reacts ? reactiveReach() : 0.0);',
     );
     // Nothing else in main reads the motion uniforms: the closed gate is the whole default path.
     const main = strokeGlsl.slice(strokeGlsl.indexOf('void main()'));
@@ -214,7 +229,14 @@ describe('uniform plumbing', () => {
     expect(body.indexOf('return scaleMotion(m, uCalm);')).toBeGreaterThan(
       body.indexOf('Motion r = reactiveMotion('),
     );
+    // Each motion runs behind its own gate (P4.5): the layer dispatch behind layerMoves, the
+    // reactive term behind reacts. The gains combine as size factors, so the wrap envelope still
+    // scales a stroke the reactive stretch grows.
+    expect(body).toContain('if (!layerMoves) {\n  } else if (layer == STROKE_LAYER_SKY) {');
+    expect(body).toContain('if (reacts) {\n    Motion r = reactiveMotion(p, n);');
     expect(body).toContain('m.bright += r.bright;');
+    expect(body).toContain('m.gain = (1.0 + m.gain) * (1.0 + r.gain) - 1.0;');
+    expect(body.match(/m\.gain/g)).toHaveLength(2);
     // The gain is the wrap envelope: full depth whenever the gate is open (amended R-P4e). The
     // brightness is an amplitude, so it fades with calm like the offset and turn (P4.3).
     expect(motionGlsl).toContain('return Motion(k * m.offset, k * m.turn, m.gain, k * m.bright);');
@@ -247,7 +269,8 @@ describe('calm scaling', () => {
     star: unit(1),
     moon: unit(2),
     cypress: unit(0),
-    reactive: () => ({ offset: [0, 0, 0.5], turn: 0.05, gain: -0.1, bright: 0.05 }),
+    // A reactive gain is a stretch growth, never negative (reactive.ts).
+    reactive: () => ({ offset: [0, 0, 0.5], turn: 0.05, gain: 0.1, bright: 0.05 }),
   };
   const p = [1, 2, 3] as const;
   const n = [0, 0, 1] as const;
@@ -256,14 +279,30 @@ describe('calm scaling', () => {
   const SCALED = [0, 1, 2, 3, 5];
 
   test('reaches every layer and every field: offset, turn and brightness are linear in calm, the gain is not', () => {
+    // Every layer's bit and the reactive bit, so the ground and building get the reactive term.
+    const ALL_WITH_REACTIVE = motionLayerMask(ALL_LAYERS) | REACTIVE_MOTION_BIT;
     for (const layer of ALL_LAYERS) {
-      const full = motionOffset(layer, 64, p, n, { time: 2, calm: 1, layerMask: ALL_MASK }, live);
+      const full = motionOffset(
+        layer,
+        64,
+        p,
+        n,
+        { time: 2, calm: 1, layerMask: ALL_WITH_REACTIVE },
+        live,
+      );
       expect(Math.hypot(...full.offset)).toBeGreaterThan(0);
       expect(full.turn).not.toBe(0);
       expect(full.gain).not.toBe(0);
       expect(full.bright).not.toBe(0);
       for (const calm of [0, 0.25, 0.5]) {
-        const scaled = motionOffset(layer, 64, p, n, { time: 2, calm, layerMask: ALL_MASK }, live);
+        const scaled = motionOffset(
+          layer,
+          64,
+          p,
+          n,
+          { time: 2, calm, layerMask: ALL_WITH_REACTIVE },
+          live,
+        );
         for (const k of SCALED) expect(flat(scaled)[k]).toBeCloseTo(calm * flat(full)[k], 12);
         // At calm 0 the clock closes the gate, so the unscaled gain never draws there.
         expect(scaled.gain).toBeCloseTo(full.gain, 12);

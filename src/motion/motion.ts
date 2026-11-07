@@ -6,19 +6,27 @@
  * shrink the stroke to nothing as it jumps back at every calm, so it runs at full depth whenever the
  * gate is open (amended R-P4e).
  * P4.2 fills in the sky (src/motion/sky-swirl.ts), P4.3 the stars and moon
- * (src/motion/sky-rings.ts) and P4.4 the cypress (src/motion/cypress-flame.ts); P4.5 (reactive,
- * every layer) fills in the rest. Each
- * one also sets its layer's bit in `MOTION_LAYERS`, and its GLSL in motion.glsl and its mirror here
- * change together.
+ * (src/motion/sky-rings.ts) and P4.4 the cypress (src/motion/cypress-flame.ts). Each sets its
+ * layer's bit in `MOTION_LAYERS`. P4.5's reactive push and wake (src/motion/reactive.ts) run on
+ * every layer behind their own gate bit, `REACTIVE_MOTION_BIT`, added on top of the layer motion.
+ * Each motion's GLSL in motion.glsl and its mirror here change together.
  */
 import { PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import { STROKE_LAYER } from '../render/strokes/instance';
 import { CYPRESS_FLAME_NONE, cypressFlame } from './cypress-flame';
-import { motionGate } from './layers';
+import { motionGate, reactiveGate } from './layers';
+import { REACTIVE_REACH, reactiveMotion, reactiveTracker } from './reactive';
 import { ringOf, skyRing } from './sky-rings';
 import { SKY_SWIRL_MAX_ANGLE, skySwirl } from './sky-swirl';
 
-export { MOTION_LAYER_MASK, MOTION_LAYERS, motionGate, motionLayerMask } from './layers';
+export {
+  MOTION_LAYER_MASK,
+  MOTION_LAYERS,
+  motionGate,
+  motionLayerMask,
+  REACTIVE_MOTION_BIT,
+  reactiveGate,
+} from './layers';
 
 type Vec3 = readonly [number, number, number];
 
@@ -54,6 +62,8 @@ export interface MotionInput {
   readonly flameByte: number;
   /** `uTime`, seconds. */
   readonly time: number;
+  /** `uCalm`: the reactive stretch growth compensates the calm-scaled push (P4.5). */
+  readonly calm: number;
 }
 
 /** One layer's motion of a stroke, before calm scaling. */
@@ -64,7 +74,7 @@ export interface MotionFunctions {
   readonly star: LayerMotion;
   readonly moon: LayerMotion;
   readonly cypress: LayerMotion;
-  /** Added for every layer (P4.5). */
+  /** Added for every layer behind the reactive gate bit (P4.5). */
   readonly reactive: LayerMotion;
 }
 
@@ -80,8 +90,8 @@ export const STUB_MOTION: MotionFunctions = Object.freeze({
 });
 
 /**
- * The motions motion.glsl runs: the sky swirl (P4.2), the star and moon rings (P4.3) and the
- * cypress flame (P4.4), the reactive term still until its card lands.
+ * The motions motion.glsl runs: the sky swirl (P4.2), the star and moon rings (P4.3), the cypress
+ * flame (P4.4) and the reactive push and wake (P4.5) of the app's tracker's current field.
  */
 export const LIVE_MOTION: MotionFunctions = Object.freeze({
   ...STUB_MOTION,
@@ -95,6 +105,8 @@ export const LIVE_MOTION: MotionFunctions = Object.freeze({
     skyRing(ringOf(true, phaseByte), position, time),
   cypress: ({ position, normal, phase, flameByte, time }: MotionInput) =>
     cypressFlame(position, normal, phase, flameByte, time),
+  reactive: ({ position, normal, calm }: MotionInput) =>
+    reactiveMotion(position, normal, reactiveTracker.field(), calm),
 });
 
 function layerMotion(layer: number, fns: MotionFunctions): LayerMotion {
@@ -119,11 +131,15 @@ export interface MotionUniformValues {
 }
 
 /**
- * Matches `motionOffset` in motion.glsl: at rest unless the layer's gate bit is set, otherwise the
- * layer's motion plus the reactive term, with the offset, turn and brightness times calm and the
- * gain unscaled. `flameByte` is the stroke's colour alpha byte, which only the cypress reads.
- * stroke.vert.glsl's gated block also skips a haze stroke its sky-light thin has collapsed
- * (`thin` 0), which draws nothing either way, so this mirror leaves that skip out.
+ * Matches `motionOffset` in motion.glsl: at rest unless the layer's gate bit or the reactive bit is
+ * set. The layer's motion runs only behind its own bit and the reactive term only behind the
+ * reactive bit; their offsets, turns and brightnesses add and are scaled by calm, and their gains
+ * combine as size factors, `(1 + a)(1 + r) − 1`, unscaled, so a wrapping stroke still shrinks to
+ * nothing and a stretched one grows (the reactive gain already carries calm). `flameByte` is the
+ * stroke's colour alpha byte, which only the cypress reads.
+ * stroke.vert.glsl also tests the reactive box before the reactive term; outside it the term is
+ * exactly 0 (reactive.ts), so this mirror leaves the box out. Its gated block also skips a haze
+ * stroke its sky-light thin has collapsed (`thin` 0), which draws nothing either way.
  */
 export function motionOffset(
   layer: number,
@@ -134,7 +150,9 @@ export function motionOffset(
   fns: MotionFunctions = LIVE_MOTION,
   flameByte: number = CYPRESS_FLAME_NONE,
 ): Motion {
-  if (!motionGate(uniforms.layerMask, layer)) return REST;
+  const layerMoves = motionGate(uniforms.layerMask, layer);
+  const reacts = reactiveGate(uniforms.layerMask);
+  if (!layerMoves && !reacts) return REST;
   const input: MotionInput = {
     position,
     normal,
@@ -142,9 +160,10 @@ export function motionOffset(
     phaseByte,
     flameByte,
     time: uniforms.time,
+    calm: uniforms.calm,
   };
-  const a = layerMotion(layer, fns)(input);
-  const r = fns.reactive(input);
+  const a = layerMoves ? layerMotion(layer, fns)(input) : REST;
+  const r = reacts ? fns.reactive(input) : REST;
   const c = uniforms.calm;
   return {
     offset: [
@@ -153,7 +172,7 @@ export function motionOffset(
       c * (a.offset[2] + r.offset[2]),
     ],
     turn: c * (a.turn + r.turn),
-    gain: a.gain + r.gain,
+    gain: (1 + a.gain) * (1 + r.gain) - 1,
     bright: c * (a.bright + r.bright),
   };
 }
@@ -171,4 +190,14 @@ export function motionReach(layer: number, position: Vec3, calm: number): number
   const [x, y, z] = position;
   const [ex, ey, ez] = PAINTER_EYE;
   return calm * SKY_SWIRL_MAX_ANGLE * Math.hypot(x - ex, y - ey, z - ez);
+}
+
+/**
+ * Matches reactiveReach in motion.glsl: the farthest, metres, the open reactive gate at `calm` can
+ * move any stroke from rest, `REACTIVE_REACH` times calm (reactiveMotion clamps its offset to it).
+ * The haze's sky-light thin widens a stroke inside the reactive box by it, and the stroke batch
+ * grows every chunk's cull sphere by it while the reactive bit is open (ruling R-P4a).
+ */
+export function reactiveReach(calm: number): number {
+  return calm * REACTIVE_REACH;
 }

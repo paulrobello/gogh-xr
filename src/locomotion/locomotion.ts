@@ -156,6 +156,13 @@ export interface Locomotion {
   setPose(x: number, y: number, z: number, yaw: number, pitch: number): void;
   /** Recaptures the seated offset from the current XR head height. A no-op outside XR. */
   calibrate(): void;
+  /**
+   * Counts discontinuous rig and view moves: a teleport jump, a snap turn, `spawn`, `setPose`, and
+   * each `markDiscontinuity` (main.ts calls it on an XR reference-space reset, the system
+   * recenter). The reactive tracker restarts its wakes when it changes (P4.5).
+   */
+  discontinuities(): number;
+  markDiscontinuity(): void;
   /** The rig, in one object reused across calls. */
   diag(): RigDiag;
 }
@@ -206,6 +213,8 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
   /** The landing a running blink jumps to at full black. */
   const pending: [number, number, number] = [0, 0, 0];
   let lastTeleport: TeleportRecord | null = null;
+  /** Discontinuous moves so far (`discontinuities`). */
+  let discontinuities = 0;
   const aimOrigin: [number, number, number] = [0, 0, 0];
   const aimDirection: [number, number, number] = [0, 0, 0];
   const eye: [number, number, number] = [0, 0, 0];
@@ -263,6 +272,7 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     headWorld(from, state.groundY);
     teleportRig(state, head, hit, settings);
     lastTeleport = { from, to: [hit[0], hit[1], hit[2]], t: now() };
+    discontinuities += 1;
   }
 
   /** Traces the aim from `source`'s -Z in world space, the rig as written this frame. */
@@ -386,7 +396,7 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       const allowed = state.mode === 'walk' && !state.dropping && !aimBlocked;
       const aiming = actions.teleportAim && allowed;
       // A held aim never turns the rig, even pushed diagonally across the snap threshold.
-      turn(state, aiming ? NO_TURN : actions, settings, actions.dt, head);
+      if (turn(state, aiming ? NO_TURN : actions, settings, actions.dt, head)) discontinuities += 1;
       if (state.mode === 'fly' && ground !== null) {
         fly(state, actions, ground, landing, settings, actions.dt, head, headPitch);
       } else {
@@ -431,6 +441,7 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       look.setLook(0, 0);
       look.update();
       writeRig();
+      discontinuities += 1;
     },
     setPose(x, y, z, yaw, pitch) {
       cancelTeleport();
@@ -438,6 +449,11 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       look.setLook(0, pitch);
       look.update();
       writeRig();
+      discontinuities += 1;
+    },
+    discontinuities: () => discontinuities,
+    markDiscontinuity() {
+      discontinuities += 1;
     },
     calibrate() {
       if (!presenting) return;

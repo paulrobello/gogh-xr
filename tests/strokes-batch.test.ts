@@ -9,7 +9,8 @@ import {
 } from 'three';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { motionClock } from '../src/motion/clock.ts';
-import { MOTION_LAYER_MASK } from '../src/motion/layers.ts';
+import { MOTION_LAYER_MASK, REACTIVE_MOTION_BIT } from '../src/motion/layers.ts';
+import { REACTIVE_MAX_GAIN, REACTIVE_REACH } from '../src/motion/reactive.ts';
 import { SKY_RINGS, skyRingReach } from '../src/motion/sky-rings.ts';
 import { skySwirlReach } from '../src/motion/sky-swirl.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
@@ -420,10 +421,38 @@ describe('bands', () => {
       const sky = radii();
       expect(sky[starChunk]).toBe(rest[starChunk]);
       expect(sky[skyChunk]).toBeCloseTo(rest[skyChunk] + 0.5 * skyReach, 9);
-      motionClock.setLayerMask(MOTION_LAYER_MASK);
+      motionClock.setLayerMask(MOTION_LAYER_MASK & ~REACTIVE_MOTION_BIT);
       motionClock.setCalm(1);
       const all = radii();
       expect(all[starChunk]).toBeCloseTo(rest[starChunk] + starReach, 4);
+      // The reactive bit grows every chunk by calm times the reactive reach on top (P4.5, R-P4a),
+      // and its half-diagonal term by the stretch growth's cap. Each chunk holds one stroke, so its
+      // rest radius is that stroke's half-diagonal times the band size.
+      const grown = (i: number): number => REACTIVE_MAX_GAIN * rest[i];
+      motionClock.setLayerMask(MOTION_LAYER_MASK);
+      const reactiveReach = SKY_REACH_MARGIN * REACTIVE_REACH;
+      const live = radii();
+      expect(live[starChunk]).toBeCloseTo(
+        rest[starChunk] + starReach + reactiveReach + grown(starChunk),
+        4,
+      );
+      expect(live[skyChunk]).toBeCloseTo(
+        rest[skyChunk] + skyReach + reactiveReach + grown(skyChunk),
+        9,
+      );
+      motionClock.setLayerMask(REACTIVE_MOTION_BIT);
+      motionClock.setCalm(0.5);
+      const reactiveOnly = radii();
+      expect(reactiveOnly[starChunk]).toBeCloseTo(
+        rest[starChunk] + 0.5 * reactiveReach + grown(starChunk),
+        9,
+      );
+      expect(reactiveOnly[skyChunk]).toBeCloseTo(
+        rest[skyChunk] + 0.5 * reactiveReach + grown(skyChunk),
+        9,
+      );
+      motionClock.setCalm(1);
+      motionClock.setLayerMask(MOTION_LAYER_MASK);
       motionClock.setFrozen(true);
       expect(radii()).toEqual(rest);
     } finally {
@@ -468,7 +497,7 @@ describe('bands', () => {
     // The app clock's gate starts closed: the spheres are the rest spheres.
     const rest = radii();
     try {
-      motionClock.setLayerMask(MOTION_LAYER_MASK);
+      motionClock.setLayerMask(MOTION_LAYER_MASK & ~REACTIVE_MOTION_BIT);
       motionClock.setCalm(0.5);
       const half = radii();
       motionClock.setCalm(1);

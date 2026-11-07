@@ -8,8 +8,18 @@ uniform float uTime;
 // Calm, 0-1: every offset, turn and brightness is multiplied by it, once, in motionOffset (ruling
 // R-P4e).
 uniform float uCalm;
-// The motion gate: bit L set when layer L's motion runs this frame. 0 when frozen or at calm 0.
+// The motion gate: bit L set when layer L's motion runs this frame, and REACTIVE_MOTION_BIT when
+// the reactive motion runs on every layer (P4.5). 0 when frozen or at calm 0.
 uniform uint uMotionLayers;
+// The reactive motion's field (src/motion/reactive.ts): per disturber (head, controller 0,
+// controller 1) its world position and strength (w, 0 when untracked) and its velocity, m/s; its
+// wake samples, newest first, at j * WAKE_SAMPLES + i, with their weight in w; and the box round
+// every weighted disturber and sample, grown by the radius (negative half extents when empty).
+uniform vec4 uDisturbers[REACTIVE_DISTURBERS];
+uniform vec4 uDisturberVelocities[REACTIVE_DISTURBERS];
+uniform vec4 uWake[REACTIVE_WAKE_SAMPLES];
+uniform vec3 uReactiveCentre;
+uniform vec3 uReactiveHalf;
 
 // One stroke's motion, every field 0 at rest. offset moves the stroke centre (model space), turn
 // rotates it about its normal from the long axis towards the short axis (radians, small:
@@ -27,6 +37,14 @@ struct Motion {
 // Matches motionGate in motion.ts. Layers are 0-5, so the shift stays inside the uint.
 bool motionGate(uint layer) {
   return (uMotionLayers & (1u << layer)) != 0u;
+}
+
+// The reactive gate (P4.5, ruling R-P4c): the reactive bit, then the stroke's rest centre p inside
+// the reactive box. Outside the box the reactive motion is exactly 0, so a stroke there pays this
+// AND, one subtract, abs and compare, and no reactive maths.
+bool reactiveGate(vec3 p) {
+  return (uMotionLayers & REACTIVE_MOTION_BIT) != 0u &&
+    all(lessThan(abs(p - uReactiveCentre), uReactiveHalf));
 }
 
 // Scales the offset, turn and brightness by k and keeps the gain (the wrap envelope) at full depth.
@@ -116,13 +134,71 @@ Motion cypressMotion(vec3 p, vec3 n, float phase, float flame, float t) {
   float gain = taper > 0.0 ? smoothstep(0.0, CYPRESS_FLAME_FADE, min(f, 1.0 - f)) - 1.0 : 0.0;
   return Motion(s * up + a * side, 0.0, gain, 0.0);
 }
-// Added for every layer (P4.5): the push away from the head and controllers, and their wake.
-Motion reactiveMotion(vec3 p, vec3 n, float phase, float t) { return Motion(vec3(0.0), 0.0, 0.0, 0.0); }
+// Matches reactiveMotion in reactive.ts (P4.5), on every layer behind reactiveGate: each disturber
+// pushes the stroke centred at p away by its strength times the falloff (1 - x²)² times
+// PUSH_GAIN (p - d), 0 at the disturber itself, and drags it by its velocity times DRAG_S; each
+// wake sample turns it about its normal n through the sample by weight times SWIRL times the
+// falloff. The rotations' offsets are linear in p - w, so the loop sums t (p - w) and t and takes
+// one cross product after it. The sum loses its part along n, so the stroke slides along its
+// surface, and is clamped to REACTIVE_REACH; the turn is capped at REACTIVE_MAX_TURN. The gain is
+// the push's areal stretch in the tangent plane, (1 + a)(1 + a - tr M) with a = calm G Σ s f² and
+// tr M = calm 4 G / R² Σ s f |t|² (t the tangent part of p - d), as a size factor √J, never below
+// 1 and capped at 1 + REACTIVE_MAX_GAIN: strokes spread apart grow to keep covering the surface
+// (R-P4o). No phase: it is a pure function of p and the field.
+// Cost per vertex inside the box, counted in scalar ALU operations (P4.6 holds to this count until
+// it measures): 3 disturbers of about 25, 24 wake samples of about 15, then a tail of about 37
+// (swirl cross product, normal removal, reach clamp, stretch), about 470 in all.
+Motion reactiveMotion(vec3 p, vec3 n) {
+  vec3 offset = vec3(0.0);
+  float spread = 0.0;
+  float squeeze = 0.0;
+  for (int j = 0; j < REACTIVE_DISTURBERS; j++) {
+    vec4 d = uDisturbers[j];
+    vec3 e = p - d.xyz;
+    float e2 = dot(e, e);
+    float f = max(1.0 - e2 * REACTIVE_INV_RADIUS2, 0.0);
+    float sf = d.w * f;
+    float s = sf * f;
+    offset += s * (REACTIVE_PUSH_GAIN * e + REACTIVE_DRAG_S * uDisturberVelocities[j].xyz);
+    float en = dot(e, n);
+    spread += s;
+    squeeze += sf * (e2 - en * en);
+  }
+  vec3 swirl = vec3(0.0);
+  float theta = 0.0;
+  for (int i = 0; i < REACTIVE_WAKE_SAMPLES; i++) {
+    vec4 w = uWake[i];
+    vec3 e = p - w.xyz;
+    float f = max(1.0 - dot(e, e) * REACTIVE_INV_RADIUS2, 0.0);
+    float t = w.w * REACTIVE_SWIRL * f * f;
+    swirl += t * e;
+    theta += t;
+  }
+  offset += cross(n, swirl);
+  offset -= n * dot(n, offset);
+  offset *= min(1.0, REACTIVE_REACH * inversesqrt(max(dot(offset, offset), 1e-12)));
+  float a = uCalm * REACTIVE_PUSH_GAIN * spread;
+  float stretch = (1.0 + a) * (1.0 + a - uCalm * REACTIVE_STRETCH_M * squeeze);
+  float gain = min(sqrt(max(stretch, 1.0)) - 1.0, REACTIVE_MAX_GAIN);
+  return Motion(offset, min(theta, REACTIVE_MAX_TURN), gain, 0.0);
+}
 
-// Matches motionOffset in motion.ts. Only called behind motionGate. MOTION_PHASE_PIN is the e2e's
-// coherent phase (material.ts pinMotionPhase), never defined in a production build. flame is the
-// instance's colour alpha, which only the cypress reads (P4.4).
-Motion motionOffset(uint layer, vec3 p, vec3 n, uint phaseByte, float flame) {
+// Matches motionOffset in motion.ts. Only called behind the gate: layerMoves is the layer's own
+// motionGate and reacts the reactiveGate, at least one true. The layer motion runs only behind its
+// bit and the reactive motion only behind its gate. Their offsets, turns and brightnesses add; their
+// gains combine as size factors, so a wrapping stroke still shrinks to nothing and a stretched one
+// grows. MOTION_PHASE_PIN is the e2e's coherent phase
+// (material.ts pinMotionPhase), never defined in a production build. flame is the instance's
+// colour alpha, which only the cypress reads (P4.4).
+Motion motionOffset(
+  uint layer,
+  vec3 p,
+  vec3 n,
+  uint phaseByte,
+  float flame,
+  bool layerMoves,
+  bool reacts
+) {
 #ifdef MOTION_PHASE_PIN
   float phase = MOTION_PHASE_PIN;
 #else
@@ -130,7 +206,8 @@ Motion motionOffset(uint layer, vec3 p, vec3 n, uint phaseByte, float flame) {
 #endif
   float t = uTime;
   Motion m = Motion(vec3(0.0), 0.0, 0.0, 0.0);
-  if (layer == STROKE_LAYER_SKY) {
+  if (!layerMoves) {
+  } else if (layer == STROKE_LAYER_SKY) {
     m = skyMotion(p, n, phase, t);
   } else if (layer == STROKE_LAYER_STAR) {
     m = starMotion(p, phaseByte, t);
@@ -139,11 +216,13 @@ Motion motionOffset(uint layer, vec3 p, vec3 n, uint phaseByte, float flame) {
   } else if (layer == STROKE_LAYER_CYPRESS) {
     m = cypressMotion(p, n, phase, flame, t);
   }
-  Motion r = reactiveMotion(p, n, phase, t);
-  m.offset += r.offset;
-  m.turn += r.turn;
-  m.gain += r.gain;
-  m.bright += r.bright;
+  if (reacts) {
+    Motion r = reactiveMotion(p, n);
+    m.offset += r.offset;
+    m.turn += r.turn;
+    m.gain = (1.0 + m.gain) * (1.0 + r.gain) - 1.0;
+    m.bright += r.bright;
+  }
   return scaleMotion(m, uCalm);
 }
 
@@ -154,3 +233,7 @@ Motion motionOffset(uint layer, vec3 p, vec3 n, uint phaseByte, float flame) {
 float motionReach(uint layer, vec3 p) {
   return layer == STROKE_LAYER_SKY ? uCalm * SKY_SWIRL_MAX_ANGLE * length(p - SKY_EYE) : 0.0;
 }
+
+// Matches reactiveReach in motion.ts: the farthest, metres, the reactive motion moves a stroke,
+// calm included. Only called behind reactiveGate, for the haze's sky-light thin (R-P4b).
+float reactiveReach() { return uCalm * REACTIVE_REACH; }

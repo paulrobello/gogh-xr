@@ -1,7 +1,9 @@
 import { GLSL3, RawShaderMaterial, type Texture, Vector3, Vector4 } from 'three';
 import { type MotionUniforms, motionClock } from '../../motion/clock';
 import { cypressFlameGlslDefines } from '../../motion/cypress-flame';
+import { REACTIVE_MOTION_BIT } from '../../motion/layers';
 import motionShader from '../../motion/motion.glsl?raw';
+import { type ReactiveUniforms, reactiveGlslDefines, reactiveTracker } from '../../motion/reactive';
 import { skyRingGlslDefines } from '../../motion/sky-rings';
 import skyRingsShader from '../../motion/sky-rings.glsl?raw';
 import { skySwirlGlslDefines } from '../../motion/sky-swirl';
@@ -62,6 +64,8 @@ const SKY_SWIRL_DEFINES = skySwirlGlslDefines();
 const SKY_RING_DEFINES = skyRingGlslDefines();
 /** The cypress flame's loop and flicker constants, which motion.glsl reads (P4.4). */
 const CYPRESS_FLAME_DEFINES = cypressFlameGlslDefines();
+/** The reactive motion's sizes and gains, which motion.glsl reads (P4.5). */
+const REACTIVE_DEFINES = reactiveGlslDefines();
 
 /** Towards the moon: from the upper right, in front of a viewer looking down -z. */
 export const MOON_DIRECTION: Readonly<Vector3> = new Vector3(0.45, 0.6, 0.66).normalize();
@@ -75,8 +79,11 @@ export const RELIEF_MIN_TEXELS = 2;
  */
 export const HAZE_GROWTH = 0.5;
 
-/** The motion uniforms (src/motion/clock.ts) are `motionClock`'s own objects, shared by reference. */
-export interface StrokeMaterialUniforms extends MotionUniforms {
+/**
+ * The motion uniforms (src/motion/clock.ts) are `motionClock`'s own objects and the reactive ones
+ * (src/motion/reactive.ts) `reactiveTracker`'s, shared by reference.
+ */
+export interface StrokeMaterialUniforms extends MotionUniforms, ReactiveUniforms {
   [name: string]: { value: unknown };
   uAtlas: { value: Texture };
   uBrushRects: { value: Vector4[] };
@@ -133,6 +140,7 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
     uHazeThickness: { value: 0 },
     uSkyLightFeathers: { value: skyLightFeatherUniforms([]) },
     ...motionClock.uniforms,
+    ...reactiveTracker.uniforms,
   };
   const material = new RawShaderMaterial({
     glslVersion: GLSL3,
@@ -171,6 +179,8 @@ export function createStrokeMaterial(atlas: Texture, sizeScale = 1): StrokeMater
       ...SKY_SWIRL_DEFINES,
       ...SKY_RING_DEFINES,
       ...CYPRESS_FLAME_DEFINES,
+      REACTIVE_MOTION_BIT: `${REACTIVE_MOTION_BIT}u`,
+      ...REACTIVE_DEFINES,
       ...(pinnedMotionPhase === null ? {} : { MOTION_PHASE_PIN: glslFloat(pinnedMotionPhase) }),
     },
     transparent: false,

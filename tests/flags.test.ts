@@ -290,6 +290,9 @@ test('?motionlayers is a stroke layer mask, null when absent; unknown names add 
   expect(parseFlags('?motionlayers=bogus').motionlayers).toBe(0);
   expect(parseFlags('?motionlayers').motionlayers).toBe(0);
   expect(parseFlags('').motionlayers).toBeNull();
+  // `reactive` names the reactive gate bit (P4.5), above the six layer bits.
+  expect(parseFlags('?motionlayers=reactive').motionlayers).toBe(1 << 6);
+  expect(parseFlags('?motionlayers=cypress,%20Reactive').motionlayers).toBe((1 << 3) | (1 << 6));
 });
 
 test('nohalo is a boolean flag, off for 0 and false', () => {

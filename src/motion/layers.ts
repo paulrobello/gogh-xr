@@ -25,7 +25,21 @@ export function motionLayerMask(layers: readonly StrokeLayer[]): number {
   return mask >>> 0;
 }
 
-export const MOTION_LAYER_MASK: number = motionLayerMask(MOTION_LAYERS);
+/**
+ * The reactive motion's gate bit (P4.5), above the six layer bits. It opens the push and wake of
+ * src/motion/reactive.ts for every layer, whatever that layer's own bit says, so the per-layer
+ * motions stay independent of it. `?motionlayers=reactive` names it.
+ */
+export const REACTIVE_MOTION_BIT: number = 1 << 6;
+
+/** The world's motion gate: every live layer's bit and the reactive bit. */
+export const MOTION_LAYER_MASK: number =
+  (motionLayerMask(MOTION_LAYERS) | REACTIVE_MOTION_BIT) >>> 0;
+
+/** True when `layerMask` opens the reactive motion. */
+export function reactiveGate(layerMask: number): boolean {
+  return ((layerMask >>> 0) & REACTIVE_MOTION_BIT) !== 0;
+}
 
 /** Matches motionGate in motion.glsl. */
 export function motionGate(layerMask: number, layer: number): boolean {

@@ -1,4 +1,5 @@
 import type { TurnMode } from '../locomotion/settings';
+import { REACTIVE_MOTION_BIT } from '../motion/layers';
 import { STROKE_LAYER, type StrokeLayerName } from '../render/strokes/instance';
 
 export interface Flags {
@@ -19,9 +20,10 @@ export interface Flags {
    */
   readonly motionphase: number | null;
   /**
-   * `?motionlayers=<list>`: a comma-separated list of stroke layer names (`STROKE_LAYER`), as a bit
-   * mask that main.ts ANDs with the world's motion layers, so it can only close layers. Only
-   * honoured in `--mode e2e` builds. Unknown names are ignored. null when absent.
+   * `?motionlayers=<list>`: a comma-separated list of stroke layer names (`STROKE_LAYER`) and
+   * `reactive` (the reactive gate bit, P4.5), as a bit mask that main.ts ANDs with the world's
+   * motion layers, so it can only close layers. Only honoured in `--mode e2e` builds. Unknown names
+   * are ignored. null when absent.
    */
   readonly motionlayers: number | null;
   /** `?nohalo`: hides the star and moon halo pass, for a headset A/B of its cost. */
@@ -149,10 +151,15 @@ function parseMotionLayers(raw: string | null): number | null {
   if (raw === null) return null;
   let mask = 0;
   for (const name of raw.split(',')) {
-    const layer = STROKE_LAYER[name.trim().toLowerCase() as StrokeLayerName];
+    const key = name.trim().toLowerCase();
+    if (key === 'reactive') {
+      mask |= REACTIVE_MOTION_BIT;
+      continue;
+    }
+    const layer = STROKE_LAYER[key as StrokeLayerName];
     if (layer !== undefined) mask |= 1 << layer;
   }
-  return mask;
+  return mask >>> 0;
 }
 
 function parseCount(raw: string | null): number | null {

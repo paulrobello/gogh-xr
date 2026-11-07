@@ -42,7 +42,7 @@ function turnAboutHead(state: LocomotionState, head: HeadPose, delta: number): v
 
 /**
  * One frame. Snap mode turns `snapAngleDeg` once per snap request, at most once per 250 ms. Smooth
- * mode turns at `smoothTurnDegPerSec` × `turn.x` and ignores snap requests.
+ * mode turns at `smoothTurnDegPerSec` × `turn.x` and ignores snap requests. True when it snapped.
  */
 export function turn(
   state: LocomotionState,
@@ -50,7 +50,7 @@ export function turn(
   settings: LocomotionSettings,
   dt: number,
   head: HeadPose,
-): void {
+): boolean {
   const t = dt > 0 ? Math.min(dt, MAX_DT) : 0;
   state.sinceSnap += t;
   state.turnRate = 0;
@@ -59,11 +59,13 @@ export function turn(
     const rate = x === 0 ? 0 : -settings.smoothTurnDegPerSec * DEG * x;
     state.turnRate = rate;
     if (rate !== 0 && t > 0) turnAboutHead(state, head, rate * t);
-    return;
+    return false;
   }
   const snap = input.turn.snap;
   if (snap !== 0 && state.sinceSnap >= SNAP_COOLDOWN - COOLDOWN_EPSILON) {
     turnAboutHead(state, head, -snap * settings.snapAngleDeg * DEG);
     state.sinceSnap = 0;
+    return true;
   }
+  return false;
 }

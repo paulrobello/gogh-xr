@@ -15,6 +15,7 @@
  */
 
 import type { Page } from '@playwright/test';
+import { REACTIVE_MOTION_BIT } from '../../src/motion/layers.ts';
 import { STROKE_LAYER } from '../../src/render/strokes/instance.ts';
 import { COVERAGE_POSES, type CoveragePose } from '../world-poses';
 import { expect, glErrors, test, type Xr } from './fixtures';
@@ -232,6 +233,7 @@ test('with the sky swirl pinned mid-motion, the spot-ahead view stays within 0.5
     expect(motion.time).toBe(time);
     expect(motion.frozen).toBe(false);
     expect(motion.layers).not.toBe(0);
+    expect(motion.layers & REACTIVE_MOTION_BIT).not.toBe(0);
     await visit(page, xr, ahead);
     const { binary, weighted } = await bareShare(page);
     const drawn = ((await xr.diag()).world as WorldDiag).strokes.visible;
@@ -259,6 +261,7 @@ test('with the cypress flame pinned, the painter view and the pose under the cyp
     expect(motion.time).toBe(time);
     expect(motion.frozen).toBe(false);
     expect(motion.layers & (1 << STROKE_LAYER.cypress)).not.toBe(0);
+    expect(motion.layers & REACTIVE_MOTION_BIT).not.toBe(0);
     await xr.waitFrames(3);
     const painter = await bareShare(page);
     await visit(page, xr, near);

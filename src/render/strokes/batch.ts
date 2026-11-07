@@ -14,7 +14,8 @@ import {
   Vector3,
 } from 'three';
 import { cypressFlameReach } from '../../motion/cypress-flame';
-import { motionGate } from '../../motion/layers';
+import { motionGate, REACTIVE_MOTION_BIT, reactiveGate } from '../../motion/layers';
+import { REACTIVE_MAX_GAIN, REACTIVE_REACH } from '../../motion/reactive';
 import { ringOf, skyRingReach } from '../../motion/sky-rings';
 import { skySwirlReach } from '../../motion/sky-swirl';
 import { addBeforeRender } from '../scene-hooks';
@@ -374,19 +375,25 @@ export function createStrokeBatch(
    * a chunk holding boundary haze also by the haze's full growth (`HAZE_GROWTH`), so a thickened
    * haze stroke never reaches past its sphere. A chunk holding moving strokes also grows by calm
    * times the largest motion reach (`motionReachesOf`) of the layers whose gate is open, unscaled by
-   * the band.
+   * the band. While the reactive bit is open every chunk grows by calm times `REACTIVE_REACH` on
+   * top, as the reactive offset adds to the layer motion's (P4.5, ruling R-P4a), and its
+   * half-diagonal by 1 + `REACTIVE_MAX_GAIN`, the reactive stretch growth's cap.
    */
   const cullSpheres: Sphere[] = [];
   const reaches: number[] = [];
   const motionReaches: MotionReaches[] = [];
-  /** The calm and the sky, star, moon and cypress gate bits the cull spheres were last grown for. */
+  /**
+   * The calm and the sky, star, moon, cypress and reactive gate bits the cull spheres were last
+   * grown for.
+   */
   let motionCalm = 0;
   let motionBits = 0;
   const MOTION_BITS =
     (1 << STROKE_LAYER.sky) |
     (1 << STROKE_LAYER.star) |
     (1 << STROKE_LAYER.moon) |
-    (1 << STROKE_LAYER.cypress);
+    (1 << STROKE_LAYER.cypress) |
+    REACTIVE_MOTION_BIT;
   const motionUniforms = materials.near.uniforms;
   const halfDiagonals: number[] = [];
   for (let c = 0; c + 1 < offsets.length; c++) {
@@ -435,7 +442,10 @@ export function createStrokeBatch(
     chunks[i].setDrawCount(pinned + bandDrawCount(densities[band], count - pinned));
   }
 
-  /** Calm times the largest reach of chunk `i`'s layers whose gate is open, metres. */
+  /**
+   * Calm times the largest reach of chunk `i`'s layers whose gate is open, plus the reactive reach
+   * while the reactive bit is open, metres.
+   */
   function motionGrowth(i: number): number {
     if (motionBits === 0) return 0;
     const r = motionReaches[i];
@@ -444,11 +454,14 @@ export function createStrokeBatch(
     if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);
     if (motionGate(motionBits, STROKE_LAYER.moon)) reach = Math.max(reach, r.moon);
     if (motionGate(motionBits, STROKE_LAYER.cypress)) reach = Math.max(reach, r.cypress);
+    if (reactiveGate(motionBits)) reach += REACTIVE_REACH * SKY_REACH_MARGIN;
     return motionCalm * reach;
   }
 
+  /** While the reactive bit is open, a stretched stroke grows by up to REACTIVE_MAX_GAIN. */
   function applySize(i: number, band: StrokeBand): void {
-    cullSpheres[i].radius = reaches[i] + motionGrowth(i) + halfDiagonals[i] * sizes[band];
+    const grow = motionCalm > 0 && reactiveGate(motionBits) ? 1 + REACTIVE_MAX_GAIN : 1;
+    cullSpheres[i].radius = reaches[i] + motionGrowth(i) + halfDiagonals[i] * sizes[band] * grow;
   }
 
   const frustum = new Frustum();

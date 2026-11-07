@@ -1,0 +1,488 @@
+/**
+ * Reactive strokes (P4.5): strokes make way round the head and the controllers, and spring back.
+ *
+ * Every test runs in XR through IWER, whose emulated session renders one full-canvas view into the
+ * default framebuffer, so a `?shot` canvas read is the XR frame. `?motionlayers=reactive` keeps
+ * only the reactive motion open, so no layer motion moves a stroke between shots (R-P4j). Poses
+ * are placed with `__goghPose`, which moves the rig, and the IWER head and controller poses,
+ * which are rig-local: the head stands at (0, 1.6, 0) and looks along the rig's yaw, pitched by
+ * its own quaternion.
+ *
+ * The cypress and village poses come from the seed-1 geometry (src/world/cypress.ts, village.ts):
+ * the main cypress's axis ring 9 is centred at (-3.36, -1.55, -9.35), its hull 1.29 m from the
+ * axis towards the painter along (0.338, 0, 0.941). House 10's front wall centre is at
+ * (4.56, -2.63, -16.68), facing (-0.186, 0, 0.983).
+ */
+import type { Page } from '@playwright/test';
+import sharp from 'sharp';
+import { REACTIVE_MOTION_BIT } from '../../src/motion/layers.ts';
+import {
+  HAND_STRENGTH,
+  HEAD_STRENGTH,
+  REACTIVE_RADIUS,
+  REACTIVE_REACH,
+  type ReactiveField,
+  reactiveMotion,
+  WAKE_WINDOW_S,
+} from '../../src/motion/reactive.ts';
+import { luma, shiftAt } from './block-match';
+import { expect, glErrors, test, type Vec3, type Xr } from './fixtures';
+
+const VIEW = { width: 1280, height: 1014 } as const;
+/** Most bare share allowed at any pose (P2-A3). */
+const MAX_BARE = 0.005;
+/** Rig-local, 60 m under the floor: no stroke is within the radius of it. */
+const PARKED: Vec3 = [0, -60, 0];
+const EYE_HEIGHT = 1.6;
+
+interface DisturberDiag {
+  tracked: boolean;
+  position: Vec3;
+  velocity: Vec3;
+  strength: number;
+  wake: number;
+  jumps: number;
+}
+interface ReactiveDiag {
+  frames: number;
+  discontinuity: number;
+  resets: number;
+  boxStrokes: number | null;
+  disturbers: DisturberDiag[];
+  box: { min: Vec3; max: Vec3 } | null;
+}
+
+async function reactive(xr: Xr): Promise<ReactiveDiag> {
+  return (await xr.diag()).reactive as ReactiveDiag;
+}
+
+/** A view: the eye's world position, its yaw (0 faces -Z) and pitch (up positive). */
+interface View {
+  eye: Vec3;
+  yaw: number;
+  pitch: number;
+}
+
+const AXIS_9: Vec3 = [-3.36, -1.55, -9.35];
+const CYPRESS_OUT: Vec3 = [0.338, 0, 0.941];
+const CYPRESS_HULL = 1.29;
+/** The eye `distance` metres out from the cypress hull, facing its axis. */
+function cypressView(distance: number): View {
+  const r = CYPRESS_HULL + distance;
+  return {
+    eye: [AXIS_9[0] + r * CYPRESS_OUT[0], AXIS_9[1], AXIS_9[2] + r * CYPRESS_OUT[2]],
+    yaw: Math.atan2(CYPRESS_OUT[0], CYPRESS_OUT[2]),
+    pitch: 0,
+  };
+}
+const HOUSE_WALL: Vec3 = [4.56, -2.63, -16.68];
+const HOUSE_OUT: Vec3 = [-0.186, 0, 0.983];
+/** The eye `distance` metres out from house 10's front wall, facing it. */
+function villageView(distance: number): View {
+  return {
+    eye: [
+      HOUSE_WALL[0] + distance * HOUSE_OUT[0],
+      HOUSE_WALL[1],
+      HOUSE_WALL[2] + distance * HOUSE_OUT[2],
+    ],
+    yaw: Math.atan2(HOUSE_OUT[0], HOUSE_OUT[2]),
+    pitch: 0,
+  };
+}
+
+/** Rig-local point `distance` metres ahead of the head along its view. */
+function ahead(view: View, distance: number): Vec3 {
+  return [0, EYE_HEIGHT + distance * Math.sin(view.pitch), -distance * Math.cos(view.pitch)];
+}
+
+/** The world position of rig-local `local` for the rig `place` set for `view`. */
+function world(view: View, local: Vec3): Vec3 {
+  const s = Math.sin(view.yaw);
+  const c = Math.cos(view.yaw);
+  const [x, y, z] = local;
+  return [view.eye[0] + c * x + s * z, view.eye[1] - EYE_HEIGHT + y, view.eye[2] - s * x + c * z];
+}
+
+async function bootXr(page: Page, xr: Xr, extra: string): Promise<void> {
+  await xr.boot(`painting=starry-night&seed=1&shot&nogov&nohalo&${extra}`);
+  await expect
+    .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+    .toBe(true);
+  await xr.enterXR();
+  void page;
+}
+
+/** Places the rig and the head for `view`, and both controllers at rig-local `left` and `right`. */
+async function place(page: Page, xr: Xr, view: View, left: Vec3, right: Vec3): Promise<void> {
+  const [x, y, z] = view.eye;
+  await page.evaluate(
+    ([px, py, pz, yaw]) => {
+      if (!window.__goghPose) throw new Error('__goghPose is not installed; boot with ?diag');
+      window.__goghPose(px, py, pz, yaw, 0);
+    },
+    [x, y, z, view.yaw] as const,
+  );
+  await xr.setPose({
+    head: {
+      position: [0, EYE_HEIGHT, 0],
+      quaternion: [Math.sin(view.pitch / 2), 0, 0, Math.cos(view.pitch / 2)],
+    },
+    left: { position: left },
+    right: { position: right },
+  });
+}
+
+/** Waits out the wake window, so a still pose has no wake and no velocity left. */
+async function settle(page: Page, xr: Xr): Promise<void> {
+  await page.waitForTimeout(WAKE_WINDOW_S * 1000 + 300);
+  await xr.waitFrames(4);
+}
+
+/** The canvas keeps its drawing buffer (`?shot`): the last XR frame, as raw RGBA. */
+async function canvasPixels(page: Page): Promise<Buffer> {
+  const url = await page.evaluate(() => {
+    const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+    return canvas.toDataURL('image/png');
+  });
+  const png = Buffer.from(url.replace(/^data:image\/png;base64,/, ''), 'base64');
+  return sharp(png).ensureAlpha().raw().toBuffer();
+}
+
+async function canvasSize(page: Page): Promise<{ width: number; height: number }> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+    return { width: canvas.width, height: canvas.height };
+  });
+}
+
+/** Mostly magenta pixels, as world-coverage.spec.ts counts them, over the last XR frame. */
+function bareShare(raw: Buffer): number {
+  let bare = 0;
+  const pixels = raw.length / 4;
+  for (let i = 0; i < raw.length; i += 4) {
+    if (raw[i] > 192 && raw[i + 1] < 64 && raw[i + 2] > 192) bare++;
+  }
+  return bare / pixels;
+}
+
+/**
+ * Pixels that differ between `a` and `b`, split by the distance from the frame centre: inside
+ * `inner` px, the mean channel difference; past `outer` px, the count of differing pixels.
+ */
+function radialDiff(
+  a: Buffer,
+  b: Buffer,
+  size: { width: number; height: number },
+  inner: number,
+  outer: number,
+): { innerMean: number; innerChanged: number; outerChanged: number; changed: number } {
+  const { width, height } = size;
+  const cx = width / 2;
+  const cy = height / 2;
+  let sum = 0;
+  let n = 0;
+  let innerChanged = 0;
+  let outerChanged = 0;
+  let changed = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const k = (y * width + x) * 4;
+      const d =
+        Math.abs(a[k] - b[k]) + Math.abs(a[k + 1] - b[k + 1]) + Math.abs(a[k + 2] - b[k + 2]);
+      const r = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+      if (d > 0) changed++;
+      if (r <= inner) {
+        sum += d / 3;
+        n++;
+        if (d > 0) innerChanged++;
+      } else if (r > outer && d > 0) {
+        outerChanged++;
+      }
+    }
+  }
+  return { innerMean: sum / n, innerChanged: innerChanged / n, outerChanged, changed };
+}
+
+/** Pixels from the frame centre to a point `angle` radians off the view axis. */
+async function pixelsAt(page: Page, angle: number, height: number): Promise<number> {
+  const fovy = await page.evaluate(() => window.__goghIwer?.fovy ?? Math.PI / 2);
+  return ((height / 2) * Math.tan(angle)) / Math.tan(fovy / 2);
+}
+
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/** Frame pixel of world point `q` for `view` (pitch 0), `focal` px per unit tangent. */
+function project(view: View, q: Vec3, focal: number): [number, number] {
+  const v = sub(q, view.eye);
+  const forward = sub(world(view, ahead(view, 1)), view.eye);
+  const right = sub(world(view, [1, EYE_HEIGHT, 0]), view.eye);
+  const depth = dot(v, forward);
+  return [
+    VIEW.width / 2 + (focal * dot(v, right)) / depth,
+    VIEW.height / 2 - (focal * v[1]) / depth,
+  ];
+}
+
+/**
+ * Whether a measured shift agrees with a predicted one: it points the same way (cosine over 0.7)
+ * and its length is within a factor of 2.5 of the prediction.
+ */
+function agrees(measured: [number, number], predicted: [number, number]): boolean {
+  const lm = Math.hypot(...measured);
+  const lp = Math.hypot(...predicted);
+  if (lm === 0 || lp === 0) return false;
+  const cosine = (measured[0] * predicted[0] + measured[1] * predicted[1]) / (lm * lp);
+  return cosine > 0.7 && lm > lp / 2.5 && lm < lp * 2.5;
+}
+
+test.describe('reactive strokes (P4.5)', () => {
+  test.use({ viewport: VIEW });
+
+  test('a controller in the cypress pushes the strokes within its radius, the rest hold, and they spring back (R-P4g)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(240_000);
+    await bootXr(page, xr, 'motionlayers=reactive');
+    expect(((await xr.diag()).motion as { layers: number }).layers).toBe(REACTIVE_MOTION_BIT);
+    // The eye 2.4 m out from the hull: no stroke within the head's radius. The controller 0.1 m
+    // inside the hull, straight ahead, so it projects onto the frame centre.
+    const view = cypressView(2.4);
+    const inside = ahead(view, 2.5);
+    await place(page, xr, view, PARKED, PARKED);
+    await settle(page, xr);
+    const before = await reactive(xr);
+    const far = await canvasPixels(page);
+    await place(page, xr, view, PARKED, inside);
+    await settle(page, xr);
+    const pushed = await canvasPixels(page);
+    const during = await reactive(xr);
+    await place(page, xr, view, PARKED, PARKED);
+    await settle(page, xr);
+    const back = await canvasPixels(page);
+    const after = await reactive(xr);
+
+    // The diag follows the IWER poses: the head at the eye (IWER's view origin sits a couple of
+    // centimetres off its head pose), one controller slot at the pushing point (its target ray
+    // sits a few centimetres off the grip), and nothing moving once still.
+    expect(during.frames).toBeGreaterThan(before.frames);
+    const [headDiag] = during.disturbers;
+    expect(headDiag.tracked).toBe(true);
+    expect(headDiag.strength).toBe(HEAD_STRENGTH);
+    for (let a = 0; a < 3; a++)
+      expect(Math.abs(headDiag.position[a] - view.eye[a])).toBeLessThan(0.05);
+    const target = world(view, inside);
+    const hands = during.disturbers.slice(1);
+    expect(hands.every((d) => d.tracked && d.strength === HAND_STRENGTH)).toBe(true);
+    const nearest = Math.min(
+      ...hands.map((d) => Math.hypot(...d.position.map((v, a) => v - target[a]))),
+    );
+    console.log(`[e2e] reactive: nearest controller ${nearest.toFixed(3)} m from the push point`);
+    expect(nearest).toBeLessThan(0.15);
+    for (const d of [...during.disturbers, ...after.disturbers]) {
+      expect(Math.hypot(...d.velocity)).toBe(0);
+    }
+    // Each placed pose is a discontinuity: the histories restarted, so no wake was drawn across
+    // the map.
+    expect(after.resets).toBeGreaterThan(before.resets);
+    expect(after.discontinuity).toBeGreaterThan(before.discontinuity);
+
+    const size = await canvasSize(page);
+    expect(size).toEqual(VIEW);
+    // Strokes whose centre is within the radius move by at most the reach; each spans at most
+    // about 0.5 m past its centre on the cypress. Seen 2.4 m off, anything changed lies inside
+    // asin((R + reach + 0.5) / 2.4) of the centre.
+    const outer = await pixelsAt(
+      page,
+      Math.asin((REACTIVE_RADIUS + REACTIVE_REACH + 0.5) / 2.4),
+      size.height,
+    );
+    const inner = await pixelsAt(page, Math.atan(0.3 / 2.4), size.height);
+    const moved = radialDiff(far, pushed, size, inner, outer);
+    const sprung = radialDiff(far, back, size, inner, outer);
+    console.log(
+      `[e2e] reactive cypress: inner ${inner.toFixed(0)} px mean diff ${moved.innerMean.toFixed(2)}, ${(moved.innerChanged * 100).toFixed(1)}% changed; past ${outer.toFixed(0)} px ${moved.outerChanged} changed; ${moved.changed} changed in all; back vs far ${sprung.changed}`,
+    );
+    expect(moved.innerMean).toBeGreaterThan(2);
+    expect(moved.innerChanged).toBeGreaterThan(0.2);
+    expect(moved.outerChanged).toBe(0);
+
+    // Direction: a patch on the hull 0.3 m right of the push point, near the push's peak, moves
+    // outward, away from the controller, by about what the TS mirror predicts for a stroke there on
+    // the ring-9 circle (measured 22.3 px against 17.7 px). The flipped prediction, a push toward
+    // the controller, must fail the same check, so a reversed push in motion.glsl fails this test.
+    // Only the right: left of the push point the hull turns away from the ring-9 circle, so the
+    // strokes there sit past the radius and the circle's prediction does not hold.
+    const focal =
+      size.height /
+      2 /
+      Math.tan((await page.evaluate(() => window.__goghIwer?.fovy ?? Math.PI / 2)) / 2);
+    const field: ReactiveField = {
+      disturbers: [
+        { position: headDiag.position, velocity: [0, 0, 0], strength: HEAD_STRENGTH },
+        { position: target, velocity: [0, 0, 0], strength: HAND_STRENGTH },
+        { position: PARKED, velocity: [0, 0, 0], strength: 0 },
+      ],
+      wake: [],
+    };
+    const farL = luma(far);
+    const pushedL = luma(pushed);
+    {
+      const side = 1;
+      const phi = (side * 0.3) / CYPRESS_HULL;
+      const out: Vec3 = [
+        CYPRESS_OUT[0] * Math.cos(phi) + CYPRESS_OUT[2] * Math.sin(phi),
+        0,
+        -CYPRESS_OUT[0] * Math.sin(phi) + CYPRESS_OUT[2] * Math.cos(phi),
+      ];
+      const q: Vec3 = [
+        AXIS_9[0] + CYPRESS_HULL * out[0],
+        AXIS_9[1],
+        AXIS_9[2] + CYPRESS_HULL * out[2],
+      ];
+      const u = reactiveMotion(q, out, field).offset;
+      const [px, py] = project(view, q, focal);
+      const [mx, my] = project(view, [q[0] + u[0], q[1] + u[1], q[2] + u[2]], focal);
+      const predicted: [number, number] = [mx - px, my - py];
+      const m = shiftAt(farL, pushedL, Math.round(px), Math.round(py), 10, 36);
+      const measured: [number, number] = [m.dx, m.dy];
+      console.log(
+        `[e2e] reactive push 0.3 m right: predicted (${predicted[0].toFixed(1)}, ${predicted[1].toFixed(1)}) px (${(Math.hypot(...u) * 100).toFixed(1)} cm), measured (${m.dx.toFixed(1)}, ${m.dy.toFixed(1)}) px, sharpness ${m.sharpness.toFixed(1)}`,
+      );
+      // Outward: away from the frame centre, where the controller projects.
+      expect(Math.sign(predicted[0])).toBe(side);
+      expect(m.sharpness).toBeGreaterThan(3);
+      expect(agrees(measured, predicted)).toBe(true);
+      expect(agrees(measured, [-predicted[0], -predicted[1]])).toBe(false);
+    }
+    // Spring back: with the controller gone the frame is the far frame, byte for byte.
+    expect(back.equals(far)).toBe(true);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
+  test('a controller at the surface or just inside it keeps the cypress and the village within 0.5% bare (R-P4o)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(600_000);
+    // Every motion layer open, as shipped, at the pinned-coverage checks' two times
+    // (world-coverage.spec.ts), so the cypress flame's wrap and the push meet in one frame and the
+    // pair of frames differs by the push alone. Each row is [eye metres off the surface, controller
+    // metres ahead of the eye]: at 0.3-0.4 m off the surface the head pushes as well (its radius is
+    // 0.6 m), and the controller reaches the surface or 0.1 m past it. The ruling's own pose is the
+    // eye 0.3 m off the cypress with the controller 0.3 m ahead. The 0.3 m-deep rows are measured
+    // and reported, not held.
+    const held: readonly [number, number, string][] = [
+      [0.6, 0.3, '0.3 m short'],
+      [0.3, 0.3, 'at the surface (ruling pose)'],
+      [0.4, 0.4, 'at the surface'],
+      [0.4, 0.5, '0.1 m inside'],
+    ];
+    const measured: readonly [number, number, string][] = [[0.4, 0.7, '0.3 m inside']];
+    const rows: {
+      name: string;
+      time: number;
+      label: string;
+      far: number;
+      near: number;
+      hold: boolean;
+    }[] = [];
+    for (const time of [0.5, 3.7]) {
+      await bootXr(page, xr, `coverage&motiont=${time}`);
+      expect(((await xr.diag()).world as { debug: string }).debug).toBe('coverage');
+      const motion = (await xr.diag()).motion as { time: number; layers: number };
+      expect(motion.time).toBe(time);
+      expect(motion.layers & REACTIVE_MOTION_BIT).toBe(REACTIVE_MOTION_BIT);
+      for (const [name, at] of [
+        ['cypress', cypressView],
+        ['village', villageView],
+      ] as const) {
+        const parkedAt = new Map<number, Buffer>();
+        for (const [eye, hand, label] of [...held, ...measured]) {
+          const view = at(eye);
+          let parked = parkedAt.get(eye);
+          if (!parked) {
+            await place(page, xr, view, PARKED, PARKED);
+            await settle(page, xr);
+            parked = await canvasPixels(page);
+            parkedAt.set(eye, parked);
+          }
+          await place(page, xr, view, PARKED, ahead(view, hand));
+          await settle(page, xr);
+          const near = await canvasPixels(page);
+          // The controller reaches the surface: the frames differ.
+          expect(near.equals(parked), `${name} ${label} at ${time}`).toBe(false);
+          const row = {
+            name,
+            time,
+            label: `eye ${eye} m off, controller ${hand} m ahead, ${label}`,
+            far: bareShare(parked),
+            near: bareShare(near),
+            hold: held.some((h) => h[0] === eye && h[1] === hand),
+          };
+          console.log(
+            `[e2e] reactive coverage ${name} at motiont ${time}, ${row.label}: parked ${(row.far * 100).toFixed(3)}%, held ${(row.near * 100).toFixed(3)}%${row.hold ? '' : ' (measured, not held)'}`,
+          );
+          rows.push(row);
+        }
+      }
+    }
+    for (const r of rows) {
+      expect(r.far, `${r.name} ${r.label} at ${r.time}`).toBeLessThanOrEqual(MAX_BARE);
+      if (r.hold) expect(r.near, `${r.name} ${r.label} at ${r.time}`).toBeLessThanOrEqual(MAX_BARE);
+    }
+    expect(await glErrors(page)).toEqual([]);
+  });
+
+  test('counts the drawn strokes inside the reactive box, still and through a 1.5 m/s sweep (I2)', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(240_000);
+    // The cypress coverage pose: the eye 0.6 m off the hull, the controller 0.3 m ahead of it.
+    await bootXr(page, xr, '');
+    const view = cypressView(0.6);
+    await place(page, xr, view, PARKED, ahead(view, 0.3));
+    await settle(page, xr);
+    const still = await reactive(xr);
+    expect(still.boxStrokes).not.toBeNull();
+    // A sweep across the hull at 1.5 m/s for one wake window, 0.3 m ahead of the eye, rig-local
+    // x from -0.9 m: the box stretches along the weighted wake.
+    const swept = await page.evaluate(
+      async ([window_s, eyeHeight]) => {
+        const device = window.__goghIwer;
+        const diag = window.__goghDiag;
+        if (!device || !diag) throw new Error('boot with ?iwer&diag');
+        const right = device.controllers.right;
+        if (!right) throw new Error('no right controller');
+        let most = 0;
+        let span = 0;
+        const t0 = performance.now();
+        await new Promise<void>((done) => {
+          const step = (now: number): void => {
+            const t = (now - t0) / 1000;
+            right.position.set(-0.9 + 1.5 * t, eyeHeight, -0.3);
+            const r = diag().reactive as {
+              boxStrokes: number | null;
+              box: { min: number[]; max: number[] } | null;
+            };
+            most = Math.max(most, r.boxStrokes ?? 0);
+            if (r.box) span = Math.max(span, r.box.max[0] - r.box.min[0]);
+            if (t < window_s) requestAnimationFrame(step);
+            else done();
+          };
+          requestAnimationFrame(step);
+        });
+        return { most, span };
+      },
+      [WAKE_WINDOW_S, EYE_HEIGHT] as const,
+    );
+    console.log(
+      `[e2e] reactive box strokes at the cypress pose: still ${still.boxStrokes}, through a 1.5 m/s sweep up to ${swept.most} (box up to ${swept.span.toFixed(2)} m along world x)`,
+    );
+    expect(still.boxStrokes ?? 0).toBeGreaterThan(0);
+    expect(swept.most).toBeGreaterThan(still.boxStrokes ?? 0);
+    expect(await glErrors(page)).toEqual([]);
+  });
+});

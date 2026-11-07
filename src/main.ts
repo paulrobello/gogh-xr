@@ -1,4 +1,11 @@
-import { PerspectiveCamera, Quaternion, type Texture, Vector3, WebGLRenderer } from 'three';
+import {
+  type Object3D,
+  PerspectiveCamera,
+  Quaternion,
+  type Texture,
+  Vector3,
+  WebGLRenderer,
+} from 'three';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { installDesktopControls } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
@@ -9,6 +16,7 @@ import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
 import { clampLocomotionSettings, DEFAULT_LOCOMOTION_SETTINGS } from './locomotion/settings';
 import { motionClock } from './motion/clock';
 import { MOTION_LAYER_MASK } from './motion/motion';
+import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { livePainting } from './paintings/registry';
 import type { PainterCamera, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
@@ -26,7 +34,7 @@ import { createBareScene } from './world/bare-scene';
 import { type Actions, createInput } from './xr/input';
 import { createInputCounter } from './xr/input-counter';
 import { installKeyboardInput } from './xr/input-keyboard';
-import { trackRightController } from './xr/right-controller';
+import { CONTROLLER_SLOTS, trackRightController } from './xr/right-controller';
 import { createSessionController, isVrSupported, resolveTargetFrameRate } from './xr/session';
 
 // Must run before any WebXR code reads navigator.xr. The MODE guard keeps IWER out of production.
@@ -110,6 +118,61 @@ const locomotion = createLocomotion({
 });
 /** The XR teleport aim. Its controller slots must exist before a session starts. */
 const rightController = runLocomotion ? trackRightController(renderer.xr, locomotion.rig) : null;
+/**
+ * The reactive motion's disturbers (P4.5): the head, then both controller slots' target-ray
+ * spaces, which trackRightController parented under the rig. The slots are read only while
+ * presenting, where three hides an untracked one; on the desktop the eye is the only disturber.
+ */
+const controllerSpaces = runLocomotion
+  ? Array.from({ length: CONTROLLER_SLOTS }, (_, i) => renderer.xr.getController(i))
+  : [];
+const disturberScratch = new Vector3();
+const disturberPositions: ([number, number, number] | null)[] = [null, null, null];
+const disturberSlots: [number, number, number][] = [
+  [0, 0, 0],
+  [0, 0, 0],
+  [0, 0, 0],
+];
+/** World position of `object`, after the rig locomotion wrote this frame, into slot `slot`. */
+function disturberAt(object: Object3D, slot: number): [number, number, number] {
+  object.updateWorldMatrix(true, false);
+  disturberScratch.setFromMatrixPosition(object.matrixWorld);
+  const out = disturberSlots[slot];
+  out[0] = disturberScratch.x;
+  out[1] = disturberScratch.y;
+  out[2] = disturberScratch.z;
+  return out;
+}
+function trackDisturbers(time: number, presenting: boolean): void {
+  disturberPositions[0] = disturberAt(camera, 0);
+  for (let i = 0; i < CONTROLLER_SLOTS; i += 1) {
+    const space = controllerSpaces[i];
+    disturberPositions[i + 1] = presenting && space?.visible ? disturberAt(space, i + 1) : null;
+  }
+  reactiveTracker.frame(time, disturberPositions, locomotion.discontinuities());
+}
+// The system recenter resets the reference space, so the head and the controllers jump.
+renderer.xr.addEventListener('sessionstart', () => {
+  renderer.xr.getReferenceSpace()?.addEventListener('reset', () => locomotion.markDiscontinuity());
+});
+/** Drawn strokes whose rest centre is inside the reactive box: the strokes that pay its loops. */
+let reactiveBatch: StrokeBatch | null = null;
+function reactiveBoxStrokes(): number | null {
+  const batch = reactiveBatch;
+  if (!batch) return null;
+  const p: [number, number, number] = [0, 0, 0];
+  let n = 0;
+  for (const chunk of batch.chunks) {
+    const a = chunk.geometry.getAttribute('iPosition').array;
+    for (let i = 0; i < chunk.drawCount; i += 1) {
+      p[0] = a[3 * i];
+      p[1] = a[3 * i + 1];
+      p[2] = a[3 * i + 2];
+      if (insideReactiveBox(reactiveTracker.uniforms, p)) n += 1;
+    }
+  }
+  return n;
+}
 // three compiles a program on its first visible draw, which for the vignette is the first smooth
 // move in XR. `compile` also takes hidden meshes, and a raw shader's program does not depend on
 // the render target, so the XR draw reuses this one.
@@ -192,7 +255,10 @@ function renderFrame(time: number): void {
   strokes.frame(time);
   world?.update(time / 1000, dt);
   if (!renderer.xr.isPresenting) desktop.update();
-  if (runLocomotion) locomotion.frame(actions, renderer.xr.isPresenting);
+  if (runLocomotion) {
+    locomotion.frame(actions, renderer.xr.isPresenting);
+    trackDisturbers(time, renderer.xr.isPresenting);
+  }
   zdiag.beforeRender(camera);
   renderer.render(scene, camera);
   drawCalls = renderer.info.render.calls;
@@ -227,7 +293,13 @@ if (flags.diag) {
   registerDiag('zdiag', () => zdiag.diag());
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
   registerDiag('motion', () => motionClock.diag());
-  if (runLocomotion) registerDiag('rig', () => locomotion.diag());
+  if (runLocomotion) {
+    registerDiag('rig', () => locomotion.diag());
+    registerDiag('reactive', () => ({
+      ...reactiveTracker.diag(),
+      boxStrokes: reactiveBoxStrokes(),
+    }));
+  }
   installPose(locomotion.setPose);
 }
 if (flags.diag && flags.shot) {
@@ -271,6 +343,7 @@ if (flags.bench === null) {
 function governStrokes(batch: StrokeBatch): Promise<void> {
   zdiag.applyToBatch(batch);
   buildArc(batch.atlas);
+  reactiveBatch ??= batch;
   return strokes.batch ? Promise.resolve() : strokes.bind(batch);
 }
 
