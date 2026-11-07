@@ -13,17 +13,17 @@ import { installDiag, installPose, installShot, registerDiag } from './diag/diag
 import { flags } from './diag/flags';
 import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
 import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
-import { clampLocomotionSettings, DEFAULT_LOCOMOTION_SETTINGS } from './locomotion/settings';
 import { motionClock } from './motion/clock';
 import { MOTION_LAYER_MASK } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
-import { livePainting } from './paintings/registry';
+import { livePainting, logRegistryProblems } from './paintings/registry';
 import type { PainterCamera, WorldModule } from './paintings/world-module';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
 import { pinMotionPhase } from './render/strokes/material';
 import { createZdiag } from './render/zdiag';
+import { applyUrlFlags, loadSettings, toLocomotionSettings } from './settings/schema';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
@@ -57,8 +57,15 @@ const context = canvas.getContext('webgl2', {
 });
 if (!context) throw new Error('WebGL2 is not available');
 const renderer = new WebGLRenderer({ canvas, context });
-// The P5 settings panel will set calm; until then `?calm` does. `?noanim` freezes the clock.
-motionClock.setCalm(flags.calm ?? 1);
+// The stored settings, with each URL flag laid over its field for this session and never written
+// back (P5.2). The P5.3 panel will write the stored ones.
+const { settings: storedSettings, recovered: settingsRecovered } = loadSettings();
+const settings = applyUrlFlags(storedSettings, flags);
+if (settingsRecovered) {
+  console.warn(`settings: ${settingsRecovered}; using the defaults`);
+}
+// `?noanim` freezes the clock.
+motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
 /**
  * `?motiont` pins the motion time for the e2e (R-P4g). `import.meta.env.MODE` is replaced at build
@@ -79,6 +86,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
 
+logRegistryProblems();
 // An unknown or coming-soon `?painting` warns here and boots the bare scene.
 const painting = flags.bench === null ? livePainting(flags.painting) : null;
 const scene = createBareScene(painting === null);
@@ -107,11 +115,7 @@ const locomotion = createLocomotion({
   scene,
   camera,
   look: desktop,
-  settings: clampLocomotionSettings({
-    ...DEFAULT_LOCOMOTION_SETTINGS,
-    seated: flags.seated,
-    turnMode: flags.turn ?? DEFAULT_LOCOMOTION_SETTINGS.turnMode,
-  }),
+  settings: toLocomotionSettings(settings),
   vignette,
   aimSource: () => rightController?.() ?? null,
   arc,
@@ -190,7 +194,7 @@ function buildArc(atlas: Texture): void {
 /** `?painter` (fidelity capture): the world's painter camera, applied before the world builds. */
 let painterView: PainterCamera | null = null;
 // Max beauty forces 72 Hz over `?hz`; the bench keeps its own frame-rate controls.
-const beauty = flags.beauty && flags.bench === null;
+const beauty = settings.quality === 'beauty-72' && flags.bench === null;
 const targetFrameRate = resolveTargetFrameRate(flags.hz, beauty);
 const session = createSessionController({
   renderer,
@@ -293,6 +297,11 @@ if (flags.diag) {
   registerDiag('zdiag', () => zdiag.diag());
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
   registerDiag('motion', () => motionClock.diag());
+  registerDiag('settings', () => ({
+    stored: storedSettings,
+    effective: settings,
+    recovered: settingsRecovered,
+  }));
   if (runLocomotion) {
     registerDiag('rig', () => locomotion.diag());
     registerDiag('reactive', () => ({
@@ -317,7 +326,7 @@ if (flags.bench !== null) {
 // so no HUD is ever built there.
 if (flags.bench === null) {
   const toggle = createHudToggle({
-    visible: flags.hud,
+    visible: settings.hud,
     build: async () => {
       const { startPerfHud } = await import('./ui/perf-hud');
       return startPerfHud({

@@ -1,5 +1,5 @@
 /**
- * The locomotion settings. No persistence yet: P5.2 adds it, and P3.4-P3.5 add their own fields.
+ * The locomotion settings and their bounds. Persistence lives in src/settings/schema.ts.
  */
 export type TurnMode = 'snap' | 'smooth';
 export type SnapAngleDeg = 30 | 45;
@@ -26,8 +26,8 @@ export const MAX_MOVE_SPEED = 3;
 export const MIN_SMOOTH_TURN_DEG_PER_SEC = 30;
 export const MAX_SMOOTH_TURN_DEG_PER_SEC = 180;
 /** Standing heights outside this range are a mistyped calibration, not a person. */
-const MIN_STANDING_HEIGHT = 1;
-const MAX_STANDING_HEIGHT = 2.2;
+export const MIN_STANDING_HEIGHT = 1;
+export const MAX_STANDING_HEIGHT = 2.2;
 
 export const DEFAULT_LOCOMOTION_SETTINGS: LocomotionSettings = Object.freeze({
   moveSpeed: 2,
