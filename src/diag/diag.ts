@@ -1,3 +1,4 @@
+import type { SkyWrap } from '../motion/variants';
 import type { XrState } from '../xr/session';
 import type { RingShift } from './swirl-probe';
 
@@ -42,6 +43,8 @@ declare global {
       calm: number,
       time: number,
       phase: number,
+      wrap?: SkyWrap,
+      turns?: number,
     ) => [number, number] | null;
     /** e2e builds only: `predictRingShift` (src/diag/swirl-probe.ts). */
     __goghRingShift?: (k: number, u: number, vDown: number, time: number) => RingShift | null;

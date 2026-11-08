@@ -486,7 +486,7 @@ describe('GLSL wiring and cost (R-P4h)', () => {
     expect(bright).toBeGreaterThan(gate);
     expect(bright).toBeLessThan(main.indexOf('gl_Position = projectionMatrix'));
     expect(main).toContain('vec3 color = iColor.rgb;');
-    expect(main).toContain('vColor = vec4(color, alpha);');
+    expect(main).toContain('vColor = color;');
     expect(main.match(/vColor =/g)).toHaveLength(1);
     expect(main).not.toMatch(/SKY_RING_/);
   });

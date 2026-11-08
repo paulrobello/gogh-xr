@@ -1,6 +1,6 @@
 import type { TurnMode } from '../locomotion/settings';
 import { REACTIVE_MOTION_BIT } from '../motion/layers';
-import { SKY_WRAPS, type SkyWrap } from '../motion/variants';
+import { SKY_WAVE_TURNS, SKY_WRAPS, type SkyWaveTurns, type SkyWrap } from '../motion/variants';
 import { STROKE_LAYER, type StrokeLayerName } from '../render/strokes/instance';
 
 export interface Flags {
@@ -79,6 +79,8 @@ export interface Flags {
   readonly ab: string | null;
   /** `?wrap=<variant>`: the sky swirl's wrap treatment (src/motion/variants.ts). null is base. */
   readonly wrap: SkyWrap | null;
+  /** `?waveturns=1|2|3`: the wave wrap's waves per turn (SKY_WAVE_TURNS). null is the default. */
+  readonly waveTurns: SkyWaveTurns | null;
   /** `?scene=bare`: boots the bare scene instead of the default gallery (src/boot-mode.ts). */
   readonly scene: SceneName | null;
 }
@@ -210,6 +212,11 @@ function parseVariant<T extends string>(variants: readonly T[], raw: string | nu
   return variants.find((variant) => variant === value) ?? null;
 }
 
+function parseWaveTurns(raw: string | null): SkyWaveTurns | null {
+  const value = raw?.trim();
+  return SKY_WAVE_TURNS.find((turns) => String(turns) === value) ?? null;
+}
+
 function parseId(raw: string | null): string | null {
   const value = raw?.trim().toLowerCase();
   return value ? value : null;
@@ -254,6 +261,7 @@ export function parseFlags(search: string): Flags {
     zdiag: parseZdiag(params.get('zdiag')),
     ab: parseId(params.get('ab')),
     wrap: parseVariant(SKY_WRAPS, params.get('wrap')),
+    waveTurns: parseWaveTurns(params.get('waveturns')),
     scene: parseScene(params.get('scene')),
   });
 }

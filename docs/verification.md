@@ -1316,7 +1316,7 @@ There is no headset in this session (no adb). The foveation steps, the back-off 
 
 ## Sky wrap and cypress sway variants (2026-11-07)
 
-Retired later the same day: in Paul's headset passes base beat `fade` and `half`, and the cypress `wind` lost too, so all three were removed, with the `flame` group, `?flame` and the sky base map. The wrap group now holds base, opacity and pingpong (Sky wrap variants: opacity and pingpong, below). This section is kept as the record of that round.
+Retired later the same day: in Paul's headset passes base beat `fade` and `half`, and the cypress `wind` lost too, so all three were removed, with the `flame` group, `?flame` and the sky base map. The wrap group then held base, opacity and pingpong (Sky wrap variants: opacity and pingpong, below), and later base, pingpong and wave (Sky wrap variants: wave, below). This section is kept as the record of that round.
 
 In the headset Paul found the sky-swirl strokes' size pulse at the wrap distracting (Q39, and Q37 at low calm), and did not notice the cypress sway (Q40). Two A/B groups (`src/motion/variants.ts`, CLAUDE.md, Motion A/B variants) let him pick in the headset with the A/B button (left stick click, or V):
 
@@ -1497,6 +1497,8 @@ Without the exclusion half the frame changes at the crossing, a visible pop over
 
 ## Sky wrap variants: opacity and pingpong (2026-11-07)
 
+Superseded later the same day: Paul ruled pingpong the best of the three, `opacity` was retired, and `wave` joined the group (Sky wrap variants: wave, below). The fixed-phase opacity checks below went with it. This section is kept as the record of that round.
+
 After two headset passes Paul still disliked the sky strokes growing in and shrinking out at the wrap, and asked for an opacity fade. The `wrap` A/B group now cycles base, opacity and pingpong (CLAUDE.md, Motion A/B variants). Headset: `https://gogh-xr.pardev.net/?painting=starry-night&ab=wrap`.
 
 - `opacity`: full size and base's arc. Over the same 6% wrap window the alpha-to-coverage alpha falls to 0 at the jump and rises again, on base's size curve. The weight reaches the fragment in the flat colour varying's fourth component (`vColor.a`), exactly 1 for every other stroke. At 0 the coverage mask is empty, so the stroke writes no sample, colour or depth. A 90 Hz frame either side of the jump the weight is below 0.002 (unit test).
@@ -1630,3 +1632,191 @@ The copies also change pixels away from the eaves. A copy joins an existing vill
 
 - The Quest. The underside is checked only in desktop captures, and the GPU cost only on the M4 Max under load.
 - The copies are selected by footprint, not visibility: one centred over the hidden inner roof still runs its vertex shader in every view that draws its chunk, and is then culled or fails the depth test.
+
+## Sky wrap variants: wave (2026-11-07)
+
+Paul ruled pingpong the best of base, opacity and pingpong, but each stroke's loop phase is its own phase byte, so about half of any patch of sky moves against its neighbours and the flow breaks up. `wave` keeps pingpong's motion and replaces that phase. `opacity` is retired, and the `wrap` group cycles base, pingpong and wave (CLAUDE.md, Motion A/B variants). Headset: `https://gogh-xr.pardev.net/?painting=starry-night&ab=wrap`.
+
+### Design
+
+- Motion: pingpong's tau, `(smoothstep(0, 1, 1 − |2f − 1|) − 0.5) × 8 s`, with `f = fract(t / 8 + phase)`. The amplitude is pingpong's, |tau| within half a period, so the cull growth and the haze thin cover its reach unchanged. No stroke changes size and none jumps (unit test: 400 strokes over 1440 frames).
+- Phase: `skyWavePhase(d)`, a sum of windings in the stereographic plane from the nadir, `z = (x, z) / (1 + y)` of the direction from the painter's eye: `Σ wᵢ · atan2(z − zᵢ) / 2π`. A stroke circling vortex i on its streamline sees its phase change by wᵢ per turn, so the loop runs as a wave round the swirl and the bands of forward and returning strokes travel along the flow. The windings follow each vortex's circulation, `max(1, round(3 × |Γᵢ| / Γ₀))` with its sign: 3, 1, 1, 1. Fix round 1 (below) moves them to the field's velocity zeros, where the eddies have none, so the windings become 3, 1, 0, 0, −4, and its numbers supersede this round's.
+- Single-valued: a phase built of windings is single-valued over the dome only if they sum to 0, else a loop round the nadir winds by their sum. One balancing pole of winding −6 sits at the field's stagnation point, (−0.068, 0.838, 0.542), 57° up behind the painter, where the field has no flow. Without it the bands ran against the flow behind the painter (mean cosine −0.83 between band motion and flow). With it at the zenith they ran downstream behind, but within 10° of the zenith the mean cosine fell to 0.20 and the along-flow strain reached 2.67. At the stagnation point the bands run downstream everywhere sampled: mean cosine 0.96 in front, 0.95 behind, 0.93 to the sides, 1.00 overhead and 1.00 within 10° of the zenith, where the strain peaks at 0.10.
+- Wavelength: `SKY_WAVE_PER_TURN = 3`, one exported constant. Each band is a 60° sector of the central swirl, about 12° of arc at its core edge, four sky strokes end to end, and wider further out. Neighbours at different phases move by different tau, so the bands stretch and squeeze the stroke spacing along the flow. The along-flow strain, the change in shift along the flow per unit of distance along it, at each point of a 0.5° grid over the painter's view (2° to 45° up, ±35° across) at its worst moment of the loop: base median 0.015 and 99th percentile 0.10, wave at 1, 2 and 3 waves per turn median 0.14, 0.19 and 0.23 and 99th percentile 0.47, 0.60 and 0.79. Strain near 1 means a stroke briefly catches up with the one ahead of it. A first estimate from the central vortex's own winding and flow alone gave 0.29 at the peak, which missed the other windings' share of the phase gradient and the stronger flow between the two central vortices. Pingpong has no smooth strain to compare: its neighbours differ by up to the whole 8 s loop. The counter-flow on the unit-test dome (below) at each value, averaged over 16 times with the jitter: Superseded by fix round 2 (below): the waves per turn are now the `uWaveTurns` uniform, 1, 2 or 3 by `?waveturns`, with a default of 2.
+
+| Per turn | Windings | Dome | In front |
+| --- | --- | --- | --- |
+| 1 | 1, 1, 1, 1, −4 | 4.09% | 4.82% |
+| 2 | 2, 1, 1, 1, −5 | 4.86% | 5.95% |
+| 3 | 3, 1, 1, 1, −6 | 5.68% | 7.18% |
+| 4 | 4, 2, 1, 1, −8 | 7.34% | 9.60% |
+| 5 | 5, 2, 2, 2, −11 | 9.71% | 12.44% |
+
+  Fewer waves per turn lower it by up to 2.4 points in front, but make each band a larger share of the swirl, up to half of it at 1, so the swirl sways in halves instead of carrying waves along. More raise it fast, and the strain with it. 3 is the most bands that keeps the front counter-flow near a seventh of pingpong's. The three small eddies wind once at every value up to 3. This is a judgement on paper: how the band speed and size read in the headset is the A/B question.
+- Jitter: `SKY_WAVE_JITTER = 1/32` times the phase byte less a half, a spread of ±1/64 of a loop, a sixteenth of a band. Without it a band edge is an exact curve where every stroke turns at once, which reads as a drawn line. A pair the jitter splits sits within 1/64 of a loop of its turn, where the eased speed is at most 12% of its peak. It costs 0.4 points of counter-flow on the unit-test dome (5.29% without, 5.68% with).
+- Hot spots: the bands meet like spokes at each vortex centre and at the stagnation point, so strokes within about 1° of one cross several bands. The worst is the right vortex of the central pair, where the big swirl's flow runs through it.
+- Cost: under the default (uSkyWrap 0) a moving sky vertex still pays one compare. Under wave it adds 5 atan2 per moving sky vertex. Not timed, because the host never reached a load of 15 (the load note under Coverage).
+
+### Counter-flow
+
+The local counter-flow (`src/motion/sky-counter-flow.ts`) is the share of nearby sky stroke pairs, centres within 2° of each other from the painter's eye, with one stroke on its way forward and the other on its way back. Each stroke moves along its own `omega × d`, so the sign of its velocity along its arc is the sign of tau's rate.
+
+- Unit-test dome (tests/motion-variants.test.ts): about 35,000 directions on a Fibonacci dome at 0.83° spacing from 10° below the horizon up, each with a seeded phase byte, averaged over 16 times across the loop. Pingpong 50.02%, wave 5.68% (7.18% in front of the painter), wave without the jitter 5.29% (6.93% in front), base 0. Of the pairs 0.5° apart along the flow in front, wave splits 3.93% and pingpong 50.49% of 6931. The bands travel downstream at 98.8% of the sampled strokes in front, 100% behind and 100% overhead.
+- Seed 1, `__goghDiag().wrap` on the e2e build (`bun scripts/motion-variant-probe.ts measure`), the drawn sky strokes at each sky pose at `?motiont=3.7`:
+
+| wrap | Spot ahead | Spot behind | Spot left, raised | Spot straight up | Boundary north-east |
+| --- | --- | --- | --- | --- | --- |
+| base | 0 | 0 | 0 | 0 | 0 |
+| pingpong | 49.85% | 50.26% | 50.19% | 50.05% | 50.00% |
+| wave | 5.16% | 5.18% | 5.53% | 5.89% | 5.04% |
+
+  Each pose counts 149,000 to 169,000 pairs. Over one period at spot ahead, sampled every 0.5 s, wave's counter-flow is 4.71 to 5.28% (mean 5.08%) and pingpong's 49.76 to 50.14% (mean 49.92%). Wave's returning share there is 48.97 to 51.03% (mean 50.00%), and at the five poses at 3.7 s it is 48.3 to 54.2%, so the forward and returning halves stay balanced over the view. Base's below-0.8-size share is 8.47 to 8.82%, wave's and pingpong's 0.
+
+### Default unchanged
+
+`bun scripts/motion-variant-probe.ts capture` took its five captures (the `?noanim` painter view, the painter view at `?motiont=0.5` and `3.7`, sky-up and under-the-cypress at `3.7`) from e2e builds of 9f13784 and of this change. With no flag, `&wrap=base` and `&ab=wrap`, all 15 captures of this change are byte-identical to 9f13784's no-flag ones, so the default path is unchanged by removing the opacity weight and adding wave. `&wrap=pingpong` is not byte-identical to 9f13784's pingpong: the `?noanim` and `motiont=0.5` captures match, and at `motiont=3.7` the painter view differs in 2 pixels, sky-up in 4 and under-the-cypress in 8, by at most 7 levels in one channel. pingpong's formula is unchanged, and the shared wrap function now also holds wave's phase, so the likely cause is the GPU compiler ordering the same arithmetic differently (not checked further). `tests/e2e/ab.spec.ts` cycles the group live at a pinned `?motiont`, checks each variant's `wrap` diag, that no switch links a program, and that a full cycle returns to a byte-identical painter view.
+
+### Coverage
+
+The `?coverage` sweep (`bun scripts/motion-variant-probe.ts measure`): the binary bare share at the 24 coverage poses (`tests/world-poses.ts`) at `?motiont` 0.5, 3.7 and 6.1, against the 0.5% limit, with the flicker at the five sky poses as in the round before.
+
+| wrap | Worst bare (pose) | Weighted | Spot ahead | Spot straight up | Boundary north-east |
+| --- | --- | --- | --- | --- | --- |
+| base | 0.475% (village uphill) | 0.536% | 0.338% | 0.101% | 0.119% |
+| pingpong | 0.473% (village uphill) | 0.533% | 0.315% | 0.051% | 0.082% |
+| wave | 0.473% (village uphill) | 0.533% | 0.336% | 0.065% | 0.117% |
+
+| wrap | Motion flicker, % | Jitter flicker, % |
+| --- | --- | --- |
+| base | 4.86 / 2.62 / 5.04 / 8.20 / 2.02 | 7.82 / 11.02 / 9.62 / 7.73 / 3.74 |
+| pingpong | 5.21 / 1.91 / 4.41 / 7.19 / 2.65 | 7.88 / 10.97 / 9.53 / 7.64 / 3.72 |
+| wave | 5.08 / 1.91 / 4.21 / 7.21 / 3.15 | 7.79 / 10.98 / 9.51 / 7.71 / 3.72 |
+
+- The worst pose is village uphill for all three, which sees little sky, so the limit is set by the ground and buildings. Wave's band strain shows at the sky poses: it leaves 0.01 to 0.04 points more bare than pingpong at spot ahead, spot straight up and boundary north-east, still within base's shares.
+- Wave's motion flicker is within 0.2 points of pingpong's at four poses and 0.5 above it at boundary north-east, where the bands meet the haze. The jitter flicker, the still-view shimmer, is within 0.1 points of base for both.
+- The fidelity thresholds and the coverage spec run in `make e2e` (Gates).
+- Load: the 15-minute wait from 21:03 found no 1-minute load of 15 or less (141 at the start, 127 at the end), so every run here is load-affected. The captures ran at 122 to 192, the shots at 114 to 117, and the measures at 49 to 72. These are pixel and count measures at pinned times, so the load slows them without changing them.
+
+### flow: not built
+
+`flow` would hold each stroke still and scroll its paint detail along its axis, with the alpha mask fixed. The brush atlas (`src/render/strokes/brush-atlas.ts`) has no detail that can scroll without a seam:
+
+- The channels are coverage (R), height (G, premultiplied by coverage), tone (B) and a spare A at 255. Tone and height are defined only inside the shape: outside it they are neutral (128) and 0. Each shape's coverage spans 47 to 75% of its rect width per row, so a scroll pulls the neutral border into the stroke.
+- The detail is not periodic along the stroke. It carries a load ramp (ridge 1 falling to about 0.65 along the stroke, comma to about 0.55), a pile at the end, an `endFade` of the height to 0 at the tail, a non-periodic value noise in tone along the stroke, and a half-sine drift. Any wrap of that detail has a seam where the tail meets the head.
+- Most of the visible structure runs along the stroke, not across it. The bristle streaks are indexed by the across-stroke coordinate, so a scroll along the axis slides them along themselves. Tone changes by 0.004 to 0.04 over 8 texels along u, against 0.04 to 0.14 across v.
+- The sky draws comma, crescent and ridge, and 5 of its 9 brushes are arcs, where atlas u is not the stroke axis.
+- A back-and-forth scroll would put pingpong's counter-flow inside each stroke. A two-phase flow-map crossfade hides the seam but pulls the neutral border in and halves the contrast mid-cycle.
+
+A route that could work, not built: bake a periodic along-centreline detail into the spare A channel and scroll that. It changes the atlas and the fragment shader's tone path, so it is Paul's call.
+
+### Captures
+
+`docs/shots/p4-wrap-wave-t3.7.jpg` and `p4-wrap-wave-t5.7.jpg`: the painter view under wave at `?motiont=3.7` and a quarter period later at 5.7, each stroke at its own phase byte as in the headset. In a crop of the central swirl, its core is crowded and broken at 3.7, and at 5.7 its strokes lie in a cleaner spiral: whole arcs of the swirl have moved together. The dome stays covered in both. Two stills cannot show whether the travelling bands read as flow, which is the headset question. 
+
+### GPU check
+
+`tests/e2e/motion.spec.ts` checks the GPU's wave phase against the TS mirror, since the `wrap` diag is the mirror. At `?motionphase=0&motionlayers=sky&nohalo` every stroke's loop phase is the mirror's wave phase at its direction. The first version block-matched 48 px patches at one pinned time, `?motiont=6`, and failed with the correct shader and with the winding sign flipped alike, at patch (0.35, 0.2): the predicted shift varies across that block by twice its size (12.7 px against 6.0), because the block straddles a band edge, so the match read noise. The wave's shift changes fast across the view: at any one time only 0 to 2 of the 14 motion patches move within 25% of uniform. Each patch is now shot at its own two turns, the mirror's times of its largest shift ahead and back (tau ±4 s), where tau is flat to first order, and a turn whose predicted shift still varies by over 30% across the block is skipped. A patch at (0.45, 0.1) then read no shift at a 24 px turn, because its block reaches the still star at (0.41, 0.06), so the patches are a 0.05 grid over the sky less any whose block reaches a star or moon ring's rim. Each kept turn needs the measured shift within 30° of the prediction and 0.5 to 1.5 times its length, with at least 8 turns each way. On this change it keeps 13 patches, 26 turns, 13 each way, and every one matches: angles 0.0 to 4.4°, length ratios 0.86 to 1.00, shifts of 14 to 29 px. With the winding sign flipped in motion.glsl it fails at its first turn, (0.35, 0.15) ahead at t 5.10: predicted (17.27, −13.04) px, measured (7.64, −2.19), ratio 0.37. Restored, it passes again in the gate run.
+
+### Gates
+
+- `make checkall-ci`: exit 0. Unit tests 1211 passed in 89 files, gitleaks found no leaks, `bun audit` found no vulnerabilities, and asset-check verified 28 files.
+- `E2E_PORT=4292 make e2e`: not exit 0. Three full runs, each after the load wait. The first (21:43 to 21:47, load 21 to 64) failed the old wave test and the IWER portal round trip. The second (22:27 to 22:31, load 21 to 19) passed the new wave test and failed both portal round trips on their longest-frame bar (desktop 66.6 ms on return, IWER 34.1 ms on enter, against 27.8 ms). The third (22:39 to 22:44, load 14.7 rising to 91 from other work on the host) had 109 passed, 2 skipped and 1 failed, the desktop portal round trip at 33.3 ms on enter. `tests/e2e/portal.spec.ts` alone passed twice in a row (3 of 3 each, 22:34 to 22:37, load 14.5 to 77). A full run of the same specs against a 9f13784 build (22:44 to 22:49, load 74 to 134) failed only the three specs that need wave and passed both portal round trips. Every run here was load-affected. This change adds no program, texture or upload at portal entry: the gallery's stroke batch already links the same stroke program, which three's program cache reuses. At base, the only state the portal runs, the per-frame shader work is unchanged. The roof eave branch fails the same frame bar, and `portal.spec` passes alone on both main and a branch at about 22 to 24 ms on MiniMac. The cause is open, and the controller is attributing it.
+- Every other spec passed in the third run, including the wave test, the wrap cycle and fixed-phase checks in `tests/e2e/ab.spec.ts` (live diag on seed 1: counter-flow pingpong 49.8%, wave 5.7%, base 0; wave at the painter view under `?coverage` 0.319% bare at t 4 and 0.342% at t 6, against base's 0.255%), the coverage spec (max bare 0.451%, hill west, unchanged) and fidelity (SSIM 0.3505, ΔE 5.2735, unchanged).
+
+### Not verified
+
+- The headset: whether wave's travelling bands read as flow in the Quest, and whether the band speed at 3 per turn suits, is Paul's A/B call. Superseded by fix round 2 (below): the default is now 2 per turn, and `?waveturns=1|2|3` picks the band speed in the headset.
+- Cost: wave's 5 atan2 per moving sky vertex are untimed on the desktop and on the Quest, because no run here found a load of 15 or less. Fix round 1 cuts them to one atan (below), also untimed.
+
+### Fix round 1
+
+The task review found the round-0 windings on the painted vortex axes. Every loop phase meets at a winding, and on the axes the drift and the other vortices carry the strokes at about the front's median speed (2.8 to 3.7 × 10⁻³ rad/s against 3.4 × 10⁻³), so the heart of the big swirl counter-flowed like pingpong: 49% of pairs within 1.5° of its centre. Only the stagnation pole sat at a true zero.
+
+- Poles: `skyVortexCentre` finds the field's velocity zero inside each vortex's core by Newton's method on the velocity's two tangent components from the axis, with a central-difference Jacobian. It accepts the zero only inside the core and at |velocity| under 10⁻¹² rad/s. The big swirl's zero is 6.5° off its painted axis, inside its 11.3° core (residual 7 × 10⁻¹⁸ rad/s), and the right vortex's is 3.7° off, inside its 4.6° core (residual 0). On a 0.5° ring round each, the flow turns the same way at all 36 samples, so both are centres. The moon and large-star eddies have no zero in their cores: the background outruns their own turn. They wind 0, and the stagnation pole balances the rest at −4, so the windings are 3, 1, 0, 0, −4.
+- Counter-flow near each painted vortex centre and at the stagnation point, on a 400,000-point Fibonacci dome (0.32° spacing, from 10° below the horizon up), seeded phase bytes with the jitter, pairs within 2°, averaged over 16 times across the loop. Pingpong is about 50% at every site.
+
+| Site | Round 0 (1.5° / 3° / 4°) | Round 1 (1.5° / 3° / 4°) |
+| --- | --- | --- |
+| Big swirl, left | 49.4 / 40.1 / 33.0% | 15.6 / 15.8 / 16.1% |
+| Central pair, right | 31.2 / 18.3 / 14.5% | 15.3 / 16.5 / 16.6% |
+| Moon eddy | 30.9 / 18.0 / 14.1% | 4.9 / 4.8 / 4.9% |
+| Large-star eddy | 31.2 / 18.4 / 14.6% | 5.8 / 5.9 / 5.9% |
+| Stagnation point | 50.4 / 51.7 / 49.5% | 50.4 / 46.9 / 40.3% |
+
+  Near the central pair this misses the review's example bound of 15% within 3°: 15.8% and 16.5% here, and 16.4% and 18.9% on the coarser unit-test dome, where the test asserts under 20% and under 0.4 of pingpong's share at each site. The whole dome: 4.2% (round 0 5.4%). The unit-test dome (0.83° spacing): 4.32%, 6.08% in front, 3.77% without the jitter (5.70% in front), pingpong 50.02%. Neighbours 0.5° apart along the flow in front split 3.56% under wave and 50.49% under pingpong, and the bands now travel downstream at 100% of the sampled strokes in front, behind and overhead (round 0: 98.8% in front).
+- At the zeros themselves every phase still meets, but the strokes there barely move:
+
+| Zero | Counter-flow within 1.5° / 3° / 4° | Mean speed there, × front median |
+| --- | --- | --- |
+| Big swirl | 49.3 / 40.5 / 33.5% | 0.13 / 0.27 / 0.36 |
+| Central pair, right | 32.5 / 21.9 / 19.7% | 0.31 / 0.55 / 0.69 |
+| Stagnation point | 50.4 / 46.9 / 40.3% | 0.01 / 0.02 / 0.02 |
+
+  Weighting each pair by its mean speed changes these by at most 4 points, so the spokes at the big swirl's zero still show, at an eighth to a third of the median speed within 4° of it. That zero is 6.5° from where the swirl is painted, inside its 11.3° core. Derived, share times speed ratio: about 6%, 11% and 12% at 1.5°, 3° and 4°, against the whole dome's 4.2% at the median speed. Fading wave's amplitude to 0 near each winding would remove the spokes, and is not built in this round. Superseded by fix round 2 (below), which builds the fade.
+- Strain over the painter's view, as in Design: median 0.185, 90th percentile 0.400, 99th percentile 0.516 (round 0: 0.226, 0.488, 0.785; base 0.015, 0.049, 0.101).
+- The wavelength stays 3. With the poles at the zeros, the trade at 1, 2 and 3 waves per turn:
+
+| Per turn | Windings | Within 3° of the big swirl's centre | Dome | Strain median / p99 |
+| --- | --- | --- | --- | --- |
+| 1 | 1, 1, 0, 0, −2 | 7.0% | 2.8% | 0.095 / 0.313 |
+| 2 | 2, 1, 0, 0, −3 | 11.4% | 3.4% | 0.140 / 0.406 |
+| 3 | 3, 1, 0, 0, −4 | 15.8% | 4.2% | 0.185 / 0.516 |
+
+  At 1 the bands are half the swirl each, the trade the round-0 choice weighed. Whether to drop to 1 or 2 is a headset call.
+- One atan (F4): every winding is an integer, so Σ wᵢ·arg(z − zᵢ) equals arg Π (z − zᵢ)^wᵢ up to whole turns, which the loop's `fract` removes. `skySwirlGlslDefines` writes `SKY_WAVE_PRODUCT`, the unrolled statements of that product for the non-zero windings: each factor normalised by one `inversesqrt`, conjugated for a negative winding, its power by repeated squaring, then one `atan`. Normalising each factor keeps the product from overflowing near the nadir or underflowing near a pole. The TS mirror stays the sum of atan2. A unit test runs the define's statements as written, 20,000 random directions, against the mirror: the largest gap is under 10⁻⁶ of a loop (the defines carry 9 significant digits), and `skyWaveProductPhase`, the same product in double, is within 10⁻⁹. On the GPU, `tests/e2e/motion.spec.ts` (the GPU check above) block-matches the new phase against the mirror: it keeps 19 patches and 38 turns, 19 each way, and every one matches, with angles 0.1 to 5.1°, length ratios 0.86 to 1.03 and shifts of 14 to 29 px. The run also shows that ANGLE compiles the one-line define.
+- Cost: under wave a moving sky vertex now pays 3 `inversesqrt`, 6 complex multiplies and one atan in place of 5 atan. It is untimed. A `scripts/motion-perf.ts --only wrap=` run, comparing the round-1 build against round 0's (one atan against five), started at 23:24 at load 17. It had 3 of its 18 rows, none of them wave, when the load rose to 115 at 23:31, so it was stopped. At about 3.9 ms GPU per frame on this desktop, the saving is likely below the run-to-run noise anyway. The Quest is where it matters.
+- The compare notes (F5): under base a moving sky vertex pays one compare in `skyMotion`. Pingpong and wave add a second inside `skyWrapMotion`.
+- Default unchanged: the probe's five captures from the round-1 e2e build, with no flag, `&wrap=base` and `&ab=wrap`, are all 15 byte-identical to 9f13784's no-flag captures (`cmp`, 23:22 to 23:24, load 19 to 13). The larger program, with `skyCmul` and the product in place of the pole loop, leaves the default path's output unchanged.
+- Coverage, the `?coverage` sweep under wave (`bun scripts/motion-variant-probe.ts measure`, 24 poses at `?motiont` 0.5, 3.7 and 6.1, load 28 to 20): worst 0.473% (village uphill), weighted 0.533%, the same as round 0 and within the 0.5% limit. At the sky poses: spot ahead 0.327% (round 0 0.336%), spot straight up 0.055% (0.065%), boundary north-east 0.126% (0.117%). Motion flicker at the five sky poses: 4.88 / 1.95 / 4.62 / 7.24 / 1.90%, within 0.5 points of round 0 at four and 1.25 below at boundary north-east. Jitter flicker 7.76 / 10.97 / 9.51 / 7.70 / 3.69%, unchanged.
+- Counter-flow from the live diag on seed 1 at `?motiont=3.7`: spot ahead 3.99%, spot behind 3.43%, spot left raised 3.89%, spot straight up 4.20%, boundary north-east 4.60% (round 0: 5.04 to 5.89%), each over 149,000 to 169,000 pairs. Over one period at spot ahead it is 3.92 to 4.36% (mean 4.21%), and the returning share there is 46.9 to 53.1% (mean 50.0%).
+- Captures: `docs/shots/p4-wrap-wave-t3.7.jpg` and `p4-wrap-wave-t5.7.jpg` are retaken with the new poles (load 34.7 to 35.9). In a crop of the central swirl the core at 3.7 is crowded with crossing strokes, and at 5.7 its strokes lie in a cleaner spiral. The dome stays covered in both. Two stills cannot show whether the bands read as flow.
+- Gates: `make checkall-ci` exit 0 (unit tests 1214 passed in 89 files, no leaks, no vulnerabilities, asset-check 28 files). The full `make e2e` was not rerun here: the controller's integration gate runs it. The specs this change touches ran one at a time from 23:17, after the load wait reached 13: `tests/e2e/ab.spec.ts` 14 passed (load 13 to 21), `tests/e2e/motion.spec.ts` 12 passed (21 to 28) and `tests/e2e/world-coverage.spec.ts` 8 passed (28 to 22), so the last two ran above 15. In the ab spec the live diag on seed 1 reads counter-flow pingpong 49.8%, wave 4.26% and base 0, and wave's returning share is 50.7%. The fixed-phase painter view under `?coverage` leaves 0.290% bare under wave at t 4 and 0.304% at t 6, against base's 0.255% (round 0: 0.319% and 0.342%). The coverage spec's worst pose is unchanged at 0.451% (hill west).
+
+### Fix round 2
+
+The review's rulings: fade wave's travel near each winding (C2), and make the waves per turn a uniform behind a flag (C3).
+
+- Fade (C2): `skyWaveFade` scales the wave's tau by the product, over the windings that are non-zero at any turns value (the big swirl's zero, the right vortex's zero and the stagnation point), of smoothstep(0, R², chord²), where chord is the chord from the stroke's direction to the winding and R the chord of `SKY_WAVE_FADE_RADIUS`. It is 0 at a winding and 1 from the radius out, and motion.glsl applies it on the wave branch only, to the amplitude, so base and pingpong run unchanged. The two zeros are 6.54° apart. The right vortex's painted centre is 3.71° from its zero and the big swirl's 6.50° from its own. The radius is 3°, the widest whole degree that leaves both painted centres at full amplitude (4° would dim the right vortex's), under the right vortex's 4.6° core and under half the gap between the zeros, so the ramps do not meet.
+- Waves per turn (C3): `uWaveTurns`, an `int` uniform beside `uSkyWrap` in `src/motion/variant-uniforms.ts`, set by `?waveturns=1|2|3` (trimmed, any other value keeps the default). The default drops from 3 to 2, the middle of the round-1 trade. Each winding is linear in the turns over 1 to 3 (the big swirl winds turns, the right vortex 1, the stagnation point −(turns + 1)), so `SKY_WAVE_PRODUCT` now builds two products, `q` from the part fixed across the turns and `a` from the part per turn, and skyWavePhase multiplies `a` into `q` `uWaveTurns` times in a loop bounded by `SKY_WAVE_MAX_TURNS` (3) before its one atan. `windingSplits` throws if a winding is ever not linear. The uniform is read only in skyWavePhase, which only the wave branch calls. `__goghDiag().wrap.waveTurns` reports it. The unit test runs the define's statements as written, then the loop, at each turns value against the mirror's sum of atan2: under 10⁻⁶ of a loop over 20,000 directions, and `skyWaveProductPhase` within 10⁻⁹.
+- Counter-flow, on the 400,000-point dome as in round 1 (seeded phase bytes with the jitter, pairs within 2°, 16 times across the loop; the dome and front-view rows take every 20th and every 5th stroke as a centre, so the dome reads 3.5% at 2 waves per turn against round 1's 3.4% over every centre). Three measures:
+  - Unweighted: the share of pairs with one stroke forward and one returning. The fade does not change it.
+  - Speed-weighted: each pair weighs the slower stroke's instantaneous speed (fade × |velocity| × the eased loop's speed, 12g(1 − g) with g = 1 − |2f − 1|), and the share is the opposed weight over the window's total weight.
+  - View-normalised: the same opposed weight divided by the window's pair count times the front view's mean pair weight, the share of pairs counter-flowing at the view's typical speed.
+
+  The speed-weighted share is scale-free inside a window, so it falls only as far as the fade reshapes the window's speeds: within 1.5° of the big swirl's zero the strokes still moving counter-flow about a third of the time, but at 16% amplitude or less on a field already slow there, which is what the view-normalised measure shows. Pingpong is 50.0% unweighted and speed-weighted, over the dome and in front.
+
+| Waves per turn, measure | Dome | Front view | Big swirl's zero, 1.5° / 3° | Right vortex's zero, 1.5° / 3° | Big swirl's centre, 3° | Right vortex's centre, 3° |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1, unweighted | 2.8% | 3.4% | 30.9 / 18.2% | 31.0 / 18.2% | 7.0% | 11.3% |
+| 1, speed-weighted, no fade | 0.2% | 0.3% | 18.9 / 6.3% | 19.7 / 6.9% | 1.2% | 2.5% |
+| 1, speed-weighted, 3° fade | 0.2% | 0.3% | 12.1 / 3.9% | 12.8 / 4.2% | 1.2% | 2.1% |
+| 1, view-normalised, no fade | 0.1% | 0.3% | 1.9 / 1.3% | 4.5 / 2.9% | 0.9% | 2.3% |
+| 1, view-normalised, 3° fade | 0.1% | 0.3% | 0.1 / 0.4% | 0.2 / 0.9% | 0.9% | 1.7% |
+| 2, unweighted | 3.5% | 4.5% | 44.6 / 30.9% | 31.8 / 19.6% | 11.4% | 13.9% |
+| 2, speed-weighted, no fade | 0.3% | 0.6% | 37.9 / 17.9% | 21.1 / 8.5% | 2.9% | 3.8% |
+| 2, speed-weighted, 3° fade | 0.3% | 0.5% | 33.0 / 12.6% | 14.7 / 5.9% | 2.9% | 3.2% |
+| 2, view-normalised, no fade | 0.2% | 0.6% | 3.7 / 3.4% | 4.8 / 3.5% | 2.1% | 3.4% |
+| 2, view-normalised, 3° fade | 0.2% | 0.5% | 0.2 / 1.3% | 0.2 / 1.3% | 2.1% | 2.7% |
+| 3, unweighted | 4.2% | 5.7% | 49.3 / 40.5% | 32.5 / 21.9% | 15.8% | 16.5% |
+| 3, speed-weighted, no fade | 0.5% | 0.9% | 47.4 / 31.3% | 23.2 / 11.1% | 5.6% | 5.4% |
+| 3, speed-weighted, 3° fade | 0.5% | 0.9% | 46.8 / 25.3% | 17.6 / 8.5% | 5.6% | 4.7% |
+| 3, view-normalised, no fade | 0.3% | 0.9% | 4.7 / 5.9% | 5.4 / 4.5% | 3.9% | 4.8% |
+| 3, view-normalised, 3° fade | 0.3% | 0.9% | 0.3 / 2.7% | 0.3 / 1.9% | 3.9% | 3.9% |
+
+  At the stagnation point the strokes barely move with or without the fade: 0.3 to 0.4% normalised within 1.5° unfaded, 0.0% faded. The radius sweep at 2 waves per turn within 1.5° / 3° of the big swirl's zero, speed-weighted then view-normalised: none 37.9 / 17.9% and 3.7 / 3.4%, 2° 33.1 / 14.5% and 0.9 / 2.3%, 3° 33.0 / 12.6% and 0.2 / 1.3%, 4° 32.9 / 12.4% and 0.1 / 0.6%. The 4° gain is small, and 4° dims the right vortex's painted centre. Within 3° of the zero at 3 waves per turn 2.7% remains, from the ring between 1.5° and 3° where the fade is partway up, and a larger radius would trade that against amplitude at the painted centres. The probe was a scratch script outside the repository, built on the mirror's exported functions. Strain was not re-measured with the fade.
+- Gates: `make checkall-ci` exit 0 (unit tests 1216 passed in 89 files, no leaks, no vulnerabilities, asset-check 28 files). The full `make e2e` was not rerun. The load wait reached 14.9 at 00:01, and the three touched specs ran one at a time: `tests/e2e/ab.spec.ts` 14 passed (load 15 to 27), `tests/e2e/motion.spec.ts` 12 passed (27 to 55) and `tests/e2e/world-coverage.spec.ts` 8 passed (55 to 71), so the last two ran above 15.
+  - In the ab spec the live diag on seed 1 at `?motiont=3.7` reads counter-flow pingpong 49.8%, wave 3.38% at the default 2 waves per turn and 4.26% at `&waveturns=3` (round 1, at 3: 4.26%), and base 0. Wave's returning share is 51.2%, and every variant reports `waveTurns` 2. The `?wrap=wave` and `&waveturns=3` boots report the same program count and draw different skies. A count cannot tell a uniform from a define, so the unit tests pin the uniform-only design: the stroke material's defines and shader source are unchanged by `setWaveTurns(3)`, and `uWaveTurns` appears only in its declaration and the wave branch's loop. Under `?coverage` the fixed-phase painter view leaves 0.268% bare under wave at t 4 and 0.285% at t 6, against base's 0.255% (round 1: 0.290% and 0.304%).
+  - The motion spec's GPU check of the wave kept 23 patches and 46 turns, 23 each way (round 1: 19 and 38), and every one matches, with angles 0.0 to 4.7° and length ratios 0.87 to 1.04.
+  - The coverage spec, under base, is unchanged: worst pose 0.451% (hill west), spot-ahead sweep worst 0.478% at motiont 7.
+- From a fresh `--mode e2e` build of 614d2f7, served on its own preview (`bun scripts/motion-variant-probe.ts`). Every leg after the load wait ran at loads of 70 to 350, so its timings and flicker are load-affected, though the captures and bare shares do not depend on load.
+  - Shots: `docs/shots/p4-wrap-wave-waveturns1-t3.7.jpg`, `-waveturns2-` and `-waveturns3-`, each also at t 5.7, the painter view at `?motiont`. In crops of the central swirl at t 3.7 the swirl reads at all three and the dome stays covered. The three differ in how the core's strokes cross, which only the headset can judge in motion.
+  - Coverage at the default 2 waves per turn, 24 poses at `?motiont` 0.5, 3.7 and 6.1 (load 120 to 156): worst 0.473% (village uphill), weighted 0.533%, as in round 1 and within the 0.5% limit. Spot ahead 0.310% (round 1 0.327%), spot straight up 0.054% (0.055%), boundary north-east 0.105% (0.126%). The live counter-flow at `?motiont=3.7` is 3.28 to 4.85% at the five sky poses, and over one period at spot ahead it is 3.21 to 3.61% (mean 3.44%, round 1 at 3 waves 4.21%) with a mean returning share of 50.0%.
+  - Default unchanged: the probe's five captures with no flag are byte-identical to 9f13784's no-flag captures (`cmp`, load 156 to 349).
+  - At 1 and 3 waves per turn (`measure ... wave '&waveturns=N'`, load 160 to 460): coverage worst 0.473% (village uphill) at both, weighted 0.533%, spot ahead 0.301% and 0.327%. Counter-flow over one period at spot ahead: mean 2.92% (2.65 to 3.19%) at 1 and 4.21% (3.92 to 4.36%) at 3, the round-1 value.
+
+### Rebase onto 67b072d
+
+The branch was rebased onto 67b072d, the roof eave fix. The only conflict was the two sections both appended at the end of this file, and both are kept. The branch does not touch the painter captures (`docs/shots/p2-painter-spot.png`, `p2-fidelity.png`) or the scatter, so main's stand.
+
+- Default unchanged: the probe's five no-flag captures from an e2e build of the rebased branch are byte-identical to those from an e2e build of 67b072d (`cmp`, 00:31 to 00:33, load 30 to 39).
+- Gates: `make checkall-ci` exit 0 (unit tests 1222 passed in 89 files, no leaks, no vulnerabilities, asset-check 28 files). The load wait reached 14.1 at 00:28, and the specs ran one at a time: `tests/e2e/ab.spec.ts` 14 passed (load 14 to 15), `tests/e2e/motion.spec.ts` 12 passed (15 to 17), with all 46 wave turns matching, and `tests/e2e/world-coverage.spec.ts` 8 passed (17 to 23), worst pose 0.460% (village uphill) and spot-ahead sweep worst 0.481% at motiont 7, under base on 67b072d's scatter.

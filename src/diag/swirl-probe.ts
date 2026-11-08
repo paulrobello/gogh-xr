@@ -5,14 +5,15 @@
  * which imports regions.json.
  */
 import { SKY_MOON_RING, SKY_RINGS, skyHaloGlow, skyHaloState, skyRing } from '../motion/sky-rings';
-import { skySwirl } from '../motion/sky-swirl';
+import { SKY_WAVE_PER_TURN, skySwirl } from '../motion/sky-swirl';
+import type { SkyWrap } from '../motion/variants';
 import { canvasRay, PAINTER_EYE, projectToCanvas } from '../paintings/starry-night/canvas-camera';
 import { anchorReach, SKY_DOME_RADIUS, skyAnchors } from '../world/sky';
 
 /**
  * The canvas shift, [du, dv] with v down, of the dome point at canvas (u, vDown) under the sky
- * swirl at `calm`, motion time `time` and phase `phase`. Null when the moved point is off the eye's
- * front.
+ * swirl at `calm`, motion time `time`, phase `phase` and wrap variant `wrap`, under `wave` at
+ * `turns` waves per turn. Null when the moved point is off the eye's front.
  */
 export function predictSkyShift(
   u: number,
@@ -20,6 +21,8 @@ export function predictSkyShift(
   calm: number,
   time: number,
   phase: number,
+  wrap: SkyWrap = 'base',
+  turns: number = SKY_WAVE_PER_TURN,
 ): [number, number] | null {
   const ray = canvasRay(u, 1 - vDown);
   const p: [number, number, number] = [
@@ -27,7 +30,7 @@ export function predictSkyShift(
     PAINTER_EYE[1] + ray[1] * SKY_DOME_RADIUS,
     PAINTER_EYE[2] + ray[2] * SKY_DOME_RADIUS,
   ];
-  const m = skySwirl(p, [-ray[0], -ray[1], -ray[2]], phase, time);
+  const m = skySwirl(p, [-ray[0], -ray[1], -ray[2]], phase, time, undefined, wrap, turns);
   const uv = projectToCanvas([
     p[0] + calm * m.offset[0],
     p[1] + calm * m.offset[1],

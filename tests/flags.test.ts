@@ -36,13 +36,14 @@ test('defaults when search is empty', () => {
     zdiag: null,
     ab: null,
     wrap: null,
+    waveTurns: null,
     scene: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Opacity',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20',
   );
   expect(f).toEqual({
     seed: 42,
@@ -77,15 +78,28 @@ test('parses every flag', () => {
     turn: 'smooth',
     zdiag: 'nosort',
     ab: 'shimmer',
-    wrap: 'opacity',
+    wrap: 'wave',
+    waveTurns: 3,
     scene: 'bare',
   });
 });
 
+test('?waveturns takes only 1, 2 or 3, trimmed', () => {
+  for (const turns of [1, 2, 3] as const) {
+    expect(parseFlags(`?waveturns=${turns}`).waveTurns).toBe(turns);
+  }
+  expect(parseFlags('?waveturns=%202%20').waveTurns).toBe(2);
+  for (const bad of ['0', '4', '2.5', '02', 'two', '', '-1']) {
+    expect(parseFlags(`?waveturns=${bad}`).waveTurns).toBeNull();
+  }
+  expect(parseFlags('?waveturns').waveTurns).toBeNull();
+  expect(parseFlags('').waveTurns).toBeNull();
+});
+
 test('?wrap takes only its variants', () => {
-  for (const wrap of ['base', 'opacity', 'pingpong'] as const)
+  for (const wrap of ['base', 'pingpong', 'wave'] as const)
     expect(parseFlags(`?wrap=${wrap}`).wrap).toBe(wrap);
-  for (const retired of ['fade', 'half', 'pair']) {
+  for (const retired of ['fade', 'half', 'pair', 'opacity', 'flow']) {
     expect(parseFlags(`?wrap=${retired}`).wrap).toBeNull();
   }
   expect(parseFlags('?wrap').wrap).toBeNull();

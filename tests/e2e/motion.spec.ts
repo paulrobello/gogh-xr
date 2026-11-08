@@ -250,6 +250,136 @@ test.describe('sky swirl (P4.2)', () => {
     }
     expect(await glErrors(page)).toEqual([]);
   });
+
+  // The `wrap` diag is the TS mirror, so this checks the GPU's own wave phase (motion.glsl
+  // skyWavePhase): its windings, sign, stereographic convention and atan argument order. Under the
+  // pin every stroke's jitter is the same, so each stroke's loop phase is the mirror's wave phase at
+  // its direction. The wave's shift changes fast across the view, so at one time most patches
+  // straddle a band edge, where no single shift describes the block. Each patch is instead shot at
+  // its own two turns, the mirror's times of its largest shift ahead and back (tau ±4 s), where tau
+  // is flat to first order. The patches are a 0.05 grid over the sky (u 0.35-0.85, v 0.1-0.4),
+  // less any whose block, grown by its diagonal, reaches a star or moon ring's rim (those strokes
+  // stay still under `motionlayers=sky` and hold the match at 0), and less any turn whose predicted
+  // shift varies by over 30% across the block (near a vortex core). A wrong sign or winding puts a
+  // patch elsewhere in its loop at those times, off the prediction.
+  test('the wave wrap carries each sky patch ahead and back as the TS mirror predicts, at its own turns', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(480_000);
+    const { width, height } = CAPTURE_SIZE;
+    /** The turns move a patch twice base's shift at the pin, up to about 29 px. */
+    const WAVE_SEARCH = 32;
+    const restL = luma(await painterShot(page, xr, 'noanim&wrap=wave'));
+    await painterShot(page, xr, 'wrap=wave&motiont=0');
+    expect(((await xr.diag()).variants as { wrap: string }).wrap).toBe('wave');
+    const { rings, plan } = await page.evaluate(
+      ([half, w, h]) => {
+        const skyShift = window.__goghSkyShift;
+        const ringShift = window.__goghRingShift;
+        if (!skyShift || !ringShift)
+          throw new Error('__goghSkyShift and __goghRingShift are e2e-only');
+        const shift = (u: number, v: number, t: number, wrap: 'base' | 'wave'): number[] => {
+          const s = skyShift(u, v, 1, t, 0, wrap);
+          if (!s) throw new Error(`no prediction at (${u}, ${v})`);
+          return [s[0] * w, s[1] * h];
+        };
+        // The rings, in pixels: the probe throws past the last one.
+        const discs: { x: number; y: number; rim: number }[] = [];
+        for (let k = 0; k < 64; k++) {
+          let ring: ReturnType<typeof ringShift>;
+          try {
+            ring = ringShift(k, 0.5, 0.3, 0);
+          } catch {
+            break;
+          }
+          if (ring) discs.push({ x: ring.centre[0] * w, y: ring.centre[1] * h, rim: ring.rim * w });
+        }
+        const turns: { u: number; v: number; turn: string; t: number; shift: number[] }[] = [];
+        for (let i = 0; i <= 10; i++) {
+          for (let j = 0; j <= 6; j++) {
+            const u = Math.round(35 + 5 * i) / 100;
+            const v = Math.round(10 + 5 * j) / 100;
+            const clear = discs.every(
+              (d) => Math.hypot(u * w - d.x, v * h - d.y) > d.rim + half * Math.SQRT2,
+            );
+            if (!clear) continue;
+            // Base 2 s past mid-loop: its shift points downstream.
+            const flow = shift(u, v, 6, 'base');
+            let ahead = { t: 0, along: -Infinity };
+            let back = { t: 0, along: Infinity };
+            for (let k = 0; k < 160; k++) {
+              const s = shift(u, v, k * 0.05, 'wave');
+              const along = s[0] * flow[0] + s[1] * flow[1];
+              if (along > ahead.along) ahead = { t: k * 0.05, along };
+              if (along < back.along) back = { t: k * 0.05, along };
+            }
+            for (const [turn, t] of [
+              ['ahead', ahead.t],
+              ['back', back.t],
+            ] as const) {
+              const centre = shift(u, v, t, 'wave');
+              const size = Math.hypot(centre[0], centre[1]);
+              let spread = 0;
+              for (const du of [-half, 0, half]) {
+                for (const dv of [-half, 0, half]) {
+                  const s = shift(u + du / w, v + dv / h, t, 'wave');
+                  spread = Math.max(spread, Math.hypot(s[0] - centre[0], s[1] - centre[1]));
+                }
+              }
+              if (size >= 4 && spread <= 0.3 * size) turns.push({ u, v, turn, t, shift: centre });
+            }
+          }
+        }
+        return { rings: discs.length, plan: turns };
+      },
+      [HALF, width, height] as const,
+    );
+    expect(rings).toBe(12);
+    let ahead = 0;
+    let back = 0;
+    for (const { u, v, turn, t, shift } of plan) {
+      const [px, py] = shift;
+      const predicted = Math.hypot(px, py);
+      const name = `patch (${u}, ${v}) ${turn} at t ${t.toFixed(2)}`;
+      await page.evaluate((time) => {
+        if (!window.__goghMotionT) throw new Error('__goghMotionT is e2e-only and needs ?motiont');
+        window.__goghMotionT(time);
+      }, t);
+      await xr.waitFrames(3);
+      const url = await page.evaluate(() => {
+        if (!window.__goghShot)
+          throw new Error('__goghShot is not installed; boot with ?diag&shot');
+        return window.__goghShot();
+      });
+      const movedL = luma(await rawPixels(url));
+      const a = shiftAt(
+        restL,
+        movedL,
+        Math.round(u * width),
+        Math.round(v * height),
+        HALF,
+        WAVE_SEARCH,
+      );
+      const mag = Math.hypot(a.dx, a.dy);
+      const angle =
+        (Math.acos(Math.min(1, Math.max(-1, (a.dx * px + a.dy * py) / (mag * predicted)))) * 180) /
+        Math.PI;
+      console.log(
+        `wave ${name}: predicted (${px.toFixed(2)}, ${py.toFixed(2)}) px, measured (${a.dx.toFixed(2)}, ${a.dy.toFixed(2)}) ` +
+          `sharp ${a.sharpness.toFixed(1)}, angle ${angle.toFixed(1)} deg, ratio ${(mag / predicted).toFixed(2)}`,
+      );
+      expect(angle, name).toBeLessThan(30);
+      expect(mag / predicted, name).toBeGreaterThan(0.5);
+      expect(mag / predicted, name).toBeLessThan(1.5);
+      if (turn === 'ahead') ahead++;
+      else back++;
+    }
+    console.log(`wave: ${ahead} patches checked ahead, ${back} back`);
+    expect(ahead).toBeGreaterThanOrEqual(8);
+    expect(back).toBeGreaterThanOrEqual(8);
+    expect(await glErrors(page)).toEqual([]);
+  });
 });
 
 test.describe('star and moon rings (P4.3)', () => {

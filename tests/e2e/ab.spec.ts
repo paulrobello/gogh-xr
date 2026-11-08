@@ -436,11 +436,13 @@ test.describe('the painter view', () => {
     };
     interface WrapDiag {
       wrap: string;
+      waveTurns: number;
       drawn: number;
       small: number;
-      fading: number;
-      hidden: number;
       returning: number;
+      forwardShare: number;
+      returningShare: number;
+      counterFlow: { pairs: number; opposed: number; share: number; radiusDeg: number };
     }
     const diag = async () => {
       const d = await xr.diag();
@@ -460,7 +462,7 @@ test.describe('the painter view', () => {
 
     await bootWorld('&ab=wrap');
     const variants = ((await ab(xr)) as AbDiag).variants;
-    expect(variants).toEqual(['base', 'opacity', 'pingpong']);
+    expect(variants).toEqual(['base', 'pingpong', 'wave']);
     await hideHud();
     expect((await rawPixels(page)).equals(fresh), 'wrap base matches a fresh boot').toBe(true);
     const programs = (await diag()).programs;
@@ -482,23 +484,31 @@ test.describe('the painter view', () => {
       expect(now.programs, variant).toBe(programs);
       const w = now.wrap as WrapDiag;
       expect(w.wrap, variant).toBe(variant);
+      // The default wavelength, 2 waves per turn, whichever wrap is active.
+      expect(w.waveTurns, variant).toBe(2);
       expect(w.drawn, variant).toBeGreaterThan(1000);
       reports.push(`${variant} ${JSON.stringify(w)}`);
+      expect(w.forwardShare + w.returningShare, variant).toBeCloseTo(1, 9);
+      expect(w.returningShare, variant).toBeCloseTo(w.returning / w.drawn, 9);
+      expect(w.counterFlow.radiusDeg, variant).toBeCloseTo(2, 9);
+      expect(w.counterFlow.pairs, variant).toBeGreaterThan(10_000);
       if (variant === 'base') {
-        // Base shrinks its wrapping strokes and never fades or turns back.
+        // Base shrinks its wrapping strokes and never turns back, so nothing counter-flows.
         expect(w.small).toBeGreaterThan(0);
-        expect([w.fading, w.hidden, w.returning]).toEqual([0, 0, 0]);
-      } else if (variant === 'opacity') {
-        // Full size, with the wrapping strokes fading and the ones at the jump hidden.
+        expect([w.returning, w.counterFlow.opposed]).toEqual([0, 0]);
+      } else if (variant === 'pingpong') {
+        // Full size, with about half the strokes on their way back, side by side with the rest.
         expect(w.small).toBe(0);
-        expect(w.fading).toBeGreaterThan(w.hidden);
-        expect(w.hidden).toBeGreaterThan(0);
-        expect(w.returning).toBe(0);
+        expect(w.returningShare).toBeGreaterThan(0.4);
+        expect(w.returningShare).toBeLessThan(0.6);
+        expect(w.counterFlow.share).toBeGreaterThan(0.45);
+        expect(w.counterFlow.share).toBeLessThan(0.55);
       } else {
-        // Full size and full alpha, with about half the strokes on their way back.
-        expect([w.small, w.fading, w.hidden]).toEqual([0, 0, 0]);
-        expect(w.returning / w.drawn).toBeGreaterThan(0.4);
-        expect(w.returning / w.drawn).toBeLessThan(0.6);
+        // Full size, forward and returning bands, and neighbours that move together.
+        expect(w.small).toBe(0);
+        expect(w.returningShare).toBeGreaterThan(0.2);
+        expect(w.returningShare).toBeLessThan(0.8);
+        expect(w.counterFlow.share).toBeLessThan(0.15);
       }
       if (variant !== 'base') {
         await hideHud();
@@ -514,17 +524,39 @@ test.describe('the painter view', () => {
     const cycled = await rawPixels(page);
     expect(cycled.equals(fresh), 'a full cycle back to base renders a fresh boot').toBe(true);
     expect(await glErrors(page)).toEqual([]);
+
+    // ?waveturns sets a uniform: the same program count as the default wavelength, the diag's turns,
+    // a different sky, and neighbours that still move together. A count cannot tell a uniform from
+    // a define. tests/motion-variants.test.ts pins that the material's defines do not change.
+    await bootWorld('&wrap=wave');
+    await hideHud();
+    const two = await diag();
+    const twoPixels = await rawPixels(page);
+    await bootWorld('&wrap=wave&waveturns=3');
+    await hideHud();
+    const three = await diag();
+    expect(three.programs).toBe(two.programs);
+    expect((two.wrap as WrapDiag).waveTurns).toBe(2);
+    const w3 = three.wrap as WrapDiag;
+    expect([w3.wrap, w3.waveTurns]).toEqual(['wave', 3]);
+    expect(w3.counterFlow.pairs).toBeGreaterThan(10_000);
+    expect(w3.counterFlow.share).toBeLessThan(0.15);
+    console.log(`[e2e] ab wrap waveturns=3 diag: ${JSON.stringify(w3)}`);
+    expect((await rawPixels(page)).equals(twoPixels), 'waveturns=3 moves the sky its own way').toBe(
+      false,
+    );
+    expect(await glErrors(page)).toEqual([]);
   });
 
-  // The `wrap` diag is the TS mirror, so these check the GPU's own wrap formulas in motion.glsl.
-  // ?motionphase=0 gives every stroke phase 0, so f = t / 8, and ?motionlayers=sky stills every
-  // other motion, so two frames at different pinned times differ only in the sky. At each pair the
-  // two variants compute the same tau, size and alpha exactly in float:
-  // - opacity at f = 0.5 and base at f = 0.5: tau 0, full size, alpha 1.
+  // The `wrap` diag is the TS mirror, so these check the GPU's own pingpong formula in motion.glsl
+  // (tests/e2e/motion.spec.ts checks the wave's phase). ?motionphase=0 gives every stroke phase 0,
+  // so f = t / 8, and ?motionlayers=sky stills every other motion, so two frames at different
+  // pinned times differ only in the sky. At each pair the two variants compute the same tau and
+  // size exactly in float:
   // - pingpong at f = 0.25 and base at f = 0.5: smoothstep(0, 1, 0.5) = 0.5, so tau 0.
-  // - pingpong at f = 0.125 and opacity at f = 0.15625: smoothstep(0, 1, 0.25) = 0.15625, so both
-  //   have tau −2.75 s on base's arc, at full size and alpha 1.
-  // And opacity at f = 0 has alpha 0, so under ?coverage its sky strokes leave the dome bare.
+  // - pingpong at f = 0.125 and base at f = 0.15625: smoothstep(0, 1, 0.25) = 0.15625, so both
+  //   have tau −2.75 s on base's arc, and base is past its 0.06 wrap shrink, at full size.
+  // And under ?coverage the wave leaves the painter view's dome covered at both.
   test('at fixed phases the GPU draws each wrap variant as motion.glsl computes it', async ({
     page,
     xr,
@@ -560,8 +592,7 @@ test.describe('the painter view', () => {
       await xr.waitFrames(3);
       return rawPixels(page);
     };
-    const wrapDiag = async () =>
-      (await xr.diag()).wrap as { drawn: number; fading: number; hidden: number };
+    const wrapDiag = async () => (await xr.diag()).wrap as { drawn: number; returning: number };
     const pixels = CAPTURE_SIZE.width * CAPTURE_SIZE.height;
     /** The `?coverage` sweep's binary bare share (tests/e2e/world-coverage.spec.ts). */
     const bareShare = (frame: Buffer): number => {
@@ -577,33 +608,31 @@ test.describe('the painter view', () => {
     await bootWorld('');
     await hideHud();
     const base4 = await at(4);
-    await cycleTo('opacity');
-    expect((await at(4)).equals(base4), 'opacity at f = 0.5 draws as base').toBe(true);
-    const opacity125 = await at(1.25);
+    const base125 = await at(1.25);
     // Negative control: the pinned time moves the sky, so the matches below mean something.
-    expect(opacity125.equals(base4), 'opacity at f = 0.15625 is off base f = 0.5').toBe(false);
+    expect(base125.equals(base4), 'base at f = 0.15625 is off base f = 0.5').toBe(false);
     await cycleTo('pingpong');
     expect((await at(2)).equals(base4), 'pingpong at f = 0.25 draws as base at f = 0.5').toBe(true);
-    expect((await at(1)).equals(opacity125), 'pingpong at f = 0.125 draws as opacity').toBe(true);
+    expect(
+      (await at(1)).equals(base125),
+      'pingpong at f = 0.125 draws as base at f = 0.15625',
+    ).toBe(true);
     expect(await glErrors(page)).toEqual([]);
 
     await bootWorld('&coverage');
     await hideHud();
     const restBare = bareShare(await at(4));
-    await cycleTo('opacity');
-    const jumpBare = bareShare(await at(0));
-    // The diag follows the pinned phase: every sky stroke is at its jump.
-    const jump = await wrapDiag();
-    expect(jump.drawn).toBeGreaterThan(1000);
-    expect([jump.fading, jump.hidden]).toEqual([jump.drawn, jump.drawn]);
-    const backBare = bareShare(await at(4));
+    await cycleTo('pingpong');
+    await cycleTo('wave');
+    // The diag follows the pinned phase, which under the wave only sets the jitter.
+    const wave = await wrapDiag();
+    expect(wave.drawn).toBeGreaterThan(1000);
+    const waveBare = [bareShare(await at(4)), bareShare(await at(6))];
     console.log(
-      `[e2e] wrap fixed phase coverage: base f 0.5 ${(restBare * 100).toFixed(3)}%, opacity f 0 ${(jumpBare * 100).toFixed(3)}%, opacity f 0.5 ${(backBare * 100).toFixed(3)}%`,
+      `[e2e] wrap fixed phase coverage: base f 0.5 ${(restBare * 100).toFixed(3)}%, wave t 4 ${(waveBare[0] * 100).toFixed(3)}%, wave t 6 ${(waveBare[1] * 100).toFixed(3)}%`,
     );
     expect(restBare).toBeLessThan(0.005);
-    // At alpha 0 the sky strokes write nothing, so the magenta dome shows over most of the sky.
-    expect(jumpBare).toBeGreaterThan(0.25);
-    expect(backBare).toBe(restBare);
+    for (const bare of waveBare) expect(bare).toBeLessThan(0.005);
     expect(await glErrors(page)).toEqual([]);
   });
 });

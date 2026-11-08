@@ -19,12 +19,13 @@ import {
 } from './diag/ab';
 import { installDiag, installPose, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
+import { skyWrapStats } from './diag/sky-wrap-stats';
 import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
 import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
 import { MOTION_TIME_WRAP_S, motionClock } from './motion/clock';
 import { MOTION_LAYER_MASK } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
-import { skyWrapLoop } from './motion/sky-swirl';
+import { SKY_WAVE_PER_TURN } from './motion/sky-swirl';
 import { motionVariants } from './motion/variant-uniforms';
 import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
 import type { PainterCamera, WorldDeps, WorldHandle, WorldModule } from './paintings/world-module';
@@ -32,7 +33,6 @@ import { createSwitcher, GALLERY_ID, type LiveWorld } from './portal/switcher';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
-import { STROKE_LAYER } from './render/strokes/instance';
 import { pinMotionPhase } from './render/strokes/material';
 import { createZdiag } from './render/zdiag';
 import { applySettingsChange, type HudLive } from './settings/apply';
@@ -92,6 +92,8 @@ motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
 // `?wrap` sets the sky wrap variant whatever A/B group wins: under another group it stays fixed.
 motionVariants.setWrap(flags.wrap ?? 'base');
+// `?waveturns` sets the wave wrap's waves per turn, read only under wave.
+motionVariants.setWaveTurns(flags.waveTurns ?? SKY_WAVE_PER_TURN);
 /**
  * `?motiont` pins the motion time for the e2e (R-P4g). `import.meta.env.MODE` is replaced at build
  * time, so a production build drops this and keeps calling `motionClock.frame`.
@@ -346,45 +348,6 @@ const ab: AbController | null = abActive
 /** The bound stroke batch, which the `wrap` diag key scans. */
 let skyBatch: StrokeBatch | null = null;
 
-/**
- * The drawn sky strokes of `batch` this frame under the active wrap variant at the clock's time,
- * from the TS mirror (skyWrapLoop) at each stroke's phase byte, or at the `?motionphase` pin as the
- * shader uses it: how many draw below 0.8 of their rest size (`small`, base),
- * below 0.8 alpha (`fading`) and below 0.05 alpha (`hidden`, both opacity), and are on their way
- * back along the arc (`returning`, pingpong). The `wrap` diag key, registered only while a wrap
- * variant can run.
- */
-function skyWrapStats(batch: StrokeBatch | null): {
-  wrap: string;
-  drawn: number;
-  small: number;
-  fading: number;
-  hidden: number;
-  returning: number;
-} | null {
-  if (!batch) return null;
-  const wrap = motionVariants.diag().wrap;
-  const time = motionClock.uniforms.uTime.value;
-  let drawn = 0;
-  let small = 0;
-  let fading = 0;
-  let hidden = 0;
-  let returning = 0;
-  for (const chunk of batch.chunks) {
-    if (!chunk.mesh.visible) continue;
-    const meta = chunk.geometry.getAttribute('iMeta').array;
-    for (let i = 0; i < chunk.drawCount; i++) {
-      if (meta[i * 4 + 1] !== STROKE_LAYER.sky) continue;
-      const loop = skyWrapLoop(wrap, pinnedMotionPhase ?? meta[i * 4 + 2] / 256, time);
-      drawn++;
-      if (1 + loop.gain < 0.8) small++;
-      if (loop.alpha < 0.8) fading++;
-      if (loop.alpha < 0.05) hidden++;
-      if (loop.returning) returning++;
-    }
-  }
-  return { wrap, drawn, small, fading, hidden, returning };
-}
 /** The last switch's cost on the CPU: its apply, then the rest of that frame (`abSwitch` diag). */
 let abSwitch: { variant: string; applyMs: number; frameMs: number | null } | null = null;
 let abSwitchStart: number | null = null;
@@ -632,7 +595,17 @@ if (flags.diag) {
   registerDiag('motion', () => motionClock.diag());
   registerDiag('variants', () => motionVariants.diag());
   if (abActive?.group === 'wrap' || flags.wrap !== null) {
-    registerDiag('wrap', () => skyWrapStats(skyBatch));
+    registerDiag('wrap', () =>
+      skyBatch
+        ? skyWrapStats(
+            skyBatch,
+            motionVariants.diag().wrap,
+            motionClock.uniforms.uTime.value,
+            pinnedMotionPhase,
+            motionVariants.waveTurns(),
+          )
+        : null,
+    );
   }
   registerDiag('settings', () => ({
     stored: settingsStore.stored,

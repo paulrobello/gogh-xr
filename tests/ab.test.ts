@@ -9,7 +9,7 @@ import {
   formatAbLine,
   resolveAb,
 } from '../src/diag/ab';
-import { ZDIAG_MODES } from '../src/diag/flags';
+import { parseFlags, ZDIAG_MODES } from '../src/diag/flags';
 
 const NONE: AbFlags = {
   ab: null,
@@ -27,22 +27,22 @@ describe('AB_GROUPS', () => {
     expect(AB_GROUPS['zdiag-all']).toEqual(['base', ...ZDIAG_MODES]);
     expect(AB_GROUPS.halo).toEqual(['on', 'off']);
     expect(AB_GROUPS.calm).toEqual(['1', '0.5', '0.25']);
-    expect(AB_GROUPS.wrap).toEqual(['base', 'opacity', 'pingpong']);
+    expect(AB_GROUPS.wrap).toEqual(['base', 'pingpong', 'wave']);
     expect(Object.keys(AB_GROUPS)).toEqual(['shimmer', 'zdiag-all', 'halo', 'calm', 'wrap']);
   });
 });
 
 describe('wrap', () => {
   it('?wrap implies its group at its variant, after ?zdiag and ?nohalo', () => {
-    expect(resolveAb(flags({ wrap: 'pingpong' })).activation).toEqual({ group: 'wrap', start: 2 });
-    expect(resolveAb(flags({ wrap: 'opacity' })).activation).toEqual({ group: 'wrap', start: 1 });
-    const both = resolveAb(flags({ nohalo: true, wrap: 'opacity' }));
+    expect(resolveAb(flags({ wrap: 'wave' })).activation).toEqual({ group: 'wrap', start: 2 });
+    expect(resolveAb(flags({ wrap: 'pingpong' })).activation).toEqual({ group: 'wrap', start: 1 });
+    const both = resolveAb(flags({ nohalo: true, wrap: 'wave' }));
     expect(both.activation).toEqual({ group: 'halo', start: 1 });
-    expect(both.warnings).toEqual(['?nohalo has the A/B button (halo); ?wrap=opacity stays fixed']);
+    expect(both.warnings).toEqual(['?nohalo has the A/B button (halo); ?wrap=wave stays fixed']);
   });
 
   it('?ab=wrap starts at an implied ?wrap and keeps a ?nohalo fixed', () => {
-    expect(resolveAb(flags({ ab: 'wrap', wrap: 'pingpong' }))).toEqual({
+    expect(resolveAb(flags({ ab: 'wrap', wrap: 'wave' }))).toEqual({
       activation: { group: 'wrap', start: 2 },
       warnings: [],
     });
@@ -51,8 +51,9 @@ describe('wrap', () => {
     ]);
   });
 
-  it('?ab=flame, the retired cypress sway group, is no group', () => {
+  it('?ab=flame, the retired cypress sway group, is no group, and ?wrap=opacity is no wrap', () => {
     expect(resolveAb(flags({ ab: 'flame' })).activation).toBeNull();
+    expect(parseFlags('?wrap=opacity').wrap).toBeNull();
   });
 
   it('its group drives the wrap setter, and calm uses the activation variants', () => {
@@ -62,8 +63,8 @@ describe('wrap', () => {
       setCalm: vi.fn(),
       setWrap: vi.fn(),
     };
-    createAbGroup('wrap', deps).apply('opacity');
-    expect(deps.setWrap).toHaveBeenCalledWith('opacity');
+    createAbGroup('wrap', deps).apply('wave');
+    expect(deps.setWrap).toHaveBeenCalledWith('wave');
     createAbGroup('wrap', deps).apply('pingpong');
     expect(deps.setWrap).toHaveBeenCalledWith('pingpong');
     const calm = createAbGroup('calm', deps, ['1', '0.7', '0.5', '0.25']);
@@ -83,7 +84,7 @@ describe('abShowsHudAtBoot (F2)', () => {
       [{ ab: 'calm', calm: 0.3 }, true],
       [{ zdiag: 'noa2c' }, false],
       [{ nohalo: true }, false],
-      [{ wrap: 'opacity' }, false],
+      [{ wrap: 'wave' }, false],
       [{ ab: 'bogus', nohalo: true }, false],
       [{ ab: 'shimmer', bench: '1000' }, false],
     ];

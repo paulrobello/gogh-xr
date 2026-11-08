@@ -1,12 +1,12 @@
 /**
  * The sky wrap A/B variant probe (src/motion/variants.ts, docs/verification.md, "Sky wrap
- * variants: opacity and pingpong"). Headless Chromium on the GPU at 1280 × 1014 with the e2e suite's
- * launch flags, against a running `--mode e2e` build (`make preview`), because `?motiont`,
+ * variants: opacity and pingpong" and "Sky wrap variants: wave"). Headless Chromium on the GPU at
+ * 1280 × 1014 with the e2e suite's launch flags, against a running `--mode e2e` build (`make preview`), because `?motiont`,
  * `?motionphase` and `__goghMotionT` only exist there.
  *
  *   bun scripts/motion-variant-probe.ts capture <base-url> <out-dir> [extra-query]
- *   bun scripts/motion-variant-probe.ts measure <base-url> [name-part]
- *   bun scripts/motion-variant-probe.ts shots <base-url> <out-dir>
+ *   bun scripts/motion-variant-probe.ts measure <base-url> [name-part] [extra-query]
+ *   bun scripts/motion-variant-probe.ts shots <base-url> <out-dir> [name-part] [extra-query]
  *
  * `capture` writes the byte-compare PNGs (the `?noanim` painter view, the painter view at two pinned
  * times, and one sky and one cypress pose at a pinned time) with `extra-query` appended, so two
@@ -14,12 +14,15 @@
  * `measure` boots each wrap variant with `?wrap=` and prints, per variant: the bare share under
  * `?coverage` at the 24 coverage poses (tests/world-poses.ts) over pinned times, binary and
  * coverage-weighted as tests/e2e/world-coverage.spec.ts counts them (the worst of each shown); the
- * share of drawn sky strokes below 0.8 of their rest size, below 0.8 and 0.05 alpha, and on the way
- * back, at motiont 3.7 from `__goghDiag().wrap`; and the per-pixel temporal flicker
+ * share of drawn sky strokes below 0.8 of their rest size and on the way back, and the local
+ * counter-flow, at motiont 3.7 from `__goghDiag().wrap`, and the counter-flow and returning share
+ * over one period at spot ahead; and the per-pixel temporal flicker
  * (`temporalFlicker`) at the sky poses over 12 frames stepped at 1/72 s of motion time, and over 8
  * frames of seeded 0.1-0.3 mm eye jitter at a pinned time (the shimmer probe's jitter).
- * `shots` writes the painter view of each variant at motiont 3.7, and at a coherent phase halfway
- * into the wrap window (`?motionphase=0&motiont=7.76`, f = 0.97), as JPEGs.
+ * `shots` writes the painter view of each variant whose name contains `name-part` at motiont 3.7
+ * and a quarter period later at 5.7, each stroke at its own phase, as JPEGs. `measure` and `shots`
+ * append `extra-query` (such as `&waveturns=3`) to every boot, and `shots` adds it, without its
+ * punctuation, to the file name.
  * It follows the host load rule: before a capture run and before each variant's measurement it
  * waits, at most 15 minutes, for a 1-minute load average of 15 or less, and it records the load
  * before and after.
@@ -33,14 +36,14 @@ import { gpuArgs } from '../tests/e2e/gpu.ts';
 import { COVERAGE_POSES } from '../tests/world-poses.ts';
 import { temporalFlicker } from './zfight-lib.ts';
 
-const [mode, base, out, extra = ''] = process.argv.slice(2);
+const [mode, base, out, extra = '', more = ''] = process.argv.slice(2);
 if (
   (mode !== 'capture' && mode !== 'measure' && mode !== 'shots') ||
   !base ||
   (mode !== 'measure' && !out)
 ) {
   console.error(
-    'usage: bun scripts/motion-variant-probe.ts capture <base-url> <out-dir> [extra] | measure <base-url> [name-part] | shots <base-url> <out-dir>',
+    'usage: bun scripts/motion-variant-probe.ts capture <base-url> <out-dir> [extra] | measure <base-url> [name-part] [extra] | shots <base-url> <out-dir> [name-part] [extra]',
   );
   process.exit(2);
 }
@@ -66,7 +69,7 @@ const COVERAGE: readonly Pose[] = COVERAGE_POSES.map(
 const SKY_TIMES = [0.5, 3.7, 6.1];
 /** A pose's eye and heading, as `__goghPose` takes them. */
 const at = (p: Pose): number[] => [p[1], p[2], p[3], p[4], p[5]];
-const WRAPS = ['base', 'opacity', 'pingpong'] as const;
+const WRAPS = ['base', 'pingpong', 'wave'] as const;
 
 async function waitForLoad(): Promise<number> {
   const start = Date.now();
@@ -208,14 +211,15 @@ try {
   } else if (mode === 'shots') {
     mkdirSync(out, { recursive: true });
     const before = await waitForLoad();
-    for (const wrap of WRAPS) {
+    for (const wrap of WRAPS.filter((w) => w.includes(extra))) {
       for (const [suffix, query] of [
         ['t3.7', 'motiont=3.7'],
-        ['midwrap', 'motionphase=0&motiont=7.76'],
+        ['t5.7', 'motiont=5.7'],
       ] as const) {
-        await boot(page, `${world}&painter&${query}&wrap=${wrap}`);
+        await boot(page, `${world}&painter&${query}&wrap=${wrap}${more}`);
         await hideHud(page);
-        const file = join(out, `p4-wrap-${wrap}-${suffix}.jpg`);
+        const tag = more.replace(/[^a-z0-9]/gi, '');
+        const file = join(out, `p4-wrap-${wrap}${tag ? `-${tag}` : ''}-${suffix}.jpg`);
         await sharp(await png(page))
           .jpeg({ quality: 88 })
           .toFile(file);
@@ -226,8 +230,8 @@ try {
   } else {
     // `measure <base-url> <name-part>` measures only the variants whose name contains it.
     for (const wrap of WRAPS.filter((w) => w.includes(out ?? ''))) {
-      const name = `wrap ${wrap}`;
-      const flag = `wrap=${wrap}`;
+      const name = `wrap ${wrap}${extra}`;
+      const flag = `wrap=${wrap}${extra}`;
       const before = await waitForLoad();
       // Coverage at the 24 coverage poses, over pinned times.
       await boot(page, `painting=starry-night&seed=1&diag&shot&coverage&motiont=0.5&${flag}`);
@@ -267,13 +271,12 @@ try {
             window.__goghDiag?.().wrap as {
               drawn: number;
               small: number;
-              fading: number;
-              hidden: number;
               returning: number;
+              counterFlow: { share: number; pairs: number };
             },
         );
         sizes.push(
-          `${p[0]} ${pct(w.small / w.drawn)} small, ${pct(w.fading / w.drawn)} fading, ${pct(w.hidden / w.drawn)} hidden, ${pct(w.returning / w.drawn)} returning`,
+          `${p[0]} ${pct(w.small / w.drawn)} small, ${pct(w.returning / w.drawn)} returning, ${pct(w.counterFlow.share)} counter-flow of ${w.counterFlow.pairs} pairs`,
         );
         const stepped: Buffer[] = [];
         for (let k = 0; k < 12; k++) {
@@ -293,6 +296,27 @@ try {
         );
       }
       console.log(`${name} at motiont 3.7: ${sizes.join('; ')}`);
+      // The counter-flow and returning share over one 8 s period at spot ahead, every 0.5 s.
+      await pose(page, at(SKY_POSES[0]));
+      const counter: number[] = [];
+      const back: number[] = [];
+      for (let k = 0; k < 16; k++) {
+        await time(page, 0.25 + k / 2);
+        const w = await page.evaluate(
+          () =>
+            window.__goghDiag?.().wrap as {
+              returningShare: number;
+              counterFlow: { share: number };
+            },
+        );
+        counter.push(w.counterFlow.share);
+        back.push(w.returningShare);
+      }
+      const span = (v: number[]): string =>
+        `mean ${pct(v.reduce((a, b) => a + b, 0) / v.length)}, ${pct(Math.min(...v))} to ${pct(Math.max(...v))}`;
+      console.log(
+        `${name} over a period at ${SKY_POSES[0][0]}: counter-flow ${span(counter)}; returning ${span(back)}`,
+      );
       console.log(`${name} flicker (flicker / per frame / clustered, %): ${flicker.join('; ')}`);
       console.log(`${name} load ${before.toFixed(1)} → ${loadavg()[0].toFixed(1)}`);
     }
