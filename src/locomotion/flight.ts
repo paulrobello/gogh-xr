@@ -14,6 +14,7 @@ import type { Vec3 } from '../render/strokes/frame';
 import { MAX_DT } from '../xr/input';
 import { type LocomotionSettings, MAX_MOVE_SPEED, MIN_MOVE_SPEED } from './settings';
 import {
+  effectiveOffset,
   type Ground,
   type HeadPose,
   type LocomotionState,
@@ -165,7 +166,7 @@ export function fly(
     hz *= scale;
   }
   const groundY = ground.heightAt(hx, hz);
-  const offset = settings.seated ? state.seatedOffset : 0;
+  const offset = effectiveOffset(state, settings, head.y);
   const floor = groundY + offset;
   // A head below its expected eye height (the standing height, less the seated offset) caps as if
   // at it: before the first XR pose head.y is 0, and the first real pose must not render above.

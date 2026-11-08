@@ -140,13 +140,33 @@ export function placeRig(
   state.grounded = false;
 }
 
-/** Captures the seated offset from the seated head height (rig-local y). Never negative. */
+/** The eye never drops below this height above the ground, metres. */
+export const MIN_EYE_HEIGHT = 0.3;
+
+/**
+ * The rig offset in force this frame: the calibrated seated offset while seated, else 0. It may be
+ * negative (a low standing height lowers the eye), but never lets the eye (offset plus the head's
+ * rig-local y) sit below `MIN_EYE_HEIGHT` above the ground.
+ */
+export function effectiveOffset(
+  state: LocomotionState,
+  settings: LocomotionSettings,
+  headY: number,
+): number {
+  return settings.seated ? Math.max(state.seatedOffset, MIN_EYE_HEIGHT - headY) : 0;
+}
+
+/**
+ * Captures the seated offset from the seated head height (rig-local y). It is negative when the
+ * standing height is below the head, so lowering the slider lowers the eye. The standing height is
+ * at least 1 m, so the eye floor binds only through `effectiveOffset`, on a live head drop.
+ */
 export function calibrateSeated(
   state: LocomotionState,
   settings: LocomotionSettings,
   headY: number,
 ): void {
-  state.seatedOffset = Math.max(0, settings.standingHeight - headY);
+  state.seatedOffset = settings.standingHeight - headY;
 }
 
 /** Smoothstep on [0, 1]. */
@@ -206,7 +226,7 @@ export function step(
   }
   state.grounded = true;
   const target = ground.heightAt(hx, hz);
-  const offset = settings.seated ? state.seatedOffset : 0;
+  const offset = effectiveOffset(state, settings, head.y);
   if (state.dropping) {
     state.dropElapsed += t;
     state.groundY = target;
@@ -222,6 +242,9 @@ export function step(
     return;
   }
   state.groundY += (target - state.groundY) * (1 - Math.exp(-t / GROUND_FOLLOW_TAU));
-  position[1] = state.groundY + offset;
+  // The eye floor is measured against the true ground under the head, not the eased groundY, so a
+  // fast uphill walk cannot dip the eye under it while groundY lags.
+  const floorY = settings.seated ? target + MIN_EYE_HEIGHT - head.y : Number.NEGATIVE_INFINITY;
+  position[1] = Math.max(state.groundY + offset, floorY);
   state.altitude = position[1] + head.y - target;
 }

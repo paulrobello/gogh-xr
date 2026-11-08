@@ -217,6 +217,37 @@ describe('flight', () => {
   });
 });
 
+describe('flight with a negative seated offset', () => {
+  const LOW: LocomotionSettings = { ...SEATED, standingHeight: 1 };
+
+  it('floors the eye at the lowered standing height, below the seated head height', () => {
+    const seatedHead = { ...STANDING, y: 1.5 };
+    const state = flying(0, 10, 0);
+    calibrateSeated(state, LOW, seatedHead.y);
+    expect(state.seatedOffset).toBeCloseTo(-0.5, 12);
+    for (let i = 0; i < 400; i += 1) fly(state, DOWN, SLOPE, NO_BOUNDARY, LOW, 0.05, seatedHead, 0);
+    expect(state.position[1]).toBeCloseTo(-0.5, 12);
+    expect(state.altitude).toBeCloseTo(1, 12);
+  });
+
+  it('keeps the eye 0.3 m above the ground when the head drops under the floor', () => {
+    const state = flying(0, 10, 0);
+    state.seatedOffset = -0.5;
+    const low = { ...STANDING, y: 0.2 };
+    for (let i = 0; i < 400; i += 1) fly(state, DOWN, SLOPE, NO_BOUNDARY, LOW, 0.05, low, 0);
+    expect(altitude(state, SLOPE, low)).toBeGreaterThanOrEqual(0.3 - EPSILON);
+  });
+
+  it('caps the altitude from the expected head height, which a negative offset raises', () => {
+    const seatedHead = { ...STANDING, y: 1.5 };
+    const state = flying(0, 10, 0);
+    calibrateSeated(state, LOW, seatedHead.y);
+    for (let i = 0; i < 2000; i += 1)
+      fly(state, UP, FLAT_GROUND, NO_BOUNDARY, LOW, 0.05, seatedHead, 0);
+    expect(altitude(state, FLAT_GROUND, seatedHead)).toBeCloseTo(MAX_ALTITUDE, 9);
+  });
+});
+
 describe('the flight boundary', () => {
   it('reads the radial factor at ground level, so a high flight over the origin is not pushed', () => {
     expect(boundaryFactor([0, 39, 0])).toBeGreaterThan(BOUNDARY_PUSH_START);

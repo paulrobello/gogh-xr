@@ -177,9 +177,41 @@ describe('seated mode', () => {
     expect(state.seatedOffset).toBeCloseTo(0.5, 12);
     run(state, 1, 0.011, IDLE, FLAT_GROUND, SEATED, { ...STANDING, y: 1.1 });
     expect(state.position[1]).toBeCloseTo(0.5, 12);
-    // A head above the standing height never sinks the rig.
-    calibrateSeated(state, SEATED, 1.9);
-    expect(state.seatedOffset).toBe(0);
+  });
+
+  it('lowers the eye below the seated head height when standing height is lower', () => {
+    const state = at(0, 0);
+    const low = { ...SEATED, standingHeight: 1.2 };
+    calibrateSeated(state, low, 1.5);
+    expect(state.seatedOffset).toBeCloseTo(-0.3, 12);
+    run(state, 1, 0.011, IDLE, FLAT_GROUND, low, { ...STANDING, y: 1.5 });
+    expect(state.position[1]).toBeCloseTo(-0.3, 12);
+    // Eye height above ground = rig y + head y = the standing height.
+    expect(state.position[1] + 1.5).toBeCloseTo(1.2, 12);
+  });
+
+  it('keeps the eye at least 0.3 m above the ground when the head drops', () => {
+    const state = at(0, 0);
+    const low = { ...SEATED, standingHeight: 1 };
+    calibrateSeated(state, low, 1.6);
+    // The head crouches to 0.1 m rig-local: the offset cannot take the eye below 0.3 m.
+    run(state, 1, 0.011, IDLE, FLAT_GROUND, low, { ...STANDING, y: 0.1 });
+    expect(state.position[1] + 0.1).toBeGreaterThanOrEqual(0.3 - 1e-9);
+  });
+
+  it('measures the eye floor against the true ground on a fast uphill, not the eased height', () => {
+    // 1 m of rise per metre of -z at 2 m/s: the eased ground height lags the true one by 0.16 m.
+    const climb: Ground = { heightAt: (_x, z) => -z };
+    const state = at(0, 0);
+    state.seatedOffset = -0.5;
+    const head = { ...STANDING, y: 0.5 };
+    let worst = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < 200; i += 1) {
+      step(state, FORWARD, climb, SEATED, 0.02, head);
+      const eye = state.position[1] + head.y - climb.heightAt(state.position[0], state.position[2]);
+      worst = Math.min(worst, eye);
+    }
+    expect(worst).toBeGreaterThanOrEqual(0.3 - 1e-9);
   });
 
   it('applies the offset only while seated', () => {

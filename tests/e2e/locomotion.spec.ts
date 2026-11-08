@@ -402,8 +402,9 @@ async function placeEye(
   z: number,
   yaw: number,
   pitchRad = 0,
+  ground: Pick<typeof terrain, 'heightAt'> = terrain,
 ): Promise<void> {
-  const y = terrain.heightAt(x, z) + 1.6;
+  const y = ground.heightAt(x, z) + 1.6;
   await page.evaluate(([px, py, pz, w, p]) => window.__goghPose?.(px, py, pz, w, p), [
     x,
     y,
@@ -460,13 +461,22 @@ function houseApproach(distance: number): [[number, number], [number, number]] {
 }
 
 /**
- * A desktop eye pose whose arc lands on ground of 38° or more, found by scanning the terrain:
+ * Seed 8's world: its terrain climbs past the 45° landing limit, which the default seed's does not
+ * (its steepest ground is about 41°). The slope-rejection test boots it with `&seed=8`.
+ */
+const STEEP_SEED = 8;
+const steepTerrain = createTerrain(STEEP_SEED);
+const steepBlocked = createFootprintTest(createVillage(STEEP_SEED, steepTerrain));
+
+/**
+ * A desktop eye pose, in the `STEEP_SEED` world, whose arc lands on ground steeper than the
+ * landing limit, found by scanning the terrain:
  * steep points 12-35 m from the origin, eyes 3-9 m short of them toward the origin, and pitches
  * from +30° to -70°, each traced with the app's own `traceArc` against the world's terrain and
  * footprints. The landing must also sit 2 m clear of every footprint.
  */
 function steepPose(): { eye: [number, number]; yaw: number; pitchRad: number; slope: number } {
-  const world = { ground: terrain, blocked };
+  const world = { ground: steepTerrain, blocked: steepBlocked };
   const out = createArcResult();
   for (let x = -35; x <= 35; x += 1) {
     for (let z = -35; z <= 35; z += 1) {
@@ -474,9 +484,9 @@ function steepPose(): { eye: [number, number]; yaw: number; pitchRad: number; sl
       if (r < 12 || r > 35) continue;
       for (let dist = 3; dist <= 9; dist += 1) {
         const eye: [number, number] = [x - (x / r) * dist, z - (z / r) * dist];
-        if (blocked(eye[0], eye[1])) continue;
+        if (steepBlocked(eye[0], eye[1])) continue;
         const yaw = yawToward(eye[0], eye[1], x, z);
-        const origin: Vec3 = [eye[0], terrain.heightAt(eye[0], eye[1]) + 1.6, eye[1]];
+        const origin: Vec3 = [eye[0], steepTerrain.heightAt(eye[0], eye[1]) + 1.6, eye[1]];
         for (let deg = 30; deg >= -70; deg -= 0.5) {
           const p = (deg * Math.PI) / 180;
           traceArc(
@@ -487,18 +497,18 @@ function steepPose(): { eye: [number, number]; yaw: number; pitchRad: number; sl
           );
           if (out.reason !== 'slope' || !out.hit) continue;
           const [hx, , hz] = out.hit;
-          const n = terrain.normalAt(hx, hz);
+          const n = steepTerrain.normalAt(hx, hz);
           const slope = (Math.acos(n[1] / Math.hypot(...n)) * 180) / Math.PI;
-          let clear = slope >= 38;
+          let clear = slope >= MAX_SLOPE_DEG + 1;
           for (let dx = -2; dx <= 2; dx += 1) {
-            for (let dz = -2; dz <= 2; dz += 1) if (blocked(hx + dx, hz + dz)) clear = false;
+            for (let dz = -2; dz <= 2; dz += 1) if (steepBlocked(hx + dx, hz + dz)) clear = false;
           }
           if (clear) return { eye, yaw, pitchRad: p, slope };
         }
       }
     }
   }
-  throw new Error('no arc lands on a 38° slope');
+  throw new Error('no arc lands on a slope past the limit');
 }
 
 /**
@@ -593,16 +603,48 @@ test('a right-stick aim at a house in XR is rejected and the release leaves the 
   expect(after.position[2]).toBeCloseTo(held.position[2], 6);
 });
 
-test('desktop T aimed at a slope of 35° or more is rejected as a slope, and its release does not jump', async ({
+test("desktop T aimed up the painter's hill from its foot lands, even on ground past the old 35° limit", async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(180_000);
+  await bootWorld(xr, WORLD);
+  await page.keyboard.down('KeyT');
+  const seen: string[] = [];
+  let validSteep = 0;
+  for (const azDeg of [0, 90, 180, 270]) {
+    const a = (azDeg * Math.PI) / 180;
+    const eye: [number, number] = [13 * Math.sin(a), -13 * Math.cos(a)];
+    const yaw = yawToward(eye[0], eye[1], 0, 0);
+    for (let deg = 0; deg <= 24; deg += 4) {
+      await placeEye(page, eye[0], eye[1], yaw, (deg * Math.PI) / 180);
+      await xr.waitFrames(3);
+      const { aim } = await rig(xr);
+      if (!aim.active || !aim.hit) continue;
+      const n = terrain.normalAt(aim.hit[0], aim.hit[2]);
+      const slope = (Math.acos(n[1] / Math.hypot(...n)) * 180) / Math.PI;
+      seen.push(`az${azDeg} pitch${deg}: ${aim.reason} ${slope.toFixed(1)}deg`);
+      if (slope >= 35) {
+        expect(aim.reason, seen.join(' | ')).toBe('ok');
+        validSteep += 1;
+      }
+    }
+  }
+  console.log(`[e2e] hill climb aims ${seen.join(' | ')}`);
+  await page.keyboard.up('KeyT');
+  expect(validSteep).toBeGreaterThan(0);
+});
+
+test('desktop T aimed at a slope past the 45° limit is rejected as a slope, and its release does not jump', async ({
   page,
   xr,
 }) => {
   test.setTimeout(180_000);
   const { eye, yaw, pitchRad, slope } = steepPose();
-  expect(slope).toBeGreaterThanOrEqual(38);
-  await bootWorld(xr, WORLD);
+  expect(slope).toBeGreaterThan(MAX_SLOPE_DEG);
+  await bootWorld(xr, `${WORLD}&seed=${STEEP_SEED}`);
   await page.keyboard.down('KeyT');
-  await placeEye(page, eye[0], eye[1], yaw, pitchRad);
+  await placeEye(page, eye[0], eye[1], yaw, pitchRad, steepTerrain);
   await expect.poll(async () => (await rig(xr)).aim.reason).toBe('slope');
   const aimed = await rig(xr);
   expect(aimed.aim.valid).toBe(false);

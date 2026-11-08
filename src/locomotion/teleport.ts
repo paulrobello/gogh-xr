@@ -9,7 +9,7 @@
  */
 import type { Vec3 } from '../render/strokes/frame';
 import type { LocomotionSettings } from './settings';
-import type { HeadPose, LocomotionState } from './step';
+import { effectiveOffset, type HeadPose, type LocomotionState } from './step';
 
 /** Launch speed along the aim, m/s. */
 export const LAUNCH_SPEED = 8;
@@ -23,8 +23,12 @@ export const MAX_SAMPLES = 40;
 export const MAX_FLIGHT_TIME = 3;
 /** Bisection steps that refine the hit between the last sample above ground and the first below. */
 export const BISECT_STEPS = 24;
-/** A landing is valid on ground whose normal is less than this far off +Y, degrees. */
-export const MAX_SLOPE_DEG = 35;
+/**
+ * A landing is valid on ground whose normal is less than this far off +Y, degrees. Ground follow
+ * walks any slope, and the painter's hill climbs to about 41° at the default seed, so the limit
+ * sits above that.
+ */
+export const MAX_SLOPE_DEG = 45;
 /**
  * A landing is rejected where `boundaryFactor` is above this. The factor is exactly 0 inside the
  * 45 m start of its ramp, which is also where the haze shell starts, and P3.5 pushes back from 0.8,
@@ -203,7 +207,7 @@ export function teleportRig(
   state.position[0] = hit[0] - (cos * head.x + sin * head.z);
   state.position[2] = hit[2] - (-sin * head.x + cos * head.z);
   state.groundY = hit[1];
-  state.position[1] = hit[1] + (settings.seated ? state.seatedOffset : 0);
+  state.position[1] = hit[1] + effectiveOffset(state, settings, head.y);
   state.held = false;
   state.grounded = true;
 }

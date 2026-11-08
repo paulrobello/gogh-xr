@@ -18,7 +18,10 @@ import {
   teleportRig,
   traceArc,
 } from '../src/locomotion/teleport';
+import { createFootprintTest } from '../src/paintings/starry-night/footprints';
 import type { Vec3 } from '../src/render/strokes/frame';
+import { createTerrain } from '../src/world/terrain';
+import { createVillage } from '../src/world/village';
 
 const UP: Vec3 = [0, 1, 0];
 const ORIGIN: Vec3 = [0, 1.5, 0];
@@ -139,12 +142,21 @@ describe('traceArc on a slope', () => {
 });
 
 describe('landing validity', () => {
-  it('rejects ground steeper than 35°, still reporting the hit', () => {
-    const steep = trace(ORIGIN, [1, 0, 0], rampX(Math.tan(40 * DEG)));
+  it('rejects ground steeper than the 45° limit, still reporting the hit', () => {
+    expect(MAX_SLOPE_DEG).toBe(45);
+    const steep = trace(ORIGIN, [1, 0, 0], rampX(Math.tan(46 * DEG)));
     expect(steep.hit).not.toBeNull();
     expect(steep.valid).toBe(false);
     expect(steep.reason).toBe('slope');
-    expect(trace(ORIGIN, [1, 0, 0], rampX(Math.tan(30 * DEG))).reason).toBe('ok');
+    expect(trace(ORIGIN, [1, 0, 0], rampX(Math.tan(44 * DEG))).reason).toBe('ok');
+  });
+
+  it('keeps the footprint and boundary checks ahead of the slope on a steep ramp', () => {
+    const steep = rampX(Math.tan(50 * DEG));
+    const blocked = (): boolean => true;
+    expect(trace(ORIGIN, [1, 0, 0], { ...steep, blocked }).reason).toBe('footprint');
+    const boundaryFactor = (): number => 0.5;
+    expect(trace(ORIGIN, [1, 0, 0], { ...steep, blocked, boundaryFactor }).reason).toBe('boundary');
   });
 
   it('measures the slope from the normal at the hit, not from the height field', () => {
@@ -280,6 +292,23 @@ describe('teleportRig', () => {
     expect(state.held).toBe(false);
     expect(state.grounded).toBe(true);
   });
+
+  it('lands a seated eye lower than the seated head with a negative offset', () => {
+    const state = createLocomotionState();
+    state.seatedOffset = -0.5;
+    const seated = { ...DEFAULT_LOCOMOTION_SETTINGS, seated: true };
+    teleportRig(state, { ...head, y: 1.5 }, [1, 2, 3], seated);
+    expect(state.position[1]).toBe(1.5);
+  });
+
+  it('keeps the landed eye 0.3 m above the hit when the head is low and the offset negative', () => {
+    const state = createLocomotionState();
+    state.seatedOffset = -0.5;
+    const seated = { ...DEFAULT_LOCOMOTION_SETTINGS, seated: true };
+    const low = { ...head, y: 0.1 };
+    teleportRig(state, low, [1, 2, 3], seated);
+    expect(state.position[1] + low.y).toBeGreaterThanOrEqual(2 + 0.3 - 1e-9);
+  });
 });
 
 describe('the blink', () => {
@@ -319,5 +348,41 @@ describe('the blink', () => {
     startBlink(blink);
     expect(stepBlink(blink, 0.1)).toBe(true);
     expect(blink.fade).toBe(1);
+  });
+});
+
+describe("the painter's hill (real heightfield, seed 1)", () => {
+  const terrain = createTerrain(1);
+  const world: LandingWorld = {
+    ground: { heightAt: terrain.heightAt, normalAt: terrain.normalAt },
+    blocked: createFootprintTest(createVillage(1, terrain)),
+  };
+
+  it('accepts a teleport aimed up the hill from its foot, at every azimuth', () => {
+    const rejected: string[] = [];
+    let landedOnSteep = 0;
+    for (let az = 0; az < 360; az += 5) {
+      const a = az * DEG;
+      const x = 13 * Math.sin(a);
+      const z = -13 * Math.cos(a);
+      const eye: Vec3 = [x, terrain.heightAt(x, z) + 1.4, z];
+      for (const pitch of [0, 5, 10, 15, 20]) {
+        const p = pitch * DEG;
+        const out = trace(
+          eye,
+          [(-x / 13) * Math.cos(p), Math.sin(p), (-z / 13) * Math.cos(p)],
+          world,
+        );
+        if (!out.hit) continue;
+        const n = terrain.normalAt(out.hit[0], out.hit[2]);
+        // Judge only landings on the flank, on ground above the old 35 degree limit.
+        if (Math.acos(n[1]) / DEG >= 35) {
+          landedOnSteep += 1;
+          if (out.reason !== 'ok') rejected.push(`az ${az} pitch ${pitch}: ${out.reason}`);
+        }
+      }
+    }
+    expect(landedOnSteep).toBeGreaterThan(20);
+    expect(rejected).toEqual([]);
   });
 });

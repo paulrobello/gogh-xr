@@ -330,6 +330,17 @@ describe('seated mode', () => {
     expect(locomotion.diag().position[1]).toBe(0);
   });
 
+  it('recalibrates on a standing height change, and a lower height lowers the eye below the head', () => {
+    const { locomotion, xrFrame } = setup(SEATED);
+    const head = new Vector3(0, 1.5, 0);
+    xrFrame(IDLE, head);
+    for (let i = 0; i < 5; i += 1) xrFrame(IDLE, head);
+    expect(locomotion.diag().position[1]).toBeCloseTo(0.1, 9);
+    locomotion.setSettings({ ...SEATED, standingHeight: 1 });
+    for (let i = 0; i < 40; i += 1) xrFrame(IDLE, head);
+    expect(locomotion.diag().position[1]).toBeCloseTo(-0.5, 9);
+  });
+
   it('is never applied when the setting is off', () => {
     const { locomotion, xrFrame } = setup();
     xrFrame(IDLE, new Vector3(0, 1.6, 0));
