@@ -625,6 +625,13 @@ test.describe('reactive strokes (P4.5)', () => {
    * Reports the largest wake weight and speed over every disturber (the swept hand alone for the
    * sweep), the swept hand's strongest single wake sample, the largest box stroke count and how far
    * the rig moved.
+   *
+   * The sweep is a function of the XR frame's own time, set in the controller's `onFrameStart`
+   * just before IWER copies the pose into the target-ray space. IWER stamps a frame with
+   * `performance.now()` inside its callback, which jitters by ±2-4 ms against the window rAF
+   * stamp, and it reads a pose set from rAF only on the next tick. A rAF-timed sweep therefore
+   * reached the tracker at 1.5 × (previous rAF interval) / (this XR interval): 1.34-1.71 m/s on a
+   * quiet host, past 2 m/s under load.
    */
   const watch = (
     page: Page,
@@ -649,10 +656,20 @@ test.describe('reactive strokes (P4.5)', () => {
           const rig0 = (diag().rig as { position: number[] }).position;
           const start = [rig0[0], rig0[1], rig0[2]];
           const out = { weight: 0, peak: 0, speed: 0, handSpeed: 0, boxStrokes: 0, moved: 0 };
+          if (z !== null) {
+            const frameStart = right.onFrameStart.bind(right);
+            let sweepT0: number | null = null;
+            right.onFrameStart = (frame) => {
+              const time = frame.predictedDisplayTime;
+              sweepT0 ??= time;
+              const t = (time - sweepT0) / 1000;
+              right.position.set(-0.4 + 1.5 * Math.min(t, 0.8 / 1.5), eyeHeight, -z);
+              frameStart(frame);
+            };
+          }
           const t0 = performance.now();
           const step = (now: number): void => {
             const t = (now - t0) / 1000;
-            if (z !== null) right.position.set(-0.4 + 1.5 * Math.min(t, 0.8 / 1.5), eyeHeight, -z);
             const d = diag() as {
               reactive: {
                 boxStrokes: number | null;
@@ -690,7 +707,10 @@ test.describe('reactive strokes (P4.5)', () => {
               d.rig.position[2] - start[2],
             );
             if (t * 1000 < duration) requestAnimationFrame(step);
-            else done(out);
+            else {
+              Reflect.deleteProperty(right, 'onFrameStart');
+              done(out);
+            }
           };
           requestAnimationFrame(step);
         }),
@@ -762,7 +782,13 @@ test.describe('reactive strokes (P4.5)', () => {
     expect(still.peak).toBeGreaterThan(0.5);
     expect(walking.peak).toBeGreaterThan(still.peak * 0.75);
     expect(walking.peak).toBeLessThan(still.peak * 1.25);
-    // World velocity would add the 2 m/s walk to the 1.5 m/s sweep and clamp at 3 m/s.
+    // Catches a reintroduced clock lag: the rAF-timed sweep read up to 1.71 m/s.
+    expect(still.handSpeed).toBeCloseTo(1.5, 1);
+    expect(walking.handSpeed).toBeCloseTo(1.5, 1);
+    // Rig-relative, the hand reads the 1.5 m/s sweep. World velocity would add the rig's motion: at
+    // least hypot(1.5, 2) = 2.5 m/s from the 2 m/s walk along rig -z, and a forced world-velocity
+    // tracker read 3.00 m/s, the clamp. This bar carries the Q41 check: the wake share is capped at
+    // 1 from 1.5 m/s, so the peak bars read the same (0.946) under world velocity.
     expect(walking.handSpeed).toBeLessThan(2);
     expect(await glErrors(page)).toEqual([]);
   });
