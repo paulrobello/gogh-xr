@@ -52,6 +52,7 @@ const summary = (p: PortalDiag) => {
     longestWorkMs: p.longestWorkMs,
     longestWorkPhase: p.longestWorkPhase,
     longestStep: p.longestStep,
+    longestStepMs: p.longestStepMs,
     durationMs: p.durationMs,
     // The longest interval ends at frame `at`, so the frame before it did the work that delayed it.
     longestInterval: p.frames.slice(Math.max(0, at - 1), at + 1),
@@ -149,8 +150,6 @@ async function roundTrip(page: Page, xr: Xr): Promise<{ enter: PortalDiag; back:
   await expect.poll(async () => (await portal(xr)).state).toBe('returning');
   await settled(xr, 'gallery');
   const back = await portal(xr);
-  expectWithinBar(enter, 'enter');
-  expectWithinBar(back, 'return');
   return { enter, back };
 }
 
@@ -208,6 +207,10 @@ test('a round trip returns the GPU geometry and texture counts to the baseline (
       back: [first.back, second.back].map(summary),
     }),
   );
+  for (const [trip, { enter, back }] of [first, second].entries()) {
+    expectWithinBar(enter, `enter ${trip}`);
+    expectWithinBar(back, `return ${trip}`);
+  }
   expect(await glErrors(page)).toEqual([]);
 });
 
