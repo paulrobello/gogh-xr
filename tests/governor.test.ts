@@ -7,6 +7,7 @@ import {
   type Governor,
   type GovernorEvent,
   type GovernorLevels,
+  holdOf,
   MAX_HOLD_MS,
   MAX_PROBE_WAIT_MS,
   MIN_BAND_DENSITY,
@@ -173,6 +174,16 @@ describe('governor shedding', () => {
     expect(gov.levels.density.far).toBeCloseTo(DEFAULT_BAND_DENSITY.far * 0.7, 10);
     expect(gov.levels.size.far).toBeCloseTo(DEFAULT_BAND_SIZE.far * Math.sqrt(1 / 0.7), 10);
     expect(gov.levels.density.mid).toBe(DEFAULT_BAND_DENSITY.mid);
+    expect(gov.snapshot().densityLaw).toBe('area');
+  });
+
+  test('under the count law a density shed drops strokes and the survivors keep their size', () => {
+    const gov = createGovernor({ mode: 'default', targetHz: 90, densityLaw: 'count' });
+    const { events } = drive(gov, 0, 10_000, { interval: () => OVER, until: isDensity });
+    expect(events.at(-1)?.step).toBe('far-density');
+    expect(gov.levels.density.far).toBeCloseTo(DEFAULT_BAND_DENSITY.far * 0.7, 10);
+    expect(gov.levels.size.far).toBe(DEFAULT_BAND_SIZE.far);
+    expect(gov.snapshot().densityLaw).toBe('count');
   });
 
   test('a band that draws nothing is skipped: shedding it would buy no time', () => {
@@ -656,6 +667,31 @@ describe('governor no-gain rule', () => {
     expect(snap.level).toBe(0);
     expect(snap.densityMin).toBe(true);
     expect(snap.noGainHeld).toEqual(['foveation', 'fb-scale', 'foveation-max', 'density']);
+  });
+
+  test('under the count law each band holds apart, so a far no-gain still lets mid and near try', () => {
+    expect(holdOf('far-density')).toBe('density');
+    expect(holdOf('far-density', 'count')).toBe('far-density');
+    expect(holdOf('fb-scale', 'count')).toBe('fb-scale');
+    const gov = createGovernor({ mode: 'default', targetHz: 90, densityLaw: 'count' });
+    const { events } = drive(gov, 0, 25_000, { interval: () => OVER, rate: 'pending' });
+    expect(summary(events)).toEqual([
+      ...UNDONE,
+      'shed mid-density x1',
+      'no-gain mid-density x1',
+      'shed near-density x1',
+      'no-gain near-density x1',
+      'rate frame-rate x1',
+    ]);
+    expect(gov.levels.density).toEqual(DEFAULT_BAND_DENSITY);
+    expect(gov.snapshot().noGainHeld).toEqual([
+      'foveation',
+      'fb-scale',
+      'foveation-max',
+      'far-density',
+      'mid-density',
+      'near-density',
+    ]);
   });
 
   test('the hold lapses after 30 s and the step is tried again', () => {

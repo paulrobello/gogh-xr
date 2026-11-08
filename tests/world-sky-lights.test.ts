@@ -790,9 +790,9 @@ test('the cull flag bit is free, the defines and uniforms match, and the GLSL ho
   // The haze growth comes first, so the thin judges the grown quad; the shrink comes before the
   // quad's corners are placed.
   expect(glsl.indexOf('sizeScale *= 1.0 + HAZE_GROWTH * uHazeThickness;')).toBeLessThan(
-    glsl.indexOf('vec2 size = iSize * sizeScale;'),
+    glsl.indexOf('vec2 size = iSize * sizeScale * uVtxSize;'),
   );
-  expect(glsl.indexOf('vec2 size = iSize * sizeScale;')).toBeLessThan(
+  expect(glsl.indexOf('vec2 size = iSize * sizeScale * uVtxSize;')).toBeLessThan(
     glsl.indexOf('thin = skyLightThin('),
   );
   expect(glsl.indexOf('size *= sqrt(thin);')).toBeLessThan(glsl.indexOf('vec3 local = iPosition'));

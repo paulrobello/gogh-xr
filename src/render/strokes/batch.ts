@@ -1,4 +1,5 @@
 import {
+  type ArrayCamera,
   BufferAttribute,
   type Camera,
   Frustum,
@@ -39,6 +40,7 @@ import {
   type StrokeBounds,
 } from './chunks';
 import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
+import { FIT_SCALE_MASK, FIT_SCALE_SHIFT, FIT_SCALE_STEP } from './face-clamp';
 import type { Vec3 } from './frame';
 import { importanceOrder } from './importance';
 import {
@@ -50,6 +52,10 @@ import {
 } from './instance';
 import { createStrokeMaterial, HAZE_GROWTH, type StrokeMaterial } from './material';
 import { SKY_LIGHT_CULL_FLAG } from './sky-light-cull';
+import { tieKeys } from './tie-key';
+import { type Footprint, vertexArms } from './vertex-arms';
+
+export { tieKeys } from './tie-key';
 
 /** Default seed of the per-chunk importance order. */
 export const STROKE_ORDER_SEED = 1889;
@@ -249,6 +255,25 @@ export interface StrokeBatch {
    * counts it during the cull, so a per-frame read walks no chunks.
    */
   visibleByBand(): Readonly<Record<StrokeBand, number>>;
+  /**
+   * Re-applies the band sizes and every banded chunk's draw count and cull radius, after the `vtx`
+   * arm's keep share or size factor changes.
+   */
+  reapplyDensity(): void;
+  /** Views the last `update` culled for: the XR ArrayCamera's eyes, else 1. */
+  views(): number;
+  /**
+   * What the drawn strokes cover, summed over the last `update`'s views (vertex-arms.ts
+   * `Footprint`): each visible chunk's drawn strokes at their band size, the `sparse` factor
+   * included, capped at their fit level as the shader caps it, times `uVtxSize`; the solid angle,
+   * area / d² inside each view's frustum from that view's eye, at rest and face-on, so an upper
+   * bound on fill that ignores foreshortening, occlusion, haze growth, the sky-light thin and
+   * motion. Walks every drawn stroke once per view, and needs the `vtx` group active for per-view
+   * matrices (one view, the cull camera's, otherwise).
+   */
+  drawnFootprint(): Footprint;
+  /** The chunk geometries, in chunk order. */
+  geometries(): readonly InstancedBufferGeometry[];
   stats(): StrokeBatchStats;
   /**
    * Only chunks below index `n` may show from the next `update` on; Infinity (the default) shows
@@ -351,6 +376,7 @@ function createChunkGeometry(
     if (spec.integer) attribute.gpuType = IntType;
     geometry.setAttribute(spec.name, attribute);
   }
+  geometry.setAttribute('iTie', new InstancedBufferAttribute(tieKeys(buffers), 1));
   geometry.instanceCount = buffers.count;
   return geometry;
 }
@@ -705,7 +731,12 @@ export function* createStrokeBatchSteps(
   const sizes: Record<StrokeBand, number> = { ...DEFAULT_BAND_SIZE };
   const materials = {} as Record<StrokeBand, StrokeMaterial>;
   for (const band of STROKE_BANDS) {
-    materials[band] = createStrokeMaterial(atlas, sizes[band], depthWrite);
+    materials[band] = createStrokeMaterial(
+      atlas,
+      sizes[band] * vertexArms.sizeScale(),
+      depthWrite,
+      { vtxSize: vertexArms.uniforms.uVtxSize },
+    );
     materials[band].name = `stroke-a2c-${band}`;
   }
   Object.freeze(materials);
@@ -750,6 +781,15 @@ export function* createStrokeBatchSteps(
     REACTIVE_MOTION_BIT;
   const motionUniforms = materials.near.uniforms;
   const halfDiagonals: number[] = [];
+  /** Views the last `update` culled for: the XR ArrayCamera's eyes, else 1. */
+  let lastViews = 1;
+  /**
+   * While the `vtx` group is active: each view's projection × view matrix and eye from the last
+   * `update`, for `drawnFootprint`. viewCount stays 0 otherwise, so the default path keeps none.
+   */
+  const viewMatrices: Matrix4[] = [];
+  const viewEyes: Vector3[] = [];
+  let viewCount = 0;
   /** Per chunk, the box round its strokes' rest centres: min xyz then max xyz, six per chunk. */
   const centreBoxes: number[] = [];
   /**
@@ -893,9 +933,12 @@ export function* createStrokeBatchSteps(
     });
   }
 
+  /** Under the `vtx` arm `fewer` (vertex-arms.ts), the band density times its keep share. */
   function applyDensity(i: number, band: StrokeBand): void {
     const { count, pinned } = chunks[i];
-    chunks[i].setDrawCount(pinned + bandDrawCount(densities[band], count - pinned));
+    const keep = vertexArms.keep();
+    const d = keep === 1 ? densities[band] : densities[band] * keep;
+    chunks[i].setDrawCount(pinned + bandDrawCount(d, count - pinned));
   }
 
   /**
@@ -917,7 +960,8 @@ export function* createStrokeBatchSteps(
   /** While chunk `i` carries the reactive growth, a stretched stroke grows by REACTIVE_MAX_GAIN. */
   function applySize(i: number, band: StrokeBand): void {
     const grow = reactiveNear[i] ? 1 + REACTIVE_MAX_GAIN : 1;
-    cullSpheres[i].radius = reaches[i] + motionGrowth(i) + halfDiagonals[i] * sizes[band] * grow;
+    const size = sizes[band] * vertexArms.sizeScale();
+    cullSpheres[i].radius = reaches[i] + motionGrowth(i) + halfDiagonals[i] * size * grow;
   }
 
   /**
@@ -987,9 +1031,29 @@ export function* createStrokeBatchSteps(
     attach(scene: Scene) {
       if (detach) throw new Error('stroke batch is already attached to a scene');
       scene.add(group);
-      detach = addBeforeRender(scene, (_renderer, _scene, camera) => batch.update(camera));
+      detach = addBeforeRender(scene, (renderer, _scene, camera) => {
+        batch.update(camera);
+        // After the frame: renderer.compile inside a render would reset the render state.
+        if (vertexArms.needsPrepare(batch)) {
+          queueMicrotask(() =>
+            vertexArms.prepare(batch, (object) => renderer.compile(object, camera, scene)),
+          );
+        }
+      });
     },
     update(camera: Camera) {
+      const views = (camera as Partial<ArrayCamera>).cameras;
+      lastViews = (camera as Partial<ArrayCamera>).isArrayCamera && views ? views.length : 1;
+      if (vertexArms.active()) {
+        const cameras: readonly Camera[] = lastViews > 1 && views ? views : [camera];
+        cameras.forEach((view, v) => {
+          viewMatrices[v] ??= new Matrix4();
+          viewMatrices[v].multiplyMatrices(view.projectionMatrix, view.matrixWorldInverse);
+          viewEyes[v] ??= new Vector3();
+          viewEyes[v].setFromMatrixPosition(view.matrixWorld);
+        });
+        viewCount = cameras.length;
+      }
       eye.setFromMatrixPosition(camera.matrixWorld);
       const bits = (motionUniforms.uMotionLayers.value >>> 0) & MOTION_BITS;
       const calm = bits === 0 ? 0 : motionUniforms.uCalm.value;
@@ -1075,7 +1139,7 @@ export function* createStrokeBatchSteps(
         throw new RangeError(`size multiplier ${m} must be a finite number above 0`);
       }
       sizes[band] = m;
-      materials[band].uniforms.uSizeScale.value = m;
+      materials[band].uniforms.uSizeScale.value = m * vertexArms.sizeScale();
       bandOf.forEach((b, i) => {
         if (b === band) applySize(i, band);
       });
@@ -1105,6 +1169,57 @@ export function* createStrokeBatchSteps(
       for (const chunk of chunks) if (chunk.mesh.visible) visible++;
       return visible;
     },
+    reapplyDensity() {
+      const scale = vertexArms.sizeScale();
+      for (const band of STROKE_BANDS)
+        materials[band].uniforms.uSizeScale.value = sizes[band] * scale;
+      bandOf.forEach((band, i) => {
+        if (!band) return;
+        applyDensity(i, band);
+        applySize(i, band);
+      });
+    },
+    views: () => lastViews,
+    drawnFootprint() {
+      const scale = vertexArms.sizeScale();
+      const vtx = vertexArms.uniforms.uVtxSize.value;
+      const matrices = viewCount > 0 ? viewMatrices.slice(0, viewCount) : [viewProjection];
+      const eyes = viewCount > 0 ? viewEyes.slice(0, viewCount) : [eye];
+      let areaM2 = 0;
+      const srViews = matrices.map(() => 0);
+      chunks.forEach((chunk, i) => {
+        const band = bandOf[i];
+        if (!band || !chunk.mesh.visible) return;
+        const attribute = (name: string): ArrayLike<number> =>
+          (chunk.geometry.getAttribute(name) as InstancedBufferAttribute).array;
+        const p = attribute('iPosition');
+        const s = attribute('iSize');
+        const meta = attribute('iMeta');
+        const factor = sizes[band] * scale;
+        for (let j = 0; j < chunk.drawCount; j++) {
+          const level = (meta[j * 4 + 3] >> FIT_SCALE_SHIFT) & FIT_SCALE_MASK;
+          const k =
+            (level === 0 ? factor : Math.min(factor, 1 + (level - 1) * FIT_SCALE_STEP)) * vtx;
+          const area = s[j * 2] * s[j * 2 + 1] * k * k;
+          areaM2 += area;
+          const x = p[j * 3];
+          const y = p[j * 3 + 1];
+          const z = p[j * 3 + 2];
+          for (let v = 0; v < matrices.length; v++) {
+            const m = matrices[v].elements;
+            const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+            if (w <= 0) continue;
+            if (Math.abs(m[0] * x + m[4] * y + m[8] * z + m[12]) > w) continue;
+            if (Math.abs(m[1] * x + m[5] * y + m[9] * z + m[13]) > w) continue;
+            const e = eyes[v];
+            const d2 = (x - e.x) ** 2 + (y - e.y) ** 2 + (z - e.z) ** 2;
+            if (d2 > 1e-6) srViews[v] += area / d2;
+          }
+        }
+      });
+      return { areaM2, sr: srViews.reduce((a, b) => a + b, 0), srViews };
+    },
+    geometries: () => chunks.map((chunk) => chunk.geometry),
     stats() {
       const bands = {} as Record<StrokeBand, StrokeBandStats>;
       for (const band of STROKE_BANDS) {
@@ -1131,6 +1246,7 @@ export function* createStrokeBatchSteps(
       return { chunks: chunks.length, visibleChunks, total, visible, atlasMs, bands, classes };
     },
     dispose() {
+      vertexArms.unregister(batch);
       detach?.();
       detach = null;
       group.removeFromParent();
@@ -1150,5 +1266,6 @@ export function* createStrokeBatchSteps(
       if (!options.atlas) atlas.dispose();
     },
   };
+  vertexArms.register(batch);
   return batch;
 }

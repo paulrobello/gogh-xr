@@ -50,6 +50,14 @@ test('applySessionSettings with updateTargetFrameRate present', async () => {
   expect(setFoveation).toHaveBeenCalledWith(0);
 });
 
+test('applySessionSettings applies a pinned foveation (?fov) in place of the default', async () => {
+  const session = fakeSession({ updateTargetFrameRate: undefined });
+  const { renderer, setFoveation } = fakeRenderer();
+  await applySessionSettings(session, renderer, createXrState(), TARGET_FRAME_RATE, 1);
+  expect(setFoveation).toHaveBeenCalledTimes(1);
+  expect(setFoveation).toHaveBeenCalledWith(1);
+});
+
 test('applySessionSettings with updateTargetFrameRate absent', async () => {
   const session = fakeSession({ updateTargetFrameRate: undefined });
   const { renderer, setFoveation } = fakeRenderer();

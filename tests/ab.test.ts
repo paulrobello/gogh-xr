@@ -10,6 +10,7 @@ import {
   resolveAb,
 } from '../src/diag/ab';
 import { parseFlags, ZDIAG_MODES } from '../src/diag/flags';
+import { VTX_FEWER_KEEP, VTX_SMALLER_SCALE, vertexArms } from '../src/render/strokes/vertex-arms';
 
 const NONE: AbFlags = {
   ab: null,
@@ -22,13 +23,37 @@ const NONE: AbFlags = {
 const flags = (over: Partial<AbFlags>): AbFlags => ({ ...NONE, ...over });
 
 describe('AB_GROUPS', () => {
-  it('ships shimmer, zdiag-all, halo, calm and wrap with base or the default first', () => {
+  it('ships shimmer, zdiag-all, halo, calm, wrap and vtx with base or the default first', () => {
     expect(AB_GROUPS.shimmer).toEqual(['base', 'write', 'noa2c', 'sharp', 'sharp4', 'freeze']);
     expect(AB_GROUPS['zdiag-all']).toEqual(['base', ...ZDIAG_MODES]);
     expect(AB_GROUPS.halo).toEqual(['on', 'off']);
     expect(AB_GROUPS.calm).toEqual(['1', '0.5', '0.25']);
     expect(AB_GROUPS.wrap).toEqual(['base', 'pingpong', 'wave']);
-    expect(Object.keys(AB_GROUPS)).toEqual(['shimmer', 'zdiag-all', 'halo', 'calm', 'wrap']);
+    expect(AB_GROUPS.vtx).toEqual(['base', 'fewer', 'smaller', 'sparse', 'hoist']);
+    expect(Object.keys(AB_GROUPS)).toEqual(['shimmer', 'zdiag-all', 'halo', 'calm', 'wrap', 'vtx']);
+  });
+});
+
+describe('vtx', () => {
+  it('has no implying flag, and its group drives the shared vertex-arm uniform', () => {
+    expect(resolveAb(flags({ ab: 'vtx' })).activation).toEqual({ group: 'vtx', start: 0 });
+    const deps = {
+      zdiag: { setMode: vi.fn(), prepare: vi.fn() },
+      setHalo: vi.fn(),
+      setCalm: vi.fn(),
+      setWrap: vi.fn(),
+    };
+    const group = createAbGroup('vtx', deps);
+    expect(group.variants).toEqual(['base', 'fewer', 'smaller', 'sparse', 'hoist']);
+    group.apply('smaller');
+    expect(vertexArms.uniforms.uVtxSize.value).toBe(VTX_SMALLER_SCALE);
+    expect(vertexArms.keep()).toBe(1);
+    group.apply('fewer');
+    expect(vertexArms.keep()).toBe(VTX_FEWER_KEEP);
+    group.apply('base');
+    expect(vertexArms.uniforms.uVtxSize.value).toBe(1);
+    expect(vertexArms.keep()).toBe(1);
+    expect(deps.setWrap).not.toHaveBeenCalled();
   });
 });
 

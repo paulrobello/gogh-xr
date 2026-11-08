@@ -34,6 +34,7 @@ import {
   unpackInstance,
 } from '../render/strokes/instance';
 import { createStrokeMaterial, type StrokeMaterial } from '../render/strokes/material';
+import { createTieKeyAttribute, writeTieKeys } from '../render/strokes/tie-key';
 import type { ArcTarget } from './locomotion';
 import { type ArcResult, MAX_SAMPLES } from './teleport';
 
@@ -131,6 +132,9 @@ export function createArcMesh(parent: Object3D, atlas: Texture): ArcMesh {
     geometry.setAttribute(spec.name, attribute);
     attributes.push(attribute);
   }
+  const tie = createTieKeyAttribute(buffers);
+  geometry.setAttribute('iTie', tie);
+  attributes.push(tie);
   geometry.instanceCount = 0;
   const material = createStrokeMaterial(atlas);
   material.name = 'teleport-arc';
@@ -285,6 +289,7 @@ export function createArcMesh(parent: Object3D, atlas: Texture): ArcMesh {
       pushArc(aim, eye, aim.valid ? ARC_VALID_COLOR : ARC_INVALID_COLOR);
       if (aim.valid && aim.hit) pushRing(aim.hit, aim.normal, eye);
       geometry.instanceCount = count;
+      writeTieKeys(buffers, tie.array as Float32Array, count);
       for (const attribute of attributes) {
         attribute.clearUpdateRanges();
         attribute.addUpdateRange(0, count * attribute.itemSize);

@@ -38,12 +38,14 @@ test('defaults when search is empty', () => {
     wrap: null,
     waveTurns: null,
     scene: null,
+    densityLaw: null,
+    fov: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20&densitylaw=%20Count&fov=0.5',
   );
   expect(f).toEqual({
     seed: 42,
@@ -81,7 +83,25 @@ test('parses every flag', () => {
     wrap: 'wave',
     waveTurns: 3,
     scene: 'bare',
+    densityLaw: 'count',
+    fov: 0.5,
   });
+});
+
+test('?densitylaw takes area or count, trimmed and lower-cased, else null', () => {
+  expect(parseFlags('?densitylaw=area').densityLaw).toBe('area');
+  expect(parseFlags('?densitylaw=COUNT').densityLaw).toBe('count');
+  expect(parseFlags('?densitylaw=sqrt').densityLaw).toBeNull();
+  expect(parseFlags('').densityLaw).toBeNull();
+});
+
+test('?fov takes only 0, 0.5 or 1, else null (the app default)', () => {
+  expect(parseFlags('?fov=0').fov).toBe(0);
+  expect(parseFlags('?fov=0.5').fov).toBe(0.5);
+  expect(parseFlags('?fov=%201%20').fov).toBe(1);
+  for (const bad of ['?fov=0.7', '?fov=2', '?fov=-1', '?fov=high', '?fov', '']) {
+    expect(parseFlags(bad).fov).toBeNull();
+  }
 });
 
 test('?waveturns takes only 1, 2 or 3, trimmed', () => {

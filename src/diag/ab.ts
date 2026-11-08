@@ -10,6 +10,7 @@
  * builds no group and does no per-frame A/B work. The bench ignores all of it.
  */
 import { SKY_WRAPS, type SkyWrap } from '../motion/variants';
+import { VTX_ARMS, type VtxArm, vertexArms } from '../render/strokes/vertex-arms';
 import { ZDIAG_MODES, type ZdiagMode } from './flags';
 
 /**
@@ -30,11 +31,13 @@ export const AB_GROUPS = {
   calm: ['1', '0.5', '0.25'],
   /** The sky swirl's wrap treatment (`?wrap`, src/motion/variants.ts). */
   wrap: SKY_WRAPS,
+  /** Vertex cost against fill (src/render/strokes/vertex-arms.ts). No flag implies it. */
+  vtx: VTX_ARMS,
 } as const satisfies Record<string, readonly string[]>;
 
 export type AbGroupName = keyof typeof AB_GROUPS;
 
-type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap';
+type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap' | 'vtx';
 
 /** The setting each group drives. Two groups that drive the same setting are rivals. */
 const OWNS: Record<AbGroupName, AbSetting> = {
@@ -43,6 +46,7 @@ const OWNS: Record<AbGroupName, AbSetting> = {
   halo: 'halo',
   calm: 'calm',
   wrap: 'wrap',
+  vtx: 'vtx',
 };
 
 /** The flags the resolution reads (src/diag/flags.ts), plus the effective calm. */
@@ -79,7 +83,7 @@ export interface AbResolution {
 
 /** An A/B flag other than `?ab`: the setting it drives, its text and the group it implies. */
 interface ImpliedFlag {
-  readonly setting: Exclude<AbSetting, 'calm'>;
+  readonly setting: Exclude<AbSetting, 'calm' | 'vtx'>;
   readonly text: string;
   readonly variant: string;
   readonly group: AbGroupName;
@@ -295,6 +299,12 @@ export function createAbGroup(
   }
   if (name === 'wrap') {
     return { name, variants, apply: (variant) => deps.setWrap(variant as SkyWrap) };
+  }
+  if (name === 'vtx') {
+    // Each stroke batch compiles the hoist variant after its first frame (vertex-arms.ts prepare),
+    // so no switch links a program.
+    vertexArms.activate();
+    return { name, variants, apply: (variant) => vertexArms.set(variant as VtxArm) };
   }
   return { name, variants, apply: (variant) => deps.setCalm(Number(variant)) };
 }

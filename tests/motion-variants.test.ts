@@ -486,15 +486,19 @@ describe('wave', () => {
 
 describe('GLSL', () => {
   test('uSkyWrap is read only in the sky motion: one compare under base, a second inside skyWrapMotion', () => {
-    const sky = motionGlsl.slice(
-      motionGlsl.indexOf('Motion skyMotion('),
-      motionGlsl.indexOf('Motion ringMotion('),
-    );
+    // The default program: the vtx hoist arm's skyMotion (VTX_HOIST) stripped.
+    const hoist = /#ifdef VTX_HOIST\n([\s\S]*?)\n#else\n/.exec(motionGlsl)?.[1] ?? '';
+    const base = motionGlsl.replace(/#ifdef VTX_HOIST\n[\s\S]*?\n#else\n/, '');
+    const sky = base.slice(base.indexOf('Motion skyMotion('), base.indexOf('Motion ringMotion('));
     expect(sky).toContain('if (uSkyWrap != 0u) return skyWrapMotion(');
     // The declaration, skyWrapMotion's wave test and skyMotion's compare.
-    expect(motionGlsl.match(/uSkyWrap/g)).toHaveLength(3);
+    expect(base.match(/uSkyWrap/g)).toHaveLength(3);
     // uWaveTurns: the declaration and skyWavePhase's loop, which only the wave branch calls.
-    expect(motionGlsl.replace(/\/\/.*$/gm, '').match(/uWaveTurns/g)).toHaveLength(2);
+    expect(base.replace(/\/\/.*$/gm, '').match(/uWaveTurns/g)).toHaveLength(2);
+    // The hoist arm reads the rest field from its attributes: the same two compares, no field.
+    expect(hoist).toContain('Motion skyMotion(');
+    expect(hoist.match(/uSkyWrap/g)).toHaveLength(2);
+    expect(hoist).not.toMatch(/uWaveTurns|skyWavePhase|SKY_VORTEX|inversesqrt/);
     const wrap = motionGlsl.slice(
       motionGlsl.indexOf('Motion skyWrapMotion('),
       motionGlsl.indexOf('Motion skyMotion('),

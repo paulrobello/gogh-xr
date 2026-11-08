@@ -109,9 +109,20 @@ export interface StrokeMaterialUniforms
   uHazeThickness: { value: number };
   /** Each cone's feather in metres, past its radius (sky-light-cull.ts). */
   uSkyLightFeathers: { value: number[] };
+  /**
+   * The `vtx` group's `smaller` scale (vertex-arms.ts): the group's shared object on a batch
+   * material, else a private 1.
+   */
+  uVtxSize: { value: number };
 }
 
 export type StrokeMaterial = RawShaderMaterial & { uniforms: StrokeMaterialUniforms };
+
+/** What only the stroke batch's band materials set (batch.ts). */
+export interface StrokeMaterialOptions {
+  /** The `vtx` A/B group's shared `smaller` scale (`vertexArms.uniforms.uVtxSize`). */
+  readonly vtxSize?: { value: number };
+}
 
 /** A GLSL float literal: always carries a decimal point or an exponent. */
 const glslFloat = (value: number): string => value.toExponential(8);
@@ -133,12 +144,14 @@ export function pinMotionPhase(phase: number | null): void {
  * instance normal). Colours are written as given, like the bench material. Depth write is on
  * unless `depthWrite` is false, which the stroke batch passes (BATCH_DEPTH_WRITE in batch.ts). A
  * lone stroke mesh, such as the teleport arc or the settings panel, keeps it on, so it occludes
- * whatever draws after it.
+ * whatever draws after it. `options` are the batch's own: any other mesh keeps the `vtx` arm at
+ * base. Every geometry drawn with it carries the depth key `iTie` (tie-key.ts).
  */
 export function createStrokeMaterial(
   atlas: Texture,
   sizeScale = 1,
   depthWrite = true,
+  options: StrokeMaterialOptions = {},
 ): StrokeMaterial {
   const uniforms: StrokeMaterialUniforms = {
     uAtlas: { value: atlas },
@@ -154,6 +167,7 @@ export function createStrokeMaterial(
     uSkyLightCones: { value: skyLightConeUniforms([]) },
     uHazeThickness: { value: 0 },
     uSkyLightFeathers: { value: skyLightFeatherUniforms([]) },
+    uVtxSize: options.vtxSize ?? { value: 1 },
     ...motionClock.uniforms,
     ...reactiveTracker.uniforms,
     ...motionVariants.uniforms,

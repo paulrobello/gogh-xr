@@ -21,6 +21,7 @@
 import type { Scene } from 'three';
 import { GpuTimer, type TimerGl } from '../bench/gpu-timer';
 import { registerDiag, unregisterDiag } from '../diag/diag';
+import { type DensityLaw, flags } from '../diag/flags';
 import {
   installViewportScale,
   type ViewportScalePath,
@@ -80,6 +81,8 @@ export interface GovernorRuntimeDeps {
   targetHz: number;
   /** Shows the 72 Hz notice to the user. */
   notify?: (message: string) => void;
+  /** The density shed's size law; defaults to `?densitylaw`, else `area` (governor.ts). */
+  densityLaw?: DensityLaw;
 }
 
 /** The `governor` diag key. `fbScale` reads 'unavailable' when the adapter cannot apply it. */
@@ -107,7 +110,11 @@ export interface GovernorRuntime {
 export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   const { renderer, scene, batch } = deps;
   const xr = renderer.xr;
-  const config = { mode: deps.mode, targetHz: deps.targetHz };
+  const config = {
+    mode: deps.mode,
+    targetHz: deps.targetHz,
+    densityLaw: deps.densityLaw ?? flags.densityLaw ?? 'area',
+  };
   let governor: Governor = createGovernor(config);
   let scaler: ViewportScaler | null = null;
   let session: GovernorSession | null = null;

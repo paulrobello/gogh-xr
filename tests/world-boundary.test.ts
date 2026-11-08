@@ -181,6 +181,6 @@ test('the stroke material thickens only the haze, and draws it as built by defau
   }
   // The growth lands before the quad is built from `size`.
   expect(glsl.indexOf('sizeScale *= 1.0 + HAZE_GROWTH')).toBeLessThan(
-    glsl.indexOf('vec2 size = iSize * sizeScale;'),
+    glsl.indexOf('vec2 size = iSize * sizeScale * uVtxSize;'),
   );
 });

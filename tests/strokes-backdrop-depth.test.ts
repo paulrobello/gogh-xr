@@ -166,5 +166,6 @@ test('a flagged moon or star stroke draws at its front rank, in front of every d
   }
   const vert = readFileSync('src/render/strokes/stroke.vert.glsl', 'utf8');
   expect(vert).toContain('iMeta.y == STROKE_LAYER_STAR || iMeta.y == STROKE_LAYER_MOON');
-  expect(vert).toContain('float(BACKDROP_DOME_RANKS + (h >> BACKDROP_FRONT_RANK_SHIFT))');
+  // h8 is the position hash's top 24 bits (batch.ts tieKeys), so h8 >> (shift - 8) is h >> shift.
+  expect(vert).toContain('float(BACKDROP_DOME_RANKS + (h8 >> (BACKDROP_FRONT_RANK_SHIFT - 8u)))');
 });

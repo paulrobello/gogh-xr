@@ -26,6 +26,7 @@ import {
   STROKE_LAYER,
 } from '../render/strokes/instance';
 import { createStrokeMaterial, type StrokeMaterial } from '../render/strokes/material';
+import { createTieKeyAttribute } from '../render/strokes/tie-key';
 import { ease } from './transition';
 
 /** Strokes in flight: a few thousand, one draw per view. */
@@ -113,6 +114,9 @@ export function createFlyStrokes(parent: Object3D, atlas: Texture): FlyStrokes {
     geometry.setAttribute(spec.name, attribute);
     attributes.push(attribute);
   }
+  // Written once, not with each draw: with depth test and write off, the key only nudges clip z
+  // inside the tie-break range, so it cannot change a pixel.
+  geometry.setAttribute('iTie', createTieKeyAttribute(buffers));
   geometry.instanceCount = FLY_COUNT;
   const material = createStrokeMaterial(atlas);
   material.name = 'portal-fly';

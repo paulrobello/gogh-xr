@@ -83,7 +83,26 @@ export interface Flags {
   readonly waveTurns: SkyWaveTurns | null;
   /** `?scene=bare`: boots the bare scene instead of the default gallery (src/boot-mode.ts). */
   readonly scene: SceneName | null;
+  /**
+   * `?densitylaw=area|count`: how a governor density shed sizes the survivors (src/render/governor.ts).
+   * null is the default, `area`.
+   */
+  readonly densityLaw: DensityLaw | null;
+  /**
+   * `?fov=0|0.5|1`: testing only, honoured in production like `?slow`. The fixed foveation an XR
+   * session starts at (src/xr/session.ts), in place of `FOVEATION`. null (absent or any other value)
+   * keeps the default. A running governor still sets its own foveation.
+   */
+  readonly fov: Fov | null;
 }
+
+/** The fixed foveation levels `?fov` pins: off, the governor's first step and its last. */
+export const FOV_LEVELS = [0, 0.5, 1] as const;
+export type Fov = (typeof FOV_LEVELS)[number];
+
+/** `area` grows survivors by sqrt(from / to), `count` keeps their size (governor.ts). */
+export const DENSITY_LAWS = ['area', 'count'] as const;
+export type DensityLaw = (typeof DENSITY_LAWS)[number];
 
 export type BenchMode = 'a2c' | 'blend';
 export type BenchOrder = 'sorted' | 'random';
@@ -145,6 +164,11 @@ function parseBenchOrder(raw: string | null): BenchOrder | null {
 function parseHz(raw: string | null): TargetHz | null {
   const value = parseNumber(raw);
   return value !== null && TARGET_HZ.includes(value) ? (value as TargetHz) : null;
+}
+
+function parseFov(raw: string | null): Fov | null {
+  const value = parseNumber(raw);
+  return FOV_LEVELS.find((level) => level === value) ?? null;
 }
 
 function parseSlow(raw: string | null): number {
@@ -263,6 +287,8 @@ export function parseFlags(search: string): Flags {
     wrap: parseVariant(SKY_WRAPS, params.get('wrap')),
     waveTurns: parseWaveTurns(params.get('waveturns')),
     scene: parseScene(params.get('scene')),
+    densityLaw: parseVariant(DENSITY_LAWS, params.get('densitylaw')),
+    fov: parseFov(params.get('fov')),
   });
 }
 

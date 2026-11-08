@@ -115,6 +115,31 @@ Motion skyWrapMotion(vec3 d, vec3 dir, vec3 omega, vec3 n, float phase, float t)
 // the vertical. The stroke sweeps a short arc of it per SKY_SWIRL_PERIOD and wraps, shrinking to
 // nothing at the wrap. SKY_VORTEX_COUNT is a handful (4): each vortex costs a dot, a max, a divide
 // and a multiply-add per vertex.
+#ifdef VTX_HOIST
+// The `vtx` group's hoist arm (src/render/strokes/vertex-arms.ts): the same motion from the
+// stroke's rest field, built on the CPU (iSkyField, iSkyWave in stroke.vert.glsl), so only the
+// time-dependent part runs per vertex.
+Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
+  if (uSkyWrap != 0u) {
+    float amplitude = SKY_SWIRL_PERIOD;
+    if (uSkyWrap == SKY_WRAP_WAVE) {
+      phase = iSkyWave.x + SKY_WAVE_JITTER * (phase - 0.5);
+      amplitude *= iSkyWave.y;
+    }
+    float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
+    float tau = (smoothstep(0.0, 1.0, 1.0 - abs(2.0 * f - 1.0)) - 0.5) * amplitude;
+    return Motion(tau * iSkyField.xyz, tau * iSkyField.w, 0.0, 0.0);
+  }
+  float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
+  float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
+  return Motion(
+    tau * iSkyField.xyz,
+    tau * iSkyField.w,
+    smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f)) - 1.0,
+    0.0
+  );
+}
+#else
 Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
   vec3 d = p - SKY_EYE;
   vec3 dir = d * inversesqrt(dot(d, d));
@@ -133,6 +158,7 @@ Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
     0.0
   );
 }
+#endif
 
 // Matches skyRing in sky-rings.ts. The stroke centred at p rings round anchor k (sky-rings.glsl):
 // a crest slides it radially out by the swell times its hat, 0 inside the still inner radius and at

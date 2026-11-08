@@ -1820,3 +1820,167 @@ The branch was rebased onto 67b072d, the roof eave fix. The only conflict was th
 
 - Default unchanged: the probe's five no-flag captures from an e2e build of the rebased branch are byte-identical to those from an e2e build of 67b072d (`cmp`, 00:31 to 00:33, load 30 to 39).
 - Gates: `make checkall-ci` exit 0 (unit tests 1222 passed in 89 files, no leaks, no vulnerabilities, asset-check 28 files). The load wait reached 14.1 at 00:28, and the specs ran one at a time: `tests/e2e/ab.spec.ts` 14 passed (load 14 to 15), `tests/e2e/motion.spec.ts` 12 passed (15 to 17), with all 46 wave turns matching, and `tests/e2e/world-coverage.spec.ts` 8 passed (17 to 23), worst pose 0.460% (village uphill) and spot-ahead sweep worst 0.481% at motiont 7, under base on 67b072d's scatter.
+
+## Vertex cost or fill: the vtx A/B and the count density law (2026-11-08, card 01a1b472)
+
+The 2026-11-06 headset evidence conflicts. Drawing everything into 1/16 of the viewport reaches the vsync cap, which points at fill or binning. Render scale 0.7 with foveation 1 still takes 18.71 ms, and the profiler puts about 54% of shading time on vertices (85M polygons/s at about 25 px each), which points at vertex work. Density sheds bought nothing, because the governor grows each survivor by sqrt(from / to) and keeps the painted area. This card builds an experiment that one headset pass can settle, and the levers each outcome calls for. Nothing here was measured on a Quest: the desktop numbers below come from an M4 Max under load and are indicative only. Round 1 (after review) made `hoist` a precompiled define, `smaller` a multiply, moved the sky's rest field into attributes under `hoist`, put the CPU depth key on every stroke geometry, made the footprint honour fit caps and both XR views, and rewrote the protocol below.
+
+### What the stroke vertex shader runs
+
+- Topology: each stroke is an instanced quad of 4 indexed vertices (`createQuadAttributes` in `src/render/strokes/batch.ts`, Uint16 index [0, 1, 2, 0, 2, 3]). The arc, settings panel and portal fly strokes use the same quad. 6 vertex shader runs per instance is the worst case, if the post-transform cache misses the shared corners. three r186's WebGL `WebXRManager` has no multiview (only its WebGPU path does), so each chunk draws once per eye: at least instances × 4 × 2 vertex shader runs a frame, before Adreno's binning pass runs the position-only part again.
+- Work that depends only on the instance, run 4 times per instance per eye: the octahedral normal decode and the tangent basis (cos, sin, cross), the colour, brush rect and fit-level decode, and the uniform-only (projection × view) matrix product. For sky strokes the swirl field at the rest direction (omega × d and omega · n) and the wave's static phase product are instance-only too. The two integer depth hashes used to be on this list; the CPU now computes them once per instance. The motion itself depends on `uTime`, so it is the same at each corner but changes every frame. Taking it out of the vertex shader would need a per-frame pre-pass (transform feedback), not an attribute.
+- Scalar ops per vertex, a SPIR-V proxy, not Adreno ISA: each path's specialised shader compiled with glslangValidator, unrolled and optimised with spirv-opt, and counted with mat4 × mat4 at 64, dot and mat × vec by components, normalize 2n + 1, cross 6 and smoothstep 5n. The haze cone loop does not unroll, so it counts one cone (about 117 ops per cone that passes, 12 at worst). Full shader / position-only (the binning-pass proxy). The "matrices only" column is `hoist` with the sky rest field left in the shader, a proxy column and not an arm:
+
+| Path | 93fce70 | Default (CPU depth key, size multiply) | `hoist`, matrices only | `hoist` |
+| --- | --- | --- | --- | --- |
+| ground, building, still sky (`?noanim`) | 314 / 257 | 267 / 210 | 155 / 146 | 155 / 146 |
+| base sky (dome, moving) | 435 / 375 | 388 / 328 | 276 / 264 | 209 / 197 |
+| wave sky (dome) | 528 / 468 | 481 / 421 | 369 / 357 | 215 / 203 |
+| haze (one cone counted) | 552 / 492 | 505 / 445 | 393 / 381 | 329 / 317 |
+| cypress | 401 / 341 | 354 / 294 | 242 / 230 | 242 / 230 |
+| reactive (ground in the box) | 940 / 880 | 893 / 833 | 781 / 769 | 781 / 769 |
+
+  The default path drops 49 ops, 48 of them integer, with the depth hash and adds 2 for the `uVtxSize` multiply. On the ground path about 70 of the 267 ops depend on the corner. The rest repeats for every corner and eye.
+
+### The levers
+
+- The CPU depth key (default, byte-identical): every stroke geometry carries `iTie`, a float attribute holding the top 24 bits of the hash the shader used to compute per vertex (`src/render/strokes/tie-key.ts`). That is the batch chunks and the lone meshes: the teleport arc and the settings panel, which rewrite it with their instances, and the portal fly strokes, which write it once: their depth test and write are off, so the key only nudges clip z inside the tie-break range and cannot change a pixel. The shader has no hash left and no fallback. A ranked stroke off the backdrop keys on the size hash, every other stroke on the position hash, which the backdrop rank also reads (`h8 >> (shift - 8)` is `h >> shift`). The hash is integer maths on the stored float32 bits, so the key equals the old one exactly: `tests/strokes-tie-key.test.ts` checks the depth it yields against a TS mirror of the old GLSL key for every flag byte on every layer, and the batch, arc and panel keys against the hash (the fly strokes' against their creation keys). It adds 4 instance bytes (34 → 38, +12% fetch and upload). `tieKeys` takes 0.08 ms for 39k strokes on the M4 Max once warm and 2.1 ms cold, once per chunk inside the build slicer. Round 1 rewrote the portal fly strokes' keys every frame of a transition (0.04 ms for their 3000 strokes warm, 0.54 ms cold). Round 2 writes them once.
+- `smaller` is a plain multiply: `vec2 size = iSize * sizeScale * uVtxSize`, with `uVtxSize` 1.0 outside the arm. Times 1.0 is exact in float32, and the byte check below covers it.
+- `hoist` is the `VTX_HOIST` define, not a branch, so the default program has no hoist code. Under it the shader applies projection × (view × p) in place of (projection × view) × (model × p), drops the identity model matrix, and skips the three varying renormalisations. The axes are unit to within rounding, plus a sub-percent axis-length change under the motion turn's polynomial cosine and sine. The sky's rest field is two per-instance attributes, built on the CPU when the arm prepares: `iSkyField` (omega × d and omega · n, the swirl's sweep and turn per unit tau) and `iSkyWave` (the wave wrap's static phase and its fade), 24 bytes per instance on every chunk, zero off the sky: 14.0 MB for Starry Night's 582,196 strokes, allocated only once `?ab=vtx` activates. Under `hoist` every drawn stroke fetches them, not only the sky's, so its instance bytes go from 38 to 62. Only the time-dependent part (the fract, the smoothstep and the scale by tau) stays per vertex. That saves 67 ops per base-sky vertex and 154 per wave-sky vertex on top of the matrix hoist, and 64 on the haze. The field is built in float64 at the wave turns the session booted with (`setWaveTurns` runs only at boot), so it differs from the shader's float32 field by rounding.
+- `?densitylaw=count`: a density shed keeps the band's survivors at their size, so it cuts instances and painted area together. `area`, the sqrt growth, stays the default. Under `count` each band holds apart after a no-gain, because a band's step then cuts its own fill and vertex work and one band's no-gain predicts nothing for the others. Under `area` the three bands still share the `density` hold.
+
+### The arms (`?ab=vtx`)
+
+Each measuring arm cuts its target quantity by 30%.
+
+| Arm | Instances and vertex runs | Painted area | Fragment work, estimated | Vertex : fill ratio | How |
+| --- | --- | --- | --- | --- | --- |
+| `base` | 1 | 1 | 1 | 1 | as shipped |
+| `fewer` | 0.7 | 0.7 | 0.7 | 1 | each chunk draws 0.7 of its unpinned importance prefix, survivors unchanged |
+| `smaller` | 1 | 0.7 | about 0.74 to 0.77 | about 1.3 | `uVtxSize` = sqrt(0.7) |
+| `sparse` | 0.7 | 0.967 by `drawnSr`, 1.05 by world area (fit caps) | about 0.90 to 0.92 with the measured fit caps (0.92 to 0.95 without them) | about 0.78 | `fewer`'s strokes grown by 1/sqrt(0.7) through the band size: the `area` law at 0.7 on every band |
+| `hoist` | 1 | 1 | 1 | 1, with 42 to 55% fewer ops per ground and sky vertex (32% on the cypress, 13% on reactive strokes) | the `VTX_HOIST` define, 24 more instance bytes fetched (38 → 62) |
+
+- What each arm cuts. `fewer` cuts instances, vertex runs, primitives, binning and fill together, since strokes write no depth (the nowrite default) and every stroke fragment shades. `smaller` keeps every vertex run and primitive and cuts the painted area by 30%. Its fragment cut is smaller, because at about 25 px per triangle the partially covered 2 × 2 pixel quads along each edge are a large share s (about 0.3 to 0.5) of the fragment work, and the perimeter only falls to sqrt(0.7) = 0.84: 0.7 (1 - s) + 0.84 s. Its smaller quads also touch fewer bins, so it cuts some binning work. `sparse` cuts vertex runs and primitives by 30% and keeps the area where the strokes can grow, but its total perimeter falls to 0.7 × 1/sqrt(0.7) = 0.84, so it also cuts the overshaded edge work: up to about 16% of that share, (1 - s) + 0.84 s overall. Fit-capped strokes cannot grow past their cap, so where they bind `sparse` cuts some area too (the drawn solid angle below). Its larger quads each touch more bins and take a coarser brush mip. `hoist` cuts shader ALU only, and adds 24 bytes of fetch per drawn instance.
+- The consistency check. With frame time about a × vertex + b × fill, `fewer` saves 0.3 a + 0.3 b, `sparse` 0.3 a + (0.08 to 0.10) b and `smaller` (0.23 to 0.26) b, so `fewer` should save about what `sparse` and `smaller` save together, within about 15% of `fewer`'s saving, inside the 20% the outcome table allows. A sum far off that means the frame time is not additive in vertex and fill (the bound moves between arms), and the single-arm readings cannot be trusted.
+- `fewer` draws a density prefix rather than testing a per-instance hash in the shader. A hash test would still run every vertex of a dropped instance, the binning pass included, and kept and dropped instances share each shader wave, so neither the invocations nor the ALU would fall.
+- No arm links a program mid-session. When the group activates, each stroke batch prepares once, on a microtask after its first frame (`renderer.compile` cannot run inside a render): it adds the sky attributes to every chunk geometry, then compiles its three band materials with `VTX_HOIST` on and then off. After that an arm switch only flips the define and `needsUpdate`, and three finds the cached program. `fewer` and `sparse` change draw counts and band sizes on the CPU, and `smaller` sets one uniform shared by the batch's band materials. Lone stroke meshes keep their own `uVtxSize` of 1 and never take the define.
+- `__goghDiag().vtx` reports per arm the instances, vertex invocations (instances × 4 × views), whether every batch has prepared (`prepared`), the active program (`program`, `base` or `hoist`), the drawn world area and `drawnSr`, the drawn strokes' summed solid angle, the fill proxy. Both walk each visible banded chunk's drawn strokes at their band size, with each stroke's fit cap applied and `uVtxSize` after it, as the shader does. `drawnSr` sums over every view, each stroke's area / d² inside that view's frustum from that view's eye, and `drawnSrViews` gives it per view. Both still leave out the haze growth, the sky-light thin, motion, occlusion and the angle to the eye, so `drawnSr` is an upper bound on the fragments shaded. The world area is dominated by the far dome, so it is not a fill measure.
+
+### Measurements (M4 Max desktop, indicative)
+
+`GX_VTX_SWEEP=1 bunx playwright test tests/e2e/vtx.spec.ts` in the round 1 combined run (the vtx spec with its sweeps and nine touched specs, 70 of 71 passed, the XR test failing on a stale footprint memo fixed since), seed 1, `noanim`, `nogov`. The load was 14.76 before the run and 25.06 after it. These are counts and pixel coverage, not timings.
+
+The arms at the painter camera (one view), each ratio against `base`. `drawnSr` now applies each stroke's fit cap, so `sparse` reads lower than in round 0 (1.007 then):
+
+| Arm | Instances | Vertex invocations | Ratio | `drawnSr` | Ratio | Drawn world area ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| `base` | 273,796 | 1,095,184 | 1 | 107.86 | 1 | 1 |
+| `fewer` | 193,122 | 772,488 | 0.705 | 76.02 | 0.705 | 0.707 |
+| `smaller` | 273,796 | 1,095,184 | 1 | 75.50 | 0.700 | 0.700 |
+| `sparse` | 194,690 | 778,760 | 0.711 | 104.27 | 0.967 | 1.052 |
+| `hoist` | 273,796 | 1,095,184 | 1 | 107.86 | 1 | 1 |
+
+- `sparse` keeps slightly more than 0.7 of the instances, because its larger strokes pass the cull a little more often. Fit caps hold back its growth by about 3% of the solid angle, so it is not a pure vertex arm: it cuts about 3% of the painted area and its edge work as well. The spec checks it lies above 1.05 × `fewer`'s and below 1.07 × `base`'s.
+- `smaller`'s 0.700 is exact by construction (`drawnSr` scales each stroke's area by `uVtxSize`²), so it proves the readout, not the shader. The shader check is on pixels: under `?coverage` at the painter camera the bare share rises from 0.246% (`base`) to 0.890% (`smaller`), falls back to 0.246% with `uVtxSize` forced to 1 (the negative control, which the check must fail), and returns to 0.890% when restored.
+- `hoist` against `base`, pixel by pixel at the painter camera: 0.0153% of the channels move by more than 8 levels (max 94) with `noanim`. With the sky moving (`motiont=3.7`, `nogov`) it is 0.0123% (max 94) under the base wrap and 0.0117% (max 94) under the wave wrap, while the motion itself moves 50.1% and 51.2% of the channels between t 0 and t 3.7, so the check sees the sky move. The spec's tolerance is 0.2%. The differences are float rounding (the reordered matrix product, the float64 rest field), not a missing term: a field that dropped or misread a term would move a large share of the sky, not 0.01%.
+- The `hoist` program is asserted by name (`program: 'hoist'`), and the cycle links no new program after the arm prepares.
+- In XR (IWER, `base`, the spawn pose, 2 views) the readout counts both eyes: 300,151 instances, 2,401,208 vertex invocations, and `drawnSr` 486.76, the sum of the two views' 243.39 and 243.37. The spec checks there are two views, that they sum to `drawnSr` and that they agree within 25%. The spawn pose is not the painter camera, so the per-view value does not compare with the 107.86 above. The round 1 combined run's XR test caught the 1 s memo serving the desktop read just after entering XR (one view, 187.34). The memo now keys on the view count too, and the check passes.
+
+The coverage sweep, the 24 poses of `world-coverage.spec.ts` under `?coverage`, against its unchanged 0.5% bar per pose. Every row matches round 0 digit for digit:
+
+| Sweep | Max bare | Mean | Poses over 0.5% |
+| --- | --- | --- | --- |
+| `base` | 0.460% (village uphill) | 0.145% | 0/24 |
+| `fewer` | 1.120% (village uphill) | 0.501% | 12/24 |
+| `smaller` | 1.898% (village uphill) | 0.687% | 13/24 |
+| `sparse` | 0.437% (village uphill) | 0.127% | 0/24 |
+| governor level 4, `area` | 0.460% (village uphill) | 0.138% | 0/24 |
+| governor level 4, `count` | 1.414% (spot ahead) | 0.655% | 16/24 |
+| governor level 6, `count` | 4.192% (spot straight up) | 1.777% | 21/24 |
+
+- `fewer` and `smaller` are measuring arms only: both open holes past the bar. `sparse`, the `area` law at 0.7 on every band, keeps coverage, so the `area` law is a vertex lever that costs no coverage.
+- The governor levels are simulated, not read from a headset (`levelsAt` in the spec): the real governor fed the 2026-11-06 painter-spot overrun (22 ms against the 72 Hz budget), with foveation 0.5 paying ×0.84, foveation 1 ×0.955 more, the fb-scale step paying nothing (so the governor undoes it) and each density step 3.5%. From the defaults (near 1, mid 0.9, far 0.4), level 4 lands on foveation 1 and two far sheds (far 0.196), and level 6 adds a mid and a far shed (mid 0.63, far 0.137). Under `count` the far size stays 1.6, and under `area` it grows to 2.29.
+- At the painter's spot (the `spot ahead` pose) the bands draw near 171,267, mid 53,994 and far 58,535 strokes, so the level-4 sheds touch only the far fifth: the spot-ahead pose draws 256,441 strokes under `count` and 256,860 under `area`, against `base`'s 283,796, about a 10% cut under either law. Under `count` that cut already fails the bar at 16 of 24 poses, spot ahead the worst. If the headset reads fill bound, `count` alone cannot carry the governor: its sheds need a coverage answer first (underpainted base meshes, or a floor on far density).
+
+### Default unchanged
+
+- `scripts/compare-builds.ts` boots six URLs on an e2e build of 93fce70 and one of the branch and compares the canvas readbacks byte for byte: `?painting=starry-night&noanim&seed=1&painter`, the same with `nogov&motiont=3.7` (motion pinned at 3.7 s), `?painting=starry-night&noanim&seed=1`, no flag, `?strokesTest&noanim` and `?demo=canvas&noanim&seed=1` (5,191,680 bytes each).
+- Round 1, at 44d61c7: two branch-against-main runs and two main-against-main runs. Five URLs are identical in all four runs. The no-flag URL was identical in the first branch run and differed in 9,781 bytes in the second, and it differed in 9,781 bytes, the same count, in both main-against-main runs, where the two builds are the same files. The no-flag boot is the gallery (`resolveBootMode` in `src/boot-mode.ts`), which carries stroke batches and boots without `noanim`, so its readback is not deterministic run to run. Its identity on the branch rests on the one identical run, the first, at load 14.71: the three runs that differed had no load wait. The first run started at load 14.71. The three repeats ran straight after it, with no load wait, on purpose, and are flagged at 27.5 to 34.4 (they test pixel identity, which does not depend on load).
+- The vtx spec cycles `base` through every arm and back, links no new program on the way, and the returning `base` frame matches a fresh boot byte for byte.
+
+### Headset protocol (Paul)
+
+Run it on one deployed build, at the painter's spot, standing still and facing the canvas (the spawn heading). Take timings from the HUD only. A CDP poll of `__goghDiag()` adds main-thread work (the `vtx` key reuses its stroke walk for 1 s), so read `vtx` over CDP at most once per arm, after its timing. `&diag` itself adds no per-frame work.
+
+1. The arms, with the governor off so nothing else moves. Foveation is pinned with `&fov`, because `?nogov` leaves it at the session default of 0 while the level-4 frame the question is about runs at foveation 1. Fixed foveation cuts fragment work only, so the fill share is larger at 0.
+   - The decision run, at the governor's foveation: `https://gogh-xr.pardev.net/?painting=starry-night&ab=vtx&nogov&hud&diag&fov=1`
+   - The control run: `https://gogh-xr.pardev.net/?painting=starry-night&ab=vtx&nogov&hud&diag&fov=0`
+   - In each, enter VR and wait 10 s: the first frame after the world binds compiles the `hoist` program, so the first seconds hitch. The HUD's last line reads `A/B vtx: base (1/5)`, and it reads "governor off" and "target 72 Hz". Note `mean` and `p99` on the first line and `visible` on the third.
+   - Once per run, read `__goghDiag().xr.foveation` over CDP: it should read 1 in the decision run and 0 in the control run. The HUD shows no foveation line with the governor off, so this is the only check that the pin took. If it reads otherwise, stop and report it. `?nogov` draws the level-0 densities, not level 4's two far sheds, so at the spot it draws about 10% more strokes than the governed level-4 frame.
+   - Click the left stick once (not both sticks) to step to `fewer`, wait 10 s, note the same. Repeat for `smaller`, `sparse`, `hoist` and back to `base`. `visible` drops by about 30% under `fewer` and `sparse` and is unchanged under the others.
+   - Do the full cycle twice in each run. The two `base` reads of a cycle bound its drift (heat, tracking). An arm gains when its saving against the cycle's mean `base` is larger than both the drift and 0.3 ms, and is near 0 otherwise. Average the two cycles.
+2. Read the outcome from the fov 1 run. `sparse` saves up to about 0.45 of what `smaller` saves through its fill cut alone (the fragment estimate above), so only a `sparse` saving beyond that points at vertex or primitive cost.
+
+| Outcome at fov 1 | Reading | Next |
+| --- | --- | --- |
+| `fewer` is off `sparse` + `smaller` by more than the drift plus 20% of `fewer`'s saving | the frame time is not additive in vertex and fill, so no single arm can be read | re-run the cycle; if it repeats, read only `fewer` (it cuts both) and go to step 3 |
+| `sparse` saves more than 0.45 of `smaller`'s saving plus the drift, `smaller` near 0 | vertex or primitive bound | read `hoist` (the table below) |
+| `smaller` gains, `sparse` within 0.45 of `smaller`'s saving | fill bound | step 3 (`count`), smaller strokes, foveation. The `area` law cannot help, which is what the 2026-11-06 sheds showed |
+| both gain, `sparse` past its fill share, `fewer` about their sum | both | `count` sheds pay on both counts (step 3); read `hoist` too |
+| `fewer` gains, `smaller` and `sparse` both near 0 | neither cut alone binds: vertex and fill bind together, or something that scales with strokes drawn (binning) | step 3 |
+| nothing gains | not the strokes | look at the base meshes, the halo pass, the CPU (main thread 6 to 7 ms of 21 ms on 2026-11-06), or the compositor |
+| `smaller` gains clearly more than `fewer` | contradicts the model | re-measure; check the drift against the two `base` reads |
+
+   Read `hoist` only when vertex work binds (the second and fourth rows). It removes 112 ops per ground vertex and 179 to 266 per sky vertex, but the 64 of them in the projection × view product depend only on uniforms, and GPU compilers often compute such a product once per draw (Mesa's ir3 does, in its preamble). The sky rest field (67 to 154 ops per sky vertex) depends on the instance, so no compiler can fold it.
+
+| `hoist` at fov 1 | Shows | Does not show | Next |
+| --- | --- | --- | --- |
+| gains past the drift | vertex shader ALU costs time in this frame, and the work it moves was not already folded | how much of the vertex cost left is ALU | move more per-instance work off the GPU; consider `VTX_HOIST` as the default after a pixel review, since it changes pixels by rounding |
+| near 0 | the ALU saved, net of the fetch added, buys nothing on this view | that ALU is cheap everywhere: the matrix saving may be one the driver already makes, and the 24 bytes of fetch it adds per drawn instance may cancel an ALU gain | treat the vertex cost as fetch, primitive setup, binning or invocation count: cut instances (the `area` law shedding deeper and earlier, fewer and larger strokes in the scatter) |
+| slower past the drift | the added fetch costs more than the ALU saved | whether ALU binds | keep the default; cut instances as above |
+
+   Then compare with the fov 0 run. `smaller` should save more at fov 0 than at fov 1, and `sparse` about the same. If so, the arms read what they claim. If `sparse` changes a lot with foveation, its saving is mostly fill (its edge-work cut), not vertex work, so re-read it as fill.
+3. The count law under the governor, after step 1. Two boots one after the other at the same spot, with no `&fov` (the governor sets foveation):
+   - `https://gogh-xr.pardev.net/?painting=starry-night&hud&diag` (the `area` default) and `https://gogh-xr.pardev.net/?painting=starry-night&densitylaw=count&hud&diag`.
+   - Wait 60 s in each, then note `mean`, `gov level N` and the `near`, `mid` and `far` densities on the fourth line, and look for holes in the sky and the far hills (the coverage numbers above). Under `area` the level-4 frame stays at about 40 fps.
+
+| Step 1 read | `count` against `area` | Meaning | Next |
+| --- | --- | --- | --- |
+| fill or both | a deeper level, or a lower `mean` past 0.3 ms at the same level, and no holes | `count`'s sheds pay | file making `count` the default behind a coverage fix (a far-density floor or underpainted base meshes), then re-run the coverage sweep |
+| fill or both | a deeper level or a lower `mean`, with holes | the sheds pay, but coverage fails | the coverage fix first, keep `area` meanwhile |
+| fill or both | the same level, `mean` within 0.3 ms | the cut each shed makes is too small to show in this frame | the fill is not in the stroke count: look at foveation and at the base meshes' overdraw |
+| vertex | no better than `area` | as expected, since `area` already cuts the vertex work | keep `area`; let density shed deeper and earlier |
+| vertex | clearly better than `area` | contradicts step 1 | re-run step 1 at fov 1 |
+
+4. Optional: `&hz=90` or `&beauty` change the target, not the experiment. Keep the default 72 Hz for comparison with 2026-11-06.
+
+### Portal A/B
+
+Round 0, at 3fa602c against 93fce70, before the fly strokes carried `iTie`. `tests/e2e/portal.spec.ts` (3 tests) ran three times on each build (e2e builds on ports 4296 and 4297), interleaved main then branch, one suite at a time on the host. All 18 tests passed. Every run started between load 15.6 and 32 and is flagged, so the timings are indicative only. The longest frame of each transition in ms, against the 27.8 ms bar (the desktop transitions read 16.8 ms in every run, the 60 Hz vsync):
+
+| Run | IWER enter 1 | IWER return 1 | IWER enter 2 | IWER return 2 | Worst |
+| --- | --- | --- | --- | --- | --- |
+| 93fce70, 1 | 22.9 | 23.7 | 19.6 | 20.6 | 23.7 |
+| 3fa602c, 1 | 23.6 | 21.5 | 18.5 | 20.8 | 23.6 |
+| 93fce70, 2 | 23.0 | 21.2 | 18.4 | 20.1 | 23.0 |
+| 3fa602c, 2 | 23.0 | 21.7 | 18.3 | 20.2 | 23.0 |
+| 93fce70, 3 | 23.3 | 21.5 | 18.6 | 20.7 | 23.3 |
+| 3fa602c, 3 | 23.2 | 21.9 | 18.1 | 20.2 | 23.2 |
+
+The worst frames average 23.3 ms on both builds. Round 1 added one cost inside a transition: the fly strokes rewrote their 3000 keys every frame, 0.04 ms warm and 0.54 ms cold on the M4 Max. Round 2 removed it. Round 1, in the combined run (the branch with the fly-stroke keys, load 14.76 before and 25.06 after, one run, so indicative only): IWER enter 1 22.6, return 1 22.5, enter 2 18.6, return 2 19.9 ms, worst 22.6 ms, inside round 0's spread on both builds. The desktop transitions read 16.8 ms, the 60 Hz vsync, and the IWER round trip returns to the baseline counts (64 geometries, 9 textures).
+
+### Gates
+
+- `make checkall-ci` exits 0: biome over 275 files, tsc, vitest 1248 tests in 91 files, the build, bundle-check, both gitleaks scans, `bun audit` and asset-check (28 files).
+- The round 1 combined e2e, one Playwright invocation of the vtx spec with `GX_VTX_SWEEP=1` and the specs the change touches (ab, portal, panel, settings, teleport-ring, locomotion, canvas, strokes, governor): 70 of 71 passed in 8.6 minutes, at load 14.76 before and 25.06 after. The one failure was the XR vtx test, on the footprint memo, fixed since.
+- After the fix, `tests/e2e/vtx.spec.ts` and `tests/e2e/ab.spec.ts`: 18 passed and 2 skipped (the sweeps, without `GX_VTX_SWEEP`) in 1.1 minutes, at load 14.75 before and 15.61 after.
+- The full `make e2e` was not run in round 1.
+
+### Not verified
+
+- Any of it on a Quest. The arm fractions, the ALU proxy and the level-4 levels are desktop and simulation numbers, and the desktop timings are on an M4 Max under load.
+- The ALU proxy counts SPIR-V ops, not Adreno instructions. The driver may already hoist or schedule some of the corner-invariant work, the projection × view product above all.
+- The fragment-work estimates for `smaller` and `sparse` assume an edge share s of 0.3 to 0.5 at about 25 px per triangle. It was not measured.
+- The level-4 levels are simulated from the 2026-11-06 frame times (foveation 0.5 ×0.84, foveation 1 ×0.955 more, 3.5% per density step), not read from a headset governor.
+- The `tieKeys` and `skyStatic` costs on the Quest's CPU, and the hitch of the `hoist` precompile on the first frame after each batch binds. A batch that binds later in a session (a portal swap to another world) prepares on a microtask after its own first frame, and draws its base program until then, even under `hoist`, so under `?ab=vtx` that frame pays the compile in XR.

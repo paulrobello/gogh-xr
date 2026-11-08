@@ -48,6 +48,7 @@ import {
   unpackInstance,
 } from '../render/strokes/instance';
 import { createStrokeMaterial } from '../render/strokes/material';
+import { createTieKeyAttribute, writeTieKeys } from '../render/strokes/tie-key';
 import type { HudLive } from '../settings/apply';
 import type { QualityMode, Settings } from '../settings/schema';
 import type { SettingsStore } from '../settings/store';
@@ -216,6 +217,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     strokeGeometry.setAttribute(spec.name, attribute);
     attributes.push(attribute);
   }
+  const tie = createTieKeyAttribute(buffers);
+  strokeGeometry.setAttribute('iTie', tie);
+  attributes.push(tie);
   strokeGeometry.instanceCount = 0;
   const strokeMaterial = createStrokeMaterial(deps.atlas);
   strokeMaterial.name = 'settings-panel-strokes';
@@ -741,6 +745,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       }
     }
     strokeGeometry.instanceCount = count;
+    writeTieKeys(buffers, tie.array as Float32Array, count);
     for (const attribute of attributes) {
       attribute.clearUpdateRanges();
       attribute.addUpdateRange(0, count * attribute.itemSize);

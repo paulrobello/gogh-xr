@@ -169,6 +169,22 @@ function diagOf(): GovernorDiag {
   return buildDiagPayload(deps).governor as GovernorDiag;
 }
 
+test('the density law defaults to area and follows deps.densityLaw', () => {
+  const xr = new FakeXr();
+  start(xr, fakeBatch(200_000));
+  expect(diagOf().densityLaw).toBe('area');
+  runtime?.dispose();
+  runtime = startGovernor({
+    renderer: { xr, ...noTimer },
+    scene: new Scene(),
+    batch: fakeBatch(200_000),
+    mode: 'default',
+    targetHz: 90,
+    densityLaw: 'count',
+  });
+  expect(diagOf().densityLaw).toBe('count');
+});
+
 test('desktop frames are not judged: a slow page sheds nothing', () => {
   const xr = new FakeXr();
   const batch = fakeBatch(200_000);

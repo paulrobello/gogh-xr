@@ -19,6 +19,9 @@ uniform float uSkyLightFeathers[SKY_LIGHT_CONES];
 // Boundary haze thickening, 0-1 (material.ts uHazeThickness): the haze is the sky layer's only
 // SKY_LIGHT_CULL_FLAG strokes.
 uniform float uHazeThickness;
+// The `vtx` A/B group's `smaller` scale (src/render/strokes/vertex-arms.ts): 1.0 on every other
+// arm and on every material outside the stroke batch, and a multiply by 1.0 is exact.
+uniform float uVtxSize;
 
 // Unit quad corner in [-0.5, 0.5]²: x along the stroke, y across it.
 in vec3 position;
@@ -28,6 +31,16 @@ in float iTangent;
 in vec4 iColor;
 in vec2 iSize;
 in uvec4 iMeta;
+// The depth key's top 24 bits as an exact float (tie-key.ts tieKeys), which every stroke geometry
+// carries: the size hash of a ranked stroke off the backdrop, else the position hash.
+in float iTie;
+#ifdef VTX_HOIST
+// The `hoist` arm's sky field at rest (vertex-arms.ts skyStatic): xyz omega × d and w omega · n,
+// the swirl's sweep and turn per unit of tau; and the wave wrap's loop phase and amplitude at the
+// stroke's direction. Zero off the sky layer.
+in vec4 iSkyField;
+in vec2 iSkyWave;
+#endif
 
 out vec2 vUv;
 flat out vec3 vColor;
@@ -57,15 +70,6 @@ void surfaceBasis(vec3 n, out vec3 b1, out vec3 b2) {
   float b = n.x * n.y * a;
   b1 = vec3(1.0 + s * n.x * n.x * a, s * b, -s * n.x);
   b2 = vec3(b, s + n.y * n.y * a, -n.y);
-}
-
-uint lowbias32(uint x) {
-  x ^= x >> 16u;
-  x *= 0x7feb352du;
-  x ^= x >> 15u;
-  x *= 0x846ca68bu;
-  x ^= x >> 16u;
-  return x;
 }
 
 // Matches skyLightThin in sky-light-cull.ts: 0 when the stroke centre p, seen from this view's
@@ -124,7 +128,7 @@ void main() {
   if (iMeta.y == STROKE_LAYER_SKY && (iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {
     sizeScale *= 1.0 + HAZE_GROWTH * uHazeThickness;
   }
-  vec2 size = iSize * sizeScale;
+  vec2 size = iSize * sizeScale * uVtxSize;
   // Boundary haze thins toward the moon and stars (sky-light-cull.ts): the drawn size scales by
   // the square root of the factor, so the quad's area follows it. Judged at the full size, haze
   // growth included, so a shrunk quad stays out of the disc cone at any thickness. The thin is
@@ -173,7 +177,13 @@ void main() {
     // The star and moon rings' crest (P4.3); 0 for every other layer.
     color *= 1.0 + m.bright;
   }
+#ifdef VTX_HOIST
+  // The hoist arm drops a chunk mesh's identity model matrix and applies the view before the
+  // projection, so no vertex multiplies the projection by the view.
+  gl_Position = projectionMatrix * (viewMatrix * vec4(local, 1.0));
+#else
   gl_Position = projectionMatrix * viewMatrix * (modelMatrix * vec4(local, 1.0));
+#endif
   // Depth tie-break (src/render/strokes/depth-tie-break.ts): each stroke moves towards the eye by
   // a stable random share of the range, in clip z. Only gl_Position changes, so early-z holds.
   // The range is DEPTH_TIE_BREAK_STEPS window-depth steps (2^-23 in NDC z each), capped at
@@ -182,17 +192,11 @@ void main() {
   float w = gl_Position.w;
   float steps = DEPTH_TIE_BREAK_NDC * w;
   float range = w > 0.0 ? min(steps, -projectionMatrix[3][2] * DEPTH_TIE_BREAK_MAX_M / w) : steps;
-  uint h = lowbias32(
-    floatBitsToUint(iPosition.x) ^
-      lowbias32(floatBitsToUint(iPosition.y) ^ lowbias32(floatBitsToUint(iPosition.z)))
-  );
-  float u = float(h >> 8u) * (1.0 / 16777216.0);
-  // A ranked stroke takes the share its lift took, a hash of its stored quad size
-  // (depth-tie-break.ts), so lift and tie-break order it alike.
-  if ((iMeta.w & DEPTH_RANKED_FLAG) != 0u) {
-    uint hs = lowbias32(floatBitsToUint(iSize.x) ^ lowbias32(floatBitsToUint(iSize.y)));
-    u = float(hs >> 8u) * (1.0 / 16777216.0);
-  }
+  // The depth key (tie-key.ts): u the tie-break share, and on the backdrop h8, the position hash's
+  // top 24 bits, which the rank reads. A ranked stroke off the backdrop keys on its stored quad
+  // size, the share its lift took (depth-tie-break.ts), so lift and tie-break order it alike.
+  uint h8 = uint(iTie);
+  float u = iTie * (1.0 / 16777216.0);
   if ((iMeta.w & DEPTH_BACKDROP_FLAG) != 0u) {
     // Sky dome (src/render/strokes/backdrop-depth.ts): a constant NDC z just in front of the far
     // plane, nearer by BACKDROP_RANK_NDC per rank, so dome strokes keep one order by hash rank and
@@ -200,8 +204,8 @@ void main() {
     // and star layers take the front tier, the BACKDROP_FRONT_RANKS ranks past the dome's.
     bool front = iMeta.y == STROKE_LAYER_STAR || iMeta.y == STROKE_LAYER_MOON;
     float rank = front
-      ? float(BACKDROP_DOME_RANKS + (h >> BACKDROP_FRONT_RANK_SHIFT))
-      : float(h >> BACKDROP_RANK_SHIFT);
+      ? float(BACKDROP_DOME_RANKS + (h8 >> (BACKDROP_FRONT_RANK_SHIFT - 8u)))
+      : float(h8 >> (BACKDROP_RANK_SHIFT - 8u));
     gl_Position.z = gl_Position.w * (BACKDROP_FAR_NDC - rank * BACKDROP_RANK_NDC);
   } else {
     // Lit windows sit just proud of their wall: the whole range keeps almost every wall stroke
@@ -209,10 +213,18 @@ void main() {
     gl_Position.z -= range * ((iMeta.w & DEPTH_TIE_BREAK_FRONT_FLAG) != 0u ? 1.0 : u);
   }
 
+#ifdef VTX_HOIST
+  // A chunk mesh's model matrix is the identity, and the axes are unit to within rounding, or
+  // within a sub-percent length change under the motion turn's polynomial cosine and sine.
+  vNormal = n;
+  vLong = longAxis;
+  vShort = shortAxis;
+#else
   mat3 toWorld = mat3(modelMatrix);
   vNormal = normalize(toWorld * n);
   vLong = normalize(toWorld * longAxis);
   vShort = normalize(toWorld * shortAxis);
+#endif
 
   vec4 rect = uBrushRects[min(iMeta.x, uint(BRUSH_COUNT - 1))];
   vUv = rect.xy + rect.zw * (position.xy + 0.5);

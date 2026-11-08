@@ -1,3 +1,4 @@
+import { flags } from '../diag/flags';
 import type { QualityMode } from '../settings/schema';
 
 /** The bench's default target, and the adaptive-90 quality's. */
@@ -78,12 +79,16 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Applies frame rate and foveation after the session is bound to the renderer. */
+/**
+ * Applies frame rate and foveation after the session is bound to the renderer. `foveation` is
+ * `?fov` when set (testing only), else `FOVEATION`.
+ */
 export async function applySessionSettings(
   session: XRSession,
   renderer: SessionRenderer,
   state: XrState,
   targetFrameRate: number = TARGET_FRAME_RATE,
+  foveation: number = flags.fov ?? FOVEATION,
 ): Promise<void> {
   if (typeof session.updateTargetFrameRate === 'function') {
     try {
@@ -96,7 +101,7 @@ export async function applySessionSettings(
     ? Array.from(session.supportedFrameRates)
     : null;
   state.frameRate = session.frameRate ?? null;
-  renderer.xr.setFoveation(FOVEATION);
+  renderer.xr.setFoveation(foveation);
 }
 
 export function createSessionController(deps: SessionDeps): SessionController {

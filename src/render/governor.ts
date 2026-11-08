@@ -42,9 +42,10 @@
  * a new session restarts the doubling, and a shed that pays restarts it for that step. The holds
  * are per step, with two exceptions (`holdOf`). The two foveation steps hold apart ('foveation' to
  * 0.5, 'foveation-max' to 1), so a 0.5 step that reads as no-gain under window noise does not block
- * 1. The density bands share one hold ('density'): under the sqrt size law every band keeps its
- * painted area, so one band's no-gain predicts the others' and they need not each flip wall strokes
- * to learn it. A held step counts as nothing left to shed, so with every step held the 3 s count to
+ * 1. Under the `area` density law the bands share one hold ('density'): under the sqrt size law
+ * every band keeps its painted area, so one band's no-gain predicts the others' and they need not
+ * each flip wall strokes to learn it. Under `count` each band holds apart, since a band's step then
+ * cuts its own fill and vertex work and one band's no-gain predicts nothing for the others. A held step counts as nothing left to shed, so with every step held the 3 s count to
  * the 72 Hz request runs as before. A check window that no longer overruns keeps the step whatever
  * its gain, since undoing it would bring the overrun back. A shed-back after a failed probe is
  * never checked: the probe already showed that step pays.
@@ -68,6 +69,7 @@
  * A stall over 100 ms or a hidden session (`interrupt`) restarts the window and both timers, so a
  * pause never counts as overrun or as clean time. A stall keeps a pending no-gain check.
  */
+import type { DensityLaw } from '../diag/flags';
 import {
   BEAUTY_BAND_DENSITY,
   BEAUTY_BAND_SIZE,
@@ -160,10 +162,10 @@ export type DensityStep = `${StrokeBand}-density`;
 /** 'foveation' takes foveation 0 to 0.5, 'foveation-max' up to 1; each has its own hold. */
 export type GovernorStep = DensityStep | 'fb-scale' | 'foveation' | 'foveation-max';
 /**
- * What a hold applies to. Density bands share one: under the sqrt size law a density step keeps the
- * painted area in any band, so one band's no-gain predicts the others'.
+ * What a hold applies to: a step, or 'density' for all three bands under the `area` law, where a
+ * density step keeps the painted area in any band, so one band's no-gain predicts the others'.
  */
-export type GovernorHold = Exclude<GovernorStep, DensityStep> | 'density';
+export type GovernorHold = GovernorStep | 'density';
 export type GovernorAction =
   | 'shed'
   | 'restore'
@@ -197,6 +199,13 @@ export interface GovernorLevels {
 export interface GovernorConfig {
   readonly mode: GovernorMode;
   readonly targetHz: number;
+  /**
+   * How a density shed sizes the band's survivors (`?densitylaw`): `area` (the default) grows them
+   * by sqrt(from / to), so the painted area holds; `count` keeps their size, so a shed cuts
+   * instances, vertex work and painted area alike and gaps can open. Under `area` the bands share
+   * the 'density' hold; under `count` each band holds apart (`holdOf`).
+   */
+  readonly densityLaw?: DensityLaw;
 }
 
 export interface FrameSample {
@@ -212,6 +221,8 @@ export interface FrameSample {
 
 export interface GovernorSnapshot {
   mode: GovernorMode;
+  /** The density shed's size law (`GovernorConfig.densityLaw`). */
+  densityLaw: DensityLaw;
   /** The configured target, or 72 once the fallback is applied. */
   targetHz: number;
   /** The frame rate the session reports, which sets the budget. */
@@ -287,8 +298,8 @@ interface RecoveryCheck {
 }
 
 /** The hold a step's no-gain or recovery result applies to. */
-export function holdOf(step: GovernorStep): GovernorHold {
-  return step.endsWith('-density') ? 'density' : (step as GovernorHold);
+export function holdOf(step: GovernorStep, law: DensityLaw = 'area'): GovernorHold {
+  return law === 'area' && step.endsWith('-density') ? 'density' : step;
 }
 
 function budgetFor(mode: GovernorMode): StrokeBudget {
@@ -350,6 +361,7 @@ export function createGovernor(config: GovernorConfig): Governor {
   const strikes = new Map<GovernorHold, number>();
 
   const budgetMs = (): number => 1000 / frameRate;
+  const holdKey = (step: GovernorStep): GovernorHold => holdOf(step, config.densityLaw);
 
   function record(event: GovernorEvent): GovernorEvent {
     history.push(event);
@@ -372,7 +384,7 @@ export function createGovernor(config: GovernorConfig): Governor {
 
   /** Holds `step` in `holds` for 30 s, doubled per hold since the last reset, up to 5 min. */
   function hold(holds: Map<GovernorHold, number>, step: GovernorStep, t: number): void {
-    const key = holdOf(step);
+    const key = holdKey(step);
     const n = strikes.get(key) ?? 0;
     strikes.set(key, n + 1);
     holds.set(key, t + Math.min(NO_GAIN_HOLD_MS * 2 ** n, MAX_HOLD_MS));
@@ -397,7 +409,7 @@ export function createGovernor(config: GovernorConfig): Governor {
     stuckSum += sum;
     stuckCount += count;
     const top = stack.at(-1);
-    if (!top || recoverHeldUntil.has(holdOf(top.step)) || t - stuckSince < RECOVER_AFTER_MS)
+    if (!top || recoverHeldUntil.has(holdKey(top.step)) || t - stuckSince < RECOVER_AFTER_MS)
       return null;
     const baselineMs = stuckSum / stuckCount;
     stack.pop();
@@ -442,7 +454,7 @@ export function createGovernor(config: GovernorConfig): Governor {
       from: d,
       to,
       fromSize: size[band],
-      toSize: size[band] * Math.sqrt(d / to),
+      toSize: config.densityLaw === 'count' ? size[band] : size[band] * Math.sqrt(d / to),
     };
   }
 
@@ -453,8 +465,8 @@ export function createGovernor(config: GovernorConfig): Governor {
    */
   function nextDensityShed(drawn: Readonly<Record<StrokeBand, number>>): ShedEntry | null {
     const total = drawn.near + drawn.mid + drawn.far;
-    if (heldUntil.has('density')) return null;
     for (const band of DENSITY_ORDER) {
+      if (heldUntil.has(holdKey(`${band}-density`))) continue;
       const entry = densityShed(band, density[band] * DENSITY_STEP, drawn);
       if (entry && drawn[band] * (1 - entry.to / entry.from) >= MIN_SHED_YIELD * total) {
         return entry;
@@ -515,7 +527,7 @@ export function createGovernor(config: GovernorConfig): Governor {
       return record({ t, action: 'no-gain', step, from: to, to: from });
     }
     // The shed paid for itself: its next no-gain hold starts from 30 s again.
-    if (check) strikes.delete(holdOf(check.entry.step));
+    if (check) strikes.delete(holdKey(check.entry.step));
     // A recovery check spans RECOVER_CHECK_MS of windows and nothing else changes meanwhile, so
     // the restored entry goes back on top if it is shed back.
     const restored = recovering;
@@ -663,6 +675,7 @@ export function createGovernor(config: GovernorConfig): Governor {
       const top = stack.at(-1);
       return {
         mode: config.mode,
+        densityLaw: config.densityLaw ?? 'area',
         targetHz,
         frameRate,
         budgetMs: budgetMs(),
