@@ -38,10 +38,9 @@ import { createFootprintTest } from './footprints';
 import {
   assembleWorldStrokesSteps,
   createWorldGeometrySteps,
-  createWorldPartGroup,
   DEFAULT_WORLD_SEED,
   scatterWorldSteps,
-  WORLD_CELL_SIZE,
+  worldBatchOptions,
   worldScatterKeyInputs,
   worldSeeds,
 } from './world';
@@ -55,7 +54,7 @@ export interface WorldBuildTimes {
   decodeMs: number;
   /** Terrain, village, cypress and sky dome. */
   generateMs: number;
-  /** Surface scatter or cache read, plus the haze. */
+  /** Surface scatter or cache read, plus the moon and stars, the haze and the eave copies. */
   scatterMs: number;
   /** `createStrokeBatch`, atlas excluded. */
   batchMs: number;
@@ -115,12 +114,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   const scattered = performance.now();
 
   const batch = await run(
-    createStrokeBatchSteps(buffers, {
-      cellSize: WORLD_CELL_SIZE,
-      cypressChunk: true,
-      mergeParts: createWorldPartGroup(world.terrain.heightAt),
-      atlas: deps.atlas,
-    }),
+    createStrokeBatchSteps(buffers, worldBatchOptions(world.terrain.heightAt, deps.atlas)),
     'batch',
   );
   const coneUniforms = skyLightConeUniforms(cones);

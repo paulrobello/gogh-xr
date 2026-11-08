@@ -113,13 +113,43 @@ export function pushGableWalls(m: MeshBuilder, f: LocalFrame, b: GableBox): void
   pushTriangle(m, P(-hw, b.eave, -hd), P(-hw, b.eave, hd), P(-hw, ridge, 0), D(-1, 0));
 }
 
+/** A gable box standing in its local frame: a house, or the church nave. */
+export interface GableRoof {
+  readonly frame: LocalFrame;
+  readonly box: GableBox;
+}
+
+/** A gable roof's outline in its local frame. */
+export interface GableRoofLines {
+  /** Half extent along local x: the walls plus the overhang. */
+  readonly hw: number;
+  /** Half extent along local z: the walls plus the overhang. */
+  readonly hd: number;
+  /** Ridge above the base. */
+  readonly ridge: number;
+  /** The overhang's outer edge above the base: the eave less the pitch's drop over the overhang. */
+  readonly low: number;
+}
+
+export function gableRoofLines(b: GableBox): GableRoofLines {
+  const drop = (b.overhang * b.rise) / (b.depth / 2);
+  return {
+    hw: b.width / 2 + b.overhang,
+    hd: b.depth / 2 + b.overhang,
+    ridge: b.eave + b.rise,
+    low: b.eave - drop,
+  };
+}
+
+/** World unit normal of the slope on local side `side` (+1 faces local +z): up and outward. */
+export function gableSlopeNormal(f: LocalFrame, b: GableBox, side: 1 | -1): Vec3 {
+  const len = Math.hypot(b.depth / 2, b.rise);
+  return toWorldDir(f, 0, b.depth / 2 / len, (side * b.rise) / len);
+}
+
 /** The two roof slopes, ridge along local x, overhanging the walls and dropping along their pitch. */
 export function pushGableRoof(m: MeshBuilder, f: LocalFrame, b: GableBox): void {
-  const hw = b.width / 2 + b.overhang;
-  const hd = b.depth / 2 + b.overhang;
-  const ridge = b.eave + b.rise;
-  const drop = (b.overhang * b.rise) / (b.depth / 2);
-  const low = b.eave - drop;
+  const { hw, hd, ridge, low } = gableRoofLines(b);
   const P = (lx: number, ly: number, lz: number): Vec3 => toWorld(f, lx, ly, lz);
   for (const side of [1, -1] as const) {
     pushQuad(
@@ -131,6 +161,69 @@ export function pushGableRoof(m: MeshBuilder, f: LocalFrame, b: GableBox): void 
       toWorldDir(f, 0, 1, side),
     );
   }
+}
+
+/**
+ * The underside of each slope's overhang band, the part past the wall line, facing down: the eave
+ * strip along the full width, and the two rake strips past the gable walls, from the eave line to
+ * the ridge. Three quads in each slope's plane. An eye outside the house sees no other part of the
+ * underside, because the walls and gables hide it.
+ */
+export function pushGableSoffit(m: MeshBuilder, f: LocalFrame, b: GableBox): void {
+  const { hw, hd, ridge, low } = gableRoofLines(b);
+  const w = b.width / 2;
+  const z = b.depth / 2;
+  const P = (lx: number, ly: number, lz: number): Vec3 => toWorld(f, lx, ly, lz);
+  for (const side of [1, -1] as const) {
+    const n = gableSlopeNormal(f, b, side);
+    const down: Vec3 = [-n[0], -n[1], -n[2]];
+    const wall = side * z;
+    const edge = side * hd;
+    pushQuad(
+      m,
+      P(-hw, b.eave, wall),
+      P(hw, b.eave, wall),
+      P(hw, low, edge),
+      P(-hw, low, edge),
+      down,
+    );
+    for (const end of [1, -1] as const) {
+      const a = end * w;
+      const o = end * hw;
+      pushQuad(m, P(a, ridge, 0), P(o, ridge, 0), P(o, b.eave, wall), P(a, b.eave, wall), down);
+    }
+  }
+}
+
+/**
+ * Whether a footprint centred at local (lx, lz), reaching `ex` either way along local x and `ez`
+ * along local z, crosses the wall line onto the overhang band: the only part of a roof's underside
+ * that an eye outside the house can see.
+ */
+export function reachesOverhang(
+  b: GableBox,
+  lx: number,
+  lz: number,
+  ex: number,
+  ez: number,
+): boolean {
+  return Math.abs(lx) + ex > b.width / 2 || Math.abs(lz) + ez > b.depth / 2;
+}
+
+/** Local coordinates of world point `p`: the inverse of `toWorld`. */
+export function toLocal(f: LocalFrame, p: Vec3): Vec3 {
+  const c = Math.cos(f.yaw);
+  const s = Math.sin(f.yaw);
+  const dx = p[0] - f.cx;
+  const dz = p[2] - f.cz;
+  return [dx * c - dz * s, p[1] - f.base, dx * s + dz * c];
+}
+
+/** Local components of world direction `v`: the inverse of `toWorldDir`. */
+export function toLocalDir(f: LocalFrame, v: Vec3): Vec3 {
+  const c = Math.cos(f.yaw);
+  const s = Math.sin(f.yaw);
+  return [v[0] * c - v[2] * s, v[1], v[0] * s + v[2] * c];
 }
 
 /** A square tower from the base to `top`, then a four-sided spire to `tip`. Axis-aligned. */

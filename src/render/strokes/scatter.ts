@@ -77,9 +77,10 @@ import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instanc
  * Bump when the scatter's output changes for the same inputs; part of the cache key. 13 is a
  * defensive bump that came with the dome's sector merge (`createWorldPartGroup`): the cache holds
  * the scattered stroke buffers, not the chunk layout, which every load rebuilds, so it only forces
- * one miss.
+ * one miss. 14 is another defensive bump, for the eave underside copies: they are assembled after
+ * the cache read (`assembleWorldStrokes`), so the scattered buffers are unchanged.
  */
-export const SCATTER_VERSION: number = 13;
+export const SCATTER_VERSION: number = 14;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([

@@ -24,9 +24,11 @@ import { mulberry32 } from '../util/prng';
 import {
   createMeshBuilder,
   type GableBox,
+  type GableRoof,
   type LocalFrame,
   type MeshBuilder,
   pushGableRoof,
+  pushGableSoffit,
   pushGableWalls,
   pushQuad,
   pushSteeple,
@@ -226,10 +228,15 @@ export interface Village {
   readonly houses: readonly HouseRecord[];
   readonly church: ChurchRecord;
   readonly windows: readonly WindowRecord[];
+  /** Every gable roof: the houses' in `houses` order, then the church nave's. */
+  readonly roofs: readonly GableRoof[];
   /**
    * Merged flat-shaded triangle soups, one per world layer, each tagged in `userData.layer`. The
    * window geometry also carries `userData.emissive = true` and `userData.color = WINDOW_COLOR`;
    * the building, roof and church geometries carry per-triangle paint tags in `userData.tint`.
+   * The roof and church geometries carry their roofs' overhang undersides (`pushGableSoffit`) in
+   * `userData.soffit`, a geometry with its own tint tags. The scatter never sees it: only the base
+   * meshes draw it.
    */
   readonly geometries: Readonly<{
     building: BufferGeometry;
@@ -435,7 +442,8 @@ function placeChurch(heightAt: Terrain['heightAt']): ChurchPlan {
   return (fallback as NonNullable<typeof fallback>).plan;
 }
 
-function buildChurch(m: MeshBuilder, church: ChurchPlan): void {
+/** Builds the steeple and the nave into `m`; returns the nave's gable roof. */
+function buildChurch(m: MeshBuilder, church: ChurchPlan): GableRoof {
   const c = CHURCH;
   const { frame, tipHeight, towerTop } = church;
   const { naveLength, naveSide } = church.record;
@@ -453,6 +461,7 @@ function buildChurch(m: MeshBuilder, church: ChurchPlan): void {
   };
   pushGableWalls(m, nave, box);
   pushGableRoof(m, nave, box);
+  return { frame: nave, box };
 }
 
 /** Per-triangle paint tags (`userData.tint`, village-tint.ts) from owners and a role per triangle. */
@@ -543,14 +552,19 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
   const roof = createMeshBuilder();
   const glass = createMeshBuilder();
   const churchMesh = createMeshBuilder();
+  const roofSoffit = createMeshBuilder();
+  const churchSoffit = createMeshBuilder();
   const windows: WindowRecord[] = [];
   const wallOwner: number[] = [];
   const roofOwner: number[] = [];
+  const soffitOwner: number[] = [];
   boxes.forEach(({ frame, box, groundTop }, house) => {
     pushGableWalls(building, frame, box);
     pushGableRoof(roof, frame, box);
+    pushGableSoffit(roofSoffit, frame, box);
     while (wallOwner.length < building.positions.length / 9) wallOwner.push(house);
     while (roofOwner.length < roof.positions.length / 9) roofOwner.push(house);
+    while (soffitOwner.length < roofSoffit.positions.length / 9) soffitOwner.push(house);
     const y = (groundTop + box.eave) / 2;
     const walls: { lx: number; lz: number; span: number; onGable: boolean }[] = [
       { lx: 0, lz: 1, span: box.width, onGable: false },
@@ -587,7 +601,8 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
       }
     });
   });
-  buildChurch(churchMesh, church);
+  const nave = buildChurch(churchMesh, church);
+  pushGableSoffit(churchSoffit, nave.frame, nave.box);
 
   const windowGeometry = toGeometry(glass, 'window');
   windowGeometry.userData.emissive = true;
@@ -611,11 +626,21 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
         ? TINT_ROLE.churchWall
         : TINT_ROLE.roof,
   );
+  const roofSoffitGeometry = toGeometry(roofSoffit, 'roof');
+  roofSoffitGeometry.userData.tint = tintTags(soffitOwner, () => TINT_ROLE.roof);
+  roofGeometry.userData.soffit = roofSoffitGeometry;
+  const churchSoffitGeometry = toGeometry(churchSoffit, 'church');
+  churchSoffitGeometry.userData.tint = tintTags(
+    new Array<number>(churchSoffit.positions.length / 9).fill(0),
+    () => TINT_ROLE.roof,
+  );
+  churchGeometry.userData.soffit = churchSoffitGeometry;
   return {
     seed,
     houses,
     church: church.record,
     windows,
+    roofs: [...boxes.map(({ frame, box }) => ({ frame, box })), nave],
     geometries: Object.freeze({
       building: buildingGeometry,
       roof: roofGeometry,

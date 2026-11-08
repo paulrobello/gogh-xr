@@ -17,6 +17,7 @@ import {
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { loadRealSource, loadSkyScan } from '../scripts/scatter-time.ts';
 import { REGION } from '../src/demo/canvas/field.ts';
+import { strokeShade } from '../src/demo/canvas/placement.ts';
 import { MAX_ALTITUDE, MAX_FLIGHT_RADIUS } from '../src/locomotion/flight.ts';
 import {
   BARE_COLOR,
@@ -38,6 +39,7 @@ import {
   type CanvasHistogram,
   COLOR_BITS,
 } from '../src/paintings/starry-night/canvas-histogram.ts';
+import { EAVE_UNDERSIDE_SHADE } from '../src/paintings/starry-night/eave-undersides.ts';
 import { painterSpot, spawnPose } from '../src/paintings/starry-night/index.ts';
 import {
   pickTint,
@@ -49,7 +51,6 @@ import {
 import {
   assembleWorldStrokes,
   createWorldGeometry,
-  createWorldPartGroup,
   RIDGE_SCATTER,
   scatterWorld,
   strokeLayerCounts,
@@ -60,6 +61,7 @@ import {
   WORLD_SIZE_SCALE,
   type WorldGeometry,
   type WorldStrokes,
+  worldBatchOptions,
   worldPartGroup,
   worldScatterKeyInputs,
   worldSeeds,
@@ -71,7 +73,7 @@ import {
   MID_BAND_MAX_M,
   STROKE_BUDGET,
 } from '../src/render/strokes/bands.ts';
-import { createStrokeBatch, type StrokeBatch } from '../src/render/strokes/batch.ts';
+import { createStrokeBatch, drawClassOf, type StrokeBatch } from '../src/render/strokes/batch.ts';
 import {
   ATLAS_SIZE,
   BRUSH_CHANNEL,
@@ -107,6 +109,7 @@ import { SKY_LIGHT_CULL_FLAG } from '../src/render/strokes/sky-light-cull.ts';
 import { deltaE2000, srgb8ToLab } from '../src/util/cielab.ts';
 import { boundaryFactor } from '../src/world/boundary.ts';
 import { CYPRESS_OUTLINE } from '../src/world/cypress.ts';
+import { gableSlopeNormal, toLocal, toWorld } from '../src/world/house-geometry.ts';
 import { WINDOW_COLOR } from '../src/world/village.ts';
 import { COVERAGE_POSES } from './world-poses.ts';
 
@@ -273,10 +276,10 @@ function meshPin(geometry: BufferGeometry): MeshPin {
 }
 
 /** The strokes of `buffers` from `start` on, as their own StrokeBuffers. */
-function strokeRange(buffers: StrokeBuffers, start: number): StrokeBuffers {
-  const out: Record<string, unknown> = { count: buffers.count - start };
+function strokeRange(buffers: StrokeBuffers, start: number, end = buffers.count): StrokeBuffers {
+  const out: Record<string, unknown> = { count: end - start };
   for (const spec of STROKE_ATTRIBUTES) {
-    out[spec.key] = buffers[spec.key].subarray(start * spec.itemSize);
+    out[spec.key] = buffers[spec.key].subarray(start * spec.itemSize, end * spec.itemSize);
   }
   return out as unknown as StrokeBuffers;
 }
@@ -475,6 +478,57 @@ describe('base meshes', () => {
       expect(material.color.getHex()).toBe(BARE_COLOR);
   });
 
+  test('the roof and church meshes close every overhang from below, facing down, past the walls only', () => {
+    // Both paints, so the `?coverage` sweep sees the soffits too. Each triangle past a surface's
+    // own is a soffit triangle: wound to face down, in the plane of a roof slope it faces away
+    // from, and outside that roof's wall rectangle. Per roof they add up to the band's area: the
+    // eave strip and the two rake strips on each slope, times the slope's secant.
+    const { roofs, houses } = WORLD.village;
+    for (const paint of ['underpaint', 'magenta'] as const) {
+      const meshes = materials(paint);
+      const area = new Array<number>(roofs.length).fill(0);
+      for (const layer of ['roof', 'church'] as const) {
+        const own = WORLD.village.geometries[layer].getAttribute('position').count / 3;
+        const found = meshes.find(([g]) => g.userData.layer === layer);
+        expect(found, layer).toBeDefined();
+        const [geometry] = found as NonNullable<typeof found>;
+        const pos = geometry.getAttribute('position');
+        const added = pos.count / 3 - own;
+        expect(added, layer).toBe(12 * (layer === 'roof' ? houses.length : 1));
+        for (let t = own; t < pos.count / 3; t++) {
+          const [a, b, c] = [0, 1, 2].map(
+            (k) => [pos.getX(t * 3 + k), pos.getY(t * 3 + k), pos.getZ(t * 3 + k)] as Vec3,
+          );
+          const e = cross3(sub3(b, a), sub3(c, a));
+          const n = unit3(e);
+          expect(n[1], `${layer} ${t}`).toBeLessThan(-0.5);
+          const hits = roofs.flatMap((roof, r) =>
+            ([1, -1] as const).flatMap((side) => {
+              const up = gableSlopeNormal(roof.frame, roof.box, side);
+              const ridge = toWorld(roof.frame, 0, roof.box.eave + roof.box.rise, 0);
+              const onPlane = [a, b, c].every((p) => Math.abs(dot3(sub3(p, ridge), up)) < 1e-4);
+              return dot3(n, up) < -0.9999 && onPlane ? [r] : [];
+            }),
+          );
+          expect(hits, `${layer} ${t}`).toHaveLength(1);
+          const r = hits[0] as number;
+          const { frame, box } = roofs[r] as (typeof roofs)[number];
+          const mid: Vec3 = [0, 1, 2].map((k) => (a[k] + b[k] + c[k]) / 3) as unknown as Vec3;
+          const [lx, , lz] = toLocal(frame, mid);
+          const past = Math.abs(lx) > box.width / 2 || Math.abs(lz) > box.depth / 2;
+          expect(past, `${layer} ${t} inside the walls`).toBe(true);
+          area[r] += Math.hypot(...e) / 2;
+        }
+      }
+      for (const [r, { box }] of roofs.entries()) {
+        const sec = Math.hypot(box.depth / 2, box.rise) / (box.depth / 2);
+        const hw = box.width / 2 + box.overhang;
+        const band = 2 * sec * box.overhang * (2 * hw + box.depth);
+        expect(area[r], `roof ${r}`).toBeCloseTo(band, 4);
+      }
+    }
+  });
+
   test('with the scatter seed, each tinted village triangle takes its house tint, darkened less', () => {
     const group = createBaseMeshes(WORLD.surfaces, SOURCE.histogram, 'underpaint', SEEDS.scatter);
     const bands = splitTintBands(SOURCE.histogram);
@@ -488,8 +542,16 @@ describe('base meshes', () => {
       }
       tinted++;
       expect(material.vertexColors).toBe(true);
-      const source = WORLD.surfaces.find((g) => g.userData === geometry.userData);
-      expect(geometry.getAttribute('position')).toBe(source?.getAttribute('position'));
+      const source = WORLD.surfaces.find((g) => g.userData.layer === geometry.userData.layer);
+      const soffit = source?.userData.soffit as BufferGeometry | undefined;
+      if (soffit) {
+        // The surface's triangles, then its soffit's (`withSoffit`).
+        const own = source?.getAttribute('position').array as Float32Array;
+        const under = soffit.getAttribute('position').array as Float32Array;
+        expect(Array.from(geometry.getAttribute('position').array)).toEqual([...own, ...under]);
+      } else {
+        expect(geometry.getAttribute('position')).toBe(source?.getAttribute('position'));
+      }
       const layer = WORLD_LAYERS.indexOf(geometry.userData.layer);
       const colors = geometry.getAttribute('color');
       for (let t = 0; t < tags.owner.length; t++) {
@@ -518,10 +580,12 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
   let scattered: StrokeBuffers;
   let assembled: WorldStrokes;
   let buffers: StrokeBuffers;
-  /** The app's batch (src/paintings/starry-night/index.ts). */
+  /** The app's batch: index.ts builds it with the same `worldBatchOptions`. */
   let batch: StrokeBatch;
   /** The same with every part a chunk of its own, the 24 m layout before `worldPartGroup`. */
   let plain: StrokeBatch;
+  /** The app's batch without the eave underside copies. */
+  let uncopied: StrokeBatch;
 
   beforeAll(() => {
     fitLog.on = true;
@@ -530,18 +594,18 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     assembled = assembleWorldStrokes(scattered, WORLD, SOURCE, SKY_SCAN, SEEDS);
     buffers = assembled.buffers;
     const atlas = new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat);
-    batch = createStrokeBatch(buffers, {
-      cellSize: WORLD_CELL_SIZE,
-      cypressChunk: true,
-      mergeParts: createWorldPartGroup(WORLD.terrain.heightAt),
-      atlas,
-    });
+    batch = createStrokeBatch(buffers, worldBatchOptions(WORLD.terrain.heightAt, atlas));
     plain = createStrokeBatch(buffers, { cellSize: WORLD_CELL_SIZE, cypressChunk: true, atlas });
+    uncopied = createStrokeBatch(
+      strokeRange(buffers, 0, assembled.eavesStart),
+      worldBatchOptions(WORLD.terrain.heightAt, atlas),
+    );
   }, 120_000);
 
   afterAll(() => {
     batch?.dispose();
     plain?.dispose();
+    uncopied?.dispose();
   });
 
   test('every layer gets strokes and the world stores under the 900k ceiling', () => {
@@ -558,8 +622,8 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     );
   });
 
-  test('the world counts list the scatter, the moon and stars and the haze once each', () => {
-    const { counts, lightsStart, hazeStart } = assembled;
+  test('the world counts list the scatter, the moon and stars, the haze and the eave copies once each', () => {
+    const { counts, lightsStart, hazeStart, eavesStart, eaveSources } = assembled;
     const lights = strokeLayerCounts(
       selectStrokes(
         buffers,
@@ -567,14 +631,142 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       ),
     );
     const scatter = strokeLayerCounts(scattered);
+    const eaves = strokeLayerCounts(strokeRange(buffers, eavesStart));
     expect(lightsStart).toBe(scattered.count);
+    expect(eavesStart + eaveSources.length).toBe(buffers.count);
+    expect(eaves.building).toBe(eaveSources.length);
     expect(counts).toEqual({
       ...scatter,
       star: lights.star,
       moon: lights.moon,
-      haze: buffers.count - hazeStart,
+      haze: eavesStart - hazeStart,
+      eaves: eaveSources.length,
     });
     expect(lights.star + lights.moon).toBe(hazeStart - lightsStart);
+  });
+
+  test('every eave copy is its roof stroke turned to face down, mirrored through the slope', () => {
+    const { roofs, church } = WORLD.village;
+    const slopes = roofs.flatMap(({ frame, box }) =>
+      ([1, -1] as const).map((side) => ({
+        frame,
+        box,
+        n: gableSlopeNormal(frame, box, side),
+        ridge: toWorld(frame, 0, box.eave + box.rise, 0),
+      })),
+    );
+    let onChurch = 0;
+    let darkest = 1;
+    let worst = { normal: -1, long: 1, plane: 0, shade: 0 };
+    // Collected, then asserted once: an expect per copy is slow over ~9k copies.
+    const bad: string[] = [];
+    for (const [k, i] of assembled.eaveSources.entries()) {
+      const o = unpackInstance(buffers, i);
+      const c = unpackInstance(buffers, assembled.eavesStart + k);
+      const same =
+        c.size[0] === o.size[0] &&
+        c.size[1] === o.size[1] &&
+        c.brush === o.brush &&
+        c.layer === o.layer &&
+        c.phase === o.phase &&
+        c.flags === o.flags;
+      if (i >= assembled.lightsStart || o.layer !== STROKE_LAYER.building || !same) {
+        bad.push(`copy ${k} of ${i} is not a scattered building stroke's twin`);
+      }
+      const slope = slopes.find(
+        (s) => dot3(o.normal, s.n) > 0.999 && Math.abs(dot3(sub3(o.position, s.ridge), s.n)) < 0.1,
+      );
+      if (!slope) {
+        bad.push(`stroke ${i} is on no roof slope`);
+        continue;
+      }
+      // The copy sits as far under the slope as the stroke sits over it.
+      const over = dot3(sub3(o.position, slope.ridge), slope.n);
+      const under = dot3(sub3(c.position, slope.ridge), slope.n);
+      const lo = strokeAxes(o.normal, o.tangent).long;
+      const lc = strokeAxes(c.normal, c.tangent).long;
+      const lit = o.color[0] + o.color[1] + o.color[2];
+      const shown =
+        ((c.color[0] + c.color[1] + c.color[2]) * strokeShade(c.normal)) /
+        Math.max(1, lit * strokeShade(o.normal));
+      worst = {
+        normal: Math.max(worst.normal, dot3(c.normal, o.normal)),
+        long: Math.min(worst.long, dot3(lo, lc)),
+        plane: Math.max(worst.plane, Math.abs(over + under)),
+        // Byte rounding moves a dark stroke's ratio by up to 1.5 / its channel sum.
+        shade: lit >= 150 ? Math.max(worst.shade, shown) : worst.shade,
+      };
+      darkest = Math.min(darkest, shown);
+      if (insidePolygon([o.position[0], o.position[2]], church.outline)) onChurch++;
+    }
+    console.log(
+      `[world] ${assembled.eaveSources.length} eave copies (${onChurch} on the church), worst ${JSON.stringify(worst)}, darkest ${darkest.toFixed(3)}`,
+    );
+    expect(bad).toEqual([]);
+    expect(worst.normal).toBeLessThan(-0.9999);
+    // The long axis survives the flip, the church's yaw π/2 nave (normal z ≈ 0) included.
+    expect(worst.long).toBeGreaterThan(0.9999);
+    expect(worst.plane).toBeLessThan(1e-4);
+    expect(worst.shade).toBeLessThan(EAVE_UNDERSIDE_SHADE + 0.01);
+    expect(onChurch).toBeGreaterThan(100);
+  });
+
+  test('every roof stroke centred over an overhang band has a copy, and no stroke deep inside does', () => {
+    // Independent of the footprint test: a stroke whose centre is itself past the wall line must
+    // be copied, and one whose half length cannot reach the wall line must not be.
+    const sources = new Set(assembled.eaveSources);
+    let centred = 0;
+    let deep = 0;
+    const missing: number[] = [];
+    const extra: number[] = [];
+    for (let i = 0; i < scattered.count; i++) {
+      if (scattered.meta[i * 4 + 1] !== STROKE_LAYER.building) continue;
+      const s = unpackInstance(scattered, i);
+      for (const { frame, box } of WORLD.village.roofs) {
+        const on = ([1, -1] as const).some((side) => {
+          const n = gableSlopeNormal(frame, box, side);
+          const ridge = toWorld(frame, 0, box.eave + box.rise, 0);
+          return dot3(s.normal, n) > 0.999 && Math.abs(dot3(sub3(s.position, ridge), n)) < 0.1;
+        });
+        if (!on) continue;
+        const [lx, , lz] = toLocal(frame, s.position);
+        const reach = Math.hypot(s.size[0], s.size[1]) / 2;
+        if (Math.abs(lx) > box.width / 2 || Math.abs(lz) > box.depth / 2) {
+          centred++;
+          if (!sources.has(i)) missing.push(i);
+        } else if (Math.abs(lx) + reach < box.width / 2 && Math.abs(lz) + reach < box.depth / 2) {
+          deep++;
+          if (sources.has(i)) extra.push(i);
+        }
+      }
+    }
+    console.log(`[world] ${centred} roof strokes centred over a band, ${deep} deep inside`);
+    expect(missing).toEqual([]);
+    expect(extra).toEqual([]);
+    expect(centred).toBeGreaterThan(2000);
+    expect(deep).toBeGreaterThan(2000);
+  });
+
+  test('the eave copies add no chunk and no draw: each joins a part that exists without them', () => {
+    expect(batch.chunks.length).toBe(uncopied.chunks.length);
+    // A world part is one draw class in one cubic cell (world parts never merge), so a copy whose
+    // class and cell some other stroke already has joins that stroke's chunk. A copy of a stroke
+    // within its lift of a cell face lands across it, in the neighbouring cell's chunk.
+    const part = (n: number): string => {
+      const cell = [0, 1, 2].map((a) => Math.floor(buffers.position[n * 3 + a] / WORLD_CELL_SIZE));
+      return `${drawClassOf(buffers, n)}:${cell.join(',')}`;
+    };
+    const parts = new Set<string>();
+    for (let i = 0; i < assembled.eavesStart; i++) parts.add(part(i));
+    let crossed = 0;
+    const alone: number[] = [];
+    for (const [k, i] of assembled.eaveSources.entries()) {
+      const j = assembled.eavesStart + k;
+      if (part(j) !== part(i)) crossed++;
+      if (!parts.has(part(j))) alone.push(k);
+    }
+    console.log(`[world] ${crossed} eave copies land across a cell face from their stroke`);
+    expect(alone).toEqual([]);
   });
 
   test('the haze is exactly the sky-layer strokes with SKY_LIGHT_CULL_FLAG, the shader haze marker', () => {
@@ -600,8 +792,10 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     // cleared it hashes as it did before the moon and stars (49bf0339). The lights' phase bytes name
     // their anchor for the P4.3 rings (1e63faa8 before, every other field unchanged). The cypress
     // strokes' colour alpha carries their flame lobe and height (P4.4): with every alpha back at
-    // 255 the scatter hashes as it did before (cf326988).
-    const haze = strokeRange(buffers, assembled.hazeStart);
+    // 255 the scatter hashes as it did before (cf326988). The eave copies are assembled outside the
+    // cache too, from the scattered strokes.
+    const haze = strokeRange(buffers, assembled.hazeStart, assembled.eavesStart);
+    const eaves = strokeRange(buffers, assembled.eavesStart);
     let unflagged = 0;
     for (let i = 0; i < haze.count; i++) {
       if ((haze.meta[i * 4 + 3] & SKY_LIGHT_CULL_FLAG) === 0) unflagged++;
@@ -628,6 +822,8 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       haze: haze.count,
       hazeUnflagged: unflagged,
       hazeHash: hashStrokeBuffers({ ...haze, meta: hazeMeta }),
+      eaves: eaves.count,
+      eavesHash: hashStrokeBuffers(eaves),
     };
     expect(pins).toEqual({
       total: 538_116,
@@ -646,6 +842,8 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       haze: 30_000,
       hazeUnflagged: 0,
       hazeHash: '49bf0339',
+      eaves: 9_145,
+      eavesHash: '8cf37162',
     });
   });
 

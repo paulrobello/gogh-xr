@@ -4,11 +4,15 @@
  * the unit tests build the real world without WebGL; index.ts adds loading, the cache, the batch
  * and the base meshes.
  */
-import type { BufferGeometry } from 'three';
+import type { BufferGeometry, Texture } from 'three';
 import type { Raster } from '../../demo/canvas/field';
 import { MAX_ALTITUDE, MAX_FLIGHT_RADIUS } from '../../locomotion/flight';
 import { BAND_HYSTERESIS_M, MID_BAND_MAX_M } from '../../render/strokes/bands';
-import type { StrokeDrawClass, StrokePartMerge } from '../../render/strokes/batch';
+import type {
+  StrokeBatchOptions,
+  StrokeDrawClass,
+  StrokePartMerge,
+} from '../../render/strokes/batch';
 import type { Vec3 } from '../../render/strokes/frame';
 import {
   appendStrokes,
@@ -37,6 +41,7 @@ import { createTerrain, type Terrain } from '../../world/terrain';
 import { createVillage, type Village } from '../../world/village';
 import { PAINTER_EYE, type WorldLayer } from './canvas-camera';
 import type { CanvasSource } from './canvas-histogram';
+import { eaveUndersidesSteps } from './eave-undersides';
 
 /** The seed when none is given. Every generator was fitted and tested at seed 1. */
 export const DEFAULT_WORLD_SEED: number = 1;
@@ -154,6 +159,20 @@ export function createWorldPartGroup(heightAt: (x: number, z: number) => number)
   return (drawClass, centre, radius) =>
     drawClass === 'dome' && nearFlight(centre, radius) ? null : worldPartGroup(drawClass, centre);
 }
+
+/** The world's stroke batch options, as index.ts builds the batch. */
+export function worldBatchOptions(
+  heightAt: (x: number, z: number) => number,
+  atlas?: Texture,
+): StrokeBatchOptions {
+  return {
+    cellSize: WORLD_CELL_SIZE,
+    cypressChunk: true,
+    mergeParts: createWorldPartGroup(heightAt),
+    atlas,
+  };
+}
+
 /** Boundary haze strokes. */
 export const WORLD_HAZE_COUNT: number = HAZE_STROKE_DEFAULT;
 /**
@@ -348,16 +367,26 @@ function worldHazeSteps(
   });
 }
 
-/** Strokes per stroke layer, the moon and stars included, plus the haze on its own. */
-export type WorldStrokeCounts = Record<StrokeLayerName | 'haze', number>;
+/**
+ * Strokes per stroke layer, the moon and stars included, plus the haze and the eave underside
+ * copies (eave-undersides.ts) each on its own.
+ */
+export type WorldStrokeCounts = Record<StrokeLayerName | 'haze' | 'eaves', number>;
 
 export interface WorldStrokes {
-  /** The scattered strokes, then the moon and star strokes, then the boundary haze. */
+  /**
+   * The scattered strokes, then the moon and star strokes, then the boundary haze, then the eave
+   * underside copies.
+   */
   readonly buffers: StrokeBuffers;
   /** Index of the first moon or star stroke: the scattered stroke count. */
   readonly lightsStart: number;
   /** Index of the first haze stroke. */
   readonly hazeStart: number;
+  /** Index of the first eave underside copy. */
+  readonly eavesStart: number;
+  /** For each eave underside copy in order, the index of the scattered stroke it copies. */
+  readonly eaveSources: readonly number[];
   readonly counts: WorldStrokeCounts;
   /** Moon and star strokes that share a front-tier rank with an overlapping one (`SkyLights`). */
   readonly lightRankTies: number;
@@ -367,10 +396,11 @@ export interface WorldStrokes {
 
 /**
  * Every stroke of the world: the scatter (or its cache read), the moon and stars
- * (`createSkyLights`, colours from `scan`, lights.webp) and the boundary haze, appended in that
- * order. The last two are generated on every build, outside the scatter cache. Every haze stroke
- * carries SKY_LIGHT_CULL_FLAG, so the shader clears it, per view, from in front of the discs and
- * thins it over a feather around them.
+ * (`createSkyLights`, colours from `scan`, lights.webp), the boundary haze and the eave underside
+ * copies of the scattered roof strokes (`eaveUndersides`), appended in that order. The last three
+ * are generated on every build, outside the scatter cache. Every haze stroke carries
+ * SKY_LIGHT_CULL_FLAG, so the shader clears it, per view, from in front of the discs and thins it
+ * over a feather around them.
  */
 export function assembleWorldStrokes(
   scattered: StrokeBuffers,
@@ -382,7 +412,10 @@ export function assembleWorldStrokes(
   return drain(assembleWorldStrokesSteps(scattered, world, source, scan, seeds));
 }
 
-/** `assembleWorldStrokes` as steps (P5.5): the lights and the haze in slices, then the append. */
+/**
+ * `assembleWorldStrokes` as steps (P5.5): the lights, the haze and the eave copies in slices, then
+ * the append.
+ */
 export function* assembleWorldStrokesSteps(
   scattered: StrokeBuffers,
   world: WorldGeometry,
@@ -402,16 +435,26 @@ export function* assembleWorldStrokesSteps(
     flags: (s.flags ?? 0) | SKY_LIGHT_CULL_FLAG,
   }));
   yield;
-  const buffers = appendStrokes(scattered, [...lights, ...haze]);
+  const eaves = yield* eaveUndersidesSteps(scattered, world.village.roofs);
+  yield;
+  const buffers = appendStrokes(scattered, [...lights, ...haze, ...eaves.strokes]);
   yield;
   const hazeStart = scattered.count + lights.length;
-  const counts = { ...strokeLayerCounts(buffers), haze: haze.length };
-  // Haze strokes are on the sky stroke layer: count them once, under haze.
+  const counts = {
+    ...strokeLayerCounts(buffers),
+    haze: haze.length,
+    eaves: eaves.strokes.length,
+  };
+  // Haze strokes are on the sky stroke layer and the eave copies on the building one: count each
+  // once, under its own name.
   counts.sky -= haze.length;
+  counts.building -= eaves.strokes.length;
   return {
     buffers,
     lightsStart: scattered.count,
     hazeStart,
+    eavesStart: hazeStart + haze.length,
+    eaveSources: eaves.sources,
     counts,
     lightRankTies: rankTies,
     cones: skyLightCones(WORLD_DOME_SIZE),

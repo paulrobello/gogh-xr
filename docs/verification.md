@@ -1561,3 +1561,72 @@ After two headset passes Paul still disliked the sky strokes growing in and shri
 - The `wrap` diag now uses the `?motionphase` pin when one is set (review F4). The fixed-phase test checks that opacity at f = 0 reports every drawn sky stroke as fading and hidden.
 - Load: a wait reached 13.3 at 19:09. The dither measures ran at 13.0 to 26.2, the captures and shots at 19.6 to 25.2, and the mutation runs at about 20.
 - Gates: `make checkall-ci` exit 0 (1205 unit tests). `E2E_PORT=4290 make e2e` exit 0, 109 passed and 2 skipped, load-affected: the 15-minute wait before it ended at 31.8, and the run went from 35.6 to 64.2. Fidelity (SSIM 0.3505, ΔE 5.2735) and the coverage spec's max bare (0.451%) are unchanged.
+
+## Roof eaves seen from the ground (2026-11-07, on 9f13784)
+
+Paul's headset note on 670342c: the roof strokes look right from above, but from the ground they are missing where the roof overhangs, because they are not double-sided.
+
+### Cause
+
+- It is not stroke overhang. Roof strokes are face-clamped ([Village stroke overhang](#village-stroke-overhang)): a stroke's paint reaches at most 10% of its own width past its face. Pulling roof strokes back from the edge (fix B in the brief) has nothing left to pull.
+- A roof slope is one quad that overhangs its walls by `ROOF_OVERHANG` (0.25 m), with no underside. Its strokes and its base mesh were both front faces only. From under an eave the overhang faces away from the eye, so nothing drew there and the sky showed through. Within a few metres of an eave-side wall the eye is below the whole near slope's plane, so from there the house read as walls with no roof at all.
+- From outside a house, the walls and gables hide every part of a roof's underside except the overhang band past the wall line. Only that band needs paint.
+
+### Fix
+
+- Underside copies (`src/paintings/starry-night/eave-undersides.ts`). Every roof stroke whose painted footprint (`BRUSH_FOOTPRINT` times its size, along its decoded axes) reaches past the wall line onto the overhang band gets one copy facing down. The copy is the stroke mirrored through its slope's plane, with its normal negated and its tangent re-measured against the flipped normal's quantised basis, so its long axis is unchanged. Its colour is scaled by `min(1, 0.9 · shade(n) / shade(−n))`, so every underside shows at most 0.9 of its top's brightness (`EAVE_UNDERSIDE_SHADE`). The negated normal alone darkens a slope that faces the moon, but lightens one that faces away from it. There is no shader change and no shader branch.
+- Seed 1 has 9,145 copies, against 87,369 building strokes. That is more than a band 0.25 m deep suggests, because village roof strokes are 0.6 to 1.3 m long: many centred inside the wall line still reach over it. A copy over the hidden inner part costs a vertex pass and a depth-test failure, but a missing one leaves a gap.
+- The copies are built on every world build in `assembleWorldStrokes`, after the scatter cache read, and appended after the haze. They are `counts.eaves` in `__goghDiag().world`, not counted in `building`. Each joins a part (draw class and cell) that already exists without them, so the batch stays at 170 chunks and no draw call is added. 31 copies land across a cell face from their originals and join that cell's existing village part.
+- Soffit (`pushGableSoffit` in `src/world/house-geometry.ts`). The roof and church base meshes gain the overhang band's underside in each slope's plane, facing down: the eave strip along the full width and the two rake strips past the gables, 12 triangles per roof. They are in the same geometries and the same `MeshBasicMaterial`, so no program is linked. The village keeps them in `userData.soffit` until `createBaseMeshes` merges them, so the scatter never paints them.
+- Every stroke chunk and base mesh is front-face only again. `SCATTER_VERSION` is 14, a defensive bump: the scattered buffers are unchanged.
+
+### Rejected: double-sided village chunks (round 0, d1277af)
+
+The first fix drew every chunk holding a building-layer stroke with both faces (`StrokeBatchOptions.doubleSidedLayers`), and the roof and church base meshes with `DoubleSide`. Review rejected it on scope and cost: it rasterized every back-facing village stroke (44k of the 87k in a 50° cone around the painter's view) to paint a 0.25 m band, and it linked a sixth base-mesh program. Round 1 reverts it. Its numbers, on 6ab365f against e215d40:
+
+- Ground pose: sky-like 55% to 4%, ΔE soffit to sky 1.93 to 21.48, ΔE soffit to roof 14.77 to 5.87, soffit bare under `?coverage` 0% to 6%, frame bare 0.177% to 0.276%.
+- GPU mean, load 20 to 37: desktop `?painter` 4.12 to 4.47 ms (+8%), desktop spot ahead 4.64 to 4.92 ms (+6%), IWER painter spot 6.01 to 6.85 ms (+14%), IWER spot ahead 6.30 to 6.60 ms (+5%).
+- The painter captures changed in 0.25% of pixels, along roof, gable and wall edges.
+
+### Measurements
+
+`bun scripts/eave-probe.ts <url>` captures house 10, the house nearest the painter's spot with a clear eave-side pose, at 1280 × 720 on the M4 Max GPU. The ground eye stands 2 m out from its eave-side wall, 1.6 m above the ground and below the roof plane, pitched 0.7 rad up. The raised eye stands 6 m out, 3 m above the ridge, pitched 0.5 rad down. Rays cast on the CPU mark every 4th pixel as soffit (a roof triangle seen from below its plane), the house's roof seen from above, or sky. "Sky-like" counts the soffit samples whose colour is nearer, in CIEDE2000, to the frame's mean sky colour than to the raised view's mean roof colour. Before is 9f13784 and after is 863a58d, both `--mode e2e` builds. The 1-minute load was 107 to 129 for the first pair and 18.3 to 18.7 for the second, which added `soffitL` and `roofL`. Both pairs gave the same numbers.
+
+| Pose | Soffit samples | Sky-like | ΔE soffit to sky | ΔE soffit to roof | Soffit L* | Soffit bare under `?coverage` | Frame bare under `?coverage` | Draw calls | Programs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ground, before | 755 | 55% | 1.93 | 14.77 | 47.48 | 0% | 0.177% | 79 | 5 |
+| ground, after | 755 | 1% | 24.63 | 9.53 | 18.98 | 2% | 0.250% | 79 | 5 |
+| raised, before | 3 | | | | | | 0.391% | 77 | 5 |
+| raised, after | 3 | | | | | | 0.403% | 77 | 5 |
+
+- Before, the soffit's mean colour sits 1.9 ΔE from the sky: it is the sky. After, 1% of its samples are nearer the sky than the roof, against 4% for the rejected double-sided fix, and it sits 24.6 ΔE from the sky, against 21.5.
+- The underside is darker than the roof seen from above: L* 19.0, against 31.3 for the raised view's roof samples. The GPU draws what the copies hold. On the CPU the copies' shown colours average L* 18.9, against L* 23.2 for their source strokes and 23.6 for the other roof strokes. The raised view reads lighter than its strokes' colours in both builds (30.7 before, 31.3 after), so that part of the gap is the view, not the copies.
+- Under `?coverage` 2% of the soffit samples are bare, where the soffit strip's under-paint shows between the copies. The ground frame is 0.250% bare, under the 0.5% sweep limit.
+- Draw calls and programs are unchanged.
+
+![House 10: ground pose (top) and raised pose (bottom), before (left) and after (right)](shots/roof-eave.png)
+
+The copies also change pixels away from the eaves. A copy joins an existing village chunk, which changes that chunk's stroke count, so `importanceOrder` reshuffles every stroke in it. With `nowrite` the instance order is the overlap order, so the chunk's original strokes overlap differently even at density 1, and the mid and far prefixes thin a different sample. Over 32 levels, the change covers 7.6% of the ground pose, 20.3% of the raised pose (mostly village ground strokes, which no copy paints) and 4.85% of the painter view. In the painter view it is all below y = 319, so the sky is untouched. It is not noise: a capture of 9f13784 taken in the same window matches its committed `p2-painter-spot.png` byte for byte. A follow-up can remove the reshuffle by leaving the copies (index from `eavesStart`) out of each chunk's `importanceOrder` input and ordering them as a trailing group with a salted seed, as the pinned lights are. The originals would then keep 9f13784's order exactly, but the copies would drop out of the mid and far prefixes first.
+
+`scripts/motion-perf.ts --only "(a) noanim"`, `?nogov`, before and after interleaved in six pass pairs, the order flipped every other pass, each pass one desktop and one IWER run. The load stayed over 15 for every row after a 15-minute wait timed out at 114: 46 to 60 for the first three pairs and 17 to 35 for the last three. These times are load-affected.
+
+| View | Draw calls | Visible chunks | Drawn before | Drawn after | GPU median before | GPU median after | Paired change, median | After higher |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| desktop `?painter` | 80 | 72 | 265,096 | 273,796 | 3.57 ms | 3.61 ms | +0.1% | 3 of 6 |
+| desktop spot ahead | 87 | 79 | 274,456 | 283,156 | 3.87 ms | 4.00 ms | +3.4% | 4 of 6 |
+| IWER painter spot | 200 | 92 | 287,625 | 296,325 | 5.23 ms | 5.57 ms | +6.7% | 6 of 6 |
+| IWER spot ahead | 190 | 87 | 278,005 | 286,705 | 5.41 ms | 5.69 ms | +4.9% | 6 of 6 |
+
+- Draw calls and visible chunks are unchanged. Drawn strokes rise by 8,700, the copies in visible chunks.
+- On the desktop the change is inside the noise: main's six runs spread 3.48 to 3.62 ms at the painter view, and the branch's paired changes run from −10.6% to +3.1%.
+- In IWER the branch is slower in all 12 pairs, typically by 5% to 7%, for 3% more drawn instances. The rejected double-sided fix measured +14% at the IWER painter spot, in a different load window.
+
+### Gates and captures
+
+- `make checkall-ci` passes.
+- `docs/shots/p2-painter-spot.png` and `p2-fidelity.png` are regenerated on a production build of 863a58d, because the reshuffle above changes 4.85% of the painter view. Fidelity: SSIM 0.3474 and mean ΔE2000 5.2419, against 0.3505 and 5.2735 on 9f13784, thresholds unchanged.
+
+### Not verified
+
+- The Quest. The underside is checked only in desktop captures, and the GPU cost only on the M4 Max under load.
+- The copies are selected by footprint, not visibility: one centred over the hidden inner roof still runs its vertex shader in every view that draws its chunk, and is then culled or fails the depth test.

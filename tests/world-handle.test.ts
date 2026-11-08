@@ -8,6 +8,7 @@ import { afterAll, beforeAll, expect, test } from 'vitest';
 import { decode } from '../scripts/scatter-time.ts';
 import * as starryNight from '../src/paintings/starry-night/index.ts';
 import type { WorldHandle } from '../src/paintings/world-module.ts';
+import { octDecode, STROKE_LAYER } from '../src/render/strokes/instance.ts';
 import { BOUNDARY_ALTITUDE, BOUNDARY_RADIUS } from '../src/world/boundary.ts';
 import { createTerrain } from '../src/world/terrain.ts';
 import { createVillage } from '../src/world/village.ts';
@@ -50,6 +51,27 @@ test('the handle boundary factor is 0 at the spot and 1 past the edge', () => {
   expect(handle.boundaryFactor([BOUNDARY_RADIUS + 1, 0, 0])).toBe(1);
   expect(handle.boundaryFactor([0, 0, -(BOUNDARY_RADIUS + 10)])).toBe(1);
   expect(handle.boundaryFactor([0, BOUNDARY_ALTITUDE + 1, 0])).toBe(1);
+});
+
+test('the built batch carries the eave underside copies, each facing down', () => {
+  // No scattered village stroke faces down (walls are vertical, roofs face up), so the
+  // downward-facing building strokes in the app's chunks are exactly the eave copies that
+  // `assembleWorldStrokes` adds (pinned at 9,145 in tests/world-starry-night.test.ts).
+  const SNORM16 = 32767;
+  let down = 0;
+  for (const chunk of handle.batch.chunks) {
+    const normal = chunk.geometry.getAttribute('iNormal').array as Int16Array;
+    const meta = chunk.geometry.getAttribute('iMeta').array as Uint8Array;
+    for (let i = 0; i < chunk.count; i++) {
+      if (meta[i * 4 + 1] !== STROKE_LAYER.building) continue;
+      const n = octDecode(
+        Math.max(-1, normal[i * 2] / SNORM16),
+        Math.max(-1, normal[i * 2 + 1] / SNORM16),
+      );
+      if (n[1] < -0.3) down++;
+    }
+  }
+  expect(down).toBe(9_145);
 });
 
 test('the handle blocks the seed-1 village’s houses and church, and not the painter’s spot', () => {

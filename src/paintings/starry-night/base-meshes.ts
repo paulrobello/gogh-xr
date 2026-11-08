@@ -116,11 +116,43 @@ function tintedUnderpaint(
 }
 
 /**
+ * `geometry` followed by its `userData.soffit` (village.ts), the roofs' overhang undersides, as
+ * one non-indexed geometry with both sets of tint tags, so they share one mesh and one draw. The
+ * geometry itself when it has no soffit.
+ */
+function withSoffit(geometry: BufferGeometry): BufferGeometry {
+  const soffit = geometry.userData.soffit as BufferGeometry | undefined;
+  if (!soffit) return geometry;
+  if (geometry.index || soffit.index) throw new Error('a soffit needs non-indexed geometry');
+  const merged = new BufferGeometry();
+  for (const name of ['position', 'normal']) {
+    const a = geometry.getAttribute(name).array as Float32Array;
+    const b = soffit.getAttribute(name).array as Float32Array;
+    const both = new Float32Array(a.length + b.length);
+    both.set(a);
+    both.set(b, a.length);
+    merged.setAttribute(name, new Float32BufferAttribute(both, 3));
+  }
+  const { soffit: _soffit, ...userData } = geometry.userData;
+  const tags = geometry.userData.tint as TintTags | undefined;
+  const extra = soffit.userData.tint as TintTags | undefined;
+  if (tags && extra) {
+    userData.tint = {
+      owner: Uint16Array.from([...tags.owner, ...extra.owner]),
+      role: Uint8Array.from([...tags.role, ...extra.role]),
+    };
+  }
+  merged.userData = userData;
+  return merged;
+}
+
+/**
  * One flat unlit mesh per surface, front faces only, pushed back in depth by a polygon offset so
  * strokes lying on the surface always win the depth test. Strokes are back-face culled, so a back
  * face is where no stroke can show: drawing it would only paint a gap. The world stays closed (the
  * dome faces inward all round, the terrain up), and the cypress's open base sits at or under the
- * ground. A backdrop surface (`userData.backdrop`, the sky dome) gets no mesh: its strokes draw by
+ * ground. The roofs' open overhangs are closed by their soffits (`withSoffit`), which face down
+ * under the eave strokes' underside copies (eave-undersides.ts). A backdrop surface (`userData.backdrop`, the sky dome) gets no mesh: its strokes draw by
  * rank just in front of the far plane (src/render/strokes/backdrop-depth.ts), where a base mesh at
  * its true depth would cover them, and the scene's clear colour is its under-paint (magenta in the
  * debug paint, index.ts), so a gap between them shows the same colour. With the scatter's `seed`, a
@@ -136,8 +168,9 @@ export function createBaseMeshes(
   const group = new Group();
   group.name = 'base-meshes';
   let bands: TintBands | null = null;
-  for (const geometry of surfaces) {
-    if (geometry.userData.backdrop === true) continue;
+  for (const surface of surfaces) {
+    if (surface.userData.backdrop === true) continue;
+    const geometry = withSoffit(surface);
     let tinted: BufferGeometry | null = null;
     if (paint === 'underpaint' && seed !== undefined && geometry.userData.tint) {
       bands ??= splitTintBands(histogram);
