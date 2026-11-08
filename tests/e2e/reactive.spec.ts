@@ -624,7 +624,9 @@ test.describe('reactive strokes (P4.5)', () => {
    * controller rig-local along x from -0.4 m at 1.5 m/s for 0.8/1.5 s, `z` metres ahead of the eye.
    * Reports the largest wake weight and speed over every disturber (the swept hand alone for the
    * sweep), the swept hand's strongest single wake sample, the largest box stroke count and how far
-   * the rig moved.
+   * the rig moved. `moved` is the horizontal distance, from the rig's XZ alone. The rig's y also
+   * follows the terrain (the cypress stands on a slope) and eases after `__goghPose`, so a 3D
+   * distance read 2.24-2.31 m over about 0.9 s of a 2 m/s walk. `rise` is the y change.
    *
    * The sweep is a function of the XR frame's own time, set in the controller's `onFrameStart`
    * just before IWER copies the pose into the target-ray space. IWER stamps a frame with
@@ -644,6 +646,7 @@ test.describe('reactive strokes (P4.5)', () => {
     handSpeed: number;
     boxStrokes: number;
     moved: number;
+    rise: number;
   }> =>
     page.evaluate(
       ([duration, z, eyeHeight]) =>
@@ -655,7 +658,15 @@ test.describe('reactive strokes (P4.5)', () => {
           if (!right) throw new Error('no right controller');
           const rig0 = (diag().rig as { position: number[] }).position;
           const start = [rig0[0], rig0[1], rig0[2]];
-          const out = { weight: 0, peak: 0, speed: 0, handSpeed: 0, boxStrokes: 0, moved: 0 };
+          const out = {
+            weight: 0,
+            peak: 0,
+            speed: 0,
+            handSpeed: 0,
+            boxStrokes: 0,
+            moved: 0,
+            rise: 0,
+          };
           if (z !== null) {
             const frameStart = right.onFrameStart.bind(right);
             let sweepT0: number | null = null;
@@ -701,11 +712,8 @@ test.describe('reactive strokes (P4.5)', () => {
               );
             }
             out.boxStrokes = Math.max(out.boxStrokes, d.reactive.boxStrokes ?? 0);
-            out.moved = Math.hypot(
-              d.rig.position[0] - start[0],
-              d.rig.position[1] - start[1],
-              d.rig.position[2] - start[2],
-            );
+            out.moved = Math.hypot(d.rig.position[0] - start[0], d.rig.position[2] - start[2]);
+            out.rise = d.rig.position[1] - start[1];
             if (t * 1000 < duration) requestAnimationFrame(step);
             else {
               Reflect.deleteProperty(right, 'onFrameStart');
@@ -735,7 +743,7 @@ test.describe('reactive strokes (P4.5)', () => {
     const walking = await watch(page, 350, null);
     await xr.stick('left', 0, 0);
     console.log(
-      `[e2e] walking past a held hand: rig moved ${walking.moved.toFixed(2)} m, wake weight ${walking.weight.toExponential(2)}, speed ${walking.speed.toExponential(2)}, box strokes up to ${walking.boxStrokes}`,
+      `[e2e] walking past a held hand: rig moved ${walking.moved.toFixed(2)} m (rise ${walking.rise.toFixed(2)} m), wake weight ${walking.weight.toExponential(2)}, speed ${walking.speed.toExponential(2)}, box strokes up to ${walking.boxStrokes}`,
     );
     expect(walking.moved).toBeGreaterThan(0.3);
     expect(walking.weight).toBeLessThan(1e-3);
@@ -773,7 +781,7 @@ test.describe('reactive strokes (P4.5)', () => {
     const walking = await watch(page, 900, inside);
     await xr.stick('left', 0, 0);
     console.log(
-      `[e2e] sweep wake: rig still sum ${still.weight.toFixed(3)} peak ${still.peak.toFixed(3)} (hand ${still.handSpeed.toFixed(2)} m/s), rig walking sum ${walking.weight.toFixed(3)} peak ${walking.peak.toFixed(3)} (hand ${walking.handSpeed.toFixed(2)} m/s, rig moved ${walking.moved.toFixed(2)} m)`,
+      `[e2e] sweep wake: rig still sum ${still.weight.toFixed(3)} peak ${still.peak.toFixed(3)} (hand ${still.handSpeed.toFixed(2)} m/s), rig walking sum ${walking.weight.toFixed(3)} peak ${walking.peak.toFixed(3)} (hand ${walking.handSpeed.toFixed(2)} m/s, rig moved ${walking.moved.toFixed(2)} m, rise ${walking.rise.toFixed(2)} m)`,
     );
     expect(walking.moved).toBeGreaterThan(0.5);
     expect(still.weight).toBeGreaterThan(0.3);

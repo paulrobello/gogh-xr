@@ -8,6 +8,7 @@
  * camera while presenting, whose matrices include the rig.
  */
 
+import os from 'node:os';
 import type { Page } from '@playwright/test';
 import {
   createArcResult,
@@ -896,4 +897,127 @@ test('flight in XR: the right stick climbing from 38.5 m nears the cap and stays
   await xr.stick('right', 0, 0);
   expect(max).toBeLessThan(40);
   expect(max).toBeGreaterThan(38.5);
+});
+
+interface RigSample {
+  /** The frame time the app's own loop received: the XR frame's clock in XR, rAF's on the desktop. */
+  t: number;
+  /** `performance.now()` when the callback returned, ms. */
+  wall: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Records the rig position after every app frame. It wraps the frame callbacks of whichever loop
+ * the app drives (the XR session's in XR, the window's on the desktop), so each sample carries the
+ * exact `time` argument `renderFrame` computed its dt from.
+ *
+ * The time must come from that argument. IWER stamps XR frames with its own clock, so a window
+ * rAF timer or `Date.now()` measures a different interval than the one the rig integrated.
+ */
+async function startRigRecorder(page: Page, xrLoop: boolean): Promise<void> {
+  await page.evaluate((useXr) => {
+    const w = window as unknown as {
+      __goghDiag: () => { rig: { position: number[] } };
+      __rigRec?: { samples: unknown[]; restore: () => void };
+    };
+    const target = (useXr ? XRSession.prototype : window) as unknown as {
+      requestAnimationFrame: (cb: (t: number, f?: unknown) => void) => number;
+    };
+    const original = target.requestAnimationFrame;
+    const samples: RigSample[] = [];
+    target.requestAnimationFrame = function (this: unknown, cb) {
+      return original.call(this, (t: number, f?: unknown) => {
+        cb(t, f);
+        const p = w.__goghDiag().rig.position;
+        samples.push({ t, wall: performance.now(), x: p[0] ?? 0, y: p[1] ?? 0, z: p[2] ?? 0 });
+      });
+    };
+    w.__rigRec = {
+      samples,
+      restore: () => {
+        target.requestAnimationFrame = original;
+      },
+    };
+  }, xrLoop);
+}
+
+async function stopRigRecorder(page: Page): Promise<RigSample[]> {
+  return page.evaluate(() => {
+    const w = window as unknown as { __rigRec?: { samples: unknown[]; restore: () => void } };
+    if (!w.__rigRec) throw new Error('the rig recorder is not running');
+    w.__rigRec.restore();
+    const samples = w.__rigRec.samples as RigSample[];
+    w.__rigRec = undefined;
+    return samples;
+  });
+}
+
+/** Horizontal speed over [from, to] seconds of frame time, from the rig's XZ alone. */
+function horizontalSpeed(samples: RigSample[], from: number, to: number): number {
+  const t0 = samples[0]?.t ?? 0;
+  const win = samples.filter((s) => s.t - t0 >= from * 1000 && s.t - t0 <= to * 1000);
+  const a = win[0];
+  const b = win[win.length - 1];
+  if (!a || !b || b.t <= a.t) throw new Error(`no samples in ${from}-${to} s`);
+  return Math.hypot(b.x - a.x, b.z - a.z) / ((b.t - a.t) / 1000);
+}
+
+function reportWalk(label: string, samples: RigSample[], load: [number, number]): number {
+  const first = samples.find((s) => Math.hypot(s.x, s.z) > 1e-6);
+  const origin = samples[0];
+  const last = samples[samples.length - 1];
+  if (!first || !origin || !last) throw new Error('the rig never moved');
+  const t0 = origin.t;
+  const steady = horizontalSpeed(samples, (first.t - t0) / 1000 + 0.3, (last.t - t0) / 1000);
+  const wallSpeed =
+    Math.hypot(last.x - first.x, last.z - first.z) / ((last.wall - first.wall) / 1000);
+  const total = Math.hypot(last.x - origin.x, last.y - origin.y, last.z - origin.z);
+  console.log(
+    `[e2e] ${label}: ${samples.length} frames, first move ${((first.t - t0) / 1000).toFixed(3)} s in, steady ${steady.toFixed(3)} m/s (frame time), ${wallSpeed.toFixed(3)} m/s (wall), 3D total ${total.toFixed(2)} m, load ${load[0].toFixed(1)} -> ${load[1].toFixed(1)}`,
+  );
+  return steady;
+}
+
+test('full left stick walks the rig at moveSpeed horizontally, in XR frame time', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(180_000);
+  await bootWorld(xr, WORLD);
+  await xr.enterXR();
+  await xr.waitFrames(5);
+  await startRigRecorder(page, true);
+  await xr.waitFrames(5);
+  const before = os.loadavg()[0] ?? 0;
+  await xr.stick('left', 0, -1);
+  await page.waitForTimeout(1500);
+  const after = os.loadavg()[0] ?? 0;
+  const samples = await stopRigRecorder(page);
+  await xr.stick('left', 0, 0);
+  const steady = reportWalk('xr walk', samples, [before, after]);
+  expect(steady).toBeGreaterThan(2 * 0.95);
+  expect(steady).toBeLessThan(2 * 1.05);
+});
+
+test('W walks the desktop rig at moveSpeed horizontally, in rAF frame time', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(180_000);
+  await bootWorld(xr, WORLD);
+  await xr.waitFrames(5);
+  await startRigRecorder(page, false);
+  await xr.waitFrames(5);
+  const before = os.loadavg()[0] ?? 0;
+  await page.keyboard.down('KeyW');
+  await page.waitForTimeout(1500);
+  const after = os.loadavg()[0] ?? 0;
+  await page.keyboard.up('KeyW');
+  const samples = await stopRigRecorder(page);
+  const steady = reportWalk('desktop walk', samples, [before, after]);
+  expect(steady).toBeGreaterThan(2 * 0.95);
+  expect(steady).toBeLessThan(2 * 1.05);
 });
