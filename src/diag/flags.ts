@@ -1,6 +1,6 @@
 import type { TurnMode } from '../locomotion/settings';
 import { REACTIVE_MOTION_BIT } from '../motion/layers';
-import { FLAME_SWAYS, type FlameSway, SKY_WRAPS, type SkyWrap } from '../motion/variants';
+import { SKY_WRAPS, type SkyWrap } from '../motion/variants';
 import { STROKE_LAYER, type StrokeLayerName } from '../render/strokes/instance';
 
 export interface Flags {
@@ -79,8 +79,6 @@ export interface Flags {
   readonly ab: string | null;
   /** `?wrap=<variant>`: the sky swirl's wrap treatment (src/motion/variants.ts). null is base. */
   readonly wrap: SkyWrap | null;
-  /** `?flame=<variant>`: the cypress sway (src/motion/variants.ts). null is base. */
-  readonly flame: FlameSway | null;
   /** `?scene=bare`: boots the bare scene instead of the default gallery (src/boot-mode.ts). */
   readonly scene: SceneName | null;
 }
@@ -256,7 +254,6 @@ export function parseFlags(search: string): Flags {
     zdiag: parseZdiag(params.get('zdiag')),
     ab: parseId(params.get('ab')),
     wrap: parseVariant(SKY_WRAPS, params.get('wrap')),
-    flame: parseVariant(FLAME_SWAYS, params.get('flame')),
     scene: parseScene(params.get('scene')),
   });
 }

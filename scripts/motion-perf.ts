@@ -118,7 +118,7 @@ const CONFIGS: readonly Config[] = [
     views: [PAINTER, SPOT_AHEAD],
   },
   // The motion A/B variants (src/motion/variants.ts), against (b): `--only "(v)"` runs them.
-  ...(['wrap=base', 'wrap=fade', 'wrap=half', 'flame=wind'] as const).map((flag) => ({
+  ...(['wrap=base', 'wrap=opacity', 'wrap=pingpong'] as const).map((flag) => ({
     name: `(v) motion, ${flag}`,
     query: flag,
     xr: false,

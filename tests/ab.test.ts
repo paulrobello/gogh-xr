@@ -16,60 +16,56 @@ const NONE: AbFlags = {
   zdiag: null,
   nohalo: false,
   wrap: null,
-  flame: null,
   calm: null,
   bench: null,
 };
 const flags = (over: Partial<AbFlags>): AbFlags => ({ ...NONE, ...over });
 
 describe('AB_GROUPS', () => {
-  it('ships shimmer, zdiag-all, halo, calm, wrap and flame with base or the default first', () => {
+  it('ships shimmer, zdiag-all, halo, calm and wrap with base or the default first', () => {
     expect(AB_GROUPS.shimmer).toEqual(['base', 'write', 'noa2c', 'sharp', 'sharp4', 'freeze']);
     expect(AB_GROUPS['zdiag-all']).toEqual(['base', ...ZDIAG_MODES]);
     expect(AB_GROUPS.halo).toEqual(['on', 'off']);
     expect(AB_GROUPS.calm).toEqual(['1', '0.5', '0.25']);
-    expect(AB_GROUPS.wrap).toEqual(['base', 'fade', 'half']);
-    expect(AB_GROUPS.flame).toEqual(['base', 'wind']);
+    expect(AB_GROUPS.wrap).toEqual(['base', 'opacity', 'pingpong']);
+    expect(Object.keys(AB_GROUPS)).toEqual(['shimmer', 'zdiag-all', 'halo', 'calm', 'wrap']);
   });
 });
 
-describe('wrap and flame', () => {
-  it('?wrap and ?flame imply their groups at their variant, after ?zdiag and ?nohalo', () => {
-    expect(resolveAb(flags({ wrap: 'half' })).activation).toEqual({ group: 'wrap', start: 2 });
-    expect(resolveAb(flags({ flame: 'wind' })).activation).toEqual({ group: 'flame', start: 1 });
-    const both = resolveAb(flags({ wrap: 'fade', flame: 'wind' }));
-    expect(both.activation).toEqual({ group: 'wrap', start: 1 });
-    expect(both.warnings).toEqual([
-      '?wrap=fade has the A/B button (wrap); ?flame=wind stays fixed',
-    ]);
-    expect(resolveAb(flags({ nohalo: true, wrap: 'fade' })).activation).toEqual({
-      group: 'halo',
-      start: 1,
-    });
+describe('wrap', () => {
+  it('?wrap implies its group at its variant, after ?zdiag and ?nohalo', () => {
+    expect(resolveAb(flags({ wrap: 'pingpong' })).activation).toEqual({ group: 'wrap', start: 2 });
+    expect(resolveAb(flags({ wrap: 'opacity' })).activation).toEqual({ group: 'wrap', start: 1 });
+    const both = resolveAb(flags({ nohalo: true, wrap: 'opacity' }));
+    expect(both.activation).toEqual({ group: 'halo', start: 1 });
+    expect(both.warnings).toEqual(['?nohalo has the A/B button (halo); ?wrap=opacity stays fixed']);
   });
 
-  it('?ab=wrap starts at an implied ?wrap and keeps a ?flame fixed', () => {
-    expect(resolveAb(flags({ ab: 'wrap', wrap: 'half' }))).toEqual({
+  it('?ab=wrap starts at an implied ?wrap and keeps a ?nohalo fixed', () => {
+    expect(resolveAb(flags({ ab: 'wrap', wrap: 'pingpong' }))).toEqual({
       activation: { group: 'wrap', start: 2 },
       warnings: [],
     });
-    expect(resolveAb(flags({ ab: 'wrap', flame: 'wind' })).warnings).toEqual([
-      '?ab=wrap has the A/B button (wrap); ?flame=wind stays fixed',
+    expect(resolveAb(flags({ ab: 'wrap', nohalo: true })).warnings).toEqual([
+      '?ab=wrap has the A/B button (wrap); ?nohalo stays fixed',
     ]);
   });
 
-  it('their groups drive the variant setters, and calm uses the activation variants', () => {
+  it('?ab=flame, the retired cypress sway group, is no group', () => {
+    expect(resolveAb(flags({ ab: 'flame' })).activation).toBeNull();
+  });
+
+  it('its group drives the wrap setter, and calm uses the activation variants', () => {
     const deps = {
       zdiag: { setMode: vi.fn(), prepare: vi.fn() },
       setHalo: vi.fn(),
       setCalm: vi.fn(),
       setWrap: vi.fn(),
-      setFlame: vi.fn(),
     };
-    createAbGroup('wrap', deps).apply('fade');
-    expect(deps.setWrap).toHaveBeenCalledWith('fade');
-    createAbGroup('flame', deps).apply('wind');
-    expect(deps.setFlame).toHaveBeenCalledWith('wind');
+    createAbGroup('wrap', deps).apply('opacity');
+    expect(deps.setWrap).toHaveBeenCalledWith('opacity');
+    createAbGroup('wrap', deps).apply('pingpong');
+    expect(deps.setWrap).toHaveBeenCalledWith('pingpong');
     const calm = createAbGroup('calm', deps, ['1', '0.7', '0.5', '0.25']);
     expect(calm.variants).toEqual(['1', '0.7', '0.5', '0.25']);
     calm.apply('0.7');
@@ -83,12 +79,11 @@ describe('abShowsHudAtBoot (F2)', () => {
       [{}, false],
       [{ ab: 'shimmer' }, true],
       [{ ab: 'wrap' }, true],
-      [{ ab: 'flame', flame: 'wind' }, true],
+      [{ ab: 'wrap', wrap: 'pingpong' }, true],
       [{ ab: 'calm', calm: 0.3 }, true],
       [{ zdiag: 'noa2c' }, false],
       [{ nohalo: true }, false],
-      [{ wrap: 'fade' }, false],
-      [{ flame: 'wind' }, false],
+      [{ wrap: 'opacity' }, false],
       [{ ab: 'bogus', nohalo: true }, false],
       [{ ab: 'shimmer', bench: '1000' }, false],
     ];

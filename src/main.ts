@@ -26,9 +26,7 @@ import { MOTION_LAYER_MASK } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { skyWrapLoop } from './motion/sky-swirl';
 import { motionVariants } from './motion/variant-uniforms';
-import type { SkyBaseStrokes } from './motion/variants';
 import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
-import { PAINTER_EYE } from './paintings/starry-night/canvas-camera';
 import type { PainterCamera, WorldDeps, WorldHandle, WorldModule } from './paintings/world-module';
 import { createSwitcher, GALLERY_ID, type LiveWorld } from './portal/switcher';
 import { createStrokeBinding } from './render/stroke-binding';
@@ -92,15 +90,16 @@ if (settingsRecovered) {
 // `?noanim` freezes the clock.
 motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
-// `?wrap` and `?flame` set their motion variant whatever A/B group wins: a losing one stays fixed.
+// `?wrap` sets the sky wrap variant whatever A/B group wins: under another group it stays fixed.
 motionVariants.setWrap(flags.wrap ?? 'base');
-motionVariants.setFlame(flags.flame ?? 'base');
 /**
  * `?motiont` pins the motion time for the e2e (R-P4g). `import.meta.env.MODE` is replaced at build
  * time, so a production build drops this and keeps calling `motionClock.frame`.
  */
 let pinnedMotionTime = import.meta.env.MODE === 'e2e' ? flags.motiont : null;
 if (pinnedMotionTime !== null) motionClock.uniforms.uTime.value = pinnedMotionTime;
+/** `?motionphase`'s pinned stroke phase, e2e builds only, so the `wrap` diag counts what draws. */
+const pinnedMotionPhase = import.meta.env.MODE === 'e2e' ? flags.motionphase : null;
 // `?motionphase` pins every stroke's phase and installs the swirl's TS prediction, e2e builds only.
 if (import.meta.env.MODE === 'e2e') {
   pinMotionPhase(flags.motionphase);
@@ -338,56 +337,53 @@ const ab: AbController | null = abActive
           setHalo,
           setCalm: (calm) => motionClock.setCalm(calm),
           setWrap: (wrap) => motionVariants.setWrap(wrap),
-          setFlame: (sway) => motionVariants.setFlame(sway),
         },
         abActive.variants,
       ),
       abActive.start,
     )
   : null;
-/** The `fade` wrap variant can run: its sky base map is built from the first bound stroke batch. */
-const skyFadeLive = abActive?.group === 'wrap' || flags.wrap === 'fade';
-/** The first bound stroke batch, which the `wrap` diag key scans. */
+/** The bound stroke batch, which the `wrap` diag key scans. */
 let skyBatch: StrokeBatch | null = null;
 
-/** The sky strokes of every chunk of `batch`, as their instance arrays hold them. */
-function skyBaseStrokes(batch: StrokeBatch): SkyBaseStrokes[] {
-  return batch.chunks.map((chunk) => ({
-    count: chunk.count,
-    position: chunk.geometry.getAttribute('iPosition').array,
-    color: chunk.geometry.getAttribute('iColor').array,
-    meta: chunk.geometry.getAttribute('iMeta').array,
-  }));
-}
-
 /**
- * The drawn sky strokes of `batch` this frame, and how many draw below 0.8 of their rest size or
- * carry a fade weight above 0.2 at the clock's time under the active wrap variant (the TS mirror,
- * skyWrapLoop). The `wrap` diag key, registered only while a wrap variant can run.
+ * The drawn sky strokes of `batch` this frame under the active wrap variant at the clock's time,
+ * from the TS mirror (skyWrapLoop) at each stroke's phase byte, or at the `?motionphase` pin as the
+ * shader uses it: how many draw below 0.8 of their rest size (`small`, base),
+ * below 0.8 alpha (`fading`) and below 0.05 alpha (`hidden`, both opacity), and are on their way
+ * back along the arc (`returning`, pingpong). The `wrap` diag key, registered only while a wrap
+ * variant can run.
  */
 function skyWrapStats(batch: StrokeBatch | null): {
+  wrap: string;
   drawn: number;
   small: number;
-  faded: number;
+  fading: number;
+  hidden: number;
+  returning: number;
 } | null {
   if (!batch) return null;
   const wrap = motionVariants.diag().wrap;
   const time = motionClock.uniforms.uTime.value;
   let drawn = 0;
   let small = 0;
-  let faded = 0;
+  let fading = 0;
+  let hidden = 0;
+  let returning = 0;
   for (const chunk of batch.chunks) {
     if (!chunk.mesh.visible) continue;
     const meta = chunk.geometry.getAttribute('iMeta').array;
     for (let i = 0; i < chunk.drawCount; i++) {
       if (meta[i * 4 + 1] !== STROKE_LAYER.sky) continue;
-      const loop = skyWrapLoop(wrap, meta[i * 4 + 2] / 256, time);
+      const loop = skyWrapLoop(wrap, pinnedMotionPhase ?? meta[i * 4 + 2] / 256, time);
       drawn++;
       if (1 + loop.gain < 0.8) small++;
-      if (loop.fade > 0.2) faded++;
+      if (loop.alpha < 0.8) fading++;
+      if (loop.alpha < 0.05) hidden++;
+      if (loop.returning) returning++;
     }
   }
-  return { drawn, small, faded };
+  return { wrap, drawn, small, fading, hidden, returning };
 }
 /** The last switch's cost on the CPU: its apply, then the rest of that frame (`abSwitch` diag). */
 let abSwitch: { variant: string; applyMs: number; frameMs: number | null } | null = null;
@@ -635,7 +631,7 @@ if (flags.diag) {
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
   registerDiag('motion', () => motionClock.diag());
   registerDiag('variants', () => motionVariants.diag());
-  if (skyFadeLive || flags.wrap !== null) {
+  if (abActive?.group === 'wrap' || flags.wrap !== null) {
     registerDiag('wrap', () => skyWrapStats(skyBatch));
   }
   registerDiag('settings', () => ({
@@ -709,10 +705,6 @@ window.addEventListener('keydown', (event) => {
 function governStrokes(batch: StrokeBatch): Promise<void> {
   zdiag.applyToBatch(batch);
   skyBatch ??= batch;
-  // The test scenes start the eye at the origin, 1.6 m up, which is PAINTER_EYE.
-  if (skyFadeLive) {
-    motionVariants.buildSkyBase(skyBaseStrokes(batch), STROKE_LAYER.sky, PAINTER_EYE);
-  }
   buildArc(batch.atlas);
   reactiveBatch ??= batch;
   return strokes.batch ? Promise.resolve() : strokes.bind(batch);
@@ -781,11 +773,6 @@ function bindWorld({ id, module, handle }: LiveWorld): void {
   const { batch } = handle;
   zdiag.applyToBatch(batch);
   skyBatch = batch;
-  // The sky base map is the bound world's own sky (empty for the gallery), so each world rebuilds
-  // it rather than keep the first bound batch's.
-  if (skyFadeLive) {
-    motionVariants.buildSkyBase(skyBaseStrokes(batch), STROKE_LAYER.sky, PAINTER_EYE, true);
-  }
   buildArc(batch.atlas);
   reactiveBatch = batch;
   void strokes.bind(batch);

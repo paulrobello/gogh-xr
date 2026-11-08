@@ -30,7 +30,9 @@ in vec2 iSize;
 in uvec4 iMeta;
 
 out vec2 vUv;
-flat out vec3 vColor;
+// rgb is the colour. a is the alpha-to-coverage weight: 1, except a sky stroke in the opacity wrap
+// variant's window (src/motion/variants.ts).
+flat out vec4 vColor;
 // Brush uv rect as (min.xy, max.xy), for clamping relief taps.
 flat out vec4 vRect;
 flat out vec3 vNormal;
@@ -152,13 +154,14 @@ void main() {
   // iColor.a never draws: under alpha-to-coverage, alpha below 1 inside a stroke dithers (R3). It
   // carries a cypress stroke's flame data, read only behind the motion gate (P4.4).
   vec3 color = iColor.rgb;
+  float alpha = 1.0;
   // Motion (P4.1): the two gates and one branch for a stroke whose layer is still and that is
   // outside the reactive box, or for every stroke while frozen or at calm 0, and none for a
   // thinned-out haze stroke. The motion is the centre's, the same at every corner; the corner work
   // is the turn of the axes. The depth hashes below keep reading the rest iPosition, so a moving
   // stroke keeps its depth order.
   if ((layerMoves || reacts) && thin > 0.0) {
-    Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts, color);
+    Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts, alpha);
     // The turn is small (SKY_SWIRL_MAX_TURN plus REACTIVE_MAX_TURN), so cosine and sine are
     // polynomials; this pair has c² + s² <= 1, so a turned quad never outgrows its rest extent.
     float a2 = m.turn * m.turn;
@@ -217,7 +220,7 @@ void main() {
   vec4 rect = uBrushRects[min(iMeta.x, uint(BRUSH_COUNT - 1))];
   vUv = rect.xy + rect.zw * (position.xy + 0.5);
   vRect = vec4(rect.xy, rect.xy + rect.zw);
-  vColor = color;
+  vColor = vec4(color, alpha);
 
   // Last, after every other output.
   if (thin <= 0.0) {

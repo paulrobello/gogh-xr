@@ -1316,6 +1316,8 @@ There is no headset in this session (no adb). The foveation steps, the back-off 
 
 ## Sky wrap and cypress sway variants (2026-11-07)
 
+Retired later the same day: in Paul's headset passes base beat `fade` and `half`, and the cypress `wind` lost too, so all three were removed, with the `flame` group, `?flame` and the sky base map. The wrap group now holds base, opacity and pingpong (Sky wrap variants: opacity and pingpong, below). This section is kept as the record of that round.
+
 In the headset Paul found the sky-swirl strokes' size pulse at the wrap distracting (Q39, and Q37 at low calm), and did not notice the cypress sway (Q40). Two A/B groups (`src/motion/variants.ts`, CLAUDE.md, Motion A/B variants) let him pick in the headset with the A/B button (left stick click, or V):
 
 - `https://gogh-xr.pardev.net/?painting=starry-night&ab=wrap`
@@ -1492,3 +1494,70 @@ Without the exclusion half the frame changes at the crossing, a visible pop over
 
 - The Quest. The 72 fps check is Paul's. The 2026-11-06 headset profile ("Governor sheds foveation first") reads the frame as GPU-bound, with main-thread JS at 6 to 7 ms of 21 ms. If the GPU binds, this cut alone may not reach 72 fps.
 - The longest portal slicer step is still one 22 to 23 ms batch step under IWER on the M4 Max (F5 of P5.5).
+
+## Sky wrap variants: opacity and pingpong (2026-11-07)
+
+After two headset passes Paul still disliked the sky strokes growing in and shrinking out at the wrap, and asked for an opacity fade. The `wrap` A/B group now cycles base, opacity and pingpong (CLAUDE.md, Motion A/B variants). Headset: `https://gogh-xr.pardev.net/?painting=starry-night&ab=wrap`.
+
+- `opacity`: full size and base's arc. Over the same 6% wrap window the alpha-to-coverage alpha falls to 0 at the jump and rises again, on base's size curve. The weight reaches the fragment in the flat colour varying's fourth component (`vColor.a`), exactly 1 for every other stroke. At 0 the coverage mask is empty, so the stroke writes no sample, colour or depth. A 90 Hz frame either side of the jump the weight is below 0.002 (unit test).
+- `pingpong`: no wrap and no size change. The stroke eases forward along base's arc and back over the same 8 s loop, so it moves twice as far per loop: mean speed 2x base's, peak 3x. |tau| stays within half a period, inside the cull growth and haze thin reach (unit test).
+- The desktop canvas reports 4 MSAA samples (`gl.getParameter(gl.SAMPLES)`), the same as the Quest, so the fade steps through five coverage levels on both.
+- The stars, moon and halos have their own motions and never fade. The boundary haze is sky-layer, so it fades with the dome.
+
+### Default unchanged
+
+`bun scripts/motion-variant-probe.ts capture` took its five captures (the `?noanim` painter view, the painter view at `?motiont=0.5` and `3.7`, sky-up and under-the-cypress at `3.7`) from e2e builds of 6ab365f and of this change. With no flag, `&wrap=base` and `&ab=wrap`, all 15 captures of this change are byte-identical to 6ab365f's no-flag ones, and 6ab365f's `&wrap=base` matches too. `tests/e2e/ab.spec.ts` cycles the group live at a pinned `?motiont`, checks each variant's `wrap` diag, that no switch links a program, and that a full cycle returns to a byte-identical painter view.
+
+### Measurements
+
+`bun scripts/motion-variant-probe.ts measure` on an e2e build, headless Chromium on the M4 Max GPU at 1280 × 1014, seed 1. Coverage is the `?coverage` sweep's binary share at all 24 poses (`tests/world-poses.ts`) at `?motiont` 0.5, 3.7 and 6.1, against the 0.5% limit. The diag shares are `__goghDiag().wrap` at `?motiont=3.7` over the five sky poses (spot ahead, spot behind, spot left raised, spot straight up, boundary north-east). Flicker is per sky pose in that order, as in the earlier round.
+
+| wrap | Worst bare (pose) | Weighted | Below 0.8 size | Alpha below 0.8 / 0.05 | Returning |
+| --- | --- | --- | --- | --- | --- |
+| base | 0.475% (village uphill) | 0.536% | 8.47 to 8.82% | 0 / 0 | 0 |
+| opacity | 0.474% (village uphill) | 0.536% | 0 | 8.47 to 8.82% / 1.50 to 1.65% | 0 |
+| pingpong | 0.473% (village uphill) | 0.533% | 0 | 0 / 0 | 49.9 to 50.2% |
+
+| wrap | Motion flicker, % | Jitter flicker, % |
+| --- | --- | --- |
+| base | 4.86 / 2.62 / 5.04 / 8.20 / 2.02 | 7.82 / 11.02 / 9.62 / 7.73 / 3.74 |
+| opacity | 5.36 / 3.53 / 6.30 / 10.63 / 2.48 | 7.81 / 10.98 / 9.56 / 7.66 / 3.73 |
+| pingpong | 5.21 / 1.91 / 4.41 / 7.19 / 2.65 | 7.88 / 10.97 / 9.53 / 7.64 / 3.72 |
+
+- The dissolving strokes expose no extra bare sky: the dome's strokes overlap enough that the 1.5% hidden at any moment leave the worst pose where base has it. The weighted share is over 0.5% for base as well, and the coverage spec's limit is on the binary share.
+- `opacity` raises the motion flicker at all five poses (spot straight up 8.20 to 10.63%), because a fading stroke changes coverage samples every frame where base's shrinking one changes its outline. `pingpong` lowers it at three poses. Jitter flicker, the still-view shimmer, is within 0.1 points of base for both.
+- Captures: `docs/shots/p4-wrap-base-midwrap.jpg`, `p4-wrap-opacity-midwrap.jpg` and `p4-wrap-pingpong-midwrap.jpg`, the painter view at `?motionphase=0&motiont=7.76` (f = 0.97, every sky stroke half way through its wrap window). Base's strokes are half size with the dome mesh showing between them. Opacity's are full size at alpha 0.5, about two of four samples, and the dome reads as an even, softer mix of strokes and the dome mesh under them. That frame holds every stroke at one alpha level, so it cannot show how a fade looks. Pingpong's strokes are full size and opaque, almost back at the start of their arc.
+- Random-phase captures, the look in the headset: `docs/shots/p4-wrap-base-t3.7.jpg`, `p4-wrap-opacity-t3.7.jpg` and `p4-wrap-pingpong-t3.7.jpg`, the painter view at `?motiont=3.7` with each stroke's own phase. Opacity differs from base in 0.25% of the pixels. In an 8x crop, its few fading strokes show a fine 2 × 2 pixel checkerboard: the desktop's alpha-to-coverage (ANGLE on Metal) dithers partial coverage in a fixed screen pattern. The Quest's GPU may use another pattern, so how the fade reads there stays a headset question.
+- Load: waiting from 18:13 to 18:32 found no 1-minute load at 15 or less (330 falling to 27.7), so every run here is load-affected. The measure ran at 23.2 to 29.2 and the captures at 48 to 60. Coverage, the diag shares, flicker and the byte compares are pixel and count measures at pinned times, so the load slows them without changing them.
+
+### Gates
+
+- `make checkall-ci`: exit 0, 1205 unit tests.
+- `E2E_PORT=4290 make e2e`: exit 0, 108 passed and 2 skipped, after a wait that reached a load of 14.3 at 18:38. The run started at 23.2 and ended at 14.8. Fidelity is unchanged at SSIM 0.3505 and ΔE 5.2735, and the coverage spec's max bare is 0.451% (hill west), as on 6ab365f's tree.
+
+### Not verified
+
+- The headset: how the opacity fade's five coverage steps over 0.48 s and pingpong's 3x peak speed read in the Quest is Paul's A/B call. The mid-wrap capture is one frame with every stroke at the same alpha, so it cannot show the steps over time (about 8 frames each at 90 Hz), and the alpha-to-coverage sample pattern is implementation-defined, so ANGLE Metal on the M4 Max says little about the Quest's GPU. The motion flicker rise above is the better hint. If the fade steps visibly, the follow-up is a `gl_FragCoord` hash dither scaled by 1 − `vAlpha`, which is exactly 0 on the default path and so keeps it byte-identical.
+- Cost: not measured, because the host never reached a 1-minute load of 15 or less, so any GPU timing would be noise. Since fix round 1 the weight shares the colour's flat varying, so the default path gains no vertex output, only one multiply per stroke fragment.
+
+### Fix round 1
+
+- GPU-side checks (review F1). The `wrap` diag is the TS mirror, so before this round no test failed if the GLSL fade or pingpong formula broke. A new test in `tests/e2e/ab.spec.ts` boots the painter view with `?motionphase=0&motionlayers=sky`, so f = t / 8 for every stroke and only the sky moves, and moves the pin with `__goghMotionT`. At each pair the two variants compute the same tau, size and alpha exactly in float:
+  - Opacity at f = 0.5 is byte-equal to base at f = 0.5 (tau 0, alpha 1).
+  - Pingpong at f = 0.25 is byte-equal to base at f = 0.5, because smoothstep(0, 1, 0.5) = 0.5 makes tau 0.
+  - Pingpong at f = 0.125 is byte-equal to opacity at f = 0.15625, because smoothstep(0, 1, 0.25) = 0.15625 gives both tau −2.75 s. As a negative control, opacity at f = 0.15625 differs from base at f = 0.5.
+  - Under `?coverage`, opacity at f = 0 leaves 35.91% of the painter view bare, against 0.255% for base at f = 0.5 and for opacity back at f = 0.5. The limit in the test is 25%.
+  - Each check was proved by breaking motion.glsl, running the test and restoring it. With the fade line deleted, opacity at f = 0 read 0.258% bare, so the bare check failed. With pingpong's sign flipped, the f = 0.125 match failed. With pingpong's formula replaced by base's linear tau, the f = 0.25 match failed.
+- Dither experiment (review ruling 2). Interleaved gradient noise on `gl_FragCoord`, one coverage step wide (±0.125), scaled to exactly 0 at weight 1 and at weight 0, was added to the weight. `motion-variant-probe measure`, opacity only, on two e2e builds that differed only in the dither, at load 13.0 to 26.2:
+
+| Opacity | Motion flicker, % | Clustered, % | Jitter flicker, % |
+| --- | --- | --- | --- |
+| no dither | 5.363 / 3.531 / 6.302 / 10.630 / 2.481 | 2.728 / 2.223 / 3.441 / 6.167 / 1.865 | 7.806 / 10.984 / 9.564 / 7.660 / 3.732 |
+| dither | 5.351 / 3.462 / 6.229 / 10.498 / 2.508 | 2.696 / 2.146 / 3.362 / 6.014 / 1.846 | 7.809 / 10.988 / 9.560 / 7.666 / 3.734 |
+| base, for the rise | 4.862 / 2.620 / 5.042 / 8.203 / 2.015 | | 7.818 / 11.024 / 9.619 / 7.726 / 3.735 |
+
+  The poses are, in order, spot ahead, spot behind, spot left raised, spot straight up and boundary north-east. The dither cut opacity's rise over base by 0.01 to 0.13 points at four poses and raised it by 0.03 at boundary north-east. Summed over the five poses, the rise went from 5.57 to 5.31 points, under 5%. Coverage was unchanged (worst 0.474%). Because it does not remove the rise and would add a hash to every stroke fragment on the default path, it was left out.
+- The weight now rides in `vColor.a` (review F3), so the default path has no extra vertex output. The five probe captures of the round-1 build with no flag, `&wrap=base` and `&ab=wrap` are still byte-identical to 6ab365f's, and the three mid-wrap shots are byte-identical to the round-0 ones.
+- The `wrap` diag now uses the `?motionphase` pin when one is set (review F4). The fixed-phase test checks that opacity at f = 0 reports every drawn sky stroke as fading and hidden.
+- Load: a wait reached 13.3 at 19:09. The dither measures ran at 13.0 to 26.2, the captures and shots at 19.6 to 25.2, and the mutation runs at about 20.
+- Gates: `make checkall-ci` exit 0 (1205 unit tests). `E2E_PORT=4290 make e2e` exit 0, 109 passed and 2 skipped, load-affected: the 15-minute wait before it ended at 31.8, and the run went from 35.6 to 64.2. Fidelity (SSIM 0.3505, ΔE 5.2735) and the coverage spec's max bare (0.451%) are unchanged.

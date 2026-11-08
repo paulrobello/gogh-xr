@@ -11,7 +11,8 @@ uniform vec3 uMoonDir;
 uniform float uRelief;
 
 in vec2 vUv;
-flat in vec3 vColor;
+// rgb is the colour, a the alpha-to-coverage weight (stroke.vert.glsl).
+flat in vec4 vColor;
 flat in vec4 vRect;
 flat in vec3 vNormal;
 flat in vec3 vLong;
@@ -37,6 +38,9 @@ void main() {
 #else
   float alpha = clamp((cov - 0.5) / max(fwidth(cov), 1e-4) + 0.5, 0.0, 1.0);
 #endif
+  // The opacity wrap variant's weight (src/motion/variants.ts), exactly 1 for every other stroke.
+  // At 0 the coverage mask is empty, so the stroke writes no sample, colour or depth.
+  alpha *= vColor.a;
 #ifdef ZDIAG_ALPHA_TEST
   // `?zdiag=noa2c` (src/render/zdiag.ts): alpha-to-coverage is off, so cut the shape out instead.
   if (alpha < 0.5) discard;
@@ -61,5 +65,5 @@ void main() {
   float moon = dot(n, uMoonDir) * 0.5 + 0.5;
   float shade = 0.85 + 0.3 * moon;
   float tone = 0.75 + 0.5 * t.b;
-  fragColor = vec4(vColor * tone * shade, alpha);
+  fragColor = vec4(vColor.rgb * tone * shade, alpha);
 }

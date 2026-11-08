@@ -9,7 +9,7 @@
  * desktop. main.ts builds a controller only when a group resolves, so a boot with no A/B flag
  * builds no group and does no per-frame A/B work. The bench ignores all of it.
  */
-import { FLAME_SWAYS, type FlameSway, SKY_WRAPS, type SkyWrap } from '../motion/variants';
+import { SKY_WRAPS, type SkyWrap } from '../motion/variants';
 import { ZDIAG_MODES, type ZdiagMode } from './flags';
 
 /**
@@ -30,13 +30,11 @@ export const AB_GROUPS = {
   calm: ['1', '0.5', '0.25'],
   /** The sky swirl's wrap treatment (`?wrap`, src/motion/variants.ts). */
   wrap: SKY_WRAPS,
-  /** The cypress sway (`?flame`, src/motion/variants.ts). */
-  flame: FLAME_SWAYS,
 } as const satisfies Record<string, readonly string[]>;
 
 export type AbGroupName = keyof typeof AB_GROUPS;
 
-type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap' | 'flame';
+type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap';
 
 /** The setting each group drives. Two groups that drive the same setting are rivals. */
 const OWNS: Record<AbGroupName, AbSetting> = {
@@ -45,7 +43,6 @@ const OWNS: Record<AbGroupName, AbSetting> = {
   halo: 'halo',
   calm: 'calm',
   wrap: 'wrap',
-  flame: 'flame',
 };
 
 /** The flags the resolution reads (src/diag/flags.ts), plus the effective calm. */
@@ -55,7 +52,6 @@ export interface AbFlags {
   readonly zdiag: ZdiagMode | null;
   readonly nohalo: boolean;
   readonly wrap: SkyWrap | null;
-  readonly flame: FlameSway | null;
   /**
    * The effective calm setting: `?calm` laid over the stored calm (src/settings/schema.ts), so
    * `?ab=calm` starts where the session already is. null starts at the first variant.
@@ -97,7 +93,7 @@ function variantIndex(group: AbGroupName, variant: string): number {
   return (AB_GROUPS[group] as readonly string[]).indexOf(variant);
 }
 
-/** The implied flags in precedence order: `?zdiag`, `?nohalo`, `?wrap`, then `?flame`. */
+/** The implied flags in precedence order: `?zdiag`, `?nohalo`, then `?wrap`. */
 function impliedFlags(flags: AbFlags): ImpliedFlag[] {
   const implied: ImpliedFlag[] = [];
   if (flags.zdiag !== null) {
@@ -119,14 +115,6 @@ function impliedFlags(flags: AbFlags): ImpliedFlag[] {
       group: 'wrap',
     });
   }
-  if (flags.flame !== null) {
-    implied.push({
-      setting: 'flame',
-      text: `?flame=${flags.flame}`,
-      variant: flags.flame,
-      group: 'flame',
-    });
-  }
   return implied;
 }
 
@@ -143,7 +131,7 @@ export function calmVariants(calm: number | null): readonly string[] {
 
 /**
  * Whether the boot builds the HUD shown for the A/B group: only for a group `?ab` names. A group
- * an older A/B flag implies (`?zdiag`, `?nohalo`, `?wrap`, `?flame`) leaves it hidden, because those
+ * an older A/B flag implies (`?zdiag`, `?nohalo`, `?wrap`) leaves it hidden, because those
  * flags drive byte-compared captures.
  */
 export function abShowsHudAtBoot(activation: AbActivation | null, ab: string | null): boolean {
@@ -154,11 +142,11 @@ export function abShowsHudAtBoot(activation: AbActivation | null, ab: string | n
  * Which group starts, and where.
  * - `?ab=<group>` starts that group at its first variant. An unknown group warns and is ignored.
  * - Each other A/B flag implies its group at that flag's variant: `?zdiag=<m>` implies `shimmer`
- *   when m is in it, else `zdiag-all`, `?nohalo` implies `halo` at off, `?wrap=<v>` implies `wrap`
- *   and `?flame=<v>` implies `flame`, each at v. `?calm` is a setting, not an A/B flag, so it
+ *   when m is in it, else `zdiag-all`, `?nohalo` implies `halo` at off and `?wrap=<v>` implies
+ *   `wrap` at v. `?calm` is a setting, not an A/B flag, so it
  *   implies nothing, but `?ab=calm` starts at the effective calm (the stored setting, or `?calm`
  *   over it), inserted among the variants when it is not one (`calmVariants`).
- * - The winner is `?ab`, else the first implied flag (`?zdiag`, `?nohalo`, `?wrap`, `?flame`). A flag that drives
+ * - The winner is `?ab`, else the first implied flag (`?zdiag`, `?nohalo`, `?wrap`). A flag that drives
  *   the winner's setting at one of its variants sets the start. Any other flag loses: it stays
  *   fixed when the winner drives a different setting, and is ignored when it drives the same one.
  *   Every loss goes into one warning.
@@ -285,8 +273,6 @@ export interface AbGroupDeps {
   setCalm(calm: number): void;
   /** The sky wrap variant (src/motion/variants.ts). */
   setWrap(wrap: SkyWrap): void;
-  /** The cypress sway variant (src/motion/variants.ts). */
-  setFlame(sway: FlameSway): void;
 }
 
 /**
@@ -309,9 +295,6 @@ export function createAbGroup(
   }
   if (name === 'wrap') {
     return { name, variants, apply: (variant) => deps.setWrap(variant as SkyWrap) };
-  }
-  if (name === 'flame') {
-    return { name, variants, apply: (variant) => deps.setFlame(variant as FlameSway) };
   }
   return { name, variants, apply: (variant) => deps.setCalm(Number(variant)) };
 }

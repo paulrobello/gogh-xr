@@ -379,8 +379,6 @@ export interface MotionReaches {
   readonly star: number;
   readonly moon: number;
   readonly cypress: number;
-  /** The cypress reach under the `wind` sway variant (src/motion/variants.ts). */
-  readonly cypressWind: number;
 }
 
 /**
@@ -400,7 +398,6 @@ export function motionReachesOf(
   let star = 0;
   let moon = 0;
   let cypress = 0;
-  let cypressWind = 0;
   const p = buffers.position;
   const n = indices ? indices.length : buffers.count;
   for (let k = 0; k < n; k++) {
@@ -422,7 +419,6 @@ export function motionReachesOf(
         Math.max(-1, buffers.normal[i * 2 + 1] / 32767),
       )[1];
       cypress = Math.max(cypress, cypressFlameReach(ny, buffers.color[i * 4 + 3]));
-      cypressWind = Math.max(cypressWind, cypressFlameReach(ny, buffers.color[i * 4 + 3], 'wind'));
     }
   }
   return {
@@ -430,7 +426,6 @@ export function motionReachesOf(
     star: star * SKY_REACH_MARGIN,
     moon: moon * SKY_REACH_MARGIN,
     cypress: cypress * SKY_REACH_MARGIN,
-    cypressWind: cypressWind * SKY_REACH_MARGIN,
   };
 }
 
@@ -662,13 +657,12 @@ export function interleaveOrders(parts: readonly { order: Uint32Array; pinned: n
 
 /** The largest of each field over `reaches`: the reaches of their parts' union. */
 function maxReaches(reaches: readonly MotionReaches[]): MotionReaches {
-  const out = { sky: 0, star: 0, moon: 0, cypress: 0, cypressWind: 0 };
+  const out = { sky: 0, star: 0, moon: 0, cypress: 0 };
   for (const r of reaches) {
     out.sky = Math.max(out.sky, r.sky);
     out.star = Math.max(out.star, r.star);
     out.moon = Math.max(out.moon, r.moon);
     out.cypress = Math.max(out.cypress, r.cypress);
-    out.cypressWind = Math.max(out.cypressWind, r.cypressWind);
   }
   return out;
 }
@@ -748,8 +742,6 @@ export function* createStrokeBatchSteps(
    */
   let motionCalm = 0;
   let motionBits = 0;
-  /** The cypress sway variant (`uCypressSway`) the cull spheres were last grown for. */
-  let motionSway = 0;
   const MOTION_BITS =
     (1 << STROKE_LAYER.sky) |
     (1 << STROKE_LAYER.star) |
@@ -917,9 +909,7 @@ export function* createStrokeBatchSteps(
     if (motionGate(motionBits, STROKE_LAYER.sky)) reach = Math.max(reach, r.sky);
     if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);
     if (motionGate(motionBits, STROKE_LAYER.moon)) reach = Math.max(reach, r.moon);
-    if (motionGate(motionBits, STROKE_LAYER.cypress)) {
-      reach = Math.max(reach, motionSway === 0 ? r.cypress : r.cypressWind);
-    }
+    if (motionGate(motionBits, STROKE_LAYER.cypress)) reach = Math.max(reach, r.cypress);
     if (reactiveNear[i]) reach += REACTIVE_REACH * SKY_REACH_MARGIN;
     return motionCalm * reach;
   }
@@ -1003,11 +993,9 @@ export function* createStrokeBatchSteps(
       eye.setFromMatrixPosition(camera.matrixWorld);
       const bits = (motionUniforms.uMotionLayers.value >>> 0) & MOTION_BITS;
       const calm = bits === 0 ? 0 : motionUniforms.uCalm.value;
-      const sway = motionUniforms.uCypressSway.value;
-      const rescale = bits !== motionBits || calm !== motionCalm || sway !== motionSway;
+      const rescale = bits !== motionBits || calm !== motionCalm;
       motionBits = bits;
       motionCalm = calm;
-      motionSway = sway;
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         const near = reactiveReaches(i) ? 1 : 0;

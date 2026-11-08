@@ -27,7 +27,6 @@ import {
 } from '../src/motion/cypress-flame.ts';
 import { MOTION_LAYER_MASK, motionOffset } from '../src/motion/motion.ts';
 import { SKY_SWIRL_FADE, SKY_SWIRL_PERIOD, skySwirl } from '../src/motion/sky-swirl.ts';
-import { CYPRESS_WIND, CYPRESS_WIND_MAX } from '../src/motion/variants.ts';
 import { PAINTER_EYE, projectToCanvas } from '../src/paintings/starry-night/canvas-camera.ts';
 import { WORLD_SCATTER_SIZE } from '../src/paintings/starry-night/world.ts';
 import { motionReachesOf, SKY_REACH_MARGIN } from '../src/render/strokes/batch.ts';
@@ -413,78 +412,6 @@ describe('hull', () => {
     );
     expect(quantile(shares, 0.99)).toBeLessThanOrEqual(0.25);
     expect(worstShare).toBeLessThanOrEqual(1);
-  });
-});
-
-describe('wind sway variant (src/motion/variants.ts)', () => {
-  const quantile = (a: number[], q: number): number =>
-    [...a].sort((x, y) => x - y)[Math.floor(q * (a.length - 1))];
-  test('reports how far the wind sway carries strokes off the hull, and cypressFlameReach bounds it', () => {
-    const excess: number[] = [];
-    const shares: number[] = [];
-    let worstShare = 0;
-    let largest = 0;
-    let largestReach = 0;
-    for (const s of SAMPLE) {
-      const reach = cypressFlameReach(s.normal[1], s.alpha, 'wind');
-      largestReach = Math.max(largestReach, reach);
-      let worst = 0;
-      for (const t of TIMES) {
-        const m = cypressFlame(s.position, s.normal, s.phase / 256, s.alpha, t, 'wind');
-        const d = Math.hypot(...m.offset);
-        expect(d).toBeLessThanOrEqual(reach + 1e-9);
-        largest = Math.max(largest, d);
-        worst = Math.max(
-          worst,
-          hullExcess([
-            s.position[0] + m.offset[0],
-            s.position[1] + m.offset[1],
-            s.position[2] + m.offset[2],
-          ]),
-        );
-      }
-      excess.push(worst);
-      shares.push(worst / s.size);
-      worstShare = Math.max(worstShare, worst / s.size);
-    }
-    record(
-      `[cypress] wind sway at ${CYPRESS_WIND_MAX} m: hull excess p99 ${(quantile(excess, 0.99) * 100).toFixed(2)} cm, max ${(quantile(excess, 1) * 100).toFixed(2)} cm, p99 ${(quantile(shares, 0.99) * 100).toFixed(1)}% of the stroke length, max ${(worstShare * 100).toFixed(1)}%; largest offset ${largest.toFixed(3)} m, largest reach ${largestReach.toFixed(3)} m`,
-    );
-    // The wind moves whole heights of the tree together, so a stroke leaves the hull on the
-    // windward side by up to the sway itself: the bound is the sway, not a share of a stroke.
-    expect(quantile(excess, 1)).toBeLessThanOrEqual(CYPRESS_WIND_MAX + CYPRESS_FLAME_HALF_ARC);
-    // The reach is the sum of the rise and the sway, but on the side faces the rise runs about
-    // vertical and the wind horizontal, so the true largest offset is near their hypot, and
-    // hypot / sum falls to 1/√2 when the two are equal. The sampled times miss a little more.
-    expect(largest).toBeGreaterThan(0.7 * largestReach);
-    const reaches = motionReachesOf(STROKES);
-    expect(reaches.cypressWind).toBeGreaterThanOrEqual(largestReach);
-    expect(reaches.cypressWind).toBeGreaterThan(reaches.cypress);
-    expect(reaches.cypressWind).toBeLessThanOrEqual(
-      SKY_REACH_MARGIN * (CYPRESS_FLAME_HALF_ARC + CYPRESS_WIND_MAX),
-    );
-  });
-
-  test('the wind sway runs along CYPRESS_WIND, and base is unchanged by the variant parameter', () => {
-    const s = SAMPLE.find((x) => (decodeFlame(x.alpha)?.height ?? 0) > 0.8);
-    const flame = s && decodeFlame(s.alpha);
-    if (!s || !flame) throw new Error('no high cypress stroke');
-    for (const t of [0.3, 1.7, 2.9]) {
-      const base = cypressFlame(s.position, s.normal, s.phase / 256, s.alpha, t);
-      expect(cypressFlame(s.position, s.normal, s.phase / 256, s.alpha, t, 'base')).toEqual(base);
-      const wind = cypressFlame(s.position, s.normal, s.phase / 256, s.alpha, t, 'wind');
-      const d = [0, 1, 2].map((k) => wind.offset[k] - base.offset[k]);
-      // The difference is the two sways: a along W minus the base sway along the tangent.
-      const [nx, , nz] = s.normal;
-      const h = flame.height;
-      const wave = flickerWave(flame.lobe, s.position[1], t);
-      const aw = CYPRESS_WIND_MAX * h * h * wave;
-      const ab = CYPRESS_FLICKER_MAX * h * h * wave;
-      expect(d[0]).toBeCloseTo(aw * CYPRESS_WIND[0] - ab * nz, 9);
-      expect(d[1]).toBeCloseTo(0, 9);
-      expect(d[2]).toBeCloseTo(aw * CYPRESS_WIND[2] + ab * nx, 9);
-      expect(wind.gain).toBe(base.gain);
-    }
   });
 });
 

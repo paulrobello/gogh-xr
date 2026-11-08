@@ -20,13 +20,9 @@ uniform vec4 uDisturberVelocities[REACTIVE_DISTURBERS];
 uniform vec4 uWake[REACTIVE_WAKE_SAMPLES];
 uniform vec3 uReactiveCentre;
 uniform vec3 uReactiveHalf;
-// The motion A/B variants (src/motion/variants.ts): the sky wrap (0 base, SKY_WRAP_FADE,
-// SKY_WRAP_HALF), read only in skyMotion, and the cypress sway (0 base, CYPRESS_SWAY_WIND), read
-// only in cypressMotion, so a moving vertex pays one compare. uSkyBase is the fade's target colour
-// by direction from SKY_EYE, sampled only inside the fade's wrap window.
+// The sky wrap A/B variant (src/motion/variants.ts): 0 base, SKY_WRAP_OPACITY or
+// SKY_WRAP_PINGPONG, read only in skyMotion, so a moving sky vertex pays one compare.
 uniform uint uSkyWrap;
-uniform uint uCypressSway;
-uniform sampler2D uSkyBase;
 
 // One stroke's motion, every field 0 at rest. offset moves the stroke centre (model space), turn
 // rotates it about its normal from the long axis towards the short axis (radians, small:
@@ -64,32 +60,21 @@ Motion scaleMotion(Motion m, float k) {
 const vec4 SKY_VORTEX_AXIS[SKY_VORTEX_COUNT] = SKY_VORTEX_AXES;
 const float SKY_VORTEX_CORE[SKY_VORTEX_COUNT] = SKY_VORTEX_CORES;
 
-// Matches skyBaseUv in variants.ts: the octahedral uv of direction d, +Y at the centre.
-vec2 skyBaseUv(vec3 d) {
-  vec3 a = d / (abs(d.x) + abs(d.y) + abs(d.z));
-  vec2 e = a.xz;
-  if (a.y < 0.0) {
-    e = (1.0 - abs(e.yx)) * vec2(e.x >= 0.0 ? 1.0 : -1.0, e.y >= 0.0 ? 1.0 : -1.0);
+// Matches the wrap variants of skySwirl in sky-swirl.ts (src/motion/variants.ts). Neither changes
+// the stroke's size. opacity sweeps base's arc and, over the same wrap window, fades the stroke's
+// alpha-to-coverage weight to 0 at the jump and back in. pingpong sweeps the arc forward over half
+// the loop and eases back over the other half, so it never jumps and |tau| stays within half a
+// period.
+Motion skyWrapMotion(vec3 d, vec3 omega, vec3 n, float phase, float t, inout float alpha) {
+  float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
+  float tau;
+  if (uSkyWrap == SKY_WRAP_PINGPONG) {
+    tau = (smoothstep(0.0, 1.0, 1.0 - abs(2.0 * f - 1.0)) - 0.5) * SKY_SWIRL_PERIOD;
+  } else {
+    tau = (f - 0.5) * SKY_SWIRL_PERIOD;
+    alpha = smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f));
   }
-  return e * 0.5 + 0.5;
-}
-
-// Matches the wrap variants of skySwirl in sky-swirl.ts (src/motion/variants.ts). Both sweep base's
-// arc. fade keeps the stroke at full size and, over the wrap window, mixes its colour toward the
-// sky base under it, all the way at the jump. half loops over SKY_WRAP_HALF_INV_PERIOD, so it moves
-// at 2/3 of base's speed, and shrinks by SKY_WRAP_HALF_DEPTH at most.
-Motion skyWrapMotion(vec3 d, vec3 dir, vec3 omega, vec3 n, float phase, float t, inout vec3 color) {
-  bool slow = uSkyWrap == SKY_WRAP_HALF;
-  float f = fract(t * (slow ? SKY_WRAP_HALF_INV_PERIOD : SKY_SWIRL_INV_PERIOD) + phase);
-  float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
-  float edge = smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f));
-  float gain = 0.0;
-  if (slow) {
-    gain = SKY_WRAP_HALF_DEPTH * (edge - 1.0);
-  } else if (edge < 1.0) {
-    color = mix(textureLod(uSkyBase, skyBaseUv(dir), 0.0).rgb, color, edge);
-  }
-  return Motion(tau * cross(omega, d), tau * dot(omega, n), gain, 0.0);
+  return Motion(tau * cross(omega, d), tau * dot(omega, n), 0.0, 0.0);
 }
 
 // Matches skySwirl in sky-swirl.ts. The field is one rotation vector about SKY_EYE: each vortex
@@ -97,7 +82,7 @@ Motion skyWrapMotion(vec3 d, vec3 dir, vec3 omega, vec3 n, float phase, float t,
 // the vertical. The stroke sweeps a short arc of it per SKY_SWIRL_PERIOD and wraps, shrinking to
 // nothing at the wrap. SKY_VORTEX_COUNT is a handful (4): each vortex costs a dot, a max, a divide
 // and a multiply-add per vertex.
-Motion skyMotion(vec3 p, vec3 n, float phase, float t, inout vec3 color) {
+Motion skyMotion(vec3 p, vec3 n, float phase, float t, inout float alpha) {
   vec3 d = p - SKY_EYE;
   vec3 dir = d * inversesqrt(dot(d, d));
   vec3 omega = vec3(0.0, SKY_DRIFT, 0.0);
@@ -105,7 +90,7 @@ Motion skyMotion(vec3 p, vec3 n, float phase, float t, inout vec3 color) {
     vec4 v = SKY_VORTEX_AXIS[i];
     omega += v.xyz * (v.w / max(1.0 - dot(v.xyz, dir), SKY_VORTEX_CORE[i]));
   }
-  if (uSkyWrap != 0u) return skyWrapMotion(d, dir, omega, n, phase, t, color);
+  if (uSkyWrap != 0u) return skyWrapMotion(d, omega, n, phase, t, alpha);
   float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
   float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
   return Motion(
@@ -167,11 +152,6 @@ Motion cypressMotion(vec3 p, vec3 n, float phase, float flame, float t) {
   float a = CYPRESS_FLICKER_MAX * h * h * w;
   vec3 up = vec3(-n.x * n.y, 1.0 - n.y * n.y, -n.z * n.y);
   vec3 side = vec3(n.z, 0.0, -n.x);
-  // The wind variant (variants.ts): the same sines along the world-fixed CYPRESS_WIND.
-  if (uCypressSway != 0u) {
-    a = CYPRESS_WIND_MAX * h * h * w;
-    side = CYPRESS_WIND;
-  }
   float gain = taper > 0.0 ? smoothstep(0.0, CYPRESS_FLAME_FADE, min(f, 1.0 - f)) - 1.0 : 0.0;
   return Motion(s * up + a * side, 0.0, gain, 0.0);
 }
@@ -231,8 +211,8 @@ Motion reactiveMotion(vec3 p, vec3 n) {
 // gains combine as size factors, so a wrapping stroke still shrinks to nothing and a stretched one
 // grows. MOTION_PHASE_PIN is the e2e's coherent phase
 // (material.ts pinMotionPhase), never defined in a production build. flame is the instance's
-// colour alpha, which only the cypress reads (P4.4). color is the stroke's colour, which only the
-// sky's fade wrap variant changes.
+// colour alpha, which only the cypress reads (P4.4). alpha is the stroke's alpha-to-coverage
+// weight, 1 at rest, which only the sky's opacity wrap variant changes.
 Motion motionOffset(
   uint layer,
   vec3 p,
@@ -241,7 +221,7 @@ Motion motionOffset(
   float flame,
   bool layerMoves,
   bool reacts,
-  inout vec3 color
+  inout float alpha
 ) {
 #ifdef MOTION_PHASE_PIN
   float phase = MOTION_PHASE_PIN;
@@ -252,7 +232,7 @@ Motion motionOffset(
   Motion m = Motion(vec3(0.0), 0.0, 0.0, 0.0);
   if (!layerMoves) {
   } else if (layer == STROKE_LAYER_SKY) {
-    m = skyMotion(p, n, phase, t, color);
+    m = skyMotion(p, n, phase, t, alpha);
   } else if (layer == STROKE_LAYER_STAR) {
     m = starMotion(p, phaseByte, t);
   } else if (layer == STROKE_LAYER_MOON) {

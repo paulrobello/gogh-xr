@@ -16,8 +16,8 @@
  * `f = fract(t / PERIOD + phase)`, offset `τ (omega × d)`, so every stroke sweeps one short arc around
  * its rest position and never drifts off its region. The same rotation turns the stroke about its
  * own normal by `τ (omega · n)`, so its orientation follows the flow. Near the wrap the stroke
- * shrinks to nothing and grows back (`gain`), so the jump back is never a pop: alpha cannot fade a
- * stroke under alpha-to-coverage.
+ * shrinks to nothing and grows back (`gain`), so the jump back is never a pop. The `opacity` and
+ * `pingpong` wrap variants (src/motion/variants.ts) replace the shrink for the A/B.
  *
  * motion.glsl's `skyMotion` is the GLSL; `skySwirlGlslDefines` hands it these tables as defines, so
  * the two read one source. Change them together.
@@ -26,7 +26,7 @@ import regionsJson from '../../assets/bake/starry-night/regions.json';
 import { canvasRay, PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import type { Vec3 } from '../render/strokes/frame';
 import { SKY_DOME_RADIUS } from '../world/sky';
-import { SKY_WRAP_HALF_FLOOR, SKY_WRAP_HALF_PERIOD, type SkyWrap } from './variants';
+import type { SkyWrap } from './variants';
 
 /** Seconds per loop: 3600 / 450, so it divides the 3600 s wrap of uTime (ruling R-P4d). */
 export const SKY_SWIRL_PERIOD: number = 8;
@@ -202,27 +202,48 @@ export interface SkySwirl {
   readonly turn: number;
   /** Size delta: the stroke draws at 1 + gain of its size, gain in [-1, 0]. */
   readonly gain: number;
-  /** The `fade` wrap's colour weight toward the sky base under the stroke, in [0, 1]; else 0. */
-  readonly fade: number;
+  /**
+   * The alpha-to-coverage weight, in [0, 1]: below 1 only in the `opacity` wrap's window, else 1.
+   */
+  readonly alpha: number;
+}
+
+/** A stroke's place in its loop under a wrap variant (`skyWrapLoop`). */
+export interface SkyWrapLoop {
+  /** Seconds from mid-loop, within ±SKY_SWIRL_PERIOD / 2: the offset is tau × (omega × d). */
+  readonly tau: number;
+  /** Size delta, in [-1, 0]. */
+  readonly gain: number;
+  /** The alpha-to-coverage weight, in [0, 1]. */
+  readonly alpha: number;
+  /** Whether tau is falling: the `pingpong` wrap's way back along the arc. */
+  readonly returning: boolean;
 }
 
 /**
  * The loop of a stroke with phase fraction `phase` at motion time `time` under wrap variant `wrap`
- * (src/motion/variants.ts): `tau`, seconds from mid-loop scaled to base's 8 s arc, the size gain
- * and the fade weight. Matches skyMotion and skyWrapMotion in motion.glsl.
+ * (src/motion/variants.ts). Matches skyMotion and skyWrapMotion in motion.glsl:
+ * - `base` sweeps forward and shrinks to nothing over the wrap window.
+ * - `opacity` sweeps forward at full size, and its alpha fades to 0 over the same window.
+ * - `pingpong` sweeps forward over the first half of the loop and eases back over the second, at
+ *   full size and alpha, with no jump.
  */
-export function skyWrapLoop(
-  wrap: SkyWrap,
-  phase: number,
-  time: number,
-): { readonly tau: number; readonly gain: number; readonly fade: number } {
-  const period = wrap === 'half' ? SKY_WRAP_HALF_PERIOD : SKY_SWIRL_PERIOD;
-  const f = fract(time / period + phase);
+export function skyWrapLoop(wrap: SkyWrap, phase: number, time: number): SkyWrapLoop {
+  const f = fract(time / SKY_SWIRL_PERIOD + phase);
+  if (wrap === 'pingpong') {
+    return {
+      tau: (smoothstep(0, 1, 1 - Math.abs(2 * f - 1)) - 0.5) * SKY_SWIRL_PERIOD,
+      gain: 0,
+      alpha: 1,
+      returning: f > 0.5,
+    };
+  }
   const edge = smoothstep(0, SKY_SWIRL_FADE, Math.min(f, 1 - f));
   return {
     tau: (f - 0.5) * SKY_SWIRL_PERIOD,
-    gain: wrap === 'base' ? edge - 1 : wrap === 'half' ? (1 - SKY_WRAP_HALF_FLOOR) * (edge - 1) : 0,
-    fade: wrap === 'fade' ? 1 - edge : 0,
+    gain: wrap === 'base' ? edge - 1 : 0,
+    alpha: wrap === 'opacity' ? edge : 1,
+    returning: false,
   };
 }
 
@@ -246,13 +267,13 @@ export function skySwirl(
   ];
   const inv = 1 / Math.hypot(d[0], d[1], d[2]);
   const omega = skyOmega([d[0] * inv, d[1] * inv, d[2] * inv], vortices);
-  const { tau, gain, fade } = skyWrapLoop(wrap, phase, time);
+  const { tau, gain, alpha } = skyWrapLoop(wrap, phase, time);
   const v = cross(omega, d);
   return {
     offset: [tau * v[0], tau * v[1], tau * v[2]],
     turn: tau * (omega[0] * normal[0] + omega[1] * normal[1] + omega[2] * normal[2]),
     gain,
-    fade,
+    alpha,
   };
 }
 

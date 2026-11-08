@@ -307,17 +307,6 @@ test('?ab=calm cycles the motion calm through 1, 0.5 and 0.25', async ({ page, x
   expect(await glErrors(page)).toEqual([]);
 });
 
-test('?wrap=fade with no world builds the sky base map from the bound batch, so fade has a target', async ({
-  xr,
-}) => {
-  for (const scene of ['demo=canvas', 'strokesTest']) {
-    await xr.boot(`${scene}&wrap=fade`);
-    await expect
-      .poll(async () => ((await xr.diag()).variants as { skyBase: boolean }).skyBase)
-      .toBe(true);
-  }
-});
-
 test('?ab=calm starts at the stored calm, not at 1', async ({ page, xr }) => {
   await page.addInitScript(() => {
     localStorage.setItem(
@@ -422,72 +411,199 @@ test.describe('the painter view', () => {
       expect(await glErrors(page)).toEqual([]);
     });
   }
-  // The motion variants (src/motion/variants.ts) only show while the motion runs, so these boot
-  // with a pinned ?motiont rather than ?noanim, where every variant draws the rest pose.
-  for (const [group, layer] of [
-    ['wrap', 'sky'],
-    ['flame', 'cypress'],
-  ] as const) {
-    test(`V cycles ${group} live at a pinned motion time, each variant draws differently, and a full cycle back to base matches a fresh boot byte for byte`, async ({
-      page,
-      xr,
-    }) => {
-      test.setTimeout(240_000);
-      const query = 'painting=starry-night&seed=1&shot&painter&nogov&motiont=3.7';
-      const bootWorld = async (extra: string): Promise<void> => {
-        await xr.boot(`${query}${extra}`);
-        await expect
-          .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
-          .toBe(true);
-        await xr.waitFrames(5);
+  // The wrap variants (src/motion/variants.ts) only show while the motion runs, so this boots with
+  // a pinned ?motiont rather than ?noanim, where every variant draws the rest pose.
+  test('V cycles wrap live at a pinned motion time, each variant reports and draws its own wrap, and a full cycle back to base matches a fresh boot byte for byte', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(240_000);
+    const query = 'painting=starry-night&seed=1&shot&painter&nogov&motiont=3.7';
+    const bootWorld = async (extra: string): Promise<void> => {
+      await xr.boot(`${query}${extra}`);
+      await expect
+        .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+        .toBe(true);
+      await xr.waitFrames(5);
+    };
+    const hideHud = async (): Promise<void> => {
+      if (!((await xr.diag()).hud as { visible: boolean }).visible) return;
+      await page.keyboard.press('h');
+      await expect
+        .poll(async () => ((await xr.diag()).hud as { visible: boolean }).visible)
+        .toBe(false);
+      await xr.waitFrames(5);
+    };
+    interface WrapDiag {
+      wrap: string;
+      drawn: number;
+      small: number;
+      fading: number;
+      hidden: number;
+      returning: number;
+    }
+    const diag = async () => {
+      const d = await xr.diag();
+      return {
+        variants: d.variants as { wrap: string },
+        wrap: d.wrap as WrapDiag | undefined,
+        programs: d.renderer.programs,
       };
-      const hideHud = async (): Promise<void> => {
-        if (!((await xr.diag()).hud as { visible: boolean }).visible) return;
-        await page.keyboard.press('h');
-        await expect
-          .poll(async () => ((await xr.diag()).hud as { visible: boolean }).visible)
-          .toBe(false);
-        await xr.waitFrames(5);
-      };
-      const variantsDiag = async () =>
-        (await xr.diag()).variants as { wrap: string; flame: string; skyBase: boolean };
+    };
 
-      await bootWorld('');
-      expect(await variantsDiag()).toEqual({ wrap: 'base', flame: 'base', skyBase: false });
-      const fresh = await rawPixels(page);
+    await bootWorld('');
+    const plain = await diag();
+    expect(plain.variants).toEqual({ wrap: 'base' });
+    // With no wrap group or ?wrap, the wrap diag key is not registered.
+    expect(plain.wrap).toBeUndefined();
+    const fresh = await rawPixels(page);
 
-      await bootWorld(`&ab=${group}`);
-      const variants = ((await ab(xr)) as AbDiag).variants;
-      expect(variants[0]).toBe('base');
-      // The fade's sky base map is built once the world's batch binds, for the wrap group only.
-      expect((await variantsDiag()).skyBase).toBe(group === 'wrap');
-      await hideHud();
-      expect((await rawPixels(page)).equals(fresh), `${group} base matches a fresh boot`).toBe(
-        true,
-      );
-      const timings: string[] = [];
-      for (let step = 1; step <= variants.length; step += 1) {
-        const index = step % variants.length;
-        const variant = variants[index];
+    await bootWorld('&ab=wrap');
+    const variants = ((await ab(xr)) as AbDiag).variants;
+    expect(variants).toEqual(['base', 'opacity', 'pingpong']);
+    await hideHud();
+    expect((await rawPixels(page)).equals(fresh), 'wrap base matches a fresh boot').toBe(true);
+    const programs = (await diag()).programs;
+    const timings: string[] = [];
+    const reports: string[] = [];
+    for (let step = 0; step <= variants.length; step += 1) {
+      const index = step % variants.length;
+      const variant = variants[index];
+      if (step > 0) {
         await pressV(page, xr);
         expect(await ab(xr), variant).toMatchObject({ index, variant });
-        expect((await variantsDiag())[group], variant).toBe(variant);
         const sw = (await xr.diag()).abSwitch as { variant: string; applyMs: number };
         expect(sw.variant).toBe(variant);
         timings.push(`${variant} apply ${sw.applyMs.toFixed(2)} ms`);
-        if (variant !== 'base') {
-          await hideHud();
-          expect(
-            (await rawPixels(page)).equals(fresh),
-            `${group} ${variant} moves the ${layer} differently from base`,
-          ).toBe(false);
-        }
       }
-      console.log(`[e2e] ab ${group} desktop switches: ${timings.join('; ')}`);
+      const now = await diag();
+      expect(now.variants.wrap, variant).toBe(variant);
+      // A switch links no program.
+      expect(now.programs, variant).toBe(programs);
+      const w = now.wrap as WrapDiag;
+      expect(w.wrap, variant).toBe(variant);
+      expect(w.drawn, variant).toBeGreaterThan(1000);
+      reports.push(`${variant} ${JSON.stringify(w)}`);
+      if (variant === 'base') {
+        // Base shrinks its wrapping strokes and never fades or turns back.
+        expect(w.small).toBeGreaterThan(0);
+        expect([w.fading, w.hidden, w.returning]).toEqual([0, 0, 0]);
+      } else if (variant === 'opacity') {
+        // Full size, with the wrapping strokes fading and the ones at the jump hidden.
+        expect(w.small).toBe(0);
+        expect(w.fading).toBeGreaterThan(w.hidden);
+        expect(w.hidden).toBeGreaterThan(0);
+        expect(w.returning).toBe(0);
+      } else {
+        // Full size and full alpha, with about half the strokes on their way back.
+        expect([w.small, w.fading, w.hidden]).toEqual([0, 0, 0]);
+        expect(w.returning / w.drawn).toBeGreaterThan(0.4);
+        expect(w.returning / w.drawn).toBeLessThan(0.6);
+      }
+      if (variant !== 'base') {
+        await hideHud();
+        expect(
+          (await rawPixels(page)).equals(fresh),
+          `wrap ${variant} moves the sky differently from base`,
+        ).toBe(false);
+      }
+    }
+    console.log(`[e2e] ab wrap diag: ${reports.join('; ')}`);
+    console.log(`[e2e] ab wrap desktop switches: ${timings.join('; ')}`);
+    await hideHud();
+    const cycled = await rawPixels(page);
+    expect(cycled.equals(fresh), 'a full cycle back to base renders a fresh boot').toBe(true);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
+  // The `wrap` diag is the TS mirror, so these check the GPU's own wrap formulas in motion.glsl.
+  // ?motionphase=0 gives every stroke phase 0, so f = t / 8, and ?motionlayers=sky stills every
+  // other motion, so two frames at different pinned times differ only in the sky. At each pair the
+  // two variants compute the same tau, size and alpha exactly in float:
+  // - opacity at f = 0.5 and base at f = 0.5: tau 0, full size, alpha 1.
+  // - pingpong at f = 0.25 and base at f = 0.5: smoothstep(0, 1, 0.5) = 0.5, so tau 0.
+  // - pingpong at f = 0.125 and opacity at f = 0.15625: smoothstep(0, 1, 0.25) = 0.15625, so both
+  //   have tau −2.75 s on base's arc, at full size and alpha 1.
+  // And opacity at f = 0 has alpha 0, so under ?coverage its sky strokes leave the dome bare.
+  test('at fixed phases the GPU draws each wrap variant as motion.glsl computes it', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(240_000);
+    const query =
+      'painting=starry-night&seed=1&shot&painter&nogov&motionlayers=sky&motionphase=0&motiont=4&ab=wrap';
+    const bootWorld = async (extra: string): Promise<void> => {
+      await xr.boot(`${query}${extra}`);
+      await expect
+        .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+        .toBe(true);
+      await xr.waitFrames(5);
+    };
+    const hideHud = async (): Promise<void> => {
+      if (!((await xr.diag()).hud as { visible: boolean }).visible) return;
+      await page.keyboard.press('h');
+      await expect
+        .poll(async () => ((await xr.diag()).hud as { visible: boolean }).visible)
+        .toBe(false);
+      await xr.waitFrames(5);
+    };
+    const cycleTo = async (variant: string): Promise<void> => {
+      await pressV(page, xr);
+      expect((await ab(xr))?.variant).toBe(variant);
       await hideHud();
-      const cycled = await rawPixels(page);
-      expect(cycled.equals(fresh), 'a full cycle back to base renders a fresh boot').toBe(true);
-      expect(await glErrors(page)).toEqual([]);
-    });
-  }
+    };
+    const at = async (time: number): Promise<Buffer> => {
+      await page.evaluate((t) => {
+        if (!window.__goghMotionT) throw new Error('__goghMotionT is e2e-only and needs ?motiont');
+        window.__goghMotionT(t);
+      }, time);
+      await xr.waitFrames(3);
+      return rawPixels(page);
+    };
+    const wrapDiag = async () =>
+      (await xr.diag()).wrap as { drawn: number; fading: number; hidden: number };
+    const pixels = CAPTURE_SIZE.width * CAPTURE_SIZE.height;
+    /** The `?coverage` sweep's binary bare share (tests/e2e/world-coverage.spec.ts). */
+    const bareShare = (frame: Buffer): number => {
+      const channels = frame.length / pixels;
+      expect([3, 4]).toContain(channels);
+      let bare = 0;
+      for (let i = 0; i < frame.length; i += channels) {
+        if (frame[i] > 192 && frame[i + 1] < 64 && frame[i + 2] > 192) bare++;
+      }
+      return bare / pixels;
+    };
+
+    await bootWorld('');
+    await hideHud();
+    const base4 = await at(4);
+    await cycleTo('opacity');
+    expect((await at(4)).equals(base4), 'opacity at f = 0.5 draws as base').toBe(true);
+    const opacity125 = await at(1.25);
+    // Negative control: the pinned time moves the sky, so the matches below mean something.
+    expect(opacity125.equals(base4), 'opacity at f = 0.15625 is off base f = 0.5').toBe(false);
+    await cycleTo('pingpong');
+    expect((await at(2)).equals(base4), 'pingpong at f = 0.25 draws as base at f = 0.5').toBe(true);
+    expect((await at(1)).equals(opacity125), 'pingpong at f = 0.125 draws as opacity').toBe(true);
+    expect(await glErrors(page)).toEqual([]);
+
+    await bootWorld('&coverage');
+    await hideHud();
+    const restBare = bareShare(await at(4));
+    await cycleTo('opacity');
+    const jumpBare = bareShare(await at(0));
+    // The diag follows the pinned phase: every sky stroke is at its jump.
+    const jump = await wrapDiag();
+    expect(jump.drawn).toBeGreaterThan(1000);
+    expect([jump.fading, jump.hidden]).toEqual([jump.drawn, jump.drawn]);
+    const backBare = bareShare(await at(4));
+    console.log(
+      `[e2e] wrap fixed phase coverage: base f 0.5 ${(restBare * 100).toFixed(3)}%, opacity f 0 ${(jumpBare * 100).toFixed(3)}%, opacity f 0.5 ${(backBare * 100).toFixed(3)}%`,
+    );
+    expect(restBare).toBeLessThan(0.005);
+    // At alpha 0 the sky strokes write nothing, so the magenta dome shows over most of the sky.
+    expect(jumpBare).toBeGreaterThan(0.25);
+    expect(backBare).toBe(restBare);
+    expect(await glErrors(page)).toEqual([]);
+  });
 });

@@ -36,14 +36,13 @@ test('defaults when search is empty', () => {
     zdiag: null,
     ab: null,
     wrap: null,
-    flame: null,
     scene: null,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Fade&flame=WIND',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Opacity',
   );
   expect(f).toEqual({
     seed: 42,
@@ -78,19 +77,19 @@ test('parses every flag', () => {
     turn: 'smooth',
     zdiag: 'nosort',
     ab: 'shimmer',
-    wrap: 'fade',
-    flame: 'wind',
+    wrap: 'opacity',
     scene: 'bare',
   });
 });
 
-test('?wrap and ?flame take only their variants', () => {
-  for (const wrap of ['base', 'fade', 'half'] as const)
+test('?wrap takes only its variants', () => {
+  for (const wrap of ['base', 'opacity', 'pingpong'] as const)
     expect(parseFlags(`?wrap=${wrap}`).wrap).toBe(wrap);
-  expect(parseFlags('?wrap=pair').wrap).toBeNull();
+  for (const retired of ['fade', 'half', 'pair']) {
+    expect(parseFlags(`?wrap=${retired}`).wrap).toBeNull();
+  }
   expect(parseFlags('?wrap').wrap).toBeNull();
-  expect(parseFlags('?flame=wind').flame).toBe('wind');
-  expect(parseFlags('?flame=gust').flame).toBeNull();
+  expect(parseFlags('?flame=wind')).not.toHaveProperty('flame');
 });
 
 test('malformed numbers become null', () => {
