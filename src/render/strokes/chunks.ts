@@ -27,14 +27,18 @@ export interface StrokeChunkData {
 /**
  * Bounding sphere of a set of strokes: the centre of their positions' bounding box, and a radius
  * reaching the farthest position plus the largest quad half-diagonal, so every corner is inside
- * whatever its orientation.
+ * whatever its orientation. With `indices`, of those strokes of `buffers` only.
  */
-export function computeBounds(buffers: StrokeBuffers): StrokeBounds {
-  if (buffers.count === 0) return { center: [0, 0, 0], radius: 0, reach: 0, halfDiagonal: 0 };
+export function computeBounds(buffers: StrokeBuffers, indices?: ArrayLike<number>): StrokeBounds {
+  const n = indices ? indices.length : buffers.count;
+  if (n === 0) return { center: [0, 0, 0], radius: 0, reach: 0, halfDiagonal: 0 };
+  const at = indices ? (k: number) => indices[k] : (k: number) => k;
   const p = buffers.position;
-  const min = [p[0], p[1], p[2]];
-  const max = [p[0], p[1], p[2]];
-  for (let i = 0; i < buffers.count; i++) {
+  const first = at(0) * 3;
+  const min = [p[first], p[first + 1], p[first + 2]];
+  const max = [p[first], p[first + 1], p[first + 2]];
+  for (let j = 0; j < n; j++) {
+    const i = at(j);
     for (let k = 0; k < 3; k++) {
       const value = p[i * 3 + k];
       if (value < min[k]) min[k] = value;
@@ -44,7 +48,8 @@ export function computeBounds(buffers: StrokeBuffers): StrokeBounds {
   const center: Vec3 = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
   let reach = 0;
   let halfDiagonal = 0;
-  for (let i = 0; i < buffers.count; i++) {
+  for (let j = 0; j < n; j++) {
+    const i = at(j);
     const d = Math.hypot(p[i * 3] - center[0], p[i * 3 + 1] - center[1], p[i * 3 + 2] - center[2]);
     if (d > reach) reach = d;
     const h = Math.hypot(buffers.size[i * 2], buffers.size[i * 2 + 1]) / 2;

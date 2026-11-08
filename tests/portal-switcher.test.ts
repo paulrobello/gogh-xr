@@ -19,7 +19,13 @@ import type { Raster } from '../src/demo/canvas/field.ts';
 import { HANGINGS } from '../src/paintings/gallery/layout.ts';
 import type { WorldModule, WorldPose } from '../src/paintings/world-module.ts';
 import { insidePortal, livePortals, PORTAL_DEPTH, portalOf } from '../src/portal/portal.ts';
-import { createSwitcher, GALLERY_ID, type LiveWorld } from '../src/portal/switcher.ts';
+import {
+  createSwitcher,
+  GALLERY_ID,
+  type LiveWorld,
+  REVEAL_STROKES_PER_FRAME,
+  revealEnd,
+} from '../src/portal/switcher.ts';
 import type { StrokeBatch } from '../src/render/strokes/batch.ts';
 import { createSlicer } from '../src/util/slicer.ts';
 
@@ -36,15 +42,23 @@ interface FakeWorld extends LiveWorld {
   disposed: boolean;
 }
 
-/** A world with one textured mesh and an empty batch, added to `scene` as a build would. */
-function fakeWorld(id: string, scene: Scene, log: string[]): FakeWorld {
+/**
+ * A world with one textured mesh and a batch of chunks of these stroke counts (none by default),
+ * added to `scene` as a build would.
+ */
+function fakeWorld(
+  id: string,
+  scene: Scene,
+  log: string[],
+  counts: readonly number[] = [],
+): FakeWorld {
   const root = new Group();
   const map = new DataTexture(new Uint8Array(4), 1, 1);
   root.add(new Mesh(new PlaneGeometry(), new MeshBasicMaterial({ map })));
   scene.add(root);
   const reveals: number[] = [];
   const batch = {
-    chunks: [],
+    chunks: counts.map((count) => ({ count })),
     reveal: (n: number) => reveals.push(n),
     setDensity: () => {},
   } as unknown as StrokeBatch;
@@ -91,6 +105,8 @@ interface Rig {
   readonly calls: { suppress: number; bare: number; compile: number };
   /** Ids whose build throws. */
   readonly failing: Set<string>;
+  /** Per id, the stroke counts of the built world's batch chunks. */
+  readonly chunkCounts: Map<string, readonly number[]>;
   loadRaster: (url: string) => Promise<Raster>;
   calm: number;
 }
@@ -108,6 +124,7 @@ function setup(): Rig {
   const spawns: WorldPose[] = [];
   const calls = { suppress: 0, bare: 0, compile: 0 };
   const failing = new Set<string>();
+  const chunkCounts = new Map<string, readonly number[]>();
   const renderer = {
     compileAsync: async () => {
       calls.compile += 1;
@@ -129,7 +146,7 @@ function setup(): Rig {
       log.push(`build ${id}`);
       await Promise.resolve();
       if (failing.has(id)) throw new Error(`no world for ${id}`);
-      const world = fakeWorld(id, scene, log);
+      const world = fakeWorld(id, scene, log, chunkCounts.get(id));
       worlds.set(id, world);
       return world;
     },
@@ -158,6 +175,7 @@ function setup(): Rig {
     spawns,
     calls,
     failing,
+    chunkCounts,
     get loadRaster() {
       return state.loadRaster;
     },
@@ -244,6 +262,18 @@ describe('createSwitcher', () => {
     // The fly strokes are gone and the mode switch suppressed input at the start and the end.
     expect(r.rig.children.some((c) => c.name === 'portal-fly')).toBe(false);
     expect(r.calls.suppress).toBe(2);
+  });
+
+  test('the reveal takes whole chunks up to the stroke budget a frame, then binds (revealEnd)', async () => {
+    const r = setup();
+    // 3000 + 3000 + 2000 fit 8192; the 40k chunk goes alone; the last chunk ends the reveal.
+    r.chunkCounts.set('starry-night', [3000, 3000, 2000, 40_000, 100]);
+    expect(REVEAL_STROKES_PER_FRAME).toBe(8192);
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    await run(r);
+    const world = must(r.worlds.get('starry-night'));
+    expect(world.reveals).toEqual([0, 3, 4, 5, Number.POSITIVE_INFINITY]);
+    expect(r.switcher.active?.id).toBe('starry-night');
   });
 
   test('fade (calm below 0.3): no fly strokes, and the same order in about 0.6 s', async () => {
@@ -400,5 +430,24 @@ describe('createSwitcher', () => {
 
   test('the live portals are the frames with a world', () => {
     expect(livePortals().map((p) => p.id)).toEqual(['starry-night']);
+  });
+});
+
+describe('revealEnd', () => {
+  const chunks = (...counts: number[]) => counts.map((count) => ({ count }));
+
+  test('reveals whole chunks up to the stroke budget a frame', () => {
+    const budget = REVEAL_STROKES_PER_FRAME;
+    const list = chunks(3000, 3000, 2000, 500, 5000);
+    expect(revealEnd(list, 0)).toBe(3);
+    expect(revealEnd(list, 3)).toBe(5);
+    expect(revealEnd(chunks(budget, 1), 0)).toBe(1);
+  });
+
+  test('reveals one chunk over the budget alone, and stops at the last chunk', () => {
+    const list = chunks(100, 40_000, 100);
+    expect(revealEnd(list, 0)).toBe(1);
+    expect(revealEnd(list, 1)).toBe(2);
+    expect(revealEnd(list, 2)).toBe(3);
   });
 });

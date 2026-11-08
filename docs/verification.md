@@ -1430,3 +1430,65 @@ Default boot capture (F13): a production build at 1600 × 1200 with `?diag&shot`
 - Single slicer steps of 14 to 22 ms remain the longest work on an M4 Max, which leaves little margin under the bar on the slower Quest. Splitting them is F5, parked for the P5.8 headset check.
 - In XR the return pose places the rig origin, not the head, so a head away from the local-floor origin lands off the return spot (F10). The disarm guard still prevents a re-trigger. Left for P5.8.
 - The Quest: no headset run yet (P5.8).
+
+
+## Draw-call cut: dome sectors and one lights chunk (2026-11-07)
+
+Paul's headset read 40 fps at the painter's spot against the 72 Hz target, read on the card as CPU-bound on draw calls. Without multiview each visible chunk is one draw per eye. At 670342c the desktop painter view drew 148 chunks, 66 of them dome and 21 moon and stars. The bar is 2x fewer visible chunks there, with coverage and fidelity green at unchanged thresholds. 24 m cells (lever 1) were already in place.
+
+### The change
+
+- `StrokeBatchOptions.mergeParts` (`src/render/strokes/batch.ts`). Parts (one class in one 24 m cell) of one class that get the same key build one chunk. Each keeps its importance order, interleaved by fraction, and its bounds as a band probe. A merged chunk takes its nearest part's band.
+- `createWorldPartGroup` (`src/paintings/starry-night/world.ts`) merges the dome into 36° sky sectors seen from the painter's eye and the 21 lights chunks into one. A dome cell that flight can bring within 25.5 m stays alone. That gives 34 sectors plus 15 single cells instead of 435 dome chunks, and 170 chunks in all instead of 576. The world, window and cypress chunks are unchanged.
+- The class blocks, back to front within each class, nosort, the depth policy and the halo slot are untouched.
+- The portal reveal takes whole chunks up to 8192 strokes a frame (`revealEnd`), because a sector holds up to 39k strokes. A merged chunk builds in part-sized slicer steps, and the grouping pass yields every 16k strokes. In one step the grouping pass and the flight check pushed the IWER portal entry to 29.1 and 28 ms, against the 27.8 ms bar. Split, the portal spec read 23.5 and 18.9 ms at load 120 to 368, with the pre-existing geometry step now the longest. The parts' orders now interleave through a binary heap, O(strokes log parts) instead of O(strokes × parts), after a full run at load 278 to 644 showed one 36 ms batch step.
+- `SCATTER_VERSION` 12 to 13 is a defensive bump. The cache holds the scattered buffers, not the chunk layout, so it only forces one miss.
+- Not taken: merging classes in a cell breaks the density prefix, merging the 4 window chunks would draw far windows at a nearer band, and multiview does not change `visibleChunks`.
+
+### Measurements
+
+`scripts/motion-perf.ts`, headless Chromium on the M4 Max GPU at 1280 × 1014, seed 1, `?nogov`. The values are `__goghDiag().draw`, before on 670342c and after on f9f32aa. The flight exclusion keeps the painter, Quest-wide and spawn counts (unit test), and 39b09b3 changed only the build steps.
+
+| View | Calls before | Calls after | Visible chunks before | Visible chunks after | Ratio | Drawn before | Drawn after |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| desktop `?painter` | 156 | 80 | 148 | 72 | 2.06 | 248,956 | 265,096 |
+| desktop spawn | 172 | 87 | 166 | 79 | 2.10 | 255,172 | 274,456 |
+| IWER painter spot | 444 | 200 | 216 | 92 | 2.35 | 265,349 | 290,230 |
+| IWER spawn | 432 | 188 | 210 | 86 | 2.44 | 264,859 | 275,802 |
+
+- Per eye under IWER at the painter spot, 216 stroke draws became 92. All draws per eye went from 222 to 100.
+- Desktop CPU per frame went from 0.97–1.07 ms to 0.61–0.69 ms. This is the summed animation-frame callback time, not a `performance.now` pair around the render alone, and only the cull and submission changed.
+- GPU time was flat on the desktop (3.96 ms at the painter) and went from 7.19 to 6.30 ms under IWER.
+- The drawn strokes rise 6 to 9%, because a sector culls as one sphere. The most drawn over the 24 coverage poses is 296k, inside the 325k budget.
+
+### Flight near the cap (fix round 1, F1)
+
+Before the flight exclusion, a crossing at the cap moved the whole sector to the mid band, about 9.2k strokes (at most 9.5k), where a 24 m cell moves about 1.2k (at most 1.3k). Offline, flying out from 40 to 55 m at 40 m over the ground on 64 headings, up to 17.8k sky strokes were in the mid band at once, against 2.6k for 24 m cells. The drawn total stayed far inside the budget, so the problem is the pop, not the budget.
+
+Captured on e2e builds at the first crossing, flying toward the dome cell `-4_3_0` at 40 m over the ground (eye radius 51.05 to 51.1 m, 5 cm apart, `tests/e2e/flight-bands.spec.ts` poses). The 1-minute load was 132 to 139, but the measures are pixels and counts, not times.
+
+| Build | Mid-band strokes drawn after | Drawn before → after | Pixels changed by more than 32 levels |
+| --- | --- | --- | --- |
+| 670342c | 1,134 | 9,038 → 9,668 | 12.85% |
+| sectors, no exclusion (f9f32aa) | 8,487 | 22,044 → 26,759 | 49.38% |
+| this build | 1,134 | 21,533 → 22,163 | 12.84% |
+
+Without the exclusion half the frame changes at the crossing, a visible pop over a whole sector. With it the crossing reads like 670342c. The unit tests check that every dome cell within 24.5 m of the flight envelope, measured on a 0.5 m grid, stays alone. A flight sweep checks that no merged sky chunk leaves the far band and that the drawn total stays within the 325k default budget. The most it drew was 262,565. The e2e checks one cell's worth of mid strokes at the crossing.
+
+### Gates and captures
+
+- `E2E_PORT=4288 make e2e`: on 39b09b3, 108 passed and 2 skipped at load 12.5 to 10.0. On aa7ebb8 (fix round 1), 107 passed and 2 failed at load 437 to 217, with no 15-minute window under 15 available: the portal round trips' frame bars (desktop entry 33.3 ms, IWER return to the gallery 36.5 ms, against 27.8 ms). The IWER entries in that run read 23.7 and 17.5 ms. The flight-cap, fidelity, coverage and shimmer specs pass.
+  - Fidelity: SSIM 0.3505 and ΔE 5.2735, against 0.3482 and 5.2914 on 670342c.
+  - Coverage: max bare 0.451%.
+  - Portal under IWER: the longest entry frames were 24.6 and 24.1 ms, against the 27.8 ms bar.
+  - The `ab.spec.ts` painter-view cycles of all six shimmer modes return byte for byte.
+- `docs/shots/p2-painter-spot.png` and `p2-fidelity.png` are regenerated on a production build, and two captures were byte-identical. 3.4% of the pixels differ from 670342c, all in the top 60% of the frame. Two things cause it. Inside a sector the cells' strokes interleave in one draw instead of stacking cell by cell. And the far density is applied to the merged count, so each 24 m cell can draw one stroke more or fewer than its own floor(0.4 n). Below the horizon the frame is identical.
+- The zdiag modes without class blocks, at the painter view against 670342c:
+  - `write` differs by 46 pixels.
+  - `strokeorder` and `paintorder` differ by 16% of the pixels, all in the sky. The one lights chunk now sorts as a unit in front of every dome sector, so `strokeorder` paints the dome over the moon and stars, and `paintorder` paints them whole on top.
+  - The ground, village and cypress read as before. The modes work, but their sky reading is not comparable with earlier ones.
+
+### Not verified
+
+- The Quest. The 72 fps check is Paul's. The 2026-11-06 headset profile ("Governor sheds foveation first") reads the frame as GPU-bound, with main-thread JS at 6 to 7 ms of 21 ms. If the GPU binds, this cut alone may not reach 72 fps.
+- The longest portal slicer step is still one 22 to 23 ms batch step under IWER on the M4 Max (F5 of P5.5).

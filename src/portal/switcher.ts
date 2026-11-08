@@ -60,8 +60,28 @@ import {
 } from './transition';
 
 export const GALLERY_ID = 'gallery';
-/** Chunks revealed, and so drawn and uploaded, per frame while a new world comes up. */
-export const REVEAL_CHUNKS_PER_FRAME = 8;
+/**
+ * Strokes revealed, and so drawn and uploaded, per frame while a new world comes up: whole chunks
+ * up to this many, and at least one. Counted in strokes, not chunks, because a Starry Night dome
+ * sector holds up to 39k strokes against about 1k in a 24 m chunk. At seed 1 Starry Night reveals
+ * in 65 frames with at most 39k strokes in one (its largest sector). Eight chunks a frame took 72
+ * frames with up to 80k on the 24 m layout, and would take 20 with up to 89k on the merged one.
+ */
+export const REVEAL_STROKES_PER_FRAME = 8192;
+
+/**
+ * The chunk index one frame's reveal ends at, starting from `start` (below `chunks.length`): the
+ * whole chunks that fit REVEAL_STROKES_PER_FRAME, and at least one.
+ */
+export function revealEnd(chunks: readonly { readonly count: number }[], start: number): number {
+  let end = start;
+  let strokes = 0;
+  do {
+    strokes += chunks[end].count;
+    end++;
+  } while (end < chunks.length && strokes + chunks[end].count <= REVEAL_STROKES_PER_FRAME);
+  return end;
+}
 /** A stroke leaving the frame: its quad, metres. */
 const FRAME_STROKE: readonly [number, number] = [0.035, 0.014];
 
@@ -509,10 +529,10 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       showHidden();
       return;
     }
-    const chunks = world.handle.batch.chunks.length;
-    if (revealed < chunks) {
+    const { chunks } = world.handle.batch;
+    if (revealed < chunks.length) {
       note('reveal');
-      revealed = Math.min(chunks, revealed + REVEAL_CHUNKS_PER_FRAME);
+      revealed = revealEnd(chunks, revealed);
       world.handle.batch.reveal(revealed);
       return;
     }

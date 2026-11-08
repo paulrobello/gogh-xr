@@ -31,8 +31,15 @@ import {
   type StrokeBand,
 } from './bands';
 import { createBrushAtlas } from './brush-atlas';
-import { computeBounds, cullAndSortInto, DEFAULT_CELL_SIZE, partitionIndices } from './chunks';
+import {
+  computeBounds,
+  cullAndSortInto,
+  DEFAULT_CELL_SIZE,
+  partitionIndices,
+  type StrokeBounds,
+} from './chunks';
 import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
+import type { Vec3 } from './frame';
 import { importanceOrder } from './importance';
 import {
   octDecode,
@@ -162,7 +169,8 @@ export const WRITE_ORDER_POLICY: StrokeOrderPolicy = Object.freeze({
  *   stays visible, and ground behind it is hidden;
  * - `world`: every other stroke;
  * - `overlay`: lit windows (DEPTH_TIE_BREAK_FRONT_FLAG), over their walls, last.
- * A grid cell holding strokes of several classes becomes one chunk per class.
+ * A grid cell holding strokes of several classes becomes one chunk per class, and `mergeParts` can
+ * merge one class's cells into fewer chunks.
  */
 export const STROKE_DRAW_CLASSES = ['dome', 'lights', 'cypress', 'world', 'overlay'] as const;
 export type StrokeDrawClass = (typeof STROKE_DRAW_CLASSES)[number];
@@ -291,7 +299,27 @@ export interface StrokeBatchOptions {
    * whatever cells it spans. The Starry Night world, which has one cypress tree, sets it.
    */
   readonly cypressChunk?: boolean;
+  /**
+   * Merges parts into fewer chunks, one draw call per view each. A part is the strokes of one draw
+   * class in one `cellSize` cell (or the cypress chunk). The function gets each part's class and the
+   * centre and radius of its bounds (the band probe), and parts of one class that it gives the same
+   * key become one chunk. null
+   * keeps a part a chunk of its own. Each part keeps its own importance order and its own bounds as
+   * a band probe: the chunk takes the band of its nearest part, so while its parts share a band each
+   * draws at the band it had as a chunk of its own. The chunk interleaves its parts' orders by each
+   * stroke's fraction through its part's order, as the cypress chunk does, so a density prefix stays
+   * the union of the parts' prefixes, within a stroke per part. The Starry Night world merges its
+   * dome by sky sector and its lights into one chunk (`createWorldPartGroup`).
+   */
+  readonly mergeParts?: StrokePartMerge;
 }
+
+/** `StrokeBatchOptions.mergeParts`: a part's merge key from its class and band-probe sphere. */
+export type StrokePartMerge = (
+  drawClass: StrokeDrawClass,
+  centre: Vec3,
+  radius: number,
+) => string | null;
 
 /** Strokes partitioned between two yields of `createStrokeBatchSteps`' cell loop. */
 const BATCH_SLICE = 16_384;
@@ -328,12 +356,13 @@ function createChunkGeometry(
 }
 
 /**
- * True when `buffers` holds boundary haze: a sky-layer stroke with SKY_LIGHT_CULL_FLAG, the one
- * stroke.vert.glsl grows by `uHazeThickness` (material.ts).
+ * True when `buffers` (or its strokes at `indices`) holds boundary haze: a sky-layer stroke with
+ * SKY_LIGHT_CULL_FLAG, the one stroke.vert.glsl grows by `uHazeThickness` (material.ts).
  */
-export function holdsHaze(buffers: StrokeBuffers): boolean {
-  for (let i = 0; i < buffers.count; i++) {
-    const meta = i * 4;
+export function holdsHaze(buffers: StrokeBuffers, indices?: ArrayLike<number>): boolean {
+  const n = indices ? indices.length : buffers.count;
+  for (let k = 0; k < n; k++) {
+    const meta = (indices ? indices[k] : k) * 4;
     if (
       buffers.meta[meta + 1] === STROKE_LAYER.sky &&
       (buffers.meta[meta + 3] & SKY_LIGHT_CULL_FLAG) !== 0
@@ -355,21 +384,27 @@ export interface MotionReaches {
 }
 
 /**
- * Per moving layer, the farthest any stroke in `buffers` moves from rest at calm 1, metres, times
+ * Per moving layer, the farthest any stroke in `buffers` (or its strokes at `indices`) moves from
+ * rest at calm 1, metres, times
  * SKY_REACH_MARGIN: the largest exact `skySwirlReach` of its sky strokes, `skyRingReach` of its
  * star and moon strokes (each round the ring its phase byte names, as motion.glsl reads it) and
  * `cypressFlameReach` of its cypress strokes (from the decoded normal and the alpha byte). The
  * cull sphere of a chunk grows by calm times the largest of these whose layer's gate is open
  * (ruling R-P4a), so a moving stroke never leaves its sphere, and by nothing while all are closed.
  */
-export function motionReachesOf(buffers: StrokeBuffers): MotionReaches {
+export function motionReachesOf(
+  buffers: StrokeBuffers,
+  indices?: ArrayLike<number>,
+): MotionReaches {
   let sky = 0;
   let star = 0;
   let moon = 0;
   let cypress = 0;
   let cypressWind = 0;
   const p = buffers.position;
-  for (let i = 0; i < buffers.count; i++) {
+  const n = indices ? indices.length : buffers.count;
+  for (let k = 0; k < n; k++) {
+    const i = indices ? indices[k] : k;
     const layer = buffers.meta[i * 4 + 1];
     const x = p[i * 3];
     const y = p[i * 3 + 1];
@@ -405,21 +440,28 @@ export function motionReachOf(buffers: StrokeBuffers): number {
   return Math.max(sky, star, moon, cypress);
 }
 
-/** The box round the rest centres of `buffers`' strokes: min xyz, then max xyz. */
+/**
+ * The box round the rest centres of `buffers`' strokes (or its strokes at `indices`): min xyz,
+ * then max xyz.
+ */
 export function centreBox(
   buffers: StrokeBuffers,
+  indices?: ArrayLike<number>,
 ): [number, number, number, number, number, number] {
   const p = buffers.position;
-  if (buffers.count === 0) return [0, 0, 0, 0, 0, 0];
+  const n = indices ? indices.length : buffers.count;
+  if (n === 0) return [0, 0, 0, 0, 0, 0];
+  const first = (indices ? indices[0] : 0) * 3;
   const box: [number, number, number, number, number, number] = [
-    p[0],
-    p[1],
-    p[2],
-    p[0],
-    p[1],
-    p[2],
+    p[first],
+    p[first + 1],
+    p[first + 2],
+    p[first],
+    p[first + 1],
+    p[first + 2],
   ];
-  for (let i = 0; i < buffers.count; i++) {
+  for (let j = 0; j < n; j++) {
+    const i = indices ? indices[j] : j;
     for (let k = 0; k < 3; k++) {
       const v = p[i * 3 + k];
       if (v < box[k]) box[k] = v;
@@ -491,13 +533,154 @@ function chunkSeed(seed: number, cells: Int32Array, c: number): number {
   );
 }
 
+interface ChunkPart {
+  /** Its `cellSize` cell, an index into the partition's cells. */
+  readonly cell: number;
+  readonly drawClass: StrokeDrawClass;
+  readonly indices: Uint32Array;
+  /** Its instance order when already set, else the batch orders `indices` by importance. */
+  readonly order?: Uint32Array;
+}
+
+interface ChunkGroup {
+  readonly drawClass: StrokeDrawClass;
+  readonly name: string;
+  readonly members: ChunkPart[];
+  /** Each member's bounds, its band probe. */
+  readonly probes: StrokeBounds[];
+}
+
+/**
+ * The parts as chunks: parts of one class that `merge` gives the same key gather into one chunk,
+ * and every other part is a chunk of its own. Chunks come in the order of their first part. It
+ * yields after each BATCH_SLICE strokes' bounds, so the pass over every stroke spans slicer steps.
+ */
+function* groupPartsSteps(
+  buffers: StrokeBuffers,
+  parts: readonly ChunkPart[],
+  cells: Int32Array,
+  merge: StrokePartMerge | undefined,
+): Steps<ChunkGroup[]> {
+  const groups: ChunkGroup[] = [];
+  const byKey = new Map<string, ChunkGroup>();
+  let sinceYield = 0;
+  for (const part of parts) {
+    if (sinceYield >= BATCH_SLICE) {
+      sinceYield = 0;
+      yield;
+    }
+    sinceYield += part.indices.length;
+    const { cell: c, drawClass } = part;
+    const bounds = computeBounds(buffers, part.indices);
+    const key = merge ? merge(drawClass, bounds.center, bounds.radius) : null;
+    if (key === null) {
+      const suffix = drawClass === 'world' ? '' : `-${drawClass}`;
+      const cell = `${cells[c * 3]}_${cells[c * 3 + 1]}_${cells[c * 3 + 2]}`;
+      groups.push({
+        drawClass,
+        name: `strokes-${cell}${suffix}`,
+        members: [part],
+        probes: [bounds],
+      });
+      continue;
+    }
+    const name = `strokes-${drawClass}-${key}`;
+    let group = byKey.get(name);
+    if (!group) {
+      group = { drawClass, name, members: [], probes: [] };
+      byKey.set(name, group);
+      groups.push(group);
+    }
+    group.members.push(part);
+    group.probes.push(bounds);
+  }
+  return groups;
+}
+
+/**
+ * One instance order from several parts' orders: every part's pinned strokes, then the rest, each
+ * tier sorted by a stroke's fraction `(r + 0.5) / n` through its part's tier, ties by part. Every
+ * stroke keeps its order among its own part's, so a density prefix of the whole is, within a
+ * stroke per part, the union of the parts' prefixes.
+ */
+export function interleaveOrders(parts: readonly { order: Uint32Array; pinned: number }[]): {
+  order: Uint32Array;
+  pinned: number;
+} {
+  let pinned = 0;
+  let total = 0;
+  for (const part of parts) {
+    pinned += part.pinned;
+    total += part.order.length;
+  }
+  const order = new Uint32Array(total);
+  let at = 0;
+  for (const tier of [0, 1]) {
+    // Each part's tier start, next stroke, tier end, and the key of its next stroke.
+    const start = parts.map((p) => (tier === 0 ? 0 : p.pinned));
+    const next = start.slice();
+    const end = parts.map((p) => (tier === 0 ? p.pinned : p.order.length));
+    const keyOf = (k: number): number =>
+      next[k] < end[k] ? (next[k] - start[k] + 0.5) / (end[k] - start[k]) : Infinity;
+    // A binary min-heap of parts by (key, part index), so a tie goes to the earlier part.
+    const keys = new Float64Array(parts.length);
+    const heap: number[] = [];
+    const less = (a: number, b: number): boolean =>
+      keys[a] < keys[b] || (keys[a] === keys[b] && a < b);
+    const down = (from: number): void => {
+      let i = from;
+      for (;;) {
+        const l = i * 2 + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < heap.length && less(heap[l], heap[m])) m = l;
+        if (r < heap.length && less(heap[r], heap[m])) m = r;
+        if (m === i) return;
+        [heap[i], heap[m]] = [heap[m], heap[i]];
+        i = m;
+      }
+    };
+    for (let k = 0; k < parts.length; k++) {
+      keys[k] = keyOf(k);
+      if (keys[k] !== Number.POSITIVE_INFINITY) heap.push(k);
+    }
+    for (let i = (heap.length >> 1) - 1; i >= 0; i--) down(i);
+    while (heap.length > 0) {
+      const best = heap[0];
+      order[at++] = parts[best].order[next[best]++];
+      keys[best] = keyOf(best);
+      if (keys[best] === Number.POSITIVE_INFINITY) {
+        const last = heap.pop() as number;
+        if (heap.length === 0) break;
+        heap[0] = last;
+      }
+      down(0);
+    }
+  }
+  return { order, pinned };
+}
+
+/** The largest of each field over `reaches`: the reaches of their parts' union. */
+function maxReaches(reaches: readonly MotionReaches[]): MotionReaches {
+  const out = { sky: 0, star: 0, moon: 0, cypress: 0, cypressWind: 0 };
+  for (const r of reaches) {
+    out.sky = Math.max(out.sky, r.sky);
+    out.star = Math.max(out.star, r.star);
+    out.moon = Math.max(out.moon, r.moon);
+    out.cypress = Math.max(out.cypress, r.cypress);
+    out.cypressWind = Math.max(out.cypressWind, r.cypressWind);
+  }
+  return out;
+}
+
 function checkBand(band: StrokeBand): void {
   if (!STROKE_BANDS.includes(band)) throw new RangeError(`unknown stroke band ${String(band)}`);
 }
 
 /**
  * Partitions `buffers` into spatial chunks, one `Mesh` + `InstancedBufferGeometry` per grid cell
- * and draw class (STROKE_DRAW_CLASSES), with each chunk's instances in importance order (`importanceOrder`) so a density draws an even
+ * and draw class (STROKE_DRAW_CLASSES), or per group of those that `mergeParts` merges, with each
+ * chunk's instances in importance order (`importanceOrder`) so a density draws an even
  * prefix. Pinned strokes (`isPinnedStroke`) come first and are always drawn. Chunks share the
  * per-band materials and one atlas. Three's own frustum culling is off; call `update(camera)`
  * once per frame with the camera three renders with, which `attach(scene)` arranges.
@@ -537,10 +720,8 @@ export function* createStrokeBatchSteps(
   group.name = 'strokes';
 
   const seed = options.seed ?? STROKE_ORDER_SEED;
-  const { cells, offsets, order } = partitionIndices(
-    buffers,
-    options.cellSize ?? DEFAULT_CELL_SIZE,
-  );
+  const cellSize = options.cellSize ?? DEFAULT_CELL_SIZE;
+  const { cells, offsets, order } = partitionIndices(buffers, cellSize);
   yield;
   const chunks: StrokeChunk[] = [];
   const bandOf: (StrokeBand | null)[] = [];
@@ -589,12 +770,7 @@ export function* createStrokeBatchSteps(
    * interleaves each cell's cypress strokes by their fraction through that cell's order, so every
    * stroke keeps its order among its own cell's strokes and a density prefix stays even.
    */
-  const parts: {
-    cell: number;
-    drawClass: StrokeDrawClass;
-    indices: Uint32Array;
-    order?: Uint32Array;
-  }[] = [];
+  const parts: ChunkPart[] = [];
   const cypress: { stroke: number; key: number; cell: number }[] = [];
   let cypressCell = -1;
   let sliceStart = 0;
@@ -638,22 +814,50 @@ export function* createStrokeBatchSteps(
       order: merged,
     });
   }
+  const groups = yield* groupPartsSteps(buffers, parts, cells, options.mergeParts);
   /** Per chunk, 1 while its cull sphere carries the reactive growth. */
-  const reactiveNear = new Uint8Array(parts.length);
-  const classRank = new Uint8Array(parts.length);
-  for (const { cell: c, drawClass, indices, order: preset } of parts) {
-    yield;
-    const { order: chunkIndices, pinned } = preset
-      ? { order: preset, pinned: 0 }
-      : chunkOrder(buffers, indices, chunkSeed(seed, cells, c));
+  const reactiveNear = new Uint8Array(groups.length);
+  const classRank = new Uint8Array(groups.length);
+  /**
+   * Band probes, centre xyz then radius, one per part: chunk `i` owns probes
+   * `probeStart[i] .. probeStart[i + 1]`. A one-part chunk's probe is its own bounds.
+   */
+  const probes: number[] = [];
+  const probeStart = new Uint32Array(groups.length + 1);
+  for (const { drawClass, name, members, probes: partBounds } of groups) {
+    const ordered: { order: Uint32Array; pinned: number }[] = [];
+    // A merged chunk's per-stroke scans run part by part, one step each, as a part's chunk did.
+    const merged = members.length > 1;
+    const partReaches: MotionReaches[] = [];
+    let haze = false;
+    const centres = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (const { cell: c, indices, order: preset } of members) {
+      yield;
+      const part = preset
+        ? { order: preset, pinned: 0 }
+        : chunkOrder(buffers, indices, chunkSeed(seed, cells, c));
+      ordered.push(part);
+      if (!merged) continue;
+      partReaches.push(motionReachesOf(buffers, part.order));
+      haze ||= holdsHaze(buffers, part.order);
+      const b = centreBox(buffers, part.order);
+      for (let k = 0; k < 3; k++) {
+        centres[k] = Math.min(centres[k], b[k]);
+        centres[k + 3] = Math.max(centres[k + 3], b[k + 3]);
+      }
+    }
+    if (merged) yield;
+    const { order: chunkIndices, pinned } = merged ? interleaveOrders(ordered) : ordered[0];
     const data = selectStrokes(buffers, chunkIndices);
+    if (merged) yield;
     const box = computeBounds(data);
+    for (const part of partBounds) probes.push(...part.center, part.radius);
+    probeStart[chunks.length + 1] = probes.length / 4;
     const geometry = createChunkGeometry(data, quad);
     const bounds = new Sphere(new Vector3(...box.center), box.radius);
     geometry.boundingSphere = bounds.clone();
     const mesh = new Mesh(geometry, materials.near);
-    const suffix = drawClass === 'world' ? '' : `-${drawClass}`;
-    mesh.name = `strokes-${cells[c * 3]}_${cells[c * 3 + 1]}_${cells[c * 3 + 2]}${suffix}`;
+    mesh.name = name;
     mesh.frustumCulled = false;
     // Hidden until the first update has banded and culled it, so stats agree from construction.
     mesh.visible = false;
@@ -668,9 +872,15 @@ export function* createStrokeBatchSteps(
     bandOf.push(null);
     cullSpheres.push(bounds.clone());
     reaches.push(box.reach);
-    motionReaches.push(motionReachesOf(data));
-    halfDiagonals.push(box.halfDiagonal * (holdsHaze(data) ? 1 + HAZE_GROWTH : 1));
-    centreBoxes.push(...centreBox(data));
+    if (merged) {
+      motionReaches.push(maxReaches(partReaches));
+    } else {
+      motionReaches.push(motionReachesOf(data));
+      haze = holdsHaze(data);
+      centres.splice(0, 6, ...centreBox(data));
+    }
+    halfDiagonals.push(box.halfDiagonal * (haze ? 1 + HAZE_GROWTH : 1));
+    centreBoxes.push(...centres);
     chunks.push({
       mesh,
       geometry,
@@ -744,6 +954,17 @@ export function* createStrokeBatchSteps(
   const frustum = new Frustum();
   const viewProjection = new Matrix4();
   const eye = new Vector3();
+  const probe = new Vector3();
+
+  /** `chunkDistance` from the eye to chunk `i`'s nearest band probe. */
+  function probeDistance(i: number): number {
+    let nearest = Number.POSITIVE_INFINITY;
+    for (let k = probeStart[i]; k < probeStart[i + 1]; k++) {
+      probe.set(probes[k * 4], probes[k * 4 + 1], probes[k * 4 + 2]);
+      nearest = Math.min(nearest, chunkDistance(probe, probes[k * 4 + 3], eye));
+    }
+    return nearest;
+  }
   /** Cull output, reused every frame: kept chunk indices front to back, and their distances. */
   const cullOrder = new Uint32Array(chunks.length);
   const cullDistances = new Float64Array(chunks.length);
@@ -792,10 +1013,7 @@ export function* createStrokeBatchSteps(
         const near = reactiveReaches(i) ? 1 : 0;
         const regrow = rescale || near !== reactiveNear[i];
         reactiveNear[i] = near;
-        const band = nextBand(
-          bandOf[i],
-          chunkDistance(chunk.bounds.center, chunk.bounds.radius, eye),
-        );
+        const band = nextBand(bandOf[i], probeDistance(i));
         if (band === bandOf[i]) {
           if (regrow && band) applySize(i, band);
           continue;
@@ -939,6 +1157,7 @@ export function* createStrokeBatchSteps(
       motionReaches.length = 0;
       halfDiagonals.length = 0;
       centreBoxes.length = 0;
+      probes.length = 0;
       for (const band of STROKE_BANDS) materials[band].dispose();
       if (!options.atlas) atlas.dispose();
     },

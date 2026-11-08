@@ -17,6 +17,7 @@ import {
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { loadRealSource, loadSkyScan } from '../scripts/scatter-time.ts';
 import { REGION } from '../src/demo/canvas/field.ts';
+import { MAX_ALTITUDE, MAX_FLIGHT_RADIUS } from '../src/locomotion/flight.ts';
 import {
   BARE_COLOR,
   createBaseMeshes,
@@ -25,6 +26,9 @@ import {
   underpaintColor,
 } from '../src/paintings/starry-night/base-meshes.ts';
 import {
+  CANVAS_ASPECT,
+  CANVAS_FOV_Y_DEG,
+  CANVAS_PITCH,
   PAINTER_EYE,
   projectToCanvas,
   type Vec2,
@@ -45,19 +49,28 @@ import {
 import {
   assembleWorldStrokes,
   createWorldGeometry,
+  createWorldPartGroup,
   RIDGE_SCATTER,
   scatterWorld,
   strokeLayerCounts,
   WORLD_CELL_SIZE,
+  WORLD_DOME_SECTOR_DEG,
+  WORLD_FLIGHT_REACH_M,
   WORLD_SCATTER_SIZE,
   WORLD_SIZE_SCALE,
   type WorldGeometry,
   type WorldStrokes,
+  worldPartGroup,
   worldScatterKeyInputs,
   worldSeeds,
 } from '../src/paintings/starry-night/world.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
-import { DEFAULT_BAND_SIZE, STROKE_BUDGET } from '../src/render/strokes/bands.ts';
+import {
+  BAND_HYSTERESIS_M,
+  DEFAULT_BAND_SIZE,
+  MID_BAND_MAX_M,
+  STROKE_BUDGET,
+} from '../src/render/strokes/bands.ts';
 import { createStrokeBatch, type StrokeBatch } from '../src/render/strokes/batch.ts';
 import {
   ATLAS_SIZE,
@@ -505,7 +518,10 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
   let scattered: StrokeBuffers;
   let assembled: WorldStrokes;
   let buffers: StrokeBuffers;
+  /** The app's batch (src/paintings/starry-night/index.ts). */
   let batch: StrokeBatch;
+  /** The same with every part a chunk of its own, the 24 m layout before `worldPartGroup`. */
+  let plain: StrokeBatch;
 
   beforeAll(() => {
     fitLog.on = true;
@@ -513,13 +529,20 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     fitLog.on = false;
     assembled = assembleWorldStrokes(scattered, WORLD, SOURCE, SKY_SCAN, SEEDS);
     buffers = assembled.buffers;
+    const atlas = new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat);
     batch = createStrokeBatch(buffers, {
       cellSize: WORLD_CELL_SIZE,
-      createAtlas: () => new DataTexture(new Uint8Array(4), 1, 1, RGBAFormat),
+      cypressChunk: true,
+      mergeParts: createWorldPartGroup(WORLD.terrain.heightAt),
+      atlas,
     });
+    plain = createStrokeBatch(buffers, { cellSize: WORLD_CELL_SIZE, cypressChunk: true, atlas });
   }, 120_000);
 
-  afterAll(() => batch?.dispose());
+  afterAll(() => {
+    batch?.dispose();
+    plain?.dispose();
+  });
 
   test('every layer gets strokes and the world stores under the 900k ceiling', () => {
     const counts = strokeLayerCounts(scattered);
@@ -815,6 +838,210 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       expect(n, name).toBeLessThanOrEqual(STROKE_BUDGET.default.max);
       expect(n, name).toBeGreaterThan(0);
     }
+  });
+
+  test('the dome merges by sky sector and the lights into one chunk, every other part alone', () => {
+    const dome = batch.chunks.filter((c) => c.drawClass === 'dome');
+    const lights = batch.chunks.filter((c) => c.drawClass === 'lights');
+    const of = (b: StrokeBatch, drawClass: string) =>
+      b.chunks.filter((c) => c.drawClass === drawClass);
+    expect(lights.map((c) => c.mesh.name)).toEqual(['strokes-lights-sky']);
+    expect(lights[0].pinned).toBe(lights[0].count);
+    expect(lights[0].count).toBe(assembled.counts.star + assembled.counts.moon);
+    // Seed 1: 435 dome parts, 34 sky sectors, and the 15 parts flight can bring near kept alone.
+    const sectors = dome.filter((c) => c.mesh.name.startsWith('strokes-dome-'));
+    const alone = dome.filter((c) => !c.mesh.name.startsWith('strokes-dome-'));
+    expect(of(plain, 'dome')).toHaveLength(435);
+    expect(sectors).toHaveLength(34);
+    expect(alone).toHaveLength(15);
+    for (const chunk of alone) {
+      expect(plain.chunks.map((c) => c.mesh.name)).toContain(chunk.mesh.name);
+    }
+    for (const drawClass of ['dome', 'lights'] as const) {
+      const sum = (chunks: readonly { count: number }[]) => chunks.reduce((s, c) => s + c.count, 0);
+      expect(sum(of(batch, drawClass)), drawClass).toBe(sum(of(plain, drawClass)));
+    }
+    for (const drawClass of ['cypress', 'world', 'overlay'] as const) {
+      expect(
+        of(batch, drawClass).map((c) => [c.mesh.name, c.count]),
+        drawClass,
+      ).toEqual(of(plain, drawClass).map((c) => [c.mesh.name, c.count]));
+    }
+    console.log(
+      `[world] ${batch.chunks.length} chunks (${sectors.length} dome sectors, ${alone.length} dome parts alone), ${plain.chunks.length} before the merge`,
+    );
+  });
+
+  test('every dome part flight can bring under the far edge stays a chunk of its own', () => {
+    // Exact over the envelope's columns on a 0.5 m grid plus its rim: the nearest head position to
+    // a part's probe sphere, from the ground to MAX_ALTITUDE above it.
+    const r = MAX_FLIGHT_RADIUS;
+    const columns: [number, number, number][] = [];
+    for (let x = -r; x <= r; x += 0.5) {
+      for (let z = -r; z <= r; z += 0.5) {
+        if (Math.hypot(x, z) <= r) columns.push([x, z, WORLD.terrain.heightAt(x, z)]);
+      }
+    }
+    for (let k = 0; k < 1440; k++) {
+      const a = (k / 1440) * 2 * Math.PI;
+      const x = r * Math.sin(a);
+      const z = r * Math.cos(a);
+      columns.push([x, z, WORLD.terrain.heightAt(x, z)]);
+    }
+    const names = new Set(batch.chunks.map((c) => c.mesh.name));
+    let reachable = 0;
+    for (const chunk of plain.chunks) {
+      if (chunk.drawClass !== 'dome') continue;
+      const { x, y, z } = chunk.bounds.center;
+      let nearest = Number.POSITIVE_INFINITY;
+      for (const [px, pz, g] of columns) {
+        const py = Math.min(g + MAX_ALTITUDE, Math.max(g, y));
+        nearest = Math.min(nearest, Math.hypot(x - px, y - py, z - pz));
+      }
+      // A far chunk drops to mid under this distance.
+      if (nearest - chunk.bounds.radius >= MID_BAND_MAX_M - BAND_HYSTERESIS_M) continue;
+      reachable++;
+      expect(names.has(chunk.mesh.name), chunk.mesh.name).toBe(true);
+    }
+    expect(reachable).toBeGreaterThan(0);
+    expect(WORLD_FLIGHT_REACH_M).toBeGreaterThanOrEqual(MID_BAND_MAX_M - BAND_HYSTERESIS_M + 1);
+  });
+
+  test('flying out to the cap, no merged sky chunk leaves the far band and the draws stay in budget', () => {
+    const camera = new PerspectiveCamera(QUEST_FOV, QUEST_ASPECT, 0.05, 1000);
+    camera.rotation.order = 'YXZ';
+    let mid = 0;
+    let most = 0;
+    for (let k = 0; k < 64; k++) {
+      const a = (k / 64) * 2 * Math.PI;
+      for (const height of [1.6, 20, 38, MAX_ALTITUDE]) {
+        for (let r = 40; r <= MAX_FLIGHT_RADIUS; r += 0.5) {
+          const x = r * Math.sin(a);
+          const z = -r * Math.cos(a);
+          camera.position.set(x, WORLD.terrain.heightAt(x, z) + height, z);
+          camera.rotation.set(0.5, -a, 0);
+          camera.updateMatrixWorld();
+          batch.update(camera);
+          for (const chunk of batch.chunks) {
+            if (chunk.drawClass !== 'dome' && chunk.drawClass !== 'lights') continue;
+            if (chunk.band === 'far') continue;
+            mid++;
+            expect(chunk.mesh.name, `${k} ${height} ${r}`).not.toMatch(/^strokes-(dome|lights)-/);
+          }
+        }
+        // At the cap, every heading of the view: the drawn total holds the default budget.
+        for (let yaw = 0; yaw < 8; yaw++) {
+          for (const pitch of [-0.4, 0, 0.6]) {
+            camera.rotation.set(pitch, (yaw / 8) * 2 * Math.PI, 0);
+            camera.updateMatrixWorld();
+            batch.update(camera);
+            most = Math.max(most, batch.visibleCount());
+          }
+        }
+      }
+    }
+    console.log(
+      `[world] flight sweep: ${mid} single-part sky chunk-frames under far, most drawn ${most}`,
+    );
+    expect(mid).toBeGreaterThan(0);
+    expect(most).toBeLessThanOrEqual(STROKE_BUDGET.default.max);
+  });
+
+  test('at every pose every dome and lights chunk is far, before and after the merge', () => {
+    const camera = new PerspectiveCamera(QUEST_FOV, QUEST_ASPECT, 0.05, 1000);
+    camera.rotation.order = 'YXZ';
+    for (const { name, position, yaw, pitch } of COVERAGE_POSES) {
+      camera.position.set(...position);
+      camera.rotation.set(pitch, yaw, 0);
+      camera.updateMatrixWorld();
+      for (const b of [batch, plain]) {
+        b.update(camera);
+        for (const chunk of b.chunks) {
+          if (chunk.drawClass !== 'dome' && chunk.drawClass !== 'lights') continue;
+          expect(chunk.band, `${name}: ${chunk.mesh.name}`).toBe('far');
+        }
+      }
+    }
+  });
+
+  test('the merge halves the visible chunks at the painter and spawn views', () => {
+    const views = {
+      painter: { fov: CANVAS_FOV_Y_DEG, aspect: CANVAS_ASPECT, pitch: CANVAS_PITCH },
+      'painter, Quest-wide': { fov: QUEST_FOV, aspect: QUEST_ASPECT, pitch: CANVAS_PITCH },
+      spawn: { fov: 70, aspect: 1280 / 1014, pitch: 0 },
+    };
+    const seen: Record<string, [number, number]> = {};
+    for (const [name, { fov, aspect, pitch }] of Object.entries(views)) {
+      const camera = new PerspectiveCamera(fov, aspect, 0.1, 1000);
+      camera.rotation.order = 'YXZ';
+      camera.position.set(...PAINTER_EYE);
+      camera.rotation.set(pitch, 0, 0);
+      camera.updateMatrixWorld();
+      const counts = [plain, batch].map((b) => {
+        b.update(camera);
+        return b.visibleChunkCount();
+      });
+      seen[name] = [counts[0], counts[1]];
+      expect(counts[1] * 2, name).toBeLessThanOrEqual(counts[0]);
+    }
+    console.log(`[world] visible chunks before and after the merge ${JSON.stringify(seen)}`);
+  });
+});
+
+describe('worldPartGroup', () => {
+  /** A part centre 100 m from the painter's eye at this elevation and azimuth from -Z, degrees. */
+  const at = (elevation: number, azimuth: number): [number, number, number] => {
+    const e = (elevation * Math.PI) / 180;
+    const a = (azimuth * Math.PI) / 180;
+    const h = 100 * Math.cos(e);
+    return [
+      PAINTER_EYE[0] + h * Math.sin(a),
+      PAINTER_EYE[1] + 100 * Math.sin(e),
+      PAINTER_EYE[2] - h * Math.cos(a),
+    ];
+  };
+
+  test('lights share one key and every class but the dome stays alone', () => {
+    expect(worldPartGroup('lights', at(40, 30))).toBe('sky');
+    expect(worldPartGroup('lights', at(-10, 170))).toBe('sky');
+    for (const drawClass of ['world', 'overlay', 'cypress'] as const) {
+      expect(worldPartGroup(drawClass, at(10, 0)), drawClass).toBeNull();
+    }
+  });
+
+  test('rows count from the horizon in sector steps, negative below it, and the top row is one cap', () => {
+    expect(WORLD_DOME_SECTOR_DEG).toBe(36);
+    expect(worldPartGroup('dome', at(10, 90))).toMatch(/^0_/);
+    expect(worldPartGroup('dome', at(50, 90))).toMatch(/^1_/);
+    expect(worldPartGroup('dome', at(-20, 90))).toMatch(/^-1_/);
+    for (const azimuth of [-179, -90, 0, 45, 179]) {
+      expect(worldPartGroup('dome', at(80, azimuth)), `${azimuth}`).toBe('2_0');
+    }
+    expect(worldPartGroup('dome', [PAINTER_EYE[0], PAINTER_EYE[1] + 100, PAINTER_EYE[2]])).toBe(
+      '2_0',
+    );
+  });
+
+  test('slices split each row by azimuth, edge straight ahead, in range at ±180°', () => {
+    // round(360 cos(row middle) / 36): 10 slices at rows 0 and -1, 6 at row 1.
+    for (const [elevation, slices] of [
+      [10, 10],
+      [-20, 10],
+      [50, 6],
+    ] as const) {
+      const seen = new Set<string>();
+      for (let azimuth = -180; azimuth <= 180; azimuth += 0.5) {
+        const key = worldPartGroup('dome', at(elevation, azimuth)) as string;
+        const slice = Number(key.split('_')[1]);
+        expect(slice, `${elevation} ${azimuth}`).toBeGreaterThanOrEqual(0);
+        expect(slice, `${elevation} ${azimuth}`).toBeLessThan(slices);
+        seen.add(key);
+      }
+      expect(seen.size, `${elevation}`).toBe(slices);
+    }
+    expect(worldPartGroup('dome', at(10, -0.5))).not.toBe(worldPartGroup('dome', at(10, 0.5)));
+    expect(worldPartGroup('dome', at(10, 180))).toBe('0_9');
+    expect(worldPartGroup('dome', at(10, -179.9))).toBe('0_0');
   });
 });
 

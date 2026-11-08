@@ -6,6 +6,10 @@
  */
 import type { BufferGeometry } from 'three';
 import type { Raster } from '../../demo/canvas/field';
+import { MAX_ALTITUDE, MAX_FLIGHT_RADIUS } from '../../locomotion/flight';
+import { BAND_HYSTERESIS_M, MID_BAND_MAX_M } from '../../render/strokes/bands';
+import type { StrokeDrawClass, StrokePartMerge } from '../../render/strokes/batch';
+import type { Vec3 } from '../../render/strokes/frame';
 import {
   appendStrokes,
   STROKE_LAYER,
@@ -31,7 +35,7 @@ import { createSkyDome } from '../../world/sky';
 import { createSkyLightsSteps, skyLightCones } from '../../world/sky-lights';
 import { createTerrain, type Terrain } from '../../world/terrain';
 import { createVillage, type Village } from '../../world/village';
-import type { WorldLayer } from './canvas-camera';
+import { PAINTER_EYE, type WorldLayer } from './canvas-camera';
 import type { CanvasSource } from './canvas-histogram';
 
 /** The seed when none is given. Every generator was fitted and tested at seed 1. */
@@ -45,9 +49,111 @@ export const DEFAULT_WORLD_SEED: number = 1;
  * the 24 coverage poses with a Quest-wide frustum, 16 m gives 1299 chunks and up to 597 visible
  * with at most 229k drawn, 24 m 543 and up to 267 with at most 273k drawn, inside the 325k budget.
  * At the painter's spot 24 m cuts the visible chunks from 420 to 189 for 14% more drawn strokes
- * (228k to 259k). 8 m gave 5049 chunks and up to 2158 visible (P2.7 report).
+ * (228k to 259k). 8 m gave 5049 chunks and up to 2158 visible (P2.7 report). The dome and the
+ * lights merge further (`worldPartGroup`).
  */
 export const WORLD_CELL_SIZE: number = 24;
+/**
+ * The sky sector edge, degrees, by which `worldPartGroup` merges the dome's 24 m parts. The dome
+ * was most of the draws: at the desktop painter view 66 dome and 21 lights chunks of 148. Sectors
+ * are rows of this height from the horizon, seen from PAINTER_EYE, each row cut into
+ * round(360 cos(row middle) / this) equal azimuth slices, so a sector holds about the same sky
+ * everywhere. Measured offline at seed 1 (painter view, spawn view, Quest-wide painter view, most
+ * drawn over the 24 coverage poses): at 24 m parts only, 148, 166 and 227 chunks with 249k at the
+ * painter and at most 272k drawn. 36° gives 72, 79 and 94 chunks, 265k and at most 296k. 30° gives
+ * 76, 83 and 99, 45° 70, 75 and 90 with at most 318k, and 60° draws 329k at the painter, over the
+ * 325k default budget. Cubic cells cull worse: 96 m gives 76, 79 and 96 with at most 315k.
+ */
+export const WORLD_DOME_SECTOR_DEG: number = 36;
+
+/**
+ * A dome part's (a 24 m cell's dome strokes) sky sector key (WORLD_DOME_SECTOR_DEG), by the
+ * direction of its centre from PAINTER_EYE. Every lights part gets `'sky'`, one chunk of about 4.9k
+ * pinned strokes, and every other class gets null. Rows count up from the horizon, so a part below
+ * it has a negative row. The top row, 72° to the zenith, is a single cap, because its slice count
+ * is taken at 89°, which rounds to one. `createWorldPartGroup` adds the flight exclusion.
+ */
+export function worldPartGroup(drawClass: StrokeDrawClass, centre: Vec3): string | null {
+  if (drawClass === 'lights') return 'sky';
+  if (drawClass !== 'dome') return null;
+  const x = centre[0] - PAINTER_EYE[0];
+  const y = centre[1] - PAINTER_EYE[1];
+  const z = centre[2] - PAINTER_EYE[2];
+  const sector = WORLD_DOME_SECTOR_DEG;
+  const elevation = (Math.atan2(y, Math.hypot(x, z)) * 180) / Math.PI;
+  const row = Math.floor(elevation / sector);
+  const middle = Math.min(89, Math.abs((row + 0.5) * sector));
+  const slices = Math.max(1, Math.round((360 * Math.cos((middle * Math.PI) / 180)) / sector));
+  // Azimuth from -Z, so with an even slice count a slice edge lies straight ahead of the painter.
+  const azimuth = (Math.atan2(x, -z) * 180) / Math.PI;
+  const slice = Math.min(slices - 1, Math.floor(((azimuth + 180) / 360) * slices));
+  return `${row}_${slice}`;
+}
+
+/**
+ * A dome part whose band probe can come within this of the flight envelope stays a chunk of its
+ * own. A far chunk drops to mid only under MID_BAND_MAX_M minus the hysteresis, so this keeps a 1 m
+ * margin over that edge for the 1 m ground sampling in `createWorldPartGroup`.
+ */
+export const WORLD_FLIGHT_REACH_M: number = MID_BAND_MAX_M + BAND_HYSTERESIS_M;
+/** Half-width of the ground window `createWorldPartGroup` samples around a candidate part, m. */
+const FLIGHT_WINDOW_M = 12;
+
+/**
+ * `StrokeBatchOptions.mergeParts` for the world: `worldPartGroup`, except that a dome part the
+ * flight envelope can bring within WORLD_FLIGHT_REACH_M stays a chunk of its own. The envelope is
+ * every head position flight allows: within MAX_FLIGHT_RADIUS of the origin, from the ground to
+ * MAX_ALTITUDE above it. A merged chunk takes the band of its nearest part, so without this a
+ * flight near the cap moved a whole sector, up to 9.5k strokes, to the mid band at once, where its
+ * 24 m part alone (about 1.2k strokes) did before. At seed 1 it keeps 15 of the 435 dome parts
+ * alone, none of them in the painter or spawn view (tests/world-starry-night.test.ts).
+ *
+ * A part is a candidate only if it is that close to the envelope's bounding cylinder, the ground's
+ * range over the disc sampled once on a 2 m grid with 1 m of slack. A candidate is then measured
+ * against the ground on a 1 m grid within FLIGHT_WINDOW_M of the point under it, clamped to the
+ * disc, which keeps the batch build step short.
+ */
+export function createWorldPartGroup(heightAt: (x: number, z: number) => number): StrokePartMerge {
+  const r = MAX_FLIGHT_RADIUS;
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (let x = -r; x <= r; x += 2) {
+    for (let z = -r; z <= r; z += 2) {
+      if (Math.hypot(x, z) > r) continue;
+      const g = heightAt(x, z);
+      low = Math.min(low, g);
+      high = Math.max(high, g);
+    }
+  }
+  low -= 1;
+  high += 1 + MAX_ALTITUDE;
+  const reach = WORLD_FLIGHT_REACH_M;
+  const nearFlight = (c: Vec3, radius: number): boolean => {
+    const h = Math.hypot(c[0], c[2]);
+    const above = Math.max(0, c[1] - high, low - c[1]);
+    if (Math.hypot(Math.max(0, h - r), above) - radius >= reach) return false;
+    const k = h > r ? r / h : 1;
+    const qx = Math.round(c[0] * k);
+    const qz = Math.round(c[2] * k);
+    for (let dx = -FLIGHT_WINDOW_M; dx <= FLIGHT_WINDOW_M; dx++) {
+      for (let dz = -FLIGHT_WINDOW_M; dz <= FLIGHT_WINDOW_M; dz++) {
+        let x = qx + dx;
+        let z = qz + dz;
+        const d = Math.hypot(x, z);
+        if (d > r) {
+          x *= r / d;
+          z *= r / d;
+        }
+        const g = heightAt(x, z);
+        const y = Math.min(g + MAX_ALTITUDE, Math.max(g, c[1]));
+        if (Math.hypot(c[0] - x, c[1] - y, c[2] - z) - radius < reach) return true;
+      }
+    }
+    return false;
+  };
+  return (drawClass, centre, radius) =>
+    drawClass === 'dome' && nearFlight(centre, radius) ? null : worldPartGroup(drawClass, centre);
+}
 /** Boundary haze strokes. */
 export const WORLD_HAZE_COUNT: number = HAZE_STROKE_DEFAULT;
 /**

@@ -73,8 +73,13 @@ import {
 import { strokeAxes, surfaceBasis, type Vec3 } from './frame';
 import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
 
-/** Bump when the scatter's output changes for the same inputs; part of the cache key. */
-export const SCATTER_VERSION: number = 12;
+/**
+ * Bump when the scatter's output changes for the same inputs; part of the cache key. 13 is a
+ * defensive bump that came with the dome's sector merge (`createWorldPartGroup`): the cache holds
+ * the scattered stroke buffers, not the chunk layout, which every load rebuilds, so it only forces
+ * one miss.
+ */
+export const SCATTER_VERSION: number = 13;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([

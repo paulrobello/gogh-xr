@@ -38,6 +38,7 @@ import { createFootprintTest } from './footprints';
 import {
   assembleWorldStrokesSteps,
   createWorldGeometrySteps,
+  createWorldPartGroup,
   DEFAULT_WORLD_SEED,
   scatterWorldSteps,
   WORLD_CELL_SIZE,
@@ -117,6 +118,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     createStrokeBatchSteps(buffers, {
       cellSize: WORLD_CELL_SIZE,
       cypressChunk: true,
+      mergeParts: createWorldPartGroup(world.terrain.heightAt),
       atlas: deps.atlas,
     }),
     'batch',

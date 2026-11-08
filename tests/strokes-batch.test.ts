@@ -35,6 +35,7 @@ import {
   DEFAULT_ORDER_POLICY,
   drawClassOf,
   holdsHaze,
+  interleaveOrders,
   isCypressStroke,
   isPinnedStroke,
   SKY_REACH_MARGIN,
@@ -1205,6 +1206,227 @@ describe('draw classes', () => {
     // Front to back from 0: the nearer chunk first.
     const [low, high] = batch.chunks;
     expect(Math.min(low.mesh.renderOrder, high.mesh.renderOrder)).toBe(0);
+    batch.dispose();
+  });
+});
+
+describe('interleaveOrders', () => {
+  /** The rule stated plainly: per tier, every stroke by (fraction through its part's tier, part). */
+  function reference(parts: readonly { order: Uint32Array; pinned: number }[]): number[] {
+    const out: number[] = [];
+    for (const tier of [0, 1]) {
+      const all: { key: number; part: number; stroke: number }[] = [];
+      parts.forEach((p, part) => {
+        const start = tier === 0 ? 0 : p.pinned;
+        const end = tier === 0 ? p.pinned : p.order.length;
+        for (let r = start; r < end; r++) {
+          all.push({ key: (r - start + 0.5) / (end - start), part, stroke: p.order[r] });
+        }
+      });
+      all.sort((a, b) => a.key - b.key || a.part - b.part);
+      for (const { stroke } of all) out.push(stroke);
+    }
+    return out;
+  }
+
+  test('matches a linear reference on random parts, ties included', () => {
+    let state = 7;
+    const random = (): number => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return state / 2147483648;
+    };
+    let ties = 0;
+    for (let trial = 0; trial < 300; trial++) {
+      const k = 1 + Math.floor(random() * 12);
+      let next = 0;
+      const parts = Array.from({ length: k }, () => {
+        // Small, often equal sizes so equal fractions (ties) are common.
+        const n = Math.floor(random() * 4) * 3 + (random() < 0.2 ? 0 : 1);
+        const pinned = random() < 0.4 ? Math.floor(random() * (n + 1)) : 0;
+        const order = Uint32Array.from({ length: n }, () => next++);
+        return { order, pinned };
+      });
+      const sizes = parts.map((p) => p.order.length - p.pinned);
+      if (new Set(sizes).size < sizes.length) ties++;
+      const got = interleaveOrders(parts);
+      expect(Array.from(got.order), `trial ${trial}`).toEqual(reference(parts));
+      expect(got.pinned).toBe(parts.reduce((s, p) => s + p.pinned, 0));
+    }
+    expect(ties).toBeGreaterThan(100);
+  });
+});
+
+describe('mergeParts', () => {
+  const positionsOf = (chunk: { geometry: InstancedBufferGeometry; count: number }): string[] => {
+    const p = chunk.geometry.getAttribute('iPosition').array as Float32Array;
+    return Array.from({ length: chunk.count }, (_, k) =>
+      [p[k * 3], p[k * 3 + 1], p[k * 3 + 2]].join(','),
+    );
+  };
+  /** Dome strokes in three 4 m cells about 3, 14 and 42 m down -z, plus a world cell near the eye. */
+  function domeCells(): StrokeBuffers {
+    const dome = [
+      cluster(30, [1, 1, -3], 11),
+      cluster(20, [1, 1, -14], 12),
+      cluster(10, [1, 1, -42], 13),
+    ];
+    for (const part of dome) {
+      for (let i = 0; i < part.count; i++) part.meta[i * 4 + 3] = DEPTH_BACKDROP_FLAG;
+    }
+    return concat(...dome, cluster(8, [-1, 1, -3], 14));
+  }
+  const allDome = (drawClass: string): string | null => (drawClass === 'dome' ? 'all' : null);
+
+  test('parts given one key become one chunk of their class, named by the key', () => {
+    const batch = createStrokeBatch(domeCells(), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: allDome,
+    });
+    expect(batch.chunks.map((c) => [c.mesh.name, c.drawClass, c.count])).toEqual([
+      ['strokes--1_0_-1', 'world', 8],
+      ['strokes-dome-all', 'dome', 60],
+    ]);
+    batch.dispose();
+  });
+
+  test('a key never merges parts of different classes', () => {
+    const batch = createStrokeBatch(domeCells(), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: () => 'x',
+    });
+    expect(batch.chunks.map((c) => [c.mesh.name, c.count])).toEqual([
+      ['strokes-world-x', 8],
+      ['strokes-dome-x', 60],
+    ]);
+    batch.dispose();
+  });
+
+  test('a merged chunk takes the band of its nearest part', () => {
+    const buffers = domeCells();
+    const plain = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    const merged = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: allDome,
+    });
+    // Only the two farther parts merge: the 3 m one stays a chunk of its own.
+    const far = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: (drawClass, centre) => (drawClass === 'dome' && centre[2] < -10 ? 'far' : null),
+    });
+    const camera = originCamera();
+    for (const batch of [plain, merged, far]) render(batch, camera);
+    const domeBands = (batch: StrokeBatch) =>
+      batch.chunks.filter((c) => c.drawClass === 'dome').map((c) => c.band);
+    expect(domeBands(plain)).toEqual(['far', 'mid', 'near']);
+    expect(domeBands(merged)).toEqual(['near']);
+    expect(domeBands(far)).toEqual(['mid', 'near']);
+    // 60 m back every part is far, so the merged chunk is too, though its sphere is 40 m across.
+    const back = new PerspectiveCamera(90, 1, 0.05, 1000);
+    back.position.set(1, 1, 60);
+    for (const batch of [plain, merged]) render(batch, back);
+    expect(domeBands(plain)).toEqual(['far', 'far', 'far']);
+    expect(domeBands(merged)).toEqual(['far']);
+    for (const batch of [plain, merged, far]) batch.dispose();
+  });
+
+  test("each stroke keeps its order among its part's, and every prefix is the parts' prefixes", () => {
+    const buffers = domeCells();
+    const plain = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    const merged = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: allDome,
+    });
+    const order = positionsOf(merged.chunks[1]);
+    const parts = plain.chunks.filter((c) => c.drawClass === 'dome').map(positionsOf);
+    for (const part of parts) {
+      expect(order.filter((p) => part.includes(p))).toEqual(part);
+    }
+    for (let n = 1; n <= order.length; n++) {
+      const prefix = new Set(order.slice(0, n));
+      for (const part of parts) {
+        const taken = part.filter((p) => prefix.has(p)).length;
+        expect(Math.abs(taken - (n * part.length) / order.length)).toBeLessThanOrEqual(1);
+        expect(part.slice(0, taken).every((p) => prefix.has(p))).toBe(true);
+      }
+    }
+    plain.dispose();
+    merged.dispose();
+  });
+
+  test('a merged chunk culls as one chunk of the same strokes: motion reach, haze and reactive box', () => {
+    // Sky strokes in one 4 m cell and haze in another, 20 m apart: a world part each.
+    const sky = cluster(6, [10, 30, -50], 17);
+    const haze = cluster(6, [30, 30, -50], 18);
+    for (const part of [sky, haze]) {
+      for (let i = 0; i < part.count; i++) part.meta[i * 4 + 1] = STROKE_LAYER.sky;
+    }
+    for (let i = 0; i < haze.count; i++) haze.meta[i * 4 + 3] = SKY_LIGHT_CULL_FLAG;
+    const buffers = concat(sky, haze);
+    const merged = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: () => 'all',
+    });
+    // One 1024 m cell holds both, so the plain batch has the one chunk the merge builds.
+    const single = createStrokeBatch(buffers, { cellSize: 1024, createAtlas: tinyAtlas });
+    expect(merged.chunks.length).toBe(1);
+    expect(single.chunks.length).toBe(1);
+    const cull = vi.mocked(cullAndSortInto);
+    const sphere = (batch: StrokeBatch): [number, number, number, number] => {
+      batch.update(originCamera());
+      const s = cull.mock.calls.at(-1)?.[0][0];
+      if (!s) throw new Error('no cull sphere');
+      return [s.center.x, s.center.y, s.center.z, s.radius];
+    };
+    const same = (): void => {
+      const [a, b] = [sphere(merged), sphere(single)];
+      for (let k = 0; k < 4; k++) expect(a[k]).toBeCloseTo(b[k], 9);
+    };
+    try {
+      same();
+      motionClock.setLayerMask(1 << STROKE_LAYER.sky);
+      motionClock.setCalm(0.5);
+      same();
+      // A reactive box round the haze cell's strokes alone.
+      motionClock.setLayerMask(MOTION_LAYER_MASK);
+      setReactiveBox([30, 30, -50], [0.6, 0.6, 0.6]);
+      same();
+      setReactiveBox([0, 0, 0], [-1, -1, -1]);
+      same();
+    } finally {
+      motionClock.setCalm(1);
+      motionClock.setLayerMask(0);
+      setReactiveBox([0, 0, 0], [-1, -1, -1]);
+    }
+    merged.dispose();
+    single.dispose();
+  });
+
+  test('pinned lights from several cells merge into one chunk that draws them all', () => {
+    const near = cluster(12, [1, 1, -3], 15);
+    const far = cluster(9, [1, 1, -42], 16);
+    for (const part of [near, far]) {
+      for (let i = 0; i < part.count; i++) {
+        part.meta[i * 4 + 1] = STROKE_LAYER.star;
+        part.meta[i * 4 + 3] = DEPTH_BACKDROP_FLAG;
+      }
+    }
+    const batch = createStrokeBatch(concat(near, far), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: (drawClass) => (drawClass === 'lights' ? 'sky' : null),
+    });
+    expect(batch.chunks.map((c) => [c.mesh.name, c.drawClass, c.count, c.pinned])).toEqual([
+      ['strokes-lights-sky', 'lights', 21, 21],
+    ]);
+    render(batch, originCamera());
+    for (const band of STROKE_BANDS) batch.setDensity(band, 0);
+    expect(batch.chunks[0].drawCount).toBe(21);
     batch.dispose();
   });
 });
