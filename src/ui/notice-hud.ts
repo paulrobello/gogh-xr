@@ -4,8 +4,9 @@
  * presenting frame with a notice queued, so a session that never shows one loads none of it beyond
  * what the HUD already loads.
  *
- * Each shown notice is a plate with its text and a Dismiss button; the newest sits at the bottom,
- * nearest the eye line. While notices show and the settings panel is closed, a laser from each
+ * Each shown notice is a plate with its text and a Dismiss button, and a kind with an action (P7.1:
+ * `update-ready`'s Reload) has that button left of Dismiss. The newest sits at the bottom, nearest
+ * the eye line. While notices show and the settings panel is closed, a laser from each
  * tracked controller shows where it points (the open panel draws its own). Hidden, nothing draws.
  */
 import {
@@ -31,7 +32,7 @@ import {
   noticeElevation,
   rayRectDistance,
 } from './notice-geometry';
-import type { Notice, NoticeKind } from './notice-queue';
+import type { Notice, NoticeHit, NoticeKind } from './notice-queue';
 import { MAX_SHOWN } from './notice-queue';
 import type { PanelPose } from './panel-core';
 import { PANEL_H, PANEL_W } from './panel-layout';
@@ -43,6 +44,11 @@ const FONT_SIZE = 0.0105;
 const BUTTON_W = 0.06;
 const BUTTON_H = 0.026;
 const LABEL_SIZE = 0.0095;
+
+/** The text's wrap width: the plate less Dismiss, and less the action button when there is one. */
+function textWidth(withAction: boolean): number {
+  return NOTICE_W - BUTTON_W - PAD * 3 - (withAction ? BUTTON_W + PAD : 0);
+}
 /** A laser that meets no dismiss button stops here, metres. */
 const LASER_LENGTH = 1.5;
 /** Above the perf HUD's 1,000,000 and 1,000,001. */
@@ -68,6 +74,8 @@ export interface NoticeHudFrame {
   shown: readonly Notice[];
   /** The open settings panel's rig-local pose, or null while closed. */
   panelPose: Readonly<PanelPose> | null;
+  /** Action button labels by kind; a kind without one has only Dismiss. */
+  actions?: Readonly<Partial<Record<NoticeKind, string>>>;
 }
 
 export interface NoticeTargetDiag {
@@ -77,22 +85,31 @@ export interface NoticeTargetDiag {
   hovered: boolean;
 }
 
+export interface NoticeActionDiag extends NoticeTargetDiag {
+  label: string;
+  /** Computed: the button and every ancestor up to the scene are visible. */
+  visible: boolean;
+}
+
 export interface NoticeHudDiag {
   visible: boolean;
   /** The stack's bottom-edge elevation above the eye line, degrees. */
   elevationDeg: number;
   typeset: boolean;
+  /** The Dismiss buttons. */
   targets: NoticeTargetDiag[];
+  /** The action buttons (P7.1's Reload). */
+  actions: NoticeActionDiag[];
 }
 
 export interface NoticeHud {
   /**
    * One frame, before the controllers' targets are read: shows or hides the stack, lays out the
-   * shown notices and places the stack. Returns the dismiss button each hand's ray meets.
+   * shown notices and places the stack. Returns the button each hand's ray meets.
    */
-  frame(input: NoticeHudFrame): Record<Hand, NoticeKind | null>;
+  frame(input: NoticeHudFrame): Record<Hand, NoticeHit | null>;
   /** After arbitration: the buttons a hand may press highlight, and the lasers update. */
-  setHover(hover: Record<Hand, NoticeKind | null>): void;
+  setHover(hover: Record<Hand, NoticeHit | null>): void;
   diag(): NoticeHudDiag;
   dispose(): void;
 }
@@ -104,6 +121,9 @@ interface Slot {
   readonly buttonMaterial: MeshBasicMaterial;
   readonly text: Text;
   readonly label: Text;
+  readonly action: Mesh;
+  readonly actionMaterial: MeshBasicMaterial;
+  readonly actionLabel: Text;
   kind: NoticeKind | null;
   /** The plate's height once typeset, metres. */
   height: number;
@@ -162,7 +182,7 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
     button.renderOrder = RENDER_ORDER + 1;
     button.frustumCulled = false;
     const text = makeText(FONT_SIZE, TEXT_COLOR, RENDER_ORDER + 2);
-    text.maxWidth = NOTICE_W - BUTTON_W - PAD * 3;
+    text.maxWidth = textWidth(false);
     text.anchorX = 'left';
     text.anchorY = 'middle';
     text.position.set(-NOTICE_W / 2 + PAD, 0, 0.001);
@@ -171,7 +191,19 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
     label.anchorX = 'center';
     label.anchorY = 'middle';
     label.position.set(button.position.x, 0, 0.001);
-    group.add(plate, button, text, label);
+    const actionMaterial = buttonMaterial.clone();
+    const action = new Mesh(plateGeometry, actionMaterial);
+    action.scale.copy(button.scale);
+    action.position.set(button.position.x - BUTTON_W - PAD, 0, 0.0005);
+    action.renderOrder = RENDER_ORDER + 1;
+    action.frustumCulled = false;
+    action.visible = false;
+    const actionLabel = makeText(LABEL_SIZE, TEXT_COLOR, RENDER_ORDER + 2);
+    actionLabel.anchorX = 'center';
+    actionLabel.anchorY = 'middle';
+    actionLabel.position.set(action.position.x, 0, 0.001);
+    actionLabel.visible = false;
+    group.add(plate, button, text, label, action, actionLabel);
     root.add(group);
     slots.push({
       group,
@@ -180,6 +212,9 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
       buttonMaterial,
       text,
       label,
+      action,
+      actionMaterial,
+      actionLabel,
       kind: null,
       height: BUTTON_H + PAD * 2,
     });
@@ -208,9 +243,10 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
   scene.add(lasers);
 
   let lastShown: readonly Notice[] | null = null;
+  let lastActions: NoticeHudFrame['actions'] | null = null;
   let elevation = noticeElevation(null, 0);
   let lasersWanted = false;
-  const hover: Record<Hand, NoticeKind | null> = { left: null, right: null };
+  const hover: Record<Hand, NoticeHit | null> = { left: null, right: null };
   const hits: Record<Hand, number | null> = { left: null, right: null };
   const rays: Record<Hand, { origin: Vector3; direction: Vector3; tracked: boolean }> = {
     left: { origin: new Vector3(), direction: new Vector3(), tracked: false },
@@ -222,6 +258,20 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
   const panelScale = new Vector3();
   const corners = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
   const center = new Vector3();
+
+  function isHovered(kind: NoticeKind | null, button: NoticeHit['button']): boolean {
+    if (kind === null) return false;
+    return HANDS.some((hand) => hover[hand]?.kind === kind && hover[hand]?.button === button);
+  }
+
+  /** True when `object` and every ancestor up to the scene are visible. */
+  function shownInScene(object: Object3D): boolean {
+    for (let o: Object3D | null = object; o; o = o.parent) {
+      if (!o.visible) return false;
+      if (o === scene) return true;
+    }
+    return false;
+  }
 
   /** Stacks the shown slots upward from the root, newest at the bottom. */
   function stack(): void {
@@ -240,12 +290,19 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
     return Math.max(0, y - GAP);
   }
 
-  function layout(shown: readonly Notice[]): void {
+  function layout(shown: readonly Notice[], actions: NoticeHudFrame['actions']): void {
     slots.forEach((slot, i) => {
       const notice = shown[i];
       slot.kind = notice?.kind ?? null;
       slot.group.visible = notice !== undefined;
-      if (!notice || slot.text.text === notice.text) return;
+      const actionText = notice ? actions?.[notice.kind] : undefined;
+      slot.action.visible = actionText !== undefined;
+      slot.actionLabel.visible = actionText !== undefined;
+      if (actionText !== undefined && slot.actionLabel.text !== actionText)
+        slot.actionLabel.text = actionText;
+      const maxWidth = textWidth(actionText !== undefined);
+      if (!notice || (slot.text.text === notice.text && slot.text.maxWidth === maxWidth)) return;
+      slot.text.maxWidth = maxWidth;
       slot.text.text = notice.text;
       slot.text.sync(() => {
         const bounds = slot.text.textRenderInfo?.blockBounds;
@@ -299,8 +356,8 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
   }
 
   return {
-    frame({ presenting, shown, panelPose }) {
-      const targets: Record<Hand, NoticeKind | null> = { left: null, right: null };
+    frame({ presenting, shown, panelPose, actions }) {
+      const targets: Record<Hand, NoticeHit | null> = { left: null, right: null };
       const visible = presenting && shown.length > 0;
       root.visible = visible;
       lasersWanted = visible && panelPose === null;
@@ -308,9 +365,10 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
         for (const hand of HANDS) rays[hand].tracked = false;
         return targets;
       }
-      if (shown !== lastShown) {
-        layout(shown);
+      if (shown !== lastShown || actions !== lastActions) {
+        layout(shown, actions);
         lastShown = shown;
+        lastActions = actions;
       }
       camera.updateWorldMatrix(true, false);
       const angle = Math.atan2(stackHeight(), NOTICE_DISTANCE);
@@ -330,12 +388,18 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
         let nearest = Number.POSITIVE_INFINITY;
         for (const slot of slots) {
           if (!slot.group.visible || slot.kind === null) continue;
-          inverse.copy(slot.button.matrixWorld).invert();
-          const t = rayRectDistance(ray.origin, ray.direction, inverse, 1, 1);
-          if (t !== null && t < nearest) {
-            nearest = t;
-            targets[hand] = slot.kind;
-            hits[hand] = t;
+          for (const [mesh, button] of [
+            [slot.button, 'dismiss'],
+            [slot.action, 'action'],
+          ] as const) {
+            if (!mesh.visible) continue;
+            inverse.copy(mesh.matrixWorld).invert();
+            const t = rayRectDistance(ray.origin, ray.direction, inverse, 1, 1);
+            if (t !== null && t < nearest) {
+              nearest = t;
+              targets[hand] = { kind: slot.kind, button };
+              hits[hand] = t;
+            }
           }
         }
       }
@@ -345,8 +409,10 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
       hover.left = next.left;
       hover.right = next.right;
       for (const slot of slots) {
-        const on = slot.kind !== null && (next.left === slot.kind || next.right === slot.kind);
-        slot.buttonMaterial.color.setHex(on ? BUTTON_HOVER : BUTTON_COLOR);
+        const dismissOn = isHovered(slot.kind, 'dismiss');
+        const actionOn = isHovered(slot.kind, 'action');
+        slot.buttonMaterial.color.setHex(dismissOn ? BUTTON_HOVER : BUTTON_COLOR);
+        slot.actionMaterial.color.setHex(actionOn ? BUTTON_HOVER : BUTTON_COLOR);
       }
       writeLasers();
     },
@@ -363,7 +429,21 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
           return {
             kind,
             center: [center.x, center.y, center.z] as [number, number, number],
-            hovered: hover.left === kind || hover.right === kind,
+            hovered: isHovered(kind, 'dismiss'),
+          };
+        }),
+      actions: slots
+        .filter((slot) => slot.group.visible && slot.kind !== null && slot.action.visible)
+        .map((slot) => {
+          slot.action.updateWorldMatrix(true, false);
+          center.setFromMatrixPosition(slot.action.matrixWorld);
+          const kind = slot.kind as NoticeKind;
+          return {
+            kind,
+            label: slot.actionLabel.text,
+            center: [center.x, center.y, center.z] as [number, number, number],
+            hovered: isHovered(kind, 'action'),
+            visible: shownInScene(slot.action),
           };
         }),
     }),
@@ -374,7 +454,9 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
       for (const slot of slots) {
         slot.text.dispose();
         slot.label.dispose();
+        slot.actionLabel.dispose();
         slot.buttonMaterial.dispose();
+        slot.actionMaterial.dispose();
       }
       plateGeometry.dispose();
       plateMaterial.dispose();

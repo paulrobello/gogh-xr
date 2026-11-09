@@ -7,12 +7,17 @@ import {
   MAX_SHOWN,
   NOTICE_KINDS,
   type NoticeHandFrame,
+  type NoticeHit,
+  type NoticeKind,
   settingsRecoveredText,
 } from '../src/ui/notice-queue';
 
 const UP = { down: false, fired: false };
 const PRESS = { down: true, fired: true };
 const HELD = { down: true, fired: false };
+
+const dismissHit = (kind: NoticeKind): NoticeHit => ({ kind, button: 'dismiss' });
+const actionHit = (kind: NoticeKind): NoticeHit => ({ kind, button: 'action' });
 
 function hand(overrides: Partial<NoticeHandFrame> = {}): NoticeHandFrame {
   return { trigger: UP, panelHit: false, panelClaimed: false, target: null, ...overrides };
@@ -107,7 +112,7 @@ describe('trigger arbitration: a notice never steals the trigger from the panel'
   it('the panel wins when its ray meets the panel, even with a dismiss button on the same ray', () => {
     const state = createNoticeTriggerState();
     const r = arbitrateNoticeTrigger(
-      { right: hand({ trigger: PRESS, panelHit: true, target: 'xr-error' }) },
+      { right: hand({ trigger: PRESS, panelHit: true, target: dismissHit('xr-error') }) },
       state,
     );
     expect(r.dismiss).toEqual([]);
@@ -118,7 +123,7 @@ describe('trigger arbitration: a notice never steals the trigger from the panel'
   it('the panel wins for a hand it holds, a grab or a press started on it', () => {
     const state = createNoticeTriggerState();
     const r = arbitrateNoticeTrigger(
-      { left: hand({ trigger: PRESS, panelClaimed: true, target: 'rate-fallback' }) },
+      { left: hand({ trigger: PRESS, panelClaimed: true, target: dismissHit('rate-fallback') }) },
       state,
     );
     expect(r.dismiss).toEqual([]);
@@ -128,12 +133,12 @@ describe('trigger arbitration: a notice never steals the trigger from the panel'
   it('a press on a dismiss button off the panel dismisses it and holds the trigger until released', () => {
     const state = createNoticeTriggerState();
     const press = arbitrateNoticeTrigger(
-      { right: hand({ trigger: PRESS, target: 'xr-error' }) },
+      { right: hand({ trigger: PRESS, target: dismissHit('xr-error') }) },
       state,
     );
     expect(press.dismiss).toEqual(['xr-error']);
     expect(press.claimed.right).toBe(true);
-    expect(press.hover.right).toBe('xr-error');
+    expect(press.hover.right).toEqual(dismissHit('xr-error'));
     // Still held, now pointing at nothing: the notice keeps the trigger, so `select` never sees it.
     const held = arbitrateNoticeTrigger({ right: hand({ trigger: HELD }) }, state);
     expect(held.dismiss).toEqual([]);
@@ -144,10 +149,13 @@ describe('trigger arbitration: a notice never steals the trigger from the panel'
 
   it('a held trigger dragged onto a dismiss button dismisses nothing', () => {
     const state = createNoticeTriggerState();
-    const r = arbitrateNoticeTrigger({ right: hand({ trigger: HELD, target: 'xr-error' }) }, state);
+    const r = arbitrateNoticeTrigger(
+      { right: hand({ trigger: HELD, target: dismissHit('xr-error') }) },
+      state,
+    );
     expect(r.dismiss).toEqual([]);
     expect(r.claimed.right).toBe(false);
-    expect(r.hover.right).toBe('xr-error');
+    expect(r.hover.right).toEqual(dismissHit('xr-error'));
   });
 
   it('a press that misses every button takes nothing', () => {
@@ -160,22 +168,22 @@ describe('trigger arbitration: a notice never steals the trigger from the panel'
     const state = createNoticeTriggerState();
     const r = arbitrateNoticeTrigger(
       {
-        left: hand({ trigger: PRESS, panelHit: true, target: 'xr-error' }),
-        right: hand({ trigger: PRESS, target: 'settings-recovered' }),
+        left: hand({ trigger: PRESS, panelHit: true, target: dismissHit('xr-error') }),
+        right: hand({ trigger: PRESS, target: dismissHit('settings-recovered') }),
       },
       state,
     );
     expect(r.dismiss).toEqual(['settings-recovered']);
     expect(r.claimed).toEqual({ left: false, right: true });
-    expect(r.hover).toEqual({ left: null, right: 'settings-recovered' });
+    expect(r.hover).toEqual({ left: null, right: dismissHit('settings-recovered') });
   });
 
   it('two hands on one button dismiss it once', () => {
     const state = createNoticeTriggerState();
     const r = arbitrateNoticeTrigger(
       {
-        left: hand({ trigger: PRESS, target: 'xr-error' }),
-        right: hand({ trigger: PRESS, target: 'xr-error' }),
+        left: hand({ trigger: PRESS, target: dismissHit('xr-error') }),
+        right: hand({ trigger: PRESS, target: dismissHit('xr-error') }),
       },
       state,
     );
@@ -184,15 +192,46 @@ describe('trigger arbitration: a notice never steals the trigger from the panel'
 
   it('a notice press the panel then claims (a grip on it) is the panel’s', () => {
     const state = createNoticeTriggerState();
-    arbitrateNoticeTrigger({ right: hand({ trigger: PRESS, target: 'xr-error' }) }, state);
+    arbitrateNoticeTrigger(
+      { right: hand({ trigger: PRESS, target: dismissHit('xr-error') }) },
+      state,
+    );
     const r = arbitrateNoticeTrigger({ right: hand({ trigger: HELD, panelClaimed: true }) }, state);
     expect(r.claimed.right).toBe(false);
     expect(state.pressing.right).toBe(false);
   });
 
+  it('a press on an action button acts, keeps the notice and holds the trigger', () => {
+    const state = createNoticeTriggerState();
+    const r = arbitrateNoticeTrigger(
+      {
+        left: hand({ trigger: PRESS, target: actionHit('update-ready') }),
+        right: hand({ trigger: PRESS, target: actionHit('update-ready') }),
+      },
+      state,
+    );
+    expect(r.act).toEqual(['update-ready']);
+    expect(r.dismiss).toEqual([]);
+    expect(r.claimed).toEqual({ left: true, right: true });
+    expect(r.hover.right).toEqual(actionHit('update-ready'));
+  });
+
+  it('the panel keeps the trigger over an action button on the same ray', () => {
+    const state = createNoticeTriggerState();
+    const r = arbitrateNoticeTrigger(
+      { right: hand({ trigger: PRESS, panelHit: true, target: actionHit('update-ready') }) },
+      state,
+    );
+    expect(r.act).toEqual([]);
+    expect(r.claimed.right).toBe(false);
+  });
+
   it('an untracked hand drops its press', () => {
     const state = createNoticeTriggerState();
-    arbitrateNoticeTrigger({ left: hand({ trigger: PRESS, target: 'update-ready' }) }, state);
+    arbitrateNoticeTrigger(
+      { left: hand({ trigger: PRESS, target: dismissHit('update-ready') }) },
+      state,
+    );
     expect(state.pressing.left).toBe(true);
     arbitrateNoticeTrigger({}, state);
     expect(state.pressing.left).toBe(false);

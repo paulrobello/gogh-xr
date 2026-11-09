@@ -1,4 +1,4 @@
-.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check bake e2e dev dev-start dev-stop dev-restart preview pre-commit
+.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check bake e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit
 
 install:
 	bun install --frozen-lockfile
@@ -37,6 +37,9 @@ bake:
 	bun scripts/bake/analyze-scan.ts
 e2e:
 	bunx playwright test
+# The served A-to-B update check (P7-A1). Local only, not part of checkall.
+update-ab:
+	bun scripts/update-ab.ts
 dev dev-start:
 	bun run dev
 # Serves the IWER-enabled e2e build (not production) on E2E_PORT, default 4253.

@@ -2,18 +2,21 @@
  * The notices host (P5.6): one queue (`notice-queue.ts`) drawn on two surfaces. The 2D page shows
  * it as DOM notices, which are invisible in immersive mode; in XR the notice stack
  * (`notice-hud.ts`) shows it on the HUD. Dismissing on either surface removes the notice from both.
+ * A kind given an action (P7.1: `update-ready`'s Reload) shows its button on both surfaces.
  *
  * The stack is built on the first presenting frame with a notice queued, like the HUD (R17), so a
  * session that never shows a notice in XR loads no troika, font or meshes for it. Free of three and
  * troika: `main.ts` passes the lazy import as `build`.
  */
 import type { Actions, Hand } from '../xr/input';
-import { syncNotices } from './notice';
+import { type NoticeActionButton, syncNotices } from './notice';
 import type { NoticeHudDiag, NoticeHudFrame } from './notice-hud';
 import {
   arbitrateNoticeTrigger,
   createNoticeQueue,
   createNoticeTriggerState,
+  type Notice,
+  type NoticeHit,
   type NoticeKind,
   type NoticeQueue,
   type NoticeQueueDiag,
@@ -30,9 +33,14 @@ declare global {
 
 /** The built XR stack, as the host drives it. */
 export interface NoticeView {
-  frame(input: NoticeHudFrame): Record<Hand, NoticeKind | null>;
-  setHover(hover: Record<Hand, NoticeKind | null>): void;
+  frame(input: NoticeHudFrame): Record<Hand, NoticeHit | null>;
+  setHover(hover: Record<Hand, NoticeHit | null>): void;
   diag(): NoticeHudDiag;
+}
+
+/** A notice shown on the page: its action, when its kind has one. */
+export interface DomNotice extends Notice {
+  readonly action?: NoticeActionButton;
 }
 
 export interface NoticesDeps {
@@ -40,8 +48,13 @@ export interface NoticesDeps {
   /** A failed build is reported here, and the next presenting frame with a notice tries again. */
   onError?(error: unknown): void;
   /** Mirrors the shown notices onto the page. Default `syncNotices` on `document`. */
-  syncDom?(shown: NoticeQueue['shown'], onDismiss: (kind: NoticeKind) => void): void;
+  syncDom?(shown: readonly DomNotice[], onDismiss: (kind: NoticeKind) => void): void;
   queue?: NoticeQueue;
+  /**
+   * Action buttons by kind, shown before Dismiss on both surfaces (P7.1: `update-ready`'s Reload).
+   * Pressing one runs it and leaves the notice up.
+   */
+  actions?: Partial<Record<NoticeKind, NoticeActionButton>>;
 }
 
 export interface NoticesDiag extends NoticeQueueDiag {
@@ -71,14 +84,20 @@ export function createNotices(deps: NoticesDeps): Notices {
     deps.syncDom ??
     ((shown, onDismiss) => syncNotices(shown, (kind) => onDismiss(kind as NoticeKind)));
   const trigger = createNoticeTriggerState();
+  const noticeActions = deps.actions ?? {};
+  const actionLabels: Partial<Record<NoticeKind, string>> = {};
+  for (const [kind, action] of Object.entries(noticeActions) as [NoticeKind, NoticeActionButton][])
+    actionLabels[kind] = action.label;
+  const withActions = (shown: readonly Notice[]): DomNotice[] =>
+    shown.map((n) => (noticeActions[n.kind] ? { ...n, action: noticeActions[n.kind] } : n));
   let view: NoticeView | null = null;
   let building = false;
   /** The stack drew last frame, so a frame with nothing to show still hides it once. */
   let viewShown = false;
 
   const dismiss = (kind: NoticeKind): boolean => queue.dismiss(kind);
-  queue.subscribe(() => syncDom(queue.shown, dismiss));
-  syncDom(queue.shown, dismiss);
+  queue.subscribe(() => syncDom(withActions(queue.shown), dismiss));
+  syncDom(withActions(queue.shown), dismiss);
 
   function build(): void {
     building = true;
@@ -103,9 +122,9 @@ export function createNotices(deps: NoticesDeps): Notices {
       const pressing = trigger.pressing.left || trigger.pressing.right;
       if (shown.length === 0 && !pressing && !viewShown) return NONE;
       if (presenting && shown.length > 0 && !view && !building) build();
-      let targets: Record<Hand, NoticeKind | null> | null = null;
+      let targets: Record<Hand, NoticeHit | null> | null = null;
       if (view) {
-        targets = view.frame({ presenting, shown, panelPose: panel.pose });
+        targets = view.frame({ presenting, shown, panelPose: panel.pose, actions: actionLabels });
         viewShown = presenting && shown.length > 0;
       }
       const result = arbitrateNoticeTrigger(
@@ -127,6 +146,7 @@ export function createNotices(deps: NoticesDeps): Notices {
       );
       view?.setHover(result.hover);
       for (const kind of result.dismiss) queue.dismiss(kind);
+      for (const kind of result.act) noticeActions[kind]?.run();
       return result.claimed;
     },
     diag: () => ({ ...queue.diag(), view: view?.diag() ?? null }),

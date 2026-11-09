@@ -52,6 +52,11 @@ export interface Flags {
   readonly slow: number;
   /** `?nogov`: keeps the quality governor off, so e2e checks see fixed densities. */
   readonly nogov: boolean;
+  /**
+   * `?update`: the build poller (P7.1, `src/update/policy.ts`). True polls in an e2e build too,
+   * `?update=0` turns it off in any build, and absent (null) polls only in a production build.
+   */
+  readonly update: boolean | null;
   /** `&count=N`: the `?demo=canvas` stroke target, 10k-1M. null means the canvas default. */
   readonly count: number | null;
   /** `?nocache`: skips the IndexedDB scatter cache, so the world re-scatters on every load. */
@@ -273,6 +278,7 @@ export function parseFlags(search: string): Flags {
     beauty: parseBool(params, 'beauty'),
     slow: parseSlow(params.get('slow')),
     nogov: parseBool(params, 'nogov'),
+    update: parseOnOff(params, 'update'),
     count: parseCount(params.get('count')),
     nocache: parseBool(params, 'nocache'),
     cache: parseBool(params, 'cache'),

@@ -2077,3 +2077,15 @@ Runs 2 to 4 ran the committed spec, so it passed 3 times out of 3 at a load of 1
 The helper move was checked once each: panel.spec passed 5 of 5 (load 14.05 before, 18.25 after), and portal.spec passed 3 of 3 in the `timing` project (load 14.96 before, 31.01 after, so the frame bars met at a rising load). The full `make e2e` was not run here.
 
 Not verified: whether a real Quest exposes its left menu button at index 6 (see Controls in CLAUDE.md). The test presses IWER's thumbrest there, because that is the button the app binds.
+
+## P7-A1 served update check (2026-11-08, on 791893f)
+
+`make update-ab` (`scripts/update-ab.ts`) built e2e bundles A (`20bbd6cb…`) and B (`4a08cd7e…`) from one tree with different `GOGH_BUILD_SHA`, so their chunks and chunk names differ. It served A on port 4298 with `Cache-Control: max-age=600` on every response, then switched that origin to B. B served alone on port 4299 reported its own manifest id as its running id. Both legs are load-affected: the 1-minute load stayed over 15 through each 15-minute wait. They are behaviour passes, not timing measurements.
+
+- **Desktop.** The page reloaded by itself 30.1 s after the switch, on its next 30 s poll, with no click. Its one document request was `?diag&update&scene=bare&noanim&_reload=…`, so the start query was kept byte for byte. Once booted, the address bar was the start URL again, `#desk` included, with `_reload` stripped. It ran B, with no update notice and the loop guard not engaged. Load was 89.7 before and 102.0 after.
+- **XR (IWER).**
+  - In a presenting session the update notice showed 29.9 s after the switch. Its Reload button was visible as computed on the HUD stack (the button and every ancestor up to the scene visible, `xr-update-notice.png`). The page's notice and its Reload button passed `checkVisibility()` with `display: flex`.
+  - Two more polls, one forced and one on the 30 s interval, left the page on A and in XR with no navigation.
+  - A right trigger on Reload ended the session first: session `end` at 60105 ms, `pagehide` at 60109 ms, in page time.
+  - The page came back 131 ms later running B, not presenting, with no notice. Its document request kept the start query and added `_reload`, and the address bar was then the start URL with `#xr`.
+  - Load was 60.3 before and 73.9 after.

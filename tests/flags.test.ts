@@ -24,6 +24,7 @@ test('defaults when search is empty', () => {
     beauty: false,
     slow: 0,
     nogov: false,
+    update: null,
     count: null,
     nocache: false,
     cache: false,
@@ -45,7 +46,7 @@ test('defaults when search is empty', () => {
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20&densitylaw=%20Count&fov=0.5',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&update&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20&densitylaw=%20Count&fov=0.5',
   );
   expect(f).toEqual({
     seed: 42,
@@ -69,6 +70,7 @@ test('parses every flag', () => {
     beauty: true,
     slow: 14,
     nogov: true,
+    update: true,
     count: 325_000,
     nocache: true,
     cache: true,
@@ -371,4 +373,12 @@ test('?seated and ?hud are on bare, off with 0 or false, and null when absent', 
     false,
   ]);
   expect([parseFlags('?x').seated, parseFlags('?x').hud]).toEqual([null, null]);
+});
+
+test('update is on, off or absent', () => {
+  expect(parseFlags('').update).toBeNull();
+  expect(parseFlags('?update').update).toBe(true);
+  expect(parseFlags('?update=1').update).toBe(true);
+  expect(parseFlags('?update=0').update).toBe(false);
+  expect(parseFlags('?update=false').update).toBe(false);
 });

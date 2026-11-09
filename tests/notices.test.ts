@@ -13,7 +13,7 @@ import {
   rayRectDistance,
 } from '../src/ui/notice-geometry';
 import type { NoticeHudFrame } from '../src/ui/notice-hud';
-import type { NoticeKind } from '../src/ui/notice-queue';
+import type { NoticeHit, NoticeKind } from '../src/ui/notice-queue';
 import { createNotices, type NoticeView } from '../src/ui/notices';
 import { createPanelPose } from '../src/ui/panel-core';
 import { PANEL_H, PANEL_W } from '../src/ui/panel-layout';
@@ -258,9 +258,14 @@ function hold(overrides: Partial<PanelHold> = {}): PanelHold {
   };
 }
 
-function fakeView(targets: Record<Hand, NoticeKind | null> = { left: null, right: null }) {
+const hit = (kind: NoticeKind, button: NoticeHit['button'] = 'dismiss'): NoticeHit => ({
+  kind,
+  button,
+});
+
+function fakeView(targets: Record<Hand, NoticeHit | null> = { left: null, right: null }) {
   const frames: NoticeHudFrame[] = [];
-  const hovers: Record<Hand, NoticeKind | null>[] = [];
+  const hovers: Record<Hand, NoticeHit | null>[] = [];
   const view: NoticeView = {
     frame: (input) => {
       frames.push(input);
@@ -269,7 +274,7 @@ function fakeView(targets: Record<Hand, NoticeKind | null> = { left: null, right
     setHover: (h) => {
       hovers.push({ ...h });
     },
-    diag: () => ({ visible: true, elevationDeg: 13, typeset: true, targets: [] }),
+    diag: () => ({ visible: true, elevationDeg: 13, typeset: true, targets: [], actions: [] }),
   };
   return { view, frames, hovers, targets };
 }
@@ -320,7 +325,7 @@ describe('notices host', () => {
   });
 
   it('a trigger on a dismiss button off the panel dismisses it and claims the hand', async () => {
-    const fake = fakeView({ left: null, right: 'xr-error' });
+    const fake = fakeView({ left: null, right: hit('xr-error') });
     const notices = createNotices({ build: async () => fake.view, syncDom: () => {} });
     notices.raise('rate-fallback', 'r');
     notices.raise('xr-error', 'x');
@@ -329,7 +334,7 @@ describe('notices host', () => {
     const took = notices.frame(true, actions({ right: { down: true, fired: true } }), hold());
     expect(took).toEqual({ left: false, right: true });
     expect(notices.queue.queue.map((n) => n.kind)).toEqual(['rate-fallback']);
-    expect(fake.hovers.at(-1)).toEqual({ left: null, right: 'xr-error' });
+    expect(fake.hovers.at(-1)).toEqual({ left: null, right: hit('xr-error') });
   });
 
   describe.each([
@@ -341,9 +346,9 @@ describe('notices host', () => {
       ['the panel holds that hand', 'held'],
     ] as const)('when %s, and the other hand still takes its own notice', async (_, owns) => {
       // Each hand points at its own Dismiss button and both triggers fire in the same frame.
-      const fake = fakeView({ [hand]: 'xr-error', [other]: 'rate-fallback' } as Record<
+      const fake = fakeView({ [hand]: hit('xr-error'), [other]: hit('rate-fallback') } as Record<
         Hand,
-        NoticeKind
+        NoticeHit
       >);
       const notices = createNotices({ build: async () => fake.view, syncDom: () => {} });
       notices.raise('rate-fallback', 'r');
@@ -364,7 +369,7 @@ describe('notices host', () => {
       expect(took[other]).toBe(true);
       expect(notices.queue.queue.map((n) => n.kind)).toEqual(['xr-error']);
       expect(fake.hovers.at(-1)?.[hand]).toBeNull();
-      expect(fake.hovers.at(-1)?.[other]).toBe('rate-fallback');
+      expect(fake.hovers.at(-1)?.[other]).toEqual(hit('rate-fallback'));
       expect(fake.frames.at(-1)?.panelPose).toBe(pose);
     });
   });
@@ -403,5 +408,45 @@ describe('notices host', () => {
     expect(fake.frames.at(-1)?.shown).toEqual([]);
     notices.frame(true, actions(), hold());
     expect(fake.frames.length).toBe(before + 1);
+  });
+});
+
+describe('notice actions (P7.1)', () => {
+  afterEach(() => clearNotices());
+
+  it('an action hit in XR runs the action, keeps the notice and claims the hand', async () => {
+    const fake = fakeView({ left: null, right: hit('update-ready', 'action') });
+    const run = vi.fn();
+    const notices = createNotices({
+      build: async () => fake.view,
+      syncDom: () => {},
+      actions: { 'update-ready': { label: 'Reload', run } },
+    });
+    notices.raiseUpdate();
+    notices.frame(true, actions(), hold());
+    await settle();
+    const took = notices.frame(true, actions({ right: { down: true, fired: true } }), hold());
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(took.right).toBe(true);
+    expect(notices.queue.queue.map((n) => n.kind)).toEqual(['update-ready']);
+    expect(fake.frames.at(-1)?.actions).toEqual({ 'update-ready': 'Reload' });
+    expect(fake.hovers.at(-1)?.right).toEqual(hit('update-ready', 'action'));
+  });
+
+  it('the page shows the action button before Dismiss, only on its kind', () => {
+    const run = vi.fn();
+    const notices = createNotices({
+      build: async () => fakeView().view,
+      actions: { 'update-ready': { label: 'Reload', run } },
+    });
+    notices.raise('xr-error', 'x');
+    notices.raiseUpdate();
+    const update = document.querySelector<HTMLElement>('[data-notice-kind="update-ready"]');
+    const buttons = Array.from(update?.querySelectorAll('button') ?? []).map((b) => b.textContent);
+    expect(buttons).toEqual(['Reload', 'Dismiss']);
+    expect(document.querySelector('[data-notice-kind="xr-error"] [data-notice-action]')).toBeNull();
+    update?.querySelector<HTMLElement>('[data-notice-action="reload"]')?.click();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(notices.queue.queue.map((n) => n.kind)).toEqual(['update-ready', 'xr-error']);
   });
 });

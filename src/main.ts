@@ -42,7 +42,7 @@ import { createSettingsStore } from './settings/store';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
-import { isNoticeKind, settingsRecoveredText } from './ui/notice-queue';
+import { isNoticeKind, RELOAD_LABEL, settingsRecoveredText } from './ui/notice-queue';
 import { createNotices } from './ui/notices';
 import { clearPanelPose } from './ui/panel-pose';
 import {
@@ -52,6 +52,8 @@ import {
   registerGalleryReturn,
 } from './ui/panel-toggle';
 import { createVignette } from './ui/vignette';
+import { startUpdates } from './update/start';
+import type { Updates } from './update/updates';
 import { busyWait } from './util/busy-wait';
 import { createSlicer } from './util/slicer';
 import { version } from './version';
@@ -293,10 +295,12 @@ const targetFrameRateFor = (quality: QualityMode): number =>
 const nextTargetFrameRate = (): number => targetFrameRateFor(settingsStore.effective.quality);
 /** The quality the current or last XR session started with; the boot's until then. */
 let sessionQuality: QualityMode = settings.quality;
+/** The update poller (P7.1), started once the notices exist. Null where none runs. */
+let updates: Updates | null = null;
 /**
  * The notices (P5.6): one queue, shown as DOM notices on the page and as the HUD's notice stack in
  * XR, built on the first presenting frame with one queued. The bench builds none and keeps the
- * plain DOM notice for its XR errors.
+ * plain DOM notice for its XR errors. `update-ready` carries the Reload action (P7.1).
  */
 const notices =
   flags.bench === null
@@ -311,6 +315,7 @@ const notices =
           });
         },
         onError: (error) => console.warn('notices failed to start', error),
+        actions: { 'update-ready': { label: RELOAD_LABEL, run: () => void updates?.reload() } },
       })
     : null;
 if (settingsRecovered)
@@ -328,6 +333,34 @@ const session = createSessionController({
     return nextTargetFrameRate();
   },
 });
+
+/** An XR entry is in progress: a new build waits for it rather than reloading under it. */
+let enteringXr = false;
+/** A portal transition is under way (`switcher.busy`, mirrored each frame): a reload waits too. */
+let portalBusy = false;
+if (notices) {
+  updates = startUpdates({
+    flag: flags.update,
+    bench: flags.bench !== null,
+    mode: import.meta.env.MODE,
+    base: import.meta.env.BASE_URL,
+    notices,
+    presenting: () => renderer.xr.isPresenting,
+    busy: () => enteringXr || portalBusy,
+    endSession: () => {
+      const active = renderer.xr.getSession();
+      if (!active) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        active.addEventListener('end', () => resolve(), { once: true });
+        active.end().catch(reject);
+      });
+    },
+    // Settings save after a 500 ms debounce: flush a pending one so the reload keeps it.
+    beforeNavigate: () => settingsStore.commit(),
+  });
+  // Back on the page after XR, a build that arrived in XR reloads.
+  renderer.xr.addEventListener('sessionend', () => updates?.settle());
+}
 
 window.addEventListener('resize', () => {
   camera.aspect = painterView ? painterView.aspect : window.innerWidth / window.innerHeight;
@@ -575,6 +608,9 @@ function renderFrame(time: number): void {
   if (runLocomotion) {
     switcher.frame(dtMs);
     const busy = switcher.busy;
+    const transitionEnded = portalBusy && !busy;
+    portalBusy = busy;
+    if (transitionEnded) updates?.settle();
     locomotion.frame(busy ? frozenActions(actions) : actions, renderer.xr.isPresenting);
     if (!busy) detectPortals();
     trackDisturbers(time, renderer.xr.isPresenting);
@@ -647,6 +683,11 @@ if (flags.diag) {
     pending: settingsStore.pending,
   }));
   if (panel) registerDiag('panel', () => panel.diag());
+  if (updates) {
+    const live = updates;
+    registerDiag('update', () => live.diag());
+    window.__goghUpdateCheck = () => live.check();
+  }
   if (notices) {
     registerDiag('notices', () => notices.diag());
     window.__goghNotice = (kind, text) => {
@@ -876,5 +917,11 @@ if (worldEntry) {
 
 void isVrSupported(navigator.xr).then((supported) => {
   session.state.supported = supported;
-  createEnterVrButton(supported, () => void session.enter());
+  createEnterVrButton(supported, () => {
+    enteringXr = true;
+    void session.enter().finally(() => {
+      enteringXr = false;
+      updates?.settle();
+    });
+  });
 });

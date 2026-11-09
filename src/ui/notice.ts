@@ -20,11 +20,19 @@ function container(doc: Document): HTMLElement {
   return el;
 }
 
+/** A notice's action button, before Dismiss (P7.1's Reload). */
+export interface NoticeActionButton {
+  label: string;
+  run: () => void;
+}
+
 export interface NoticeOptions {
   /** Marks the element, so `syncNotices` can find it again (`data-notice-kind`). */
   kind?: string;
   /** Called when the Dismiss button removes the notice. */
   onDismiss?: () => void;
+  /** An action button before Dismiss (`data-notice-action`). It leaves the notice up. */
+  action?: NoticeActionButton;
 }
 
 export function showNotice(
@@ -55,7 +63,17 @@ export function showNotice(
     notice.remove();
     options.onDismiss?.();
   });
-  notice.append(text, dismiss);
+  if (options.action) {
+    const { label, run } = options.action;
+    const act = doc.createElement('button');
+    act.type = 'button';
+    act.textContent = label;
+    act.dataset.noticeAction = label.toLowerCase();
+    act.addEventListener('click', () => run());
+    notice.append(text, act, dismiss);
+  } else {
+    notice.append(text, dismiss);
+  }
   container(doc).appendChild(notice);
   return notice;
 }
@@ -67,10 +85,10 @@ export function clearNotices(doc: Document = document): void {
 /**
  * Makes the page's notices match `notices` (newest first, the queue's `shown`): one element per
  * kind, in that order, with its current text. Each Dismiss button calls `onDismiss` with its kind.
- * Notices shown without a kind are left alone.
+ * A notice's `action` is built with its element. Notices shown without a kind are left alone.
  */
 export function syncNotices(
-  notices: readonly { kind: string; text: string }[],
+  notices: readonly { kind: string; text: string; action?: NoticeActionButton }[],
   onDismiss: (kind: string) => void,
   doc: Document = document,
 ): void {
@@ -85,13 +103,13 @@ export function syncNotices(
     if (notices.some((n) => n.kind === kind)) existing.set(kind, el);
     else el.remove();
   }
-  notices.forEach(({ kind, text }, index) => {
+  notices.forEach(({ kind, text, action }, index) => {
     let el = existing.get(kind);
     if (el) {
       const span = el.firstElementChild;
       if (span && span.textContent !== text) span.textContent = text;
     } else {
-      el = showNotice(text, doc, { kind, onDismiss: () => onDismiss(kind) });
+      el = showNotice(text, doc, { kind, onDismiss: () => onDismiss(kind), action });
     }
     const at = box.children[index] ?? null;
     if (at !== el) box.insertBefore(el, at);

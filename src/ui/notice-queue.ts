@@ -25,8 +25,20 @@ export function isNoticeKind(value: unknown): value is NoticeKind {
 /** At most this many notices show at once, newest first. */
 export const MAX_SHOWN = 2;
 
-/** The pending update reload's text (P7.1 raises it once its poller sees a new build). */
-export const UPDATE_NOTICE = 'A new version is ready. Reload the page to update.';
+/** The update notice's text (P7.1 raises it once its poller sees a new build). */
+export const UPDATE_NOTICE = 'Update: a new version is ready.';
+
+/** The label of the update notice's action button, which reloads (P7.1). */
+export const RELOAD_LABEL = 'Reload';
+
+/** A notice's buttons: every notice has Dismiss, and a kind with an action also has its action. */
+export type NoticeButton = 'dismiss' | 'action';
+
+/** The button a ray meets: which notice, and which of its buttons. */
+export interface NoticeHit {
+  readonly kind: NoticeKind;
+  readonly button: NoticeButton;
+}
 
 /** The settings-recovered notice's text for each reason `loadSettings` falls back with. */
 export function settingsRecoveredText(reason: RecoveredReason): string {
@@ -109,8 +121,8 @@ export interface NoticeHandFrame {
   readonly panelHit: boolean;
   /** The panel holds this hand: a grab or a press that started on it. */
   readonly panelClaimed: boolean;
-  /** The notice whose dismiss button this hand's ray meets, or null. */
-  readonly target: NoticeKind | null;
+  /** The notice button this hand's ray meets, or null. */
+  readonly target: NoticeHit | null;
 }
 
 export interface NoticeTriggerState {
@@ -125,10 +137,12 @@ export function createNoticeTriggerState(): NoticeTriggerState {
 export interface NoticeTriggerResult {
   /** Notices dismissed this frame, at most one per hand. */
   readonly dismiss: NoticeKind[];
+  /** Notices whose action button was pressed this frame, at most one per hand. */
+  readonly act: NoticeKind[];
   /** Hands whose trigger the notices hold this frame, for `Input.claim`. */
   readonly claimed: Record<Hand, boolean>;
-  /** The dismiss button each hand may press: its target, unless the panel owns that hand. */
-  readonly hover: Record<Hand, NoticeKind | null>;
+  /** The button each hand may press: its target, unless the panel owns that hand. */
+  readonly hover: Record<Hand, NoticeHit | null>;
 }
 
 const HANDS: readonly Hand[] = ['left', 'right'];
@@ -136,18 +150,20 @@ const HANDS: readonly Hand[] = ['left', 'right'];
 /**
  * The trigger rule (P5.6). The settings panel owns a hand's trigger whenever that hand's ray meets
  * the panel or the panel holds the hand, whatever notice lies on the same ray. A notice takes the
- * trigger only on the press itself (`fired`), only when that ray meets its own dismiss button, and
- * only when the panel neither meets that ray nor holds that hand. A press it takes stays the
- * notice's until the trigger is released, so the hold never reaches `select`. A trigger already
- * held when the ray moves onto a button dismisses nothing. Each hand is judged on its own.
+ * trigger only on the press itself (`fired`), only when that ray meets one of its buttons, and
+ * only when the panel neither meets that ray nor holds that hand. Dismiss dismisses the notice,
+ * and its action button (P7.1's Reload) acts. A press it takes stays the notice's until the
+ * trigger is released, so the hold never reaches `select`. A trigger already held when the ray
+ * moves onto a button presses nothing. Each hand is judged on its own.
  */
 export function arbitrateNoticeTrigger(
   hands: Partial<Record<Hand, NoticeHandFrame>>,
   state: NoticeTriggerState,
 ): NoticeTriggerResult {
   const dismiss: NoticeKind[] = [];
+  const act: NoticeKind[] = [];
   const claimed: Record<Hand, boolean> = { left: false, right: false };
-  const hover: Record<Hand, NoticeKind | null> = { left: null, right: null };
+  const hover: Record<Hand, NoticeHit | null> = { left: null, right: null };
   for (const name of HANDS) {
     const hand = hands[name];
     if (!hand) {
@@ -159,11 +175,12 @@ export function arbitrateNoticeTrigger(
     hover[name] = panelOwns ? null : hand.target;
     if (hand.trigger.fired && !panelOwns && hand.target !== null) {
       state.pressing[name] = true;
-      if (!dismiss.includes(hand.target)) dismiss.push(hand.target);
+      const list = hand.target.button === 'action' ? act : dismiss;
+      if (!list.includes(hand.target.kind)) list.push(hand.target.kind);
     }
     // The panel may claim a hand mid-hold (a grip on it); the panel then has the trigger.
     if (hand.panelClaimed) state.pressing[name] = false;
     claimed[name] = state.pressing[name];
   }
-  return { dismiss, claimed, hover };
+  return { dismiss, act, claimed, hover };
 }
