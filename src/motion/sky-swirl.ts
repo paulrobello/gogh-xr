@@ -18,8 +18,9 @@
  * own normal by `τ (omega · n)`, so its orientation follows the flow. Near the wrap the stroke
  * shrinks to nothing and grows back (`gain`), so the jump back is never a pop. That is the `base`
  * wrap. The app ships `wave` as the default (src/motion/variants.ts, Paul's 2026-11-08 choice), which
- * replaces the shrink with a travel ahead and back in bands. `base` and `pingpong` stay as the A/B
- * alternatives (`?wrap`, `?ab=wrap`).
+ * replaces the shrink with a travel ahead and back in bands. `lift`, `base` and `pingpong` stay as
+ * the A/B alternatives (`?wrap`, `?ab=wrap`): lift keeps base's forward-only arc on a loop of its
+ * own (SKY_LIFT_PERIOD) and replaces its shrink with a cut along the stroke's length (skyLiftLoop).
  *
  * motion.glsl's `skyMotion` is the GLSL; `skySwirlGlslDefines` hands it these tables as defines, so
  * the two read one source. Change them together.
@@ -588,29 +589,84 @@ export interface SkyWrapLoop {
   readonly gain: number;
   /** Whether tau is falling: the way back along the arc under `pingpong` and `wave`. */
   readonly returning: boolean;
+  /**
+   * Lift's along-length cut, in [-1, 1], 0 at full length: the share of the stroke's length
+   * removed, positive keeping the end that faces its travel (its head, on the way out) and negative
+   * the end it comes from (its tail, on the way in). `skyLiftCorner` turns it into the corner remap.
+   */
+  readonly clip: number;
+}
+
+/**
+ * Lift's window: the share of the loop, at either end, over which the stroke shortens to
+ * nothing or grows back along its length. With every stroke's loop staggered by its phase byte,
+ * 2 × SKY_LIFT_WINDOW of the sky strokes are in a window at any moment, and the cut, a smoothstep,
+ * removes half of a window's length on average, so the sky loses SKY_LIFT_WINDOW of its stroke
+ * area, against base's 7.5% (SKY_SWIRL_FADE). Each window lasts SKY_LIFT_WINDOW × SKY_LIFT_PERIOD,
+ * 0.4 s.
+ */
+export const SKY_LIFT_WINDOW: number = 0.1;
+/**
+ * Lift's own loop, seconds: half SKY_SWIRL_PERIOD, so its stroke covers base's arc (tau still spans
+ * ±SKY_SWIRL_PERIOD / 2, so every reach bound holds) at twice base's rate. That is the wave's mean
+ * rate, 2, with a constant peak of 2 under the wave's 3, so the headset A/B compares a flow with a
+ * pulse at one speed. The window stays SKY_LIFT_WINDOW of the loop, 0.4 s, and 2 × SKY_LIFT_WINDOW
+ * of the strokes are in transition.
+ */
+export const SKY_LIFT_PERIOD: number = SKY_SWIRL_PERIOD / 2;
+
+/**
+ * Lift's envelope at loop fraction `f` (skyLift in motion.glsl): the cut is
+ * 1 − smoothstep(0, 1, e), e = min(f, 1 − f) / SKY_LIFT_WINDOW, positive past mid-loop, where the
+ * stroke shortens toward its head, and negative before it, where it grows from its tail.
+ */
+export function skyLiftLoop(f: number): { clip: number } {
+  const cut = 1 - smoothstep(0, 1, Math.min(f, 1 - f) / SKY_LIFT_WINDOW);
+  return { clip: f < 0.5 ? -cut : cut };
+}
+
+/**
+ * The quad corner's along-length coordinate under a cut (stroke.vert.glsl): `x` the rest corner in
+ * [−½, ½], `clip` skyWrapLoop's cut and `head` the stroke's long axis at rest dotted with its
+ * travel, omega × d (the offset tau (omega × d) only moves forward), whose sign says which end
+ * faces the travel (0 counts as +x). The kept end stays where it is and the other moves toward it;
+ * the uv keeps the rest corner, so the brush scales.
+ */
+export function skyLiftCorner(x: number, clip: number, head: number): number {
+  const c = head < 0 ? -clip : clip;
+  return x * (1 - Math.abs(c)) + 0.5 * c;
 }
 
 /**
  * The loop of a stroke with loop phase `phase` (skyWrapPhase) at motion time `time` under wrap
- * variant `wrap` (src/motion/variants.ts). Matches skyMotion and skyWrapMotion in motion.glsl:
+ * variant `wrap` (src/motion/variants.ts). Matches skyMotion, skyWrapMotion and skyLift in
+ * motion.glsl:
  * - `base` sweeps forward and shrinks to nothing over the wrap window.
+ * - `lift` sweeps base's arc forward at full width over its own SKY_LIFT_PERIOD loop, and shortens
+ *   along its length to nothing over the wrap window instead (skyLiftLoop).
  * - `pingpong` and `wave` sweep forward over the first half of the loop and ease back over the
  *   second, at full size, with no jump.
  */
 export function skyWrapLoop(wrap: SkyWrap, phase: number, time: number): SkyWrapLoop {
-  const f = fract(time / SKY_SWIRL_PERIOD + phase);
-  if (wrap !== 'base') {
+  const f = fract(time / (wrap === 'lift' ? SKY_LIFT_PERIOD : SKY_SWIRL_PERIOD) + phase);
+  if (wrap === 'wave' || wrap === 'pingpong') {
     return {
       tau: (smoothstep(0, 1, 1 - Math.abs(2 * f - 1)) - 0.5) * SKY_SWIRL_PERIOD,
       gain: 0,
       returning: f > 0.5,
+      clip: 0,
     };
   }
-  return {
-    tau: (f - 0.5) * SKY_SWIRL_PERIOD,
-    gain: smoothstep(0, SKY_SWIRL_FADE, Math.min(f, 1 - f)) - 1,
-    returning: false,
-  };
+  const tau = (f - 0.5) * SKY_SWIRL_PERIOD;
+  if (wrap === 'base') {
+    return {
+      tau,
+      gain: smoothstep(0, SKY_SWIRL_FADE, Math.min(f, 1 - f)) - 1,
+      returning: false,
+      clip: 0,
+    };
+  }
+  return { tau, gain: 0, returning: false, ...skyLiftLoop(f) };
 }
 
 /**
@@ -683,6 +739,8 @@ export function skySwirlGlslDefines(
     SKY_SWIRL_PERIOD: glslFloat(SKY_SWIRL_PERIOD),
     SKY_SWIRL_INV_PERIOD: glslFloat(1 / SKY_SWIRL_PERIOD),
     SKY_SWIRL_FADE: glslFloat(SKY_SWIRL_FADE),
+    SKY_LIFT_INV_WINDOW: glslFloat(1 / SKY_LIFT_WINDOW),
+    SKY_LIFT_INV_PERIOD: glslFloat(1 / SKY_LIFT_PERIOD),
     SKY_SWIRL_MAX_ANGLE: glslFloat(SKY_SWIRL_MAX_ANGLE),
   };
 }

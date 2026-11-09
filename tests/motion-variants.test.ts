@@ -7,6 +7,8 @@ import {
   skyCounterFlow,
 } from '../src/motion/sky-counter-flow.ts';
 import {
+  SKY_LIFT_PERIOD,
+  SKY_LIFT_WINDOW,
   SKY_SWIRL_FADE,
   SKY_SWIRL_PERIOD,
   SKY_VORTICES,
@@ -15,6 +17,8 @@ import {
   SKY_WAVE_PER_TURN,
   SKY_WAVE_POLES,
   SKY_WAVE_TURNS,
+  skyLiftCorner,
+  skyLiftLoop,
   skyStagnation,
   skySwirl,
   skySwirlGlslDefines,
@@ -116,8 +120,8 @@ function domeCounterFlow(
 }
 
 describe('sky wrap variants', () => {
-  test('the variants are wave, base and pingpong, the default wave first: opacity is retired and flow not built', () => {
-    expect(SKY_WRAPS).toEqual(['wave', 'base', 'pingpong']);
+  test('the variants are wave, lift, base and pingpong, the default wave first: opacity is retired, dive dropped and flow not built', () => {
+    expect(SKY_WRAPS).toEqual(['wave', 'lift', 'base', 'pingpong']);
     expect(DEFAULT_SKY_WRAP).toBe('wave');
   });
 
@@ -194,11 +198,14 @@ describe('sky wrap variants', () => {
     // The default is wave, code 0, the cheap branch in motion.glsl.
     expect(variants.diag()).toEqual({ wrap: 'wave' });
     expect(variants.uniforms.uSkyWrap.value).toBe(0);
-    variants.setWrap('base');
+    variants.setWrap('lift');
     expect(variants.uniforms.uSkyWrap.value).toBe(1);
+    expect(variants.diag()).toEqual({ wrap: 'lift' });
+    variants.setWrap('base');
+    expect(variants.uniforms.uSkyWrap.value).toBe(2);
     expect(variants.diag()).toEqual({ wrap: 'base' });
     variants.setWrap('pingpong');
-    expect(variants.uniforms.uSkyWrap.value).toBe(2);
+    expect(variants.uniforms.uSkyWrap.value).toBe(3);
     variants.setWrap('wave');
     expect(variants.uniforms.uSkyWrap.value).toBe(0);
     variants.setWrap('base');
@@ -493,39 +500,289 @@ describe('wave', () => {
   });
 });
 
+describe('lift', () => {
+  const LIFTS = ['lift'] as const;
+  /** The GLSL's corner, written as motion.glsl skyLift and stroke.vert.glsl compute it. */
+  const glslCorner = (x: number, f: number, head: number): number => {
+    const e = Math.min(f, 1 - f) / SKY_LIFT_WINDOW;
+    const t = Math.min(1, Math.max(0, e));
+    const cut = 1 - t * t * (3 - 2 * t);
+    const clip = f < 0.5 === head < 0 ? cut : -cut;
+    return x * (1 - cut) + 0.5 * clip;
+  };
+
+  test("forward only: base's tau at full width, a jump only at the wrap, where the stroke has no length", () => {
+    const n = 8000;
+    for (const wrap of LIFTS) {
+      let previous = skyWrapLoop(wrap, 0, 0).tau;
+      for (let i = 1; i < n; i++) {
+        const f = i / n;
+        const loop = skyWrapLoop(wrap, f, 0);
+        expect(loop.tau).toBeCloseTo((f - 0.5) * SKY_SWIRL_PERIOD, 12);
+        expect(loop.tau).toBeGreaterThan(previous);
+        expect(loop.gain).toBe(0);
+        expect(loop.returning).toBe(false);
+        expect(Math.abs(loop.tau)).toBeLessThanOrEqual(0.5 * SKY_SWIRL_PERIOD);
+        previous = loop.tau;
+      }
+      // Both sides of the wrap are at zero length: out keeps the head, in starts from the tail.
+      expect(skyWrapLoop(wrap, 1 - 1e-12, 0).clip).toBeCloseTo(1, 9);
+      expect(skyWrapLoop(wrap, 0, 0).clip).toBe(-1);
+      // The swirl moves the centre along base's arc, on a loop half as long: lift at t is base at
+      // 2t.
+      expect(SKY_LIFT_PERIOD).toBe(SKY_SWIRL_PERIOD / 2);
+      for (const phase of [0.03, 0.5, 0.95]) {
+        const a = skySwirl(DOME, [0, -1, 0], phase, 1.85, undefined, wrap);
+        const b = skySwirl(DOME, [0, -1, 0], phase, 3.7, undefined, 'base');
+        expect(a.offset).toEqual(b.offset);
+        expect(a.turn).toBe(b.turn);
+        expect(a.gain).toBe(0);
+      }
+    }
+  });
+
+  test('the cut: full length outside the windows, shortening toward the head on the way out and growing from the tail on the way in', () => {
+    for (const wrap of LIFTS) {
+      for (let i = 0; i <= 1000; i++) {
+        const f = Math.min(i / 1000, 1 - 1e-12);
+        const { clip } = skyWrapLoop(wrap, f, 0);
+        const inside = Math.min(f, 1 - f) / SKY_LIFT_WINDOW < 1 - 1e-9;
+        if (!inside) expect(Math.abs(clip)).toBe(0);
+        expect(Math.abs(clip)).toBeLessThanOrEqual(1);
+        if (inside && f > 0.5) expect(clip).toBeGreaterThan(0);
+        if (inside && f < 0.5) expect(clip).toBeLessThan(0);
+      }
+    }
+    // A stroke whose long axis runs with the flow (head > 0) or against it (head < 0), at length
+    // 1, moving at unit speed: every point of it moves forward along the flow over the whole loop
+    // but the wrap, and the end the cut keeps stays put on the stroke.
+    for (const head of [1, -1]) {
+      const end = 0.5 * Math.sign(head);
+      expect(skyLiftCorner(end, 0.6, head)).toBeCloseTo(end, 12);
+      expect(skyLiftCorner(-end, -0.6, head)).toBeCloseTo(-end, 12);
+      expect(skyLiftCorner(-end, 1, head)).toBeCloseTo(end, 12);
+      expect(skyLiftCorner(end, -1, head)).toBeCloseTo(-end, 12);
+      const n = 4000;
+      for (const x of [-0.5, -0.2, 0.3, 0.5]) {
+        const along = (f: number): number =>
+          (f - 0.5) * SKY_SWIRL_PERIOD +
+          Math.sign(head) * skyLiftCorner(x, skyLiftLoop(f).clip, head);
+        for (let i = 1; i < n; i++) {
+          const step = along(i / n) - along((i - 1) / n);
+          expect(step, `x ${x} head ${head} f ${i / n}`).toBeGreaterThan(-1e-12);
+        }
+      }
+    }
+  });
+
+  test('the head faces the travel: a stroke shortens toward where it is going and grows from where it came from, at any angle to the flow', () => {
+    const eye = PAINTER_EYE;
+    const P = SKY_LIFT_PERIOD;
+    const unit = (v: readonly number[]): [number, number, number] => {
+      const k = 1 / Math.hypot(v[0], v[1], v[2]);
+      return [v[0] * k, v[1] * k, v[2] * k];
+    };
+    const cross3 = (a: readonly number[], b: readonly number[]): [number, number, number] => [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0],
+    ];
+    const dot3 = (a: readonly number[], b: readonly number[]): number =>
+      a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let checked = 0;
+    for (const p of [DOME, [40, 35, -55], [-60, 30, -20], [5, 70, -30]] as const) {
+      const dir = unit([p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]]);
+      const flow = unit(skyVelocity(dir));
+      const side = unit(cross3(dir, flow));
+      const normal: [number, number, number] = [-dir[0], -dir[1], -dir[2]];
+      // The travel as the offset itself moves, between two times inside each window.
+      const travel = (t: number): number[] => {
+        const a = skySwirl(p, normal, 0, t, undefined, 'lift').offset;
+        const b = skySwirl(p, normal, 0, t + 1e-3, undefined, 'lift').offset;
+        return [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      };
+      for (const deg of [0, 30, 59, 61, 80, 89, 91, 100, 150, 180, 230, 300]) {
+        const a = (deg * Math.PI) / 180;
+        const l = [0, 1, 2].map((i) => Math.cos(a) * flow[i] + Math.sin(a) * side[i]);
+        // The shader's head: the rest long axis on omega × d (skyVelocity's direction).
+        const head = dot3(l, skyVelocity(dir));
+        for (const [t, out] of [
+          [0.95 * P, true],
+          [0.03 * P, false],
+        ] as const) {
+          const { clip } = skyWrapLoop('lift', 0, t);
+          expect(Math.abs(clip)).toBeGreaterThan(0);
+          // The end the cut keeps is the one whose corner does not move.
+          const kept = Math.abs(skyLiftCorner(0.5, clip, head) - 0.5) < 1e-12 ? 1 : -1;
+          expect(Math.abs(skyLiftCorner(-0.5 * kept, clip, head) + 0.5 * kept)).toBeGreaterThan(0);
+          const facing = Math.sign(dot3(l, travel(t)));
+          expect(kept, `${deg}° ${out ? 'out' : 'in'}`).toBe(out ? facing : -facing);
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBe(4 * 12 * 2);
+  });
+
+  test("the TS corner is the shader's: the sign convention and the smoothstep agree over the loop", () => {
+    for (const head of [1, -1, 0, 0.2, -0.7]) {
+      for (let i = 0; i < 400; i++) {
+        const f = i / 400;
+        for (const x of [-0.5, 0.5]) {
+          const loop = skyWrapLoop('lift', f, 0);
+          expect(skyLiftCorner(x, loop.clip, head)).toBeCloseTo(glslCorner(x, f, head), 12);
+        }
+      }
+    }
+  });
+
+  test('staggered by the phase byte: no direction bands, and a constant share in transition', () => {
+    for (const wrap of LIFTS) {
+      expect(skyWrapPhase(wrap, DOME, 0.2)).toBe(0.2);
+      for (let k = 0; k < 64; k++) {
+        const time = (k / 64) * SKY_SWIRL_PERIOD;
+        let cut = 0;
+        for (let b = 0; b < 256; b++) if (skyWrapLoop(wrap, b / 256, time).clip !== 0) cut++;
+        // 2 × SKY_LIFT_WINDOW of the 256 phase bytes, give or take the window's two open ends.
+        expect(Math.abs(cut / 256 - 2 * SKY_LIFT_WINDOW)).toBeLessThanOrEqual(2 / 256);
+      }
+    }
+    // The cut removes, on average, SKY_LIFT_WINDOW of the sky's stroke length.
+    let kept = 0;
+    const n = 100000;
+    for (let i = 0; i < n; i++) kept += 1 - Math.abs(skyWrapLoop('lift', i / n, 0).clip);
+    expect(1 - kept / n).toBeCloseTo(SKY_LIFT_WINDOW, 3);
+  });
+
+  test("lift's pace: its own 4 s loop runs base's arc at the wave's mean rate, 2, with a constant peak of 2 under the wave's 3", () => {
+    const n = 8000;
+    const rates = (wrap: SkyWrap): { mean: number; peak: number } => {
+      const dt = SKY_SWIRL_PERIOD / n;
+      let sum = 0;
+      let count = 0;
+      let peak = 0;
+      for (let i = 1; i < n; i++) {
+        const a = skyWrapLoop(wrap, 0, (i - 1) * dt).tau;
+        const b = skyWrapLoop(wrap, 0, i * dt).tau;
+        const rate = Math.abs(b - a) / dt;
+        // The wrap's own jump, which happens at zero length.
+        if (rate > 10) continue;
+        sum += rate;
+        count++;
+        peak = Math.max(peak, rate);
+      }
+      return { mean: sum / count, peak };
+    };
+    for (const wrap of LIFTS) {
+      const r = rates(wrap);
+      expect(r.mean).toBeCloseTo(2, 6);
+      expect(r.peak).toBeCloseTo(2, 6);
+    }
+    const base = rates('base');
+    expect(base.mean).toBeCloseTo(1, 6);
+    // The wave's loop at full amplitude: its fade only slows it.
+    const wave = rates('wave');
+    expect(wave.mean).toBeCloseTo(2, 2);
+    expect(wave.peak).toBeCloseTo(3, 2);
+    const pingpong = rates('pingpong');
+    expect(pingpong.mean).toBeCloseTo(2, 2);
+    expect(pingpong.peak).toBeCloseTo(3, 2);
+  });
+
+  test('the other wraps never cut', () => {
+    for (const wrap of ['wave', 'base', 'pingpong'] as const) {
+      expect(skyWrapLoop(wrap, 0, 0).clip).toBe(0);
+      expect(skyWrapLoop(wrap, 0.97, 0).clip).toBe(0);
+    }
+  });
+
+  test('GLSL: skyLift and its corner are the mirror at full depth under calm, only lift moves the corner, and the dome rank is untouched', () => {
+    const lift = motionGlsl.slice(
+      motionGlsl.indexOf('float skyLift('),
+      motionGlsl.indexOf('// Matches skySwirl in sky-swirl.ts.'),
+    );
+    expect(motionGlsl).not.toMatch(/skyClip|skySink|SKY_WRAP_DIVE|SKY_DIVE_SINK/);
+    expect(lift).toContain('float skyLift(float f, float head, float x) {');
+    expect(lift).toContain('float e = min(f, 1.0 - f) * SKY_LIFT_INV_WINDOW;');
+    expect(lift).toContain('float cut = 1.0 - smoothstep(0.0, 1.0, e);');
+    expect(lift).toContain('float clip = (f < 0.5) == (head < 0.0) ? cut : -cut;');
+    expect(lift).toContain('return x * (1.0 - cut) + 0.5 * clip;');
+    expect(lift).not.toMatch(/uSkyWrap|abs\(/);
+    // The envelope runs at full depth whenever the gate is open: calm scales only the amplitudes.
+    expect(lift).not.toMatch(/uCalm/);
+    // Only lift's branches move the corner: the definition and one call in each skyMotion, each on
+    // lift's own loop.
+    expect(motionGlsl.match(/skyLift\(/g)).toHaveLength(3);
+    expect(motionGlsl.match(/along = skyLift\(f, dot\(l, /g)).toHaveLength(2);
+    expect(motionGlsl.match(/along = /g)).toHaveLength(2);
+    expect(motionGlsl.match(/float f = fract\(t \* SKY_LIFT_INV_PERIOD \+ phase\);/g)).toHaveLength(
+      2,
+    );
+    expect(motionGlsl.match(/inout float along/g)).toHaveLength(3);
+    // The vertex shader seeds the corner at the rest corner inside the gated motion block, before
+    // the motion, and the uv keeps the rest corner, so the brush scales instead of being cut.
+    const main = strokeVert.slice(strokeVert.indexOf('void main()'));
+    const gate = main.indexOf('if ((layerMoves || reacts) && thin > 0.0) {');
+    const seed = main.indexOf('float along = position.x;');
+    expect(gate).toBeGreaterThan(0);
+    expect(seed).toBeGreaterThan(gate);
+    expect(main.indexOf('motionOffset(')).toBeGreaterThan(seed);
+    expect(main.match(/along = /g)).toHaveLength(1);
+    expect(main).toContain('longAxis * (along * size.x)');
+    expect(main).toContain('vUv = rect.xy + rect.zw * (position.xy + 0.5);');
+    // The dome rank is the pre-lift one: no wrap moves it.
+    expect(main).toContain(': float(h8 >> (BACKDROP_RANK_SHIFT - 8u));');
+    expect(strokeVert).not.toMatch(/skySink|skyClip/);
+  });
+});
+
 describe('GLSL', () => {
-  test('uSkyWrap is read only in the sky motion: one compare under the default wave, two under base and pingpong', () => {
+  test('uSkyWrap is read only in the sky motion: one compare under the default wave, two under base, three under lift and pingpong', () => {
     // The default program: the vtx hoist arm's skyMotion (VTX_HOIST) stripped.
     const hoist = /#ifdef VTX_HOIST\n([\s\S]*?)\n#else\n/.exec(motionGlsl)?.[1] ?? '';
     const base = motionGlsl.replace(/#ifdef VTX_HOIST\n[\s\S]*?\n#else\n/, '');
     const sky = base.slice(base.indexOf('Motion skyMotion('), base.indexOf('Motion ringMotion('));
-    // Wave, the default, is the first compare; base and pingpong pay the second.
+    // Wave, the default, is the first compare and base the second, as before lift; lift and
+    // pingpong pay the third.
     const wave = sky.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {');
-    const notBase = sky.indexOf(
-      'if (uSkyWrap != SKY_WRAP_BASE) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);',
+    const baseWrap = sky.indexOf('if (uSkyWrap == SKY_WRAP_BASE) {');
+    const pingpong = sky.indexOf(
+      'if (uSkyWrap != SKY_WRAP_LIFT) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);',
     );
     expect(wave).toBeGreaterThan(0);
-    expect(notBase).toBeGreaterThan(wave);
+    expect(baseWrap).toBeGreaterThan(wave);
+    expect(pingpong).toBeGreaterThan(baseWrap);
     expect(sky).toContain('float wavePhase = skyWavePhase(dir) + SKY_WAVE_JITTER * (phase - 0.5);');
     expect(sky).toContain(
       'return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir), t);',
     );
-    // The declaration and skyMotion's two compares.
-    expect(base.replace(/\/\/.*$/gm, '').match(/uSkyWrap/g)).toHaveLength(3);
+    expect(sky).toContain('float tau = (f - 0.5) * SKY_SWIRL_PERIOD;');
+    expect(sky.indexOf('along = skyLift(f, dot(l, v), along);')).toBeGreaterThan(pingpong);
+    expect(sky).toContain('return Motion(tau * v, tau * dot(omega, n), 0.0, 0.0);');
+    // The declaration and skyMotion's three compares.
+    expect(base.replace(/\/\/.*$/gm, '').match(/uSkyWrap/g)).toHaveLength(4);
     // uWaveTurns: the declaration and skyWavePhase's loop, which only the wave branch calls.
     expect(base.replace(/\/\/.*$/gm, '').match(/uWaveTurns/g)).toHaveLength(2);
-    // The hoist arm reads the rest field from its attributes: the same two compares, wave first,
-    // no field.
+    // The hoist arm reads the rest field from its attributes: the same compares, wave first, no
+    // field.
     expect(hoist).toContain('Motion skyMotion(');
-    expect(hoist.match(/uSkyWrap/g)).toHaveLength(2);
+    expect(hoist.match(/uSkyWrap/g)).toHaveLength(3);
     expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {')).toBeLessThan(
       hoist.indexOf('} else if (uSkyWrap == SKY_WRAP_BASE) {'),
     );
+    expect(hoist.indexOf('} else if (uSkyWrap == SKY_WRAP_BASE) {')).toBeLessThan(
+      hoist.indexOf('} else if (uSkyWrap == SKY_WRAP_LIFT) {'),
+    );
     expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {')).toBeGreaterThan(0);
+    expect(hoist).toContain('float tau = (f - 0.5) * SKY_SWIRL_PERIOD;');
+    expect(hoist).toContain('along = skyLift(f, dot(l, iSkyField.xyz), along);');
+    expect(hoist).toContain(
+      'return Motion(tau * iSkyField.xyz, tau * iSkyField.w, 0.0, 0.0);\n  }\n  float f',
+    );
     expect(hoist).not.toMatch(/uWaveTurns|skyWavePhase|SKY_VORTEX|inversesqrt/);
     const wrap = motionGlsl.slice(
       motionGlsl.indexOf('Motion skyWrapMotion('),
-      motionGlsl.indexOf('Motion skyMotion('),
+      motionGlsl.indexOf('float skyLift('),
     );
     // The formulas skyWrapPhase and skyWrapLoop mirror. tests/e2e/ab.spec.ts checks what the GPU
     // draws with them.
@@ -548,7 +805,7 @@ describe('GLSL', () => {
     expect(phase).toContain('return atan(q.y, q.x) * SKY_WAVE_INV_TAU;');
     // One atan for the whole phase, however many windings.
     expect(phase.match(/\batan\(/g)).toHaveLength(1);
-    expect(motionGlsl).not.toMatch(/SKY_WRAP_OPACITY|SKY_WRAP_PINGPONG|inout float alpha/);
+    expect(motionGlsl).not.toMatch(/SKY_WRAP_OPACITY|SKY_WRAP_DIVE|inout float alpha/);
   });
 
   test('the opacity weight is gone: the colour varying is the colour', () => {
@@ -566,7 +823,17 @@ describe('GLSL', () => {
     for (const [key, value] of Object.entries(motionVariantGlslDefines())) {
       expect(a.defines[key]).toBe(value);
     }
-    expect(motionVariantGlslDefines()).toEqual({ SKY_WRAP_WAVE: '0u', SKY_WRAP_BASE: '1u' });
+    expect(motionVariantGlslDefines()).toEqual({
+      SKY_WRAP_WAVE: '0u',
+      SKY_WRAP_LIFT: '1u',
+      SKY_WRAP_BASE: '2u',
+    });
+    // Pingpong is the fall-through, so no GLSL names its code.
+    expect(motionGlsl).not.toMatch(/SKY_WRAP_PINGPONG/);
+    expect(a.defines.SKY_LIFT_INV_WINDOW).toBe((1 / SKY_LIFT_WINDOW).toExponential(8));
+    expect(a.defines.SKY_LIFT_INV_PERIOD).toBe((1 / SKY_LIFT_PERIOD).toExponential(8));
+    expect(SKY_LIFT_PERIOD).toBe(4);
+    expect(a.defines).not.toHaveProperty('SKY_DIVE_SINK');
     const defines = skySwirlGlslDefines();
     // A factor per non-zero winding: the central pair and the stagnation point.
     expect(String(defines.SKY_WAVE_PRODUCT).match(/= z - vec2\(/g)).toHaveLength(3);

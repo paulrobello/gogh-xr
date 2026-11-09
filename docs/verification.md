@@ -2718,3 +2718,300 @@ New unit tests: a one-off 30 ms first reveal frame recovers to 64,000 strokes a 
 Re-measured on the production build with `tests/e2e/entry-time.ts` (load 11.00 before and 9.87 after): cold entry 4070 ms, warm entries 2846 and 2797 ms, returns 2094, 2233 and 2249 ms. Starry Night still reveals in 13 frames on the desktop, where nothing triggers the floor or the back-off. Every entry frame was at most 16.8 ms, and the longest entry work 7.5 to 8.3 ms. Return 1 again read 166.6 ms.
 
 `tests/e2e/portal.spec.ts` alone (load 9.90 before and 9.34 after) passed 3 of 3. Desktop entries took 4118 and 3933 ms and returns 2253 and 2254 ms, all at 16.8 ms longest frames. IWER entries took 4091 and 3944 ms with 20.3 and 19.1 ms, and returns 2235 and 2232 ms with 19.3 and 18.8 ms.
+
+## Sky wrap variants: dive and lift (2026-11-09)
+
+This change added two `?wrap` arms for the headset A/B, `?wrap=dive` and `?wrap=lift`. Paul dropped `dive` the same day (fix round 1 below), so `SKY_WRAPS` is now wave, lift, base, pingpong, and `?ab=wrap` reaches lift with one press from wave. The measurements before fix round 1 were taken with dive present. Removing it changes no lift pixel. Fix round 2 moved lift's corner remap into its own branch and gave lift its own 4 s loop, so the first build's lift pace, cost and coverage figures below are superseded where fix round 2 says so. `wave` stays the default on every boot. Both arms move only the main sky layer. Stars, moon, sky-rings, the halo and the sky lights keep their own motion.
+
+### What they draw
+
+- **Loop.** It is base's arc, forward only: `tau = (f − 0.5) × SKY_SWIRL_PERIOD`, where `f = fract(t / period + phase)` and `phase` is the stroke's own phase byte. The period was base's 8 s in the first build and is lift's own `SKY_LIFT_PERIOD`, 4 s, since fix round 2. There are no direction bands, so the strokes in transition are spread over the whole sky at any moment.
+- **Length.** There is no size gain.
+  - Over the last `SKY_LIFT_WINDOW` of the loop (0.1 of the loop: 0.8 s on the first build's 8 s loop, 0.4 s on the 4 s loop since fix round 2), a stroke shortens along its length toward its head. The head is the end the flow carries it towards, `sign(longAxis · (omega × d))` at rest.
+  - The stroke jumps back along its arc while it has zero length. Over the first 0.1 of the loop it grows again from its tail.
+  - The cut is `1 − smoothstep(0, 1, min(f, 1 − f) / 0.1)`.
+- **Width.** The width never changes. The quad corner along the stroke becomes `x (1 − cut) + clip / 2`, where |clip| is the cut and its sign picks the kept end. In the first build and fix round 1 the vertex shader applied it from a global, `skyClip`, for every moving vertex. Since fix round 2 `skyLift` returns it into an `inout float along` that the vertex shader seeds with `position.x`, so only lift's branch moves the corner. The uv keeps the rest corner, so the whole brush scales into the shorter quad and is not cropped. No attribute was added: the head comes from the rest long axis that the vertex shader already decodes, which `motionOffset` now takes as `l`.
+- **Share in transition.** 2 × 0.1 of the sky strokes are in a window at any time, give or take the windows' open ends. A unit test checks this over 64 times and 256 phase bytes, to within 2/256. At the painter view on seed 1, `cutShare` measured 0.1973 in the first build: 8961 of 45,423 drawn sky strokes. On average the sky loses 0.1 of its stroke length.
+- **Speed and arc.** The arc is the same length as base's, so `SKY_SWIRL_MAX_ANGLE` and the reach bounds hold unchanged. In the first build the speed was base's too: a rate of 1, in units of the stroke's sweep per second, against the wave's mean of 2 and peak of 3, so the sky moved at half the wave's mean speed. A forward-only loop over the same arc and 8 s period cannot match the wave's mean, because the wave sweeps the arc twice per loop. Fix round 2 gave lift its own 4 s loop on Paul's controller ruling, so it now runs at the wave's mean, 2, with a constant peak of 2, still under the wave's 3.
+- **Calm and rest.** Calm scales the offset and the turn, as before. The envelope has no `uCalm` term, so the cut keeps its full depth at any calm above 0. Calm 0 and `?noanim` close the sky gate, so `skyMotion` never runs and the corner stays `position.x`. The dome rank is the pre-lane line under every wrap, since fix round 1.
+
+### Dive layering: draw order decides
+
+Draw order, not the backdrop rank, decides which of two dome strokes is drawn on top.
+
+- The stroke batch writes no depth (`BATCH_DEPTH_WRITE = false` in `batch.ts`, the nowrite default Paul chose for the shimmer). Only the lights and the cypress take `writeDepthWhileDrawn`, and the dome strokes draw before them. With `depthFunc` LessEqual and no depth written, a later dome stroke always draws over an earlier one, whatever its clip z.
+- Measured under the default, `?wrap=dive` and `?wrap=lift` at motiont 3.7 are byte-identical at 1280 × 1028. The coverage sweep below also reads the same for both at all 24 views.
+- Under `&zdiag=write`, which turns depth writes on, the two arms differ at 41,280 of 1,315,840 pixels. The rank is in the clip z, but it decides only when depth is written.
+
+The options for making a stroke dive behind its neighbours:
+
+| Option | Cost | Verdict |
+| --- | --- | --- |
+| O1: depth writes on for the dome under dive | No draw call or program. It reverses the nowrite verdict and brings back same-rank tie flicker in the dome. It also changes the rest layering of every dome stroke, so the A/B would compare two layerings, not two wraps. It touches batch.ts and the shimmer group. | Not built |
+| O2: draw the transitioning strokes first, in an extra pass | One more draw call per chunk and view, plus a per-frame split of the instances | Rejected by the brief |
+| O3: sort the dome strokes by their sink every frame | A per-frame CPU sort and upload of the sky instances | Rejected by the brief |
+| O4 (built): sink the rank in the shader | A multiply and a floor per dome vertex | Takes effect only when depth writes are on |
+
+So `dive` was `lift` plus a rank sink. While a dome stroke was in its window, its backdrop rank became `floor(rank × skySink)`. `skySink` was `SKY_DIVE_SINK` (1/16) over the outer half of the window and eased back to 1 over the inner half. The floor kept the rank on the rank grid and inside the dome tier. Under the shipped nowrite default, dive drew byte for byte like lift, which is why fix round 1 dropped it. The sink showed only with `&zdiag=write` (the dive-write strip, removed with dive in fix round 1).
+
+### Cost per sky vertex
+
+Superseded. This is the first build's record, with dive. Fix round 1 removed dive and its rank sink, and fix round 2 took the corner remap off every path but lift's. Their tables below are current.
+
+The arms add no draw call and no program. They are codes of the existing `uSkyWrap` uniform, so `?ab=wrap` still has nothing to precompile.
+
+The `skyMotion` ops on each path were counted the way the wave card counted them:
+
+- A wrapper shader calls `skyMotion`, with `uSkyWrap` specialised to each code and `uWaveTurns` to 2.
+- It is compiled with glslangValidator `-G` and run through spirv-opt (merge-return, exhaustive inlining, loop unroll, `-O`).
+- Loads, stores, access chains, composites, phis and control flow are not counted.
+
+The vortex loop stays rolled in both builds. These are static counts, so the totals are smaller than the wave card's executed counts. Only the differences are meaningful.
+
+| Path | Before (0a9aaaf) | After |
+| --- | --- | --- |
+| default wave | 78 | 78 |
+| default base | 25 | 25 |
+| default pingpong | 26 | 26 |
+| default lift | none | 31 (base + 6) |
+| default dive | none | 33 (base + 8) |
+| `hoist` wave | 16 | 16 |
+| `hoist` base | 11 | 11 |
+| `hoist` pingpong | 12 | 12 |
+| `hoist` lift | none | 17 (base + 6) |
+| `hoist` dive | none | 19 (base + 8) |
+
+- Lift drops base's fade and adds these to base's path: a dot (`l · v`), a multiply, a smoothstep, two compares, their equality and a select. Dive adds a second smoothstep and a mix.
+- Each moving sky vertex pays these `uSkyWrap` compares in the unspecialised program:
+  - wave: 1, unchanged.
+  - pingpong: 2, unchanged.
+  - base: 3, up from 2.
+  - dive and lift: 4, three in `skyMotion` and one in `skyLift`.
+- `stroke.vert.glsl` adds work under every wrap, the default included:
+  - About 4 ops on the corner (an abs, a subtract and two multiply-adds) for every moving vertex.
+  - A multiply and a floor on the rank of every dome vertex, moving or not.
+
+### Default and rest unchanged
+
+Seven captures were taken from e2e builds of 0a9aaaf (an export of the commit) and of this change, at `?painting=starry-night&seed=1&shot&painter&nogov` and 1280 × 1014, then compared with `cmp`. All 7 are byte-identical:
+
+- no flag, at motiont 3.7 and at 6.1
+- `?noanim`
+- `&wrap=base` at 5.2
+- `&wrap=pingpong` at 2.3
+- `&motionlayers=star,moon` at 3.7 (stars and moon alone, with the sky still)
+- the straight-up pose at 3.7
+
+So the default wave, base, pingpong, stars, moon and halo draw exactly as before.
+
+- No pinned stroke hash moved (lights, assembled, batch, slicer identity). The change is in the shaders only, and no stroke data changed.
+- In the first build, `tests/e2e/sky-lift.spec.ts` checked that dive and lift at `&noanim`, and dive at `&calm=0&motiont=3.7`, each drew the no-flag `&noanim` rest sky byte for byte. Since fix round 1 it checks lift alone, at `&noanim` and at `&calm=0&motiont=3.7`.
+- `tests/e2e/vtx.spec.ts` checks that the `hoist` arm draws within tolerance of the default arm under each wrap. In the first build, hoist differed from it by 0.0112% (max 44) under base, 0.0119% (max 69) under dive and lift, and 0.0115% (max 43) under wave.
+
+### Coverage
+
+Measured in the first build, with dive present and lift on the 8 s loop (fix round 2 has the current sampling). This is the bare share with `?coverage` at 8 motion times, from 0.5 s to 7.5 s, 1 s apart. It was measured at the painter view and at two sky-heavy world-coverage poses, `spot straight up` and `spot left, raised`.
+
+The first table is the share of the whole frame. Its painter view includes static non-sky bare, which is the same under every wrap. Its straight-up view is almost all sky. The second table is the painter view's share of the sky alone. Each cell is the mean, then the worst, of the 8 times, in %.
+
+| Wrap | Painter | Straight up | Left, raised |
+| --- | --- | --- | --- |
+| wave (default) | 0.294 / 0.310 | 0.064 / 0.066 | 0.004 / 0.004 |
+| base | 0.320 / 0.366 | 0.107 / 0.134 | 0.011 / 0.016 |
+| dive | 0.345 / 0.381 | 0.143 / 0.168 | 0.015 / 0.020 |
+| lift | 0.345 / 0.381 | 0.143 / 0.168 | 0.015 / 0.020 |
+
+For the share of the sky alone at the painter view, the denominator is the sky, stars and moon of `regions.png` (ids 0 to 2), resized to the 1280 × 1028 frame, which is canvas uv [0, 1]². That mask covers 59.1% of the frame. The world's sky dome follows the painting's sky closely but not exactly, so pixels along the hills' edge can be counted on the wrong side. This was measured in a second run of the coverage test. Its whole-frame rows matched the first run exactly. Load was 81.8 before and 53.6 after.
+
+| Wrap | Painter, of the sky |
+| --- | --- |
+| wave (default) | 0.120 / 0.150 |
+| base | 0.162 / 0.238 |
+| dive | 0.203 / 0.263 |
+| lift | 0.203 / 0.263 |
+
+Per time, of the sky, dive and lift: 0.244 0.195 0.199 0.183 0.179 0.176 0.186 0.263.
+
+At the painter view, dive and lift leave about 0.025 points more of the frame bare than base, and 0.041 points more of the sky. Straight up, they leave 0.036 points more. They stay under the 0.5% limit everywhere, and the spec holds them to it. Dive equals lift in every cell, because draw order decides.
+
+The per-time values for dive and lift are the same:
+
+- Painter: 0.367 0.346 0.335 0.333 0.333 0.330 0.334 0.381.
+- Straight up: 0.153 0.160 0.147 0.157 0.141 0.085 0.134 0.168.
+
+### Flow alignment
+
+The head is taken from the stroke's rest long axis, which follows the painted flow, not the swirl's motion field. At the painter view on seed 1, measured as `__goghDiag().wrap.alignment`:
+
+- 30.6% of the drawn sky strokes lie within 30° of `omega × d`.
+- 35.8% lie more than 60° off it.
+- The median |cos| is 0.68.
+
+When a stroke lies crossways to its motion, the cut still runs along the stroke. It shortens sideways to its travel, toward whichever end leans downstream. This comes from the field, not from the arm, and the headset A/B will show it.
+
+### Strips
+
+The strips show six frames 0.5 s apart (motiont 3.7 to 6.2) of the big central swirl, in a 480 × 400 crop around canvas uv (0.518, 0.335) at the painter view. The sky-lift spec writes them when `SWIRL_STRIPS=1` is set, as JPEG at quality 85, about 0.26 MB each. Fix round 1 converted the PNG captures to JPEG with the same settings, and dropped the dive and dive-write strips.
+
+- `docs/shots/swirl-wave-strip.jpg`
+- `docs/shots/swirl-lift-strip.jpg`
+
+### Gates
+
+- Unit, in the first build: 1691 of 1691 passed.
+  - In `tests/motion-variants.test.ts`, the `dive and lift` tests covered:
+    - the forward-only tau
+    - the cut and the forward motion of every point of the stroke
+    - TS against GLSL corner parity
+    - the constant transition share and the mean length loss
+    - that neither arm is faster
+    - the dive rank grid, removed with dive in fix round 1
+    - the GLSL text and the rest no-ops
+  - `tests/ab.test.ts` and `tests/flags.test.ts` cover the order and the parsing.
+- `make checkall` exit 0 at load 36 to 45, then `make checkall-ci` exit 0 with the docs and specs in: vitest 1691 tests in 123 files, gitleaks, `bun audit`, asset-check. Load was 38.3 before and 39.4 after.
+- Every e2e run used one worker, on port 4281 (4282 for the identity captures), on macdaddy at load 35 to 94. These are pixel and count measures at pinned times, so load slows them without changing them.
+  - The sky-lift selection test passed. Load was 53.1 at the start and 43.7 at the end.
+  - The sky-lift coverage test passed. Load before and after each wrap:
+
+    | Wrap | Before | After |
+    | --- | --- | --- |
+    | wave | 43.3 | 42.2 |
+    | base | 42.2 | 51.5 |
+    | dive | 51.5 | 81.2 |
+    | lift | 81.2 | 93.7 |
+
+  - The coverage test's second run, which added the sky-only share, passed alone at load 81.8 before and 53.6 after.
+  - The ab.spec wrap tests (the cycle and the fixed phase) passed, 2 of 2. Load was 61.3 before and 57.1 after.
+  - The vtx.spec hoist-under-motion test passed. Load was 59.9 before and 42.4 after.
+  - The sky-lift strips test passed. Load was 42.0 before and 37.9 after.
+- The first six of these Playwright runs broke the lane's load rule.
+  - They were started without `--project=e2e --no-deps`, so the config's `timing` teardown project (`tests/e2e/portal.spec.ts`, 5 tests) ran after each one.
+  - 29 of the 30 portal runs passed. The one that failed was "a round trip returns the GPU geometry and texture counts to the baseline (IWER)". Its longest frame was 42 ms against the 27.8 ms bar, at load 44.6 to 47.4. That is a timing bar under load, and nothing in this change touches the portal or its frames.
+  - Every later run used `--project=e2e --no-deps`.
+- The full `make e2e` was not run here.
+
+### Not verified
+
+- Lift has not been seen in the headset. It is for Paul's A/B against wave.
+- The dive sink had no effect under the shipped nowrite default, by construction. Dive was dropped in fix round 1.
+
+### Fix round 1: dive dropped, the head follows the travel (2026-11-09)
+
+Paul's ruling: compare lift only against wave, and drop dive.
+
+- **Dive is removed.** That covers the `SKY_WRAPS` entry, `SKY_WRAP_DIVE`, `skySink`, `SKY_DIVE_SINK` and `skyDiveRank`. The dome rank in `stroke.vert.glsl` is again `float(h8 >> (BACKDROP_RANK_SHIFT - 8u))`, byte for byte the pre-lane line. The diag's `sunk` count, dive's tests and the dive strips are gone.
+- **Order.** `SKY_WRAPS` is wave, lift, base, pingpong, so the codes are wave 0, lift 1, base 2, pingpong 3. `?ab=wrap` reaches lift with one press from wave, then base, then pingpong, as before.
+- **Branches.** Both `skyMotion` bodies test wave first and base second, as before the lane. Lift and pingpong share the third test. `skyLift` no longer reads `uSkyWrap`.
+
+Ops per sky vertex in `skyMotion`, counted as above with `uSkyWrap` specialised:
+
+| Path | Pre-lane (0a9aaaf) | Now |
+| --- | --- | --- |
+| default wave | 78 | 78 |
+| default base | 25 | 25 |
+| default pingpong | 26 | 26 |
+| default lift | none | 31 (base + 6) |
+| `hoist` wave | 16 | 16 |
+| `hoist` base | 11 | 11 |
+| `hoist` pingpong | 12 | 12 |
+| `hoist` lift | none | 17 (base + 6) |
+
+- `uSkyWrap` compares per moving sky vertex, in the unspecialised program:
+
+  | Wrap | Pre-lane | Now |
+  | --- | --- | --- |
+  | wave | 1 | 1 |
+  | base | 2 | 2 |
+  | lift | none | 3 |
+  | pingpong | 2 | 3 |
+
+  Pingpong pays one more compare, because lift splits from it there.
+- In `stroke.vert.glsl`, the dome rank costs what it did before the lane. The corner remap stayed in this round: 5 SPIR-V ops (abs, subtract, two multiplies and an add, so 4 with a fused multiply-add) for every moving vertex under every wrap, the default included. Fix round 2 moved it into lift's branch through the existing uniform branch, with no new program.
+
+**The head already followed the travel.** Within a loop, tau only grows, so the offset `tau (omega × d)` always moves along `+omega × d`, and that is the travel. The head was already `sign(longAxis · (omega × d))`, the end that faces the travel. So the rule did not change, and the comments now say so.
+
+A new unit test derives the travel from the offset itself, `skySwirl` at two times 1 ms apart inside each window. It runs at 4 dome points and 12 angles between the long axis and the flow (0° to 300°, including 59°, 61°, 89° and 91°). It checks that the kept end faces the travel on the way out and faces away from it on the way in, at all 96 cases.
+
+The head reads the rest long axis, not the turned one. The turn reaches `SKY_SWIRL_MAX_TURN` (0.4 rad, 23°) at the window ends. A turned axis could cross square to the travel inside the window for a stroke within 23° of square, swapping the anchor mid-cut, which would pop.
+
+**Strokes far off the flow (more than 60°, 35.8% of the drawn sky strokes at the painter view).** The cut runs along the stroke, so its vanishing end moves along the stroke axis. Under half of that movement (|cos| < 0.5) is along the travel, and over 87% (sin 60°) is across it. Such a stroke reads as collapsing sideways into its leading end while the whole stroke drifts with the flow. Near 90° the leading end is decided by a small dot product, so neighbouring strokes that lie almost square to the flow pick opposite ends. That reads as arbitrary, though it is stable over the loop.
+
+No new strip was captured this round. Without a browser, the existing lift strip cannot separate these strokes from the rest.
+
+Alternatives if they look wrong (proposed, not built):
+
+| Option | What it does | Cost |
+| --- | --- | --- |
+| P1: weight the anchor shift by the alignment | `skyLift` returns `along` as `x (1 − cut) + 0.5 clip |cos θ|`, where `|cos θ|` is `|l · normalize(omega × d)|`. An aligned stroke keeps its head anchor, and a crossways one shrinks toward its centre with no chosen end. | The vertex remap's op count is unchanged. The lift path gains an inversesqrt, two multiplies and an abs. |
+| P2: a fragment wipe along the travel | A varying carries each fragment's position along the travel, and fragments past a moving threshold are discarded. Every stroke is eaten from its trailing side at any angle. | A varying and a compare and discard per fragment for every stroke, with discard under alpha-to-coverage. Far more than P1. |
+| P3: base's shrink for strokes more than 60° off | Those strokes shrink uniformly in their window. | Cheap, but their width changes, which the brief rules out. |
+
+P1 is the recommended fallback.
+
+**Strips.** The wave and lift strips are now JPEG at quality 85. They were converted from this lane's PNG captures with the same settings the spec now writes (`docs/shots/swirl-wave-strip.jpg` 263 KB, `swirl-lift-strip.jpg` 268 KB). The lift strip was exact for this round's code: neither the head rule nor lift's maths changed, and dive's rank sink never touched lift. Fix round 2 changed lift's pace, so the lift strip is stale until it is recaptured. To recapture them in a booked window:
+
+```
+E2E_PORT=4281 SWIRL_STRIPS=1 bunx playwright test tests/e2e/sky-lift.spec.ts -g "strips:" --project=e2e --no-deps --workers=1 --reporter=line
+```
+
+**Gates.** Unit tests and `make checkall` passed. No Playwright run was made this round. `tests/e2e/sky-lift.spec.ts`, `ab.spec.ts` and `vtx.spec.ts` were edited for the four wraps, and only typecheck and lint have checked them.
+
+### Fix round 2: the corner off every other path, lift at the wave's pace (2026-11-09)
+
+The review of fix round 1 (Spec PASS except the pace, Quality CHANGES) asked for these fixes.
+
+- **F1, the corner remap.** It is gone from every path but lift's, with no new program.
+  - `stroke.vert.glsl` seeds `float along = position.x;` inside the motion gate and passes it as the last, `inout`, argument of `motionOffset`, which hands it to `skyMotion`.
+  - Only the lift branch of each `skyMotion` body writes it: `along = skyLift(f, head, along)`.
+  - `skyLift` returns `x (1 − cut) + 0.5 clip`, with the cut in place of `abs(skyClip)`. The `skyClip` global is gone.
+  - Every other wrap, and every other layer, draws `position.x` exactly as before the lane.
+- **F6, lift's pace.** This was the controller's ruling: the headset A/B should compare flow against pulse, not speed.
+  - Lift has its own loop, `SKY_LIFT_PERIOD = SKY_SWIRL_PERIOD / 2 = 4 s`, read through the lift-only define `SKY_LIFT_INV_PERIOD` (0.25) in the `fract` of both lift branches. `skyWrapLoop` mirrors it in TS.
+  - `tau` keeps `SKY_SWIRL_PERIOD`, so the arc, `SKY_SWIRL_MAX_ANGLE`, `SKY_SWIRL_MAX_TURN` and the reach bounds are unchanged.
+  - `SKY_SWIRL_PERIOD` stays 8 s and is shared, unchanged, by wave, base and pingpong.
+  - Lift's mean rate is 2, equal to the wave's mean, with a constant peak of 2 against the wave's 3. Base stays at 1.
+  - The window stays `SKY_LIFT_WINDOW`, 0.1 of the loop, which is now 0.4 s. 20% of the sky strokes are in transition, as before.
+  - The unit tests pin all of this, with the travel test at the 4 s period and lift at t matched against base at 2t.
+- **F4.** The unused `SKY_WRAP_PINGPONG` define is removed. Pingpong is the fall-through past `SKY_WRAP_LIFT`, and a test checks that no GLSL names it.
+- **F2, F3.** The dive leftovers and the remap claim above are marked superseded, and CLAUDE.md's lift bullet is updated.
+
+Ops per vertex, counted as above with `uSkyWrap` specialised. Each wrapper now also computes the corner along the stroke, `longAxis × (along × size.x)`:
+
+- for 0a9aaaf, from `position.x`
+- for f0151f2, through round 1's remap from `skyClip`
+- now, through the `inout` seed
+
+The skyMotion rows are therefore 2 higher than in the tables above. The motionOffset rows call `motionOffset` for one specialised layer, with the gate open.
+
+| Path | 0a9aaaf | f0151f2 | Now |
+| --- | --- | --- | --- |
+| skyMotion, default wave | 80 | 83 | 80 |
+| skyMotion, default base | 27 | 30 | 27 |
+| skyMotion, default pingpong | 28 | 31 | 28 |
+| skyMotion, default lift | none | 38 | 36 |
+| skyMotion, `hoist` wave | 18 | 21 | 18 |
+| skyMotion, `hoist` base | 13 | 16 | 13 |
+| skyMotion, `hoist` pingpong | 14 | 17 | 14 |
+| skyMotion, `hoist` lift | none | 24 | 22 |
+| motionOffset, sky, default, under wave | 84 | 87 | 84 |
+| motionOffset, sky, default, under lift | none | 42 | 40 |
+| motionOffset, cypress, default | 60 | 63 | 60 |
+| motionOffset, sky, `hoist`, under wave | 22 | 25 | 22 |
+| motionOffset, sky, `hoist`, under lift | none | 28 | 26 |
+| motionOffset, cypress, `hoist` | 60 | 63 | 60 |
+
+- Every non-lift path is back to 0a9aaaf, the cypress included, under both arms.
+- Lift costs 2 fewer ops than in round 1: an abs and a subtract are gone, because the remap reads the cut directly instead of `abs(skyClip)`.
+- The `uSkyWrap` compares are as in fix round 1: wave 1, base 2, lift and pingpong 3.
+
+**Strips.** Both strips must be regenerated, because lift's pace changed. The wave strip's code is unchanged, but the pair should come from one run. Run this in a booked window:
+
+```
+E2E_PORT=4281 SWIRL_STRIPS=1 bunx playwright test tests/e2e/sky-lift.spec.ts -g "strips:" --project=e2e --no-deps --workers=1 --reporter=line
+```
+
+It writes `docs/shots/swirl-wave-strip.jpg` and `swirl-lift-strip.jpg` as JPEG at quality 85, six frames 0.5 s apart from motiont 3.7. On lift's 4 s loop those frames cover 62% of a loop.
+
+**Coverage.** The sky-lift coverage test now samples each wrap's own loop at 8 evenly spaced times: wave and base at 0.5 to 7.5 s, 1 s apart, and lift at 0.25 to 3.75 s, 0.5 s apart. The coverage figures above are from the first build's 8 s lift loop. The share in transition is the same 20%, but the per-time values will differ.
+
+**Gates.** The unit tests and `make checkall` passed. No Playwright run was made this round. The controller runs sky-lift.spec, the ab.spec wrap tests, the vtx.spec hoist test, a default capture `cmp` against 0a9aaaf and the strips on MiniMac.

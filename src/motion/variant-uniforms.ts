@@ -8,7 +8,7 @@ import { DEFAULT_SKY_WRAP, SKY_WRAPS, type SkyWrap, skyWrapCode } from './varian
 
 export interface MotionVariantUniforms {
   [name: string]: { value: unknown };
-  /** SKY_WRAPS index: 0 wave (the default), 1 base, 2 pingpong. */
+  /** SKY_WRAPS index: 0 wave (the default), 1 lift, 2 base, 3 pingpong. */
   uSkyWrap: { value: number };
   /** The wave wrap's waves per turn (SKY_WAVE_TURNS), read only on the wave branch. */
   uWaveTurns: { value: number };

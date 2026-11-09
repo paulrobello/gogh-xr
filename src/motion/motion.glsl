@@ -21,8 +21,9 @@ uniform vec4 uWake[REACTIVE_WAKE_SAMPLES];
 uniform vec3 uReactiveCentre;
 uniform vec3 uReactiveHalf;
 // The sky wrap A/B variant (src/motion/variants.ts): SKY_WRAP_WAVE (0, the default),
-// SKY_WRAP_BASE or pingpong, read only in skyMotion, so a moving sky vertex under the default
-// wave pays one compare and base and pingpong two.
+// SKY_WRAP_LIFT, SKY_WRAP_BASE, or pingpong, the fall-through, which no GLSL names. Read only in
+// skyMotion, so a moving sky vertex under the default wave pays one compare, base two, and lift
+// and pingpong three.
 uniform uint uSkyWrap;
 // The wave wrap's waves per turn (SKY_WAVE_TURNS in sky-swirl.ts, ?waveturns), read only on the
 // wave branch.
@@ -108,17 +109,37 @@ Motion skyWrapMotion(vec3 d, vec3 omega, vec3 n, float phase, float amplitude, f
   return Motion(tau * cross(omega, d), tau * dot(omega, n), 0.0, 0.0);
 }
 
+// Matches skyLiftLoop and skyLiftCorner in sky-swirl.ts: the lift wrap's along-length envelope,
+// for a stroke at fraction f of lift's own loop whose long axis has projection `head` on its
+// travel, omega × d (tau only grows, so the offset tau (omega × d) always moves along +omega × d),
+// and its quad corner x along the stroke. Inside SKY_LIFT_WINDOW of either end of the loop the
+// length eases to 0 at the wrap: on the way in the stroke grows from its tail, on the way out it
+// shortens toward its head, the end that faces its travel. It returns the corner
+// x (1 - cut) + clip / 2, where |clip| is cut: positive clip keeps the +x end and negative the -x
+// end. Only lift's branch calls it, so no other wrap or layer moves the corner. A few multiply-adds
+// and a smoothstep.
+float skyLift(float f, float head, float x) {
+  float e = min(f, 1.0 - f) * SKY_LIFT_INV_WINDOW;
+  float cut = 1.0 - smoothstep(0.0, 1.0, e);
+  float clip = (f < 0.5) == (head < 0.0) ? cut : -cut;
+  return x * (1.0 - cut) + 0.5 * clip;
+}
+
 // Matches skySwirl in sky-swirl.ts. The field is one rotation vector about SKY_EYE: each vortex
 // turns at gamma / max(chord², core²) about its axis (Rankine, no square root), plus the drift about
 // the vertical. The stroke sweeps a short arc of it per SKY_SWIRL_PERIOD: forward and back in
-// bands under the default wave, and under base forward only, shrinking to nothing at the wrap. The
-// default wave is the first compare, so it pays one and base and pingpong two. SKY_VORTEX_COUNT is
-// a handful (4): each vortex costs a dot, a max, a divide and a multiply-add per vertex.
+// bands under the default wave, and under base and lift forward only, shrinking to nothing at the
+// wrap (base) or shortening along its length (lift, skyLift), lift on its own SKY_LIFT_INV_PERIOD
+// loop. l is the stroke's long axis at rest, and along its quad corner along the stroke, which
+// only lift moves.
+// The default wave is the first compare, so it pays one, base two, and lift and pingpong three.
+// SKY_VORTEX_COUNT is a handful (4): each vortex costs a dot, a max, a divide and a multiply-add
+// per vertex.
 #ifdef VTX_HOIST
 // The `vtx` group's hoist arm (src/render/strokes/vertex-arms.ts): the same motion from the
 // stroke's rest field, built on the CPU (iSkyField, iSkyWave in stroke.vert.glsl), so only the
 // time-dependent part runs per vertex.
-Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
+Motion skyMotion(vec3 p, vec3 n, vec3 l, float phase, float t, inout float along) {
   float amplitude = SKY_SWIRL_PERIOD;
   if (uSkyWrap == SKY_WRAP_WAVE) {
     phase = iSkyWave.x + SKY_WAVE_JITTER * (phase - 0.5);
@@ -132,13 +153,18 @@ Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
       smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f)) - 1.0,
       0.0
     );
+  } else if (uSkyWrap == SKY_WRAP_LIFT) {
+    float f = fract(t * SKY_LIFT_INV_PERIOD + phase);
+    float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
+    along = skyLift(f, dot(l, iSkyField.xyz), along);
+    return Motion(tau * iSkyField.xyz, tau * iSkyField.w, 0.0, 0.0);
   }
   float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
   float tau = (smoothstep(0.0, 1.0, 1.0 - abs(2.0 * f - 1.0)) - 0.5) * amplitude;
   return Motion(tau * iSkyField.xyz, tau * iSkyField.w, 0.0, 0.0);
 }
 #else
-Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
+Motion skyMotion(vec3 p, vec3 n, vec3 l, float phase, float t, inout float along) {
   vec3 d = p - SKY_EYE;
   vec3 dir = d * inversesqrt(dot(d, d));
   vec3 omega = vec3(0.0, SKY_DRIFT, 0.0);
@@ -150,15 +176,22 @@ Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
     float wavePhase = skyWavePhase(dir) + SKY_WAVE_JITTER * (phase - 0.5);
     return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir), t);
   }
-  if (uSkyWrap != SKY_WRAP_BASE) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);
-  float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
+  if (uSkyWrap == SKY_WRAP_BASE) {
+    float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
+    float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
+    return Motion(
+      tau * cross(omega, d),
+      tau * dot(omega, n),
+      smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f)) - 1.0,
+      0.0
+    );
+  }
+  if (uSkyWrap != SKY_WRAP_LIFT) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);
+  float f = fract(t * SKY_LIFT_INV_PERIOD + phase);
   float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
-  return Motion(
-    tau * cross(omega, d),
-    tau * dot(omega, n),
-    smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f)) - 1.0,
-    0.0
-  );
+  vec3 v = cross(omega, d);
+  along = skyLift(f, dot(l, v), along);
+  return Motion(tau * v, tau * dot(omega, n), 0.0, 0.0);
 }
 #endif
 
@@ -280,15 +313,18 @@ Motion reactiveMotion(vec3 p, vec3 n) {
 // gains combine as size factors, so a wrapping stroke still shrinks to nothing and a stretched one
 // grows. MOTION_PHASE_PIN is the e2e's coherent phase
 // (material.ts pinMotionPhase), never defined in a production build. flame is the instance's
-// colour alpha, which only the cypress reads (P4.4).
+// colour alpha, which only the cypress reads (P4.4), l its long axis at rest and along its quad
+// corner along the stroke, which only the sky reads and only lift moves (skyLift).
 Motion motionOffset(
   uint layer,
   vec3 p,
   vec3 n,
+  vec3 l,
   uint phaseByte,
   float flame,
   bool layerMoves,
-  bool reacts
+  bool reacts,
+  inout float along
 ) {
 #ifdef MOTION_PHASE_PIN
   float phase = MOTION_PHASE_PIN;
@@ -299,7 +335,7 @@ Motion motionOffset(
   Motion m = Motion(vec3(0.0), 0.0, 0.0, 0.0);
   if (!layerMoves) {
   } else if (layer == STROKE_LAYER_SKY) {
-    m = skyMotion(p, n, phase, t);
+    m = skyMotion(p, n, l, phase, t, along);
   } else if (layer == STROKE_LAYER_STAR) {
     m = starMotion(p, phaseByte, t);
   } else if (layer == STROKE_LAYER_MOON) {

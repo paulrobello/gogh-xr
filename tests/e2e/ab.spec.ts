@@ -470,7 +470,7 @@ test.describe('the painter view', () => {
 
     await bootWorld('&ab=wrap');
     const variants = ((await ab(xr)) as AbDiag).variants;
-    expect(variants).toEqual(['wave', 'base', 'pingpong']);
+    expect(variants).toEqual(['wave', 'lift', 'base', 'pingpong']);
     await hideHud();
     expect((await rawPixels(page)).equals(fresh), 'wrap wave matches a fresh boot').toBe(true);
     const programs = (await diag()).programs;
@@ -504,6 +504,9 @@ test.describe('the painter view', () => {
         // Base shrinks its wrapping strokes and never turns back, so nothing counter-flows.
         expect(w.small).toBeGreaterThan(0);
         expect([w.returning, w.counterFlow.opposed]).toEqual([0, 0]);
+      } else if (variant === 'lift') {
+        // Forward only at full width: they shorten along their length instead of shrinking.
+        expect([w.small, w.returning, w.counterFlow.opposed]).toEqual([0, 0, 0]);
       } else if (variant === 'pingpong') {
         // Full size, with about half the strokes on their way back, side by side with the rest.
         expect(w.small).toBe(0);

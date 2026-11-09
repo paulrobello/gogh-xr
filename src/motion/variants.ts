@@ -2,9 +2,16 @@
  * Sky wrap A/B variants (src/diag/ab.ts, `?wrap`): the sky swirl's wrap treatments, switched live
  * by one shared uniform, `uSkyWrap`. `wave` is the default, on Paul's headset verdict of 2026-11-08
  * at 2 waves per turn. `base` is the P4.2 wrap shrink. motion.glsl reads the uniform only in the
- * sky motion: under wave, code 0, a moving sky vertex pays one compare in skyMotion, base and
- * pingpong a second, and a still vertex pays none.
+ * sky motion: under wave, code 0, a moving sky vertex pays one compare in skyMotion, base a second,
+ * lift and pingpong a third, and a still vertex pays none.
  *
+ * - wrap `lift`: base's forward-only arc, `tau = PERIOD (f − ½)`, with no size gain, on its own
+ *   loop of SKY_LIFT_PERIOD (half PERIOD), so its flow runs at the wave's mean speed. Each stroke's
+ *   loop phase is its own phase byte. Over the last SKY_LIFT_WINDOW of its loop the stroke shortens
+ *   along its length toward its head, its downstream end, to nothing, and it jumps back while it
+ *   has no length; over the first SKY_LIFT_WINDOW it grows from its tail to full length. Its width
+ *   never changes (skyLiftLoop in sky-swirl.ts). The head is the end that faces the stroke's
+ *   travel, so it always shortens toward where it is going.
  * - wrap `pingpong`: the stroke sweeps base's arc forward over half the loop and eases back along
  *   it over the other half, `tau = PERIOD (smoothstep(0, 1, 1 − |2f − 1|) − ½)`, with no wrap and no
  *   size change. |tau| stays within PERIOD / 2, as in base, so every reach bound (cull, haze thin)
@@ -25,9 +32,10 @@
 
 /**
  * The sky swirl's wrap treatments (`?wrap`, the `wrap` A/B group), the default first. The A/B
- * group cycles them in this order, so base still steps to pingpong and pingpong back to wave.
+ * group cycles them in this order, so one press from wave reaches lift, and pingpong steps back to
+ * wave.
  */
-export const SKY_WRAPS = ['wave', 'base', 'pingpong'] as const;
+export const SKY_WRAPS = ['wave', 'lift', 'base', 'pingpong'] as const;
 export type SkyWrap = (typeof SKY_WRAPS)[number];
 
 /** The wrap every boot draws without `?wrap`: wave (docs/verification.md, sky wrap default). */
@@ -47,6 +55,7 @@ export const skyWrapCode = (wrap: SkyWrap): number => SKY_WRAPS.indexOf(wrap);
 export function motionVariantGlslDefines(): Record<string, string | number> {
   return {
     SKY_WRAP_WAVE: `${skyWrapCode('wave')}u`,
+    SKY_WRAP_LIFT: `${skyWrapCode('lift')}u`,
     SKY_WRAP_BASE: `${skyWrapCode('base')}u`,
   };
 }

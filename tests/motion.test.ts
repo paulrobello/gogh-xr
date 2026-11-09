@@ -236,7 +236,7 @@ describe('uniform plumbing', () => {
     expect(gate).toBeGreaterThan(strokeGlsl.indexOf('thin = skyLightThin('));
     expect(gate).toBeLessThan(strokeGlsl.indexOf('gl_Position = projectionMatrix'));
     expect(strokeGlsl).toContain(
-      'Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts);',
+      'float along = position.x;\n    Motion m =\n      motionOffset(iMeta.y, iPosition, n, longAxis, iMeta.z, iColor.a, layerMoves, reacts, along);',
     );
     expect(strokeGlsl.match(/motionOffset\(/g)).toHaveLength(1);
     // The haze thin widens by each reach only behind its own gate (R-P4b).

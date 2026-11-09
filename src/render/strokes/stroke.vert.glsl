@@ -162,7 +162,12 @@ void main() {
   // is the turn of the axes. The depth hashes below keep reading the rest iPosition, so a moving
   // stroke keeps its depth order.
   if ((layerMoves || reacts) && thin > 0.0) {
-    Motion m = motionOffset(iMeta.y, iPosition, n, iMeta.z, iColor.a, layerMoves, reacts);
+    // The quad corner along the stroke. Only lift's branch moves it (motion.glsl skyLift), so
+    // every other wrap and layer draws position.x. The uv keeps the rest corner, so under lift the
+    // whole brush scales into the shorter quad.
+    float along = position.x;
+    Motion m =
+      motionOffset(iMeta.y, iPosition, n, longAxis, iMeta.z, iColor.a, layerMoves, reacts, along);
     // The turn is small (SKY_SWIRL_MAX_TURN plus REACTIVE_MAX_TURN), so cosine and sine are
     // polynomials; this pair has c² + s² <= 1, so a turned quad never outgrows its rest extent.
     float a2 = m.turn * m.turn;
@@ -172,7 +177,7 @@ void main() {
     shortAxis = c * shortAxis - s * longAxis;
     longAxis = turned;
     size *= 1.0 + m.gain;
-    local = iPosition + m.offset + longAxis * (position.x * size.x) +
+    local = iPosition + m.offset + longAxis * (along * size.x) +
       shortAxis * (position.y * size.y);
     // The star and moon rings' crest (P4.3); 0 for every other layer.
     color *= 1.0 + m.bright;
