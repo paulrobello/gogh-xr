@@ -9,6 +9,7 @@ import {
 import { createAudioHost } from './audio/audio';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { bootWorld, GALLERY_WORLD, resolveBootMode } from './boot-mode';
+import { bootWorldWithFallback } from './boot-world';
 import { installDesktopControls, releaseLock } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
 import {
@@ -55,7 +56,12 @@ import { createSettingsStore } from './settings/store';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
-import { isNoticeKind, RELOAD_LABEL, settingsRecoveredText } from './ui/notice-queue';
+import {
+  isNoticeKind,
+  RELOAD_LABEL,
+  settingsRecoveredText,
+  worldFailedText,
+} from './ui/notice-queue';
 import { createNotices, raiseRateFallback } from './ui/notices';
 import { clearPanelPose } from './ui/panel-pose';
 import {
@@ -902,6 +908,11 @@ function unbindWorld(): void {
   locomotion.awaitGround();
 }
 
+/** A world's display name for a notice: a painting's title, or the gallery's. */
+function worldName(id: string): string {
+  return PAINTINGS.find((p) => p.id === id)?.title ?? 'The gallery';
+}
+
 const switcher = createSwitcher({
   renderer,
   scene,
@@ -923,6 +934,15 @@ const switcher = createSwitcher({
   spawn: ({ position, yaw }) => {
     spawnYaw = yaw;
     locomotion.spawn(position[0], position[1], position[2], yaw);
+  },
+  loadFailed: (id, reason) => {
+    const text = worldFailedText(worldName(id), reason);
+    if (notices) notices.raise('world-failed', text);
+    else showNotice(text);
+  },
+  entered: () => {
+    // The world opened: a failure notice from an earlier try is stale.
+    notices?.dismiss('world-failed');
   },
   bare: () => {
     locomotion.setWorld(null);
@@ -954,9 +974,15 @@ window.addEventListener('keydown', (event) => {
 
 if (worldEntry) {
   locomotion.awaitGround();
-  const load = worldEntry.world;
-  Promise.all([load(), import('./demo/canvas/demo')])
-    .then(async ([module, { loadRaster }]) => {
+  void bootWorldWithFallback(worldEntry, GALLERY_WORLD, {
+    load: async (boot) => {
+      const [module, { loadRaster }] = await Promise.all([
+        boot.world(),
+        import('./demo/canvas/demo'),
+      ]);
+      return { module, loadRaster };
+    },
+    start: async (boot, { module, loadRaster }) => {
       // Before build, which registers the `world` diag key that captures wait for.
       if (flags.diag && flags.painter) {
         painterView = module.painterCamera();
@@ -966,13 +992,27 @@ if (worldEntry) {
         spawnYaw = yaw;
         locomotion.spawn(position[0], position[1], position[2], yaw);
       }
-      const handle = await module.build(worldDeps(false, loadRaster));
-      switcher.adopt({ id: worldEntry.id, module, handle });
-    })
-    .catch((error: unknown) => {
+      try {
+        const handle = await module.build(worldDeps(false, loadRaster));
+        switcher.adopt({ id: boot.id, module, handle });
+      } catch (error) {
+        // One world at a time: a half-built world goes before the gallery builds.
+        try {
+          module.dispose();
+        } catch (disposeError) {
+          console.warn(`world ${boot.id} failed to dispose`, disposeError);
+        }
+        throw error;
+      }
+    },
+    failed: (boot, error) => {
       locomotion.setWorld(null);
-      console.warn(`world ${worldEntry.id} failed to start`, error);
-    });
+      console.warn(`world ${boot.id} failed to start`, error);
+      const text = worldFailedText(worldName(boot.id));
+      if (notices) notices.raise('world-failed', text);
+      else showNotice(text);
+    },
+  });
 }
 
 void isVrSupported(navigator.xr).then((supported) => {

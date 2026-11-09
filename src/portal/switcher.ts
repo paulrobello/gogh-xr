@@ -180,6 +180,16 @@ const FRAME_STROKE: readonly [number, number] = [0.035, 0.014];
  * on is skipped, as a failed one is.
  */
 export const STALL_TIMEOUT_S = 15;
+/** What the stall watchdog rejects a wait with, so a give-up is told from a failed build. */
+class StallError extends Error {
+  constructor() {
+    super(`stalled for ${STALL_TIMEOUT_S} s`);
+  }
+}
+
+/** A retry of a world whose abandoned build has not landed. */
+class StillLoadingError extends Error {}
+
 /**
  * The most one frame adds to a stall count, ms. The first frame after a paused loop (the Meta
  * button, a doff, a hidden tab) carries the whole pause, which is no evidence of a stall.
@@ -222,6 +232,18 @@ export interface SwitcherDeps {
    * origin moves the head off it, and turns the view off its heading by the head yaw.
    */
   spawn(pose: WorldPose): void;
+  /**
+   * A world failed to load during a transition, before the fallback runs: `stall` when the
+   * watchdog gave up on a fetch, `loading` when a retry was refused because a build given up on
+   * is still in flight, `build` for any other failure. Raises the user's notice; the
+   * switcher imports no UI.
+   */
+  loadFailed?(target: string, reason: 'build' | 'stall' | 'loading'): void;
+  /**
+   * A transition reached its target world, with no fallback: whatever `loadFailed` raised is
+   * stale. Not called for a gallery fallback after a failure.
+   */
+  entered?(target: string): void;
   /** No world could be built: locomotion falls back to the flat ground of the bare scene. */
   bare(): void;
   /** Mode switch: every held button and aim reports nothing until released. */
@@ -634,7 +656,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       expired,
       expire() {
         wait.stale = true;
-        reject(new Error(`stalled for ${STALL_TIMEOUT_S} s`));
+        reject(new StallError());
       },
     };
     return wait;
@@ -718,7 +740,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
    * On a throw or a stall the half-built world is disposed and the scene left as it was.
    */
   async function prepareWorld(id: string, previous: string, done: Promise<void>): Promise<void> {
-    if (abandoned.has(id)) throw new Error(`a stalled build of ${id} has not landed`);
+    if (abandoned.has(id)) throw new StillLoadingError(`a stalled build of ${id} has not landed`);
     const before = new Set(deps.scene.children);
     const shown = deps.scene.background;
     let world: LiveWorld | null = null;
@@ -839,6 +861,15 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     if (cueField) point(cueField.positions);
   }
 
+  /** Reports a load failure to the host; a throwing host cannot break the fallback. */
+  function notifyLoadFailed(target: string, reason: 'build' | 'stall' | 'loading'): void {
+    try {
+      deps.loadFailed?.(target, reason);
+    } catch (notifyError) {
+      console.warn('portal: the load-failure notice failed', notifyError);
+    }
+  }
+
   /**
    * Builds `target` from the trigger; if that throws, rebuilds the gallery in front of `target`'s
    * frame once `out` has ended (`done`), since the old world may be the gallery; if that throws
@@ -850,6 +881,14 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       return;
     } catch (error) {
       console.warn(`portal: world ${target} failed to build`, error);
+      notifyLoadFailed(
+        target,
+        error instanceof StallError
+          ? 'stall'
+          : error instanceof StillLoadingError
+            ? 'loading'
+            : 'build',
+      );
     }
     await done;
     if (target !== GALLERY_ID) {
@@ -968,6 +1007,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     deps.setVeil(0);
     deps.suppressInput();
     detector.reset();
+    if (diagState.fallback === null && active) deps.entered?.(active.id);
     diagState.durationMs = deps.now() - startedAt;
     diagState.longestFrameMs = longest;
     diagState.longestStepMs = deps.slicer.stats.longestStepMs;
@@ -1142,7 +1182,12 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     },
     go(id, cause) {
       const from = active;
-      if (!from || from.id === id || abandoned.has(id)) return false;
+      if (!from || from.id === id) return false;
+      if (abandoned.has(id)) {
+        // The earlier build was given up on and has not landed: tell the user why nothing opens.
+        notifyLoadFailed(id, 'loading');
+        return false;
+      }
       const style = transitionStyle(deps.calm());
       if (!transition.request(id === GALLERY_ID ? 'returning' : 'entering', id, style)) {
         return false;

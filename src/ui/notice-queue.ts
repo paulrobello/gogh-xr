@@ -9,13 +9,19 @@
 import type { RecoveredReason } from '../settings/schema';
 import type { ButtonAction, Hand } from '../xr/input';
 
-export type NoticeKind = 'rate-fallback' | 'settings-recovered' | 'xr-error' | 'update-ready';
+export type NoticeKind =
+  | 'rate-fallback'
+  | 'settings-recovered'
+  | 'xr-error'
+  | 'update-ready'
+  | 'world-failed';
 
 export const NOTICE_KINDS: readonly NoticeKind[] = Object.freeze([
   'rate-fallback',
   'settings-recovered',
   'xr-error',
   'update-ready',
+  'world-failed',
 ]);
 
 export function isNoticeKind(value: unknown): value is NoticeKind {
@@ -30,6 +36,25 @@ export const UPDATE_NOTICE = 'Update: a new version is ready.';
 
 /** The label of the update notice's action button, which reloads (P7.1). */
 export const RELOAD_LABEL = 'Reload';
+
+/**
+ * The world-failed notice's text (cards 01a1c05ae68c, 01a1c05452e4): `name` is the painting's
+ * display name. A stall is a build that gave up waiting on a fetch, and `loading` a retry refused while that build is still in flight; any other failure is a throw,
+ * an import or raster timeout, or a boot that could not load the world.
+ */
+export function worldFailedText(
+  name: string,
+  reason: 'build' | 'stall' | 'loading' = 'build',
+): string {
+  switch (reason) {
+    case 'stall':
+      return `${name} took too long to load. Try again, or reload the page.`;
+    case 'loading':
+      return `${name} is still loading. Try again in a moment.`;
+    default:
+      return `${name} could not load. Try again, or reload the page.`;
+  }
+}
 
 /** A notice's buttons: every notice has Dismiss, and a kind with an action also has its action. */
 export type NoticeButton = 'dismiss' | 'action';

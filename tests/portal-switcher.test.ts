@@ -48,6 +48,7 @@ import {
   STALL_TIMEOUT_S,
 } from '../src/portal/switcher.ts';
 import type { StrokeBatch } from '../src/render/strokes/batch.ts';
+import { createNoticeQueue, type NoticeQueue } from '../src/ui/notice-queue.ts';
 import { VIGNETTE_RENDER_ORDER } from '../src/ui/vignette.ts';
 import { createSlicer } from '../src/util/slicer.ts';
 
@@ -147,6 +148,12 @@ interface Rig {
   /** Per id, a chunk import the build awaits through `boundedImport`, as main.ts does. */
   readonly imports: Map<string, Promise<unknown>>;
   readonly slicer: ReturnType<typeof createSlicer>;
+  /** Every `loadFailed` call, in order. */
+  readonly failures: { target: string; reason: string }[];
+  /** Every `entered` call, in order. */
+  readonly entered: string[];
+  /** The notice queue `loadFailed` and `entered` drive, as main.ts wires them. */
+  readonly notices: NoticeQueue;
   loadRaster: (url: string) => Promise<Raster>;
   calm: number;
 }
@@ -177,6 +184,9 @@ function setup(
   const gates = new Map<string, Promise<void>>();
   const readies = new Map<string, Promise<void>>();
   const imports = new Map<string, Promise<unknown>>();
+  const failures: { target: string; reason: string }[] = [];
+  const entered: string[] = [];
+  const notices = createNoticeQueue();
   const slicer = createSlicer(6);
   const renderer = {
     compileAsync: async (object: Object3D) => {
@@ -217,6 +227,14 @@ function setup(
       spawns.push(pose);
       options.onSpawn?.(camera);
     },
+    loadFailed: (target, reason) => {
+      failures.push({ target, reason });
+      notices.raise('world-failed', `${target} ${reason}`);
+    },
+    entered: (target) => {
+      entered.push(target);
+      notices.dismiss('world-failed');
+    },
     bare: () => {
       calls.bare += 1;
     },
@@ -246,6 +264,9 @@ function setup(
     readies,
     imports,
     slicer,
+    failures,
+    entered,
+    notices,
     get loadRaster() {
       return state.loadRaster;
     },
@@ -856,6 +877,8 @@ describe('createSwitcher', () => {
     ]);
     expect(r.switcher.active?.id).toBe(GALLERY_ID);
     expect(r.switcher.diag().fallback).toBe('gallery');
+    // The user is told once, as a build failure (card 01a1c05ae68c).
+    expect(r.failures).toEqual([{ target: 'starry-night', reason: 'build' }]);
     // In front of the frame it tried to enter, outside the threshold.
     expect(insidePortal(starryPortal, standing(must(r.spawns.at(-1))))).toBe(false);
     expect(r.veils.at(-1)).toBe(0);
@@ -1376,6 +1399,8 @@ describe('a fetch that never lands (N1)', () => {
     expect(waitS(r)).toBeGreaterThanOrEqual(STALL_TIMEOUT_S);
     expect(waitS(r)).toBeLessThan(STALL_TIMEOUT_S + 1);
     expect(r.switcher.diag().frames.some((f) => f.task === 'stall')).toBe(true);
+    // The give-up tells the user too, as a stall (card 01a1c05ae68c).
+    expect(r.failures).toEqual([{ target: 'starry-night', reason: 'stall' }]);
     // While the stalled build has not landed, the world is not entered again.
     expect(r.switcher.go('starry-night', 'api')).toBe(false);
     // When it lands it is disposed at once: never bound, spawned into or left in the scene.
@@ -1394,6 +1419,57 @@ describe('a fetch that never lands (N1)', () => {
     await run(r);
     expect(r.switcher.active?.id).toBe('starry-night');
     expect(r.switcher.diag().fallback).toBe(null);
+    warn.mockRestore();
+  });
+
+  test('a failed entry raises the notice and a retry that succeeds clears it (F1)', async () => {
+    const r = setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.failing.add('starry-night');
+    r.switcher.go('starry-night', 'api');
+    await run(r);
+    expect(r.switcher.diag().fallback).toBe('gallery');
+    // The gallery fallback is not an entry: the notice stays.
+    expect(r.entered).toEqual([]);
+    expect(r.notices.queue.map((n) => n.kind)).toEqual(['world-failed']);
+    r.failing.delete('starry-night');
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    await run(r);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    expect(r.entered).toEqual(['starry-night']);
+    expect(r.notices.queue).toEqual([]);
+    warn.mockRestore();
+  });
+
+  test('a stall give-up followed by a late build failure raises the notice once (F2)', async () => {
+    const r = setup();
+    let fail = (_error: Error): void => {};
+    r.gates.set('starry-night', new Promise<void>((_, reject) => (fail = reject)));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.switcher.go('starry-night', 'api');
+    await runSlow(r);
+    expect(r.switcher.diag().fallback).toBe('gallery');
+    expect(r.failures).toEqual([{ target: 'starry-night', reason: 'stall' }]);
+    fail(new Error('late'));
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(r.failures).toEqual([{ target: 'starry-night', reason: 'stall' }]);
+    warn.mockRestore();
+  });
+
+  test('a retry refused while a given-up build is still in flight says it is loading (F3)', async () => {
+    const r = setup();
+    r.gates.set('starry-night', new Promise<void>(() => {}));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.switcher.go('starry-night', 'api');
+    await runSlow(r);
+    expect(r.failures).toEqual([{ target: 'starry-night', reason: 'stall' }]);
+    expect(r.switcher.go('starry-night', 'api')).toBe(false);
+    expect(r.failures).toEqual([
+      { target: 'starry-night', reason: 'stall' },
+      { target: 'starry-night', reason: 'loading' },
+    ]);
+    // Same kind, so the user sees one notice whose text is the latest.
+    expect(r.notices.queue).toHaveLength(1);
     warn.mockRestore();
   });
 
@@ -1547,6 +1623,7 @@ describe('a fetch that never lands (N1)', () => {
         expect.objectContaining({ message: expect.stringContaining('world import timed out') }),
       );
       expect(r.switcher.diag().frames.some((f) => f.task === 'stall')).toBe(false);
+      expect(r.failures).toEqual([{ target: 'starry-night', reason: 'build' }]);
       expect(waitS(r)).toBeLessThan(STALL_TIMEOUT_S);
       expect(r.switcher.diag().fallback).toBe('gallery');
       expect(r.switcher.active?.id).toBe(GALLERY_ID);

@@ -211,3 +211,36 @@ test('a round trip returns the GPU geometry and texture counts to the baseline (
   }
   expect(await glErrors(page)).toEqual([]);
 });
+
+test('a world whose fetch fails falls back to the gallery with a notice, and a retry clears it', async ({
+  page,
+  xr,
+  pageErrors,
+}) => {
+  test.setTimeout(180_000);
+  await xr.boot('noanim');
+  await settled(xr, 'gallery');
+  // Only the world reads flow.png (the gallery draws the scans), so the entry fails at once and
+  // the gallery fallback still builds.
+  const abort = (route: { abort(): Promise<void> }) => route.abort();
+  await page.route('**/paintings/starry-night/flow.png', abort);
+  expect(await page.evaluate(() => window.__goghPortal?.('starry-night'))).toBe(true);
+  await expect.poll(async () => (await portal(xr)).fallback, { timeout: 60_000 }).toBe('gallery');
+  await settled(xr, 'gallery');
+  // The aborted request is the one console error this test expects.
+  const aborted = pageErrors.filter((e) => e.includes('/paintings/starry-night/flow.png'));
+  expect(aborted).toHaveLength(1);
+  pageErrors.splice(0, pageErrors.length, ...pageErrors.filter((e) => !aborted.includes(e)));
+  const notice = page.locator('[data-notice-kind="world-failed"]');
+  await expect(notice).toContainText('The Starry Night could not load');
+  const raised = (await xr.diag()).notices as { queue: { kind: string }[] };
+  expect(raised.queue.map((n) => n.kind)).toEqual(['world-failed']);
+  // The route removed, the same entry opens the world and the stale notice goes.
+  await page.unroute('**/paintings/starry-night/flow.png', abort);
+  expect(await page.evaluate(() => window.__goghPortal?.('starry-night'))).toBe(true);
+  await settled(xr, 'starry-night');
+  expect((await portal(xr)).fallback).toBe(null);
+  await expect(notice).toHaveCount(0);
+  const cleared = (await xr.diag()).notices as { queue: unknown[] };
+  expect(cleared.queue).toEqual([]);
+});

@@ -31,6 +31,8 @@ export interface PortalDiag {
   longestWorkMs: number | null;
   longestWorkPhase: string | null;
   flying: boolean;
+  /** What the last transition fell back to after its target failed to build, else null. */
+  fallback: 'gallery' | 'bare' | null;
   frames: FrameRecord[];
 }
 

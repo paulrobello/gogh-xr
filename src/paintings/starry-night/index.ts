@@ -155,16 +155,30 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   scene.background = debug
     ? new Color(BARE_COLOR)
     : new Color().setRGB(sky[0] / 255, sky[1] / 255, sky[2] / 255, SRGBColorSpace);
-  scene.add(base);
-  batch.attach(scene);
-  if (debug === 'bare') batch.group.visible = false;
-  // The star and moon halos (P4.3), the world's one blended pass. The `?bare` and `?coverage`
-  // sweeps count magenta pixels, which additive light would hide, so they draw without it, and
-  // `?nohalo` turns it off for a cost A/B. It draws after the lights and before the cypress and
-  // the world, which write no depth, so their overhang paints over it (docs/verification.md, N2).
-  const halo = createSkyHalo(batch.orderBeforeClass('cypress'));
-  halo.mesh.visible = debug === null && deps.halo !== false;
-  scene.add(halo.mesh);
+  // Until `built` is set `dispose` has nothing to release, so a throw in this window undoes
+  // what it added itself (a world that fails to build is never disposed by the caller).
+  let made: SkyHalo | null = null;
+  try {
+    scene.add(base);
+    batch.attach(scene);
+    if (debug === 'bare') batch.group.visible = false;
+    // The star and moon halos (P4.3), the world's one blended pass. The `?bare` and `?coverage`
+    // sweeps count magenta pixels, which additive light would hide, so they draw without it, and
+    // `?nohalo` turns it off for a cost A/B. It draws after the lights and before the cypress and
+    // the world, which write no depth, so their overhang paints over it (docs/verification.md, N2).
+    made = createSkyHalo(batch.orderBeforeClass('cypress'));
+    made.mesh.visible = debug === null && deps.halo !== false;
+    scene.add(made.mesh);
+  } catch (error) {
+    (made as SkyHalo | null)?.dispose();
+    batch.dispose();
+    scene.remove(base);
+    disposeBaseMeshes(base);
+    scene.background = background;
+    throw error;
+  }
+  const halo = made as SkyHalo | null;
+  if (!halo) throw new Error('the sky halo was not made');
   built = { scene, batch, halo, base, background };
 
   const cache = bypass ? 'bypass' : load.hit ? 'hit' : 'miss';

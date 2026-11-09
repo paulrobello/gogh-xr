@@ -10,6 +10,7 @@ import {
   type NoticeHit,
   type NoticeKind,
   settingsRecoveredText,
+  worldFailedText,
 } from '../src/ui/notice-queue';
 
 const UP = { down: false, fired: false };
@@ -91,12 +92,13 @@ describe('notice queue', () => {
     expect(q.shown.map((n) => n.kind)).toEqual(['update-ready']);
   });
 
-  it('knows its four kinds and names every settings recovery', () => {
+  it('knows its five kinds and names every settings recovery', () => {
     expect(NOTICE_KINDS).toEqual([
       'rate-fallback',
       'settings-recovered',
       'xr-error',
       'update-ready',
+      'world-failed',
     ]);
     expect(isNoticeKind('xr-error')).toBe(true);
     expect(isNoticeKind('panel')).toBe(false);
@@ -235,5 +237,20 @@ describe('trigger arbitration: a notice never steals the trigger from the panel'
     expect(state.pressing.left).toBe(true);
     arbitrateNoticeTrigger({}, state);
     expect(state.pressing.left).toBe(false);
+  });
+});
+
+describe('worldFailedText', () => {
+  it('names the painting, for a failed build and for a stall', () => {
+    expect(isNoticeKind('world-failed')).toBe(true);
+    expect(worldFailedText('The Starry Night')).toBe(
+      'The Starry Night could not load. Try again, or reload the page.',
+    );
+    expect(worldFailedText('The Starry Night', 'loading')).toBe(
+      'The Starry Night is still loading. Try again in a moment.',
+    );
+    expect(worldFailedText('The Starry Night', 'stall')).toBe(
+      'The Starry Night took too long to load. Try again, or reload the page.',
+    );
   });
 });
