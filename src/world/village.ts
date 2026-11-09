@@ -158,6 +158,9 @@ const CHURCH = Object.freeze({
   maxSteeple: 16,
 });
 
+/** The church nave's eave above the base, metres: its walls' top, where the gable roof starts. */
+export const CHURCH_NAVE_EAVE: number = CHURCH.naveEave;
+
 /** The church outline stays within this distance of the spot, metres, inside the boundary. */
 export const CHURCH_MAX_REACH: number = 48;
 /** Most ground allowed above the church base anywhere over its walls, metres. */

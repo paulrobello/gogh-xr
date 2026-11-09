@@ -1,8 +1,8 @@
 /**
  * The teleport core (P3.4), pure like step.ts: a ballistic arc from an aim ray, its first landing
  * on the ground, whether that landing is valid, the jump itself and the blink that hides it.
- * `traceArc` runs every frame while the aim is held. It writes into a reused `ArcResult`, and its
- * only allocation per call is its small `clearance` closure.
+ * `traceArc` runs every frame while the aim is held. It writes into a reused `ArcResult` and keeps its
+ * working state in the module-level `T`, so it allocates nothing.
  *
  * World: metres, +Y up. The aim ray is in world space; locomotion.ts turns the right controller's
  * target ray (XR) or the camera's view (desktop) into it.
@@ -44,13 +44,45 @@ const COS_MAX_SLOPE = Math.cos((MAX_SLOPE_DEG * Math.PI) / 180);
 const BLINK_EPSILON = 1e-9;
 const UP: Vec3 = Object.freeze([0, 1, 0]) as Vec3;
 
-/** Why a landing is or is not valid. `none`: the arc reached no ground. */
-export type LandingReason = 'slope' | 'boundary' | 'footprint' | 'none' | 'ok';
+/** Bisection steps that refine where an arc enters a building volume, between two samples. */
+export const CUT_BISECT_STEPS = 16;
+
+/**
+ * Why a landing is or is not valid. `building`: the arc entered a building's volume and was cut
+ * there. `footprint`: the landing is on or beside a wall (a world with no volume query). `tree`:
+ * the landing is inside a tree crown. `none`: the arc reached no ground.
+ */
+export type LandingReason =
+  | 'slope'
+  | 'boundary'
+  | 'building'
+  | 'footprint'
+  | 'tree'
+  | 'none'
+  | 'ok';
 
 export interface LandingGround {
   heightAt(x: number, z: number): number;
   /** Unit upward normal at (x, z). */
   normalAt(x: number, z: number): Vec3;
+}
+
+/** Building volumes, as indexed solids. Every method must allocate nothing. */
+export interface VolumeQuery {
+  /** Index of a volume containing the point, or -1. */
+  at(x: number, y: number, z: number): number;
+  /**
+   * Starts a trace. A volume holds the point in its walls when the point is inside the ungrown
+   * footprint and at or below the volume's top there (the gable, or the spire for the tower). A
+   * volume whose walls hold the point is ignored by `crossing` until `update`
+   * sees a point outside them. A volume that holds the point only in its margin is tested at its
+   * bare walls (no margin) for the whole trace.
+   */
+  begin(x: number, y: number, z: number): void;
+  /** An ignored volume whose walls no longer hold the point counts again, at its bare walls. */
+  update(x: number, y: number, z: number): void;
+  /** Index of a volume, not ignored, that the straight segment a to b touches, or -1. */
+  crossing(ax: number, ay: number, az: number, bx: number, by: number, bz: number): number;
 }
 
 /** What a landing is tested against. A painting's `WorldHandle` is one. */
@@ -60,6 +92,14 @@ export interface LandingWorld {
   boundaryFactor?(position: Vec3): number;
   /** True inside a building footprint. Omitted: no footprints. */
   blocked?(x: number, z: number): boolean;
+  /**
+   * The buildings' volumes (each footprint grown by the margin, up to its wall and roof top): an
+   * arc is cut where a segment between two samples enters one. Omitted: arcs pass through
+   * buildings.
+   */
+  readonly volumes?: VolumeQuery;
+  /** True where a landing's foot or eye is inside a tree crown. Arcs pass through crowns. */
+  treeBlocked?(x: number, z: number): boolean;
 }
 
 /** No world bound: the flat floor at y = 0, with no boundary and no footprints. */
@@ -100,13 +140,83 @@ function noLanding(out: ArcResult): void {
   out.reason = 'none';
 }
 
-/** The landing's validity: the boundary first, then a footprint, then the slope. */
+/** The landing's validity: the boundary first, then a footprint, a tree crown, then the slope. */
 function landingReason(world: LandingWorld, hit: Vec3, normal: Vec3): LandingReason {
   if (world.boundaryFactor && world.boundaryFactor(hit) > BOUNDARY_LIMIT) return 'boundary';
   if (world.blocked?.(hit[0], hit[2])) return 'footprint';
+  if (world.treeBlocked?.(hit[0], hit[2])) return 'tree';
   const length = Math.hypot(normal[0], normal[1], normal[2]);
   if (!(normal[1] > COS_MAX_SLOPE * length)) return 'slope';
   return 'ok';
+}
+
+/** The running trace's launch and world, so the helpers below are module-level, not closures. */
+const T = {
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  vx: 0,
+  vy: 0,
+  vz: 0,
+  ground: FLAT_WORLD.ground as LandingGround,
+  volumes: undefined as VolumeQuery | undefined,
+};
+
+const px = (t: number): number => T.ox + T.vx * t;
+const py = (t: number): number => T.oy + T.vy * t - (GRAVITY / 2) * t * t;
+const pz = (t: number): number => T.oz + T.vz * t;
+
+/** Height above the ground at time t; positive above it. */
+function clearance(t: number): number {
+  return py(t) - T.ground.heightAt(px(t), pz(t));
+}
+
+/** Whether the chord of the parabola from time a to time b touches a volume. */
+function touches(a: number, b: number): boolean {
+  const v = T.volumes;
+  return v !== undefined && v.crossing(px(a), py(a), pz(a), px(b), py(b), pz(b)) >= 0;
+}
+
+/** Rewrites the live samples evenly over [0, tEnd] and ends the arc at `endPoint`. */
+function finish(out: ArcResult, tEnd: number, endPoint: Vec3): void {
+  const points = out.points;
+  const step = tEnd / (MAX_SAMPLES - 1);
+  for (let j = 1; j < MAX_SAMPLES - 1; j += 1) {
+    const tj = j * step;
+    points[j * 3] = px(tj);
+    points[j * 3 + 1] = py(tj);
+    points[j * 3 + 2] = pz(tj);
+  }
+  const last = (MAX_SAMPLES - 1) * 3;
+  points[last] = endPoint[0];
+  points[last + 1] = endPoint[1];
+  points[last + 2] = endPoint[2];
+  out.count = MAX_SAMPLES;
+}
+
+/**
+ * Ends the arc where the chord from `from` to `to` enters a volume, found by halving it. A graze
+ * within the chord's sag (under 1 cm) of a roof can put the hit up to one sample step past it.
+ */
+function cut(out: ArcResult, from: number, to: number): void {
+  let lo = from;
+  let hi = to;
+  for (let step = 0; step < CUT_BISECT_STEPS; step += 1) {
+    const mid = (lo + hi) / 2;
+    if (touches(lo, mid)) hi = mid;
+    else lo = mid;
+  }
+  const hit = out.landing;
+  hit[0] = px(hi);
+  hit[1] = py(hi);
+  hit[2] = pz(hi);
+  finish(out, hi, hit);
+  out.normal[0] = 0;
+  out.normal[1] = 1;
+  out.normal[2] = 0;
+  out.hit = hit;
+  out.reason = 'building';
+  out.valid = false;
 }
 
 /**
@@ -116,8 +226,24 @@ function landingReason(world: LandingWorld, hit: Vec3, normal: Vec3): LandingRea
  * the time between it and the sample before is bisected, and the hit is that point dropped exactly
  * onto the ground. A landed arc is then resampled evenly over its flight to the hit, so a short or
  * steep-down arc still has `MAX_SAMPLES` points to draw.
+ *
+ * With `world.volumes`, each segment between consecutive samples (and the last one to the
+ * landing) is tested against the buildings' volumes, not just the sample points, so a step cannot
+ * skip a corner or a ridge. The first segment that touches one ends the arc: the entry inside it
+ * is bisected on the parabola, the hit is the point at the entry, and the reason is `building`.
+ * A volume whose walls hold the origin is ignored until the arc has left them, and one that holds
+ * it only in its margin is tested at its bare walls, so an aim started beside a wall is cut at the
+ * wall and an aim away from it is free. A segment is a chord of the parabola
+ * and sags under 1 cm at the longest step, so the chord test is effectively exact.
  */
 export function traceArc(out: ArcResult, origin: Vec3, direction: Vec3, world: LandingWorld): void {
+  trace(out, origin, direction, world);
+  // Keep no reference to the last world's terrain or volumes between traces.
+  T.ground = FLAT_WORLD.ground;
+  T.volumes = undefined;
+}
+
+function trace(out: ArcResult, origin: Vec3, direction: Vec3, world: LandingWorld): void {
   const points = out.points;
   const [ox, oy, oz] = origin;
   points[0] = ox;
@@ -131,27 +257,36 @@ export function traceArc(out: ArcResult, origin: Vec3, direction: Vec3, world: L
     return;
   }
   const k = LAUNCH_SPEED / length;
-  const vx = direction[0] * k;
-  const vy = direction[1] * k;
-  const vz = direction[2] * k;
-  const vh = Math.hypot(vx, vz);
+  const vh = Math.hypot(direction[0] * k, direction[2] * k);
+  T.ox = ox;
+  T.oy = oy;
+  T.oz = oz;
+  T.vx = direction[0] * k;
+  T.vy = direction[1] * k;
+  T.vz = direction[2] * k;
+  T.ground = ground;
+  const volumes = world.volumes;
+  T.volumes = volumes;
   const end = vh > 0 ? Math.min(MAX_FLIGHT_TIME, MAX_RANGE / vh) : MAX_FLIGHT_TIME;
   const dt = end / (MAX_SAMPLES - 1);
-  const halfG = GRAVITY / 2;
-  /** Height above the ground at time t; positive above it. */
-  const clearance = (t: number): number =>
-    oy + vy * t - halfG * t * t - ground.heightAt(ox + vx * t, oz + vz * t);
+  // Every volume the origin is inside is ignored until a sample is outside it.
+  volumes?.begin(ox, oy, oz);
 
   for (let i = 1; i < MAX_SAMPLES; i += 1) {
     const t = i * dt;
-    const x = ox + vx * t;
-    const y = oy + vy * t - halfG * t * t;
-    const z = oz + vz * t;
+    const x = px(t);
+    const y = py(t);
+    const z = pz(t);
     if (y > ground.heightAt(x, z)) {
+      if (touches(t - dt, t)) {
+        cut(out, t - dt, t);
+        return;
+      }
       points[i * 3] = x;
       points[i * 3 + 1] = y;
       points[i * 3 + 2] = z;
       out.count = i + 1;
+      volumes?.update(x, y, z);
       continue;
     }
     let lo = t - dt;
@@ -162,22 +297,15 @@ export function traceArc(out: ArcResult, origin: Vec3, direction: Vec3, world: L
       else hi = mid;
     }
     const th = (lo + hi) / 2;
-    const hit = out.landing;
-    hit[0] = ox + vx * th;
-    hit[2] = oz + vz * th;
-    hit[1] = ground.heightAt(hit[0], hit[2]);
-    const step = th / (MAX_SAMPLES - 1);
-    for (let j = 1; j < MAX_SAMPLES - 1; j += 1) {
-      const tj = j * step;
-      points[j * 3] = ox + vx * tj;
-      points[j * 3 + 1] = oy + vy * tj - halfG * tj * tj;
-      points[j * 3 + 2] = oz + vz * tj;
+    if (touches(t - dt, th)) {
+      cut(out, t - dt, th);
+      return;
     }
-    const last = (MAX_SAMPLES - 1) * 3;
-    points[last] = hit[0];
-    points[last + 1] = hit[1];
-    points[last + 2] = hit[2];
-    out.count = MAX_SAMPLES;
+    const hit = out.landing;
+    hit[0] = px(th);
+    hit[2] = pz(th);
+    hit[1] = ground.heightAt(hit[0], hit[2]);
+    finish(out, th, hit);
     const normal = ground.normalAt(hit[0], hit[2]);
     out.normal[0] = normal[0];
     out.normal[1] = normal[1];

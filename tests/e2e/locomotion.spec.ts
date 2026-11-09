@@ -17,7 +17,11 @@ import {
   traceArc,
 } from '../../src/locomotion/teleport.ts';
 import { PAINTER_SPOT } from '../../src/paintings/starry-night/canvas-camera.ts';
-import { createFootprintTest } from '../../src/paintings/starry-night/footprints.ts';
+import {
+  createFootprintTest,
+  createVolumes,
+  createVolumeTest,
+} from '../../src/paintings/starry-night/footprints.ts';
 import { createTerrain } from '../../src/world/terrain.ts';
 import { createVillage } from '../../src/world/village.ts';
 import { expect, type Quat, test, type Vec3, type Xr } from './fixtures';
@@ -44,6 +48,8 @@ const terrain = createTerrain(1);
 /** The world's house and church footprints, as `WorldHandle.blocked` tests them. */
 const village = createVillage(1, terrain);
 const blocked = createFootprintTest(village);
+const volume = createVolumeTest(village);
+const volumes = createVolumes(village);
 const WORLD = 'painting=starry-night&noanim&nogov';
 
 /** A rotation about +X: a negative angle pitches a -Z ray down. */
@@ -449,16 +455,64 @@ test('after a snap turn the left stick walks along the new heading, within the 2
   expect(Math.hypot(dx, dz)).toBeLessThanOrEqual(2 * elapsed + 0.05);
 });
 
-/** House 7's centre, and the eye `distance` m short of it on the line from the painter's spot. */
-function houseApproach(distance: number): [[number, number], [number, number]] {
-  const house = village.houses[7];
-  if (!house) throw new Error('the village has no house 7');
-  const [cx, , cz] = house.center;
-  const length = Math.hypot(cx, cz);
-  return [
-    [cx - (cx / length) * distance, cz - (cz / length) * distance],
-    [cx, cz],
-  ];
+/** A house to aim at, and the open ground to aim from. */
+interface Approach {
+  /** The eye's x and z. */
+  readonly eye: [number, number];
+  /** The house centre. */
+  readonly target: [number, number];
+  /** The house's index in the volumes: the cut must land inside it. */
+  readonly volumeIndex: number;
+}
+
+/**
+ * An eye in open ground with a clear run to a house: no volume within 3 m of the eye or of a point
+ * 0.5 m ahead of it (the XR controller sits 0.3 m forward), and the line from the eye to the house
+ * centre, at head height, first enters that house's own volume 3.5 m or more away. House 7 is tried
+ * first, then the others. Houses are dense: the run is usually found from another azimuth.
+ */
+function houseApproach(): Approach {
+  const order = [7, ...village.houses.map((_, i) => i).filter((i) => i !== 7)];
+  const openAt = (x: number, z: number): boolean => {
+    for (let k = 0; k < 8; k += 1) {
+      const a = (k / 8) * 2 * Math.PI;
+      for (const r of [0, 3]) {
+        const px = x + r * Math.sin(a);
+        const pz = z + r * Math.cos(a);
+        if (blocked(px, pz)) return false;
+        for (const h of [1.4, 1.6])
+          if (volumes.at(px, terrain.heightAt(px, pz) + h, pz) >= 0) return false;
+      }
+    }
+    return true;
+  };
+  for (const index of order) {
+    const house = village.houses[index];
+    if (!house) continue;
+    const [cx, , cz] = house.center;
+    for (let k = 0; k < 16; k += 1) {
+      const a = (k / 16) * 2 * Math.PI;
+      for (const d of [5, 6, 7, 8, 9, 10]) {
+        const x = cx + d * Math.sin(a);
+        const z = cz + d * Math.cos(a);
+        const ahead: [number, number] = [x - Math.sin(a) * 0.5, z - Math.cos(a) * 0.5];
+        if (!openAt(x, z) || !openAt(ahead[0], ahead[1])) continue;
+        // March toward the centre at head height: the first volume must be this house, 3.5 m out.
+        let first = -1;
+        let at = 0;
+        for (let m = 0; m <= d * 8 && first < 0; m += 1) {
+          const t = m / 8;
+          const px = x - Math.sin(a) * t;
+          const pz = z - Math.cos(a) * t;
+          first = volumes.at(px, terrain.heightAt(px, pz) + 1.4, pz);
+          at = t;
+        }
+        if (first === index && at >= 3.5)
+          return { eye: [x, z], target: [cx, cz], volumeIndex: index };
+      }
+    }
+  }
+  throw new Error('no open-ground approach to any house');
 }
 
 /**
@@ -533,19 +587,25 @@ async function aimUntilRejected(
   throw new Error(`no pitch gave a ${reason} rejection`);
 }
 
-test('desktop T aimed at a house is rejected as a footprint, and its release does not jump', async ({
+test('desktop T aimed at a house is cut at the building, and its release does not jump', async ({
   page,
   xr,
 }) => {
   test.setTimeout(180_000);
   await bootWorld(xr, WORLD);
   await page.keyboard.down('KeyT');
-  const [eye, target] = houseApproach(6);
-  const aimed = await aimUntilRejected(page, xr, eye, target, 'footprint');
+  const { eye, target, volumeIndex } = houseApproach();
+  const aimed = await aimUntilRejected(page, xr, eye, target, 'building');
   expect(aimed.aim.valid).toBe(false);
   expect(aimed.aim.hit).not.toBeNull();
   const hit = aimed.aim.hit as Vec3;
+  // The cut point is inside the house's volume, in the air above the ground, not a landing behind it.
   expect(blocked(hit[0], hit[2])).toBe(true);
+  expect(volume(hit[0], hit[1], hit[2])).toBe(true);
+  expect(hit[1]).toBeGreaterThan(terrain.heightAt(hit[0], hit[2]) + 0.05);
+  // The cut is in the aimed house, across open ground, not against a wall beside the eye.
+  expect(volumes.at(hit[0], hit[1], hit[2])).toBe(volumeIndex);
+  expect(Math.hypot(hit[0] - eye[0], hit[2] - eye[1])).toBeGreaterThan(3);
   await page.keyboard.up('KeyT');
   await xr.waitFrames(5);
   const after = await rig(xr);
@@ -578,9 +638,9 @@ test('a right-stick aim at a house in XR is rejected and the release leaves the 
   test.setTimeout(180_000);
   await bootWorld(xr, WORLD);
   await xr.enterXR();
-  // The rig stands 7.5 m short of house 7, facing it. The controller pitches down until the arc
-  // lands on its walls.
-  const [eye, target] = houseApproach(7.5);
+  // The rig stands in open ground facing a house. The controller pitches down until the arc meets
+  // its walls.
+  const { eye, target, volumeIndex } = houseApproach();
   await placeEye(page, eye[0], eye[1], yawToward(eye[0], eye[1], target[0], target[1]));
   await xr.waitFrames(3);
   await xr.setPose({ right: { position: [0, 1.4, -0.3], quaternion: pitch(14) } });
@@ -590,12 +650,15 @@ test('a right-stick aim at a house in XR is rejected and the release leaves the 
     await xr.setPose({ right: { position: [0, 1.4, -0.3], quaternion: pitch(deg) } });
     await xr.waitFrames(2);
     const current = await rig(xr);
-    if (current.aim.active && current.aim.reason === 'footprint') found = current;
+    if (current.aim.active && current.aim.reason === 'building') found = current;
   }
   expect(found, 'an arc landing on the house').not.toBeNull();
   const held = found as RigDiag;
   expect(held.aim.valid).toBe(false);
-  expect(held.aim.hit).not.toBeNull();
+  const cut = held.aim.hit as Vec3;
+  expect(cut).not.toBeNull();
+  expect(volumes.at(cut[0], cut[1], cut[2])).toBe(volumeIndex);
+  expect(Math.hypot(cut[0] - eye[0], cut[2] - eye[1])).toBeGreaterThan(3);
   await xr.stick('right', 0, 0);
   await xr.waitFrames(5);
   const after = await rig(xr);

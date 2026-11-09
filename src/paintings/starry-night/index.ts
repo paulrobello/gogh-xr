@@ -39,7 +39,7 @@ import {
   PAINTER_SPOT,
 } from './canvas-camera';
 import { buildCanvasHistogramSteps, type CanvasSource } from './canvas-histogram';
-import { createFootprintTest } from './footprints';
+import { createCrownTest, createFootprintTest, createVolumes } from './footprints';
 import {
   assembleWorldStrokesSteps,
   createWorldGeometrySteps,
@@ -184,6 +184,8 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   registerDiag('halo', () => ({ visible: halo.mesh.visible, halos: halo.state() }));
   const { heightAt, normalAt } = world.terrain;
   const blocked = createFootprintTest(world.village);
+  const volumes = createVolumes(world.village);
+  const treeBlocked = createCrownTest(world.cypress, heightAt);
   const setHaze = (thickness: number): void => {
     for (const material of Object.values(batch.materials)) {
       material.uniforms.uHazeThickness.value = thickness;
@@ -197,6 +199,8 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     ground: { heightAt, normalAt },
     boundaryFactor,
     blocked,
+    volumes,
+    treeBlocked,
     setHaze,
     setHalo,
     halo: halo.mesh,

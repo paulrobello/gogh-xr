@@ -4,6 +4,7 @@
  */
 import type { Object3D, Scene, Texture } from 'three';
 import type { Raster } from '../demo/canvas/field';
+import type { VolumeQuery } from '../locomotion/teleport';
 import type { WalkBounds } from '../locomotion/walk-bounds';
 import type { StrokeBatch } from '../render/strokes/batch';
 import type { Vec3 } from '../render/strokes/frame';
@@ -99,6 +100,17 @@ export interface WorldHandle {
    * no teleport lands there (P3.4). Omitted: a world without buildings.
    */
   blocked?(x: number, z: number): boolean;
+  /**
+   * The buildings' volumes: each footprint grown by the same margin, up to its wall and roof top.
+   * A teleport arc is cut where a segment between two samples enters one. Omitted: arcs pass
+   * through whatever the world has.
+   */
+  readonly volumes?: VolumeQuery;
+  /**
+   * True where a viewer landing at (x, z) would stand in a tree crown or have the eye in one: no
+   * teleport lands there. Arcs pass through crowns. Omitted: a world without trees.
+   */
+  treeBlocked?(x: number, z: number): boolean;
   /**
    * Thickens the boundary haze, 0-1, 0 being the world as built. Flight drives it near the edge
    * (P3.5). Omitted: a world without haze.

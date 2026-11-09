@@ -17,9 +17,15 @@ import {
   stepBlink,
   teleportRig,
   traceArc,
+  type VolumeQuery,
 } from '../src/locomotion/teleport';
-import { createFootprintTest } from '../src/paintings/starry-night/footprints';
+import {
+  createCrownTest,
+  createFootprintTest,
+  createVolumes,
+} from '../src/paintings/starry-night/footprints';
 import type { Vec3 } from '../src/render/strokes/frame';
+import { createCypress } from '../src/world/cypress';
 import { createTerrain } from '../src/world/terrain';
 import { createVillage } from '../src/world/village';
 
@@ -384,5 +390,391 @@ describe("the painter's hill (real heightfield, seed 1)", () => {
     }
     expect(landedOnSteep).toBeGreaterThan(20);
     expect(rejected).toEqual([]);
+  });
+});
+
+/** A building volume for fixtures: an upright box with a flat top. */
+interface Box {
+  readonly x0: number;
+  readonly x1: number;
+  readonly z0: number;
+  readonly z1: number;
+  readonly top: number;
+}
+
+/** `VolumeQuery` over boxes: exact point and segment tests, as the real volumes promise. */
+function boxVolumes(boxes: readonly Box[]): VolumeQuery {
+  const ignored = boxes.map(() => false);
+  const inside = (b: Box, x: number, y: number, z: number): boolean =>
+    x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1 && y <= b.top;
+  return {
+    at: (x, y, z) => boxes.findIndex((b) => inside(b, x, y, z)),
+    begin(x, y, z) {
+      for (const [i, b] of boxes.entries()) ignored[i] = inside(b, x, y, z);
+    },
+    update(x, y, z) {
+      for (const [i, b] of boxes.entries())
+        if (ignored[i] && !inside(b, x, y, z)) ignored[i] = false;
+    },
+    crossing(ax, ay, az, bx, by, bz) {
+      for (const [i, b] of boxes.entries()) {
+        if (ignored[i]) continue;
+        let t0 = 0;
+        let t1 = 1;
+        for (const [a, d, lo, hi] of [
+          [ax, bx - ax, b.x0, b.x1],
+          [az, bz - az, b.z0, b.z1],
+        ] as const) {
+          if (d === 0) {
+            if (a < lo || a > hi) t1 = -1;
+          } else {
+            const u = (lo - a) / d;
+            const v = (hi - a) / d;
+            t0 = Math.max(t0, Math.min(u, v));
+            t1 = Math.min(t1, Math.max(u, v));
+          }
+        }
+        if (t0 > t1) continue;
+        if (Math.min(ay + (by - ay) * t0, ay + (by - ay) * t1) <= b.top) return i;
+      }
+      return -1;
+    },
+  };
+}
+
+describe('arcs and building volumes', () => {
+  /** x -1..1, z -4..-3, up to y 3, on flat ground. */
+  const BOX: Box = { x0: -1, x1: 1, z0: -4, z1: -3, top: 3 };
+  const box = boxVolumes([BOX]);
+  const inBox = (x: number, y: number, z: number): boolean => box.at(x, y, z) >= 0;
+  const lowWall = boxVolumes([{ ...BOX, top: 1 }]);
+
+  it('cuts an arc at the wall it enters, reports `building` and draws up to the cut', () => {
+    const out = trace(ORIGIN, FORWARD, flatWith({ volumes: box }));
+    expect(out.reason).toBe('building');
+    expect(out.valid).toBe(false);
+    const hit = out.hit as Vec3;
+    // The wall face the arc meets is z = -3, and the hit is just inside it.
+    expect(hit[2]).toBeLessThan(-3);
+    expect(hit[2]).toBeGreaterThan(-3.001);
+    expect(inBox(hit[0], hit[1], hit[2])).toBe(true);
+    expect(hit[1]).toBeGreaterThan(0);
+    // The arc is the parabola up to there: every sample is clear of the box except the last.
+    expect(out.count).toBe(MAX_SAMPLES);
+    expect(point(out, out.count - 1)).toEqual(hit);
+    for (let i = 0; i < out.count - 1; i += 1) {
+      const [x, y, z] = point(out, i);
+      expect(inBox(x, y, z), `sample ${i}`).toBe(false);
+    }
+    expect(point(out, 0)).toEqual(ORIGIN);
+  });
+
+  it('cuts an arc that crosses a wall thinner than a sample step, with both samples outside it', () => {
+    // 0.1 m thick at z -3.05..-2.95. Samples fall every 0.385 m in z, at -2.695 and -3.08.
+    const thin = boxVolumes([{ ...BOX, z0: -3.05, z1: -2.95 }]);
+    const out = trace(ORIGIN, FORWARD, flatWith({ volumes: thin }));
+    expect(out.reason).toBe('building');
+    const hit = out.hit as Vec3;
+    expect(hit[2]).toBeLessThan(-2.94);
+    expect(hit[2]).toBeGreaterThan(-3.06);
+    expect(trace(ORIGIN, FORWARD, flatWith({})).reason).toBe('ok');
+  });
+
+  it('passes an arc over a wall it clears and lands behind it', () => {
+    const clear = trace(ORIGIN, [0, 0.6, -1], flatWith({ volumes: lowWall }));
+    expect(clear.reason).toBe('ok');
+    expect((clear.hit as Vec3)[2]).toBeLessThan(-4);
+  });
+
+  it('cuts an arc that would land behind the building, which the landing test alone accepts', () => {
+    const blocked = (x: number, z: number): boolean => x >= -1 && x <= 1 && z >= -4 && z <= -3;
+    const start: Vec3 = [0, 2.5, -1];
+    const aim: Vec3 = [0, 0, -1];
+    const lands = trace(start, aim, flatWith({ blocked }));
+    expect(lands.reason).toBe('ok');
+    expect((lands.hit as Vec3)[2]).toBeLessThan(-4);
+    const cut = trace(start, aim, flatWith({ blocked, volumes: box }));
+    expect(cut.reason).toBe('building');
+    expect(cut.valid).toBe(false);
+  });
+
+  it('cuts at a landing that ends in the ground inside a low volume, at its entry', () => {
+    // Top 0.2 m, z -5..-4.3: the arc lands at z -4.4 and its last sample above ground is at -4.2.
+    const low = boxVolumes([{ x0: -1, x1: 1, z0: -5, z1: -4.3, top: 0.2 }]);
+    const out = trace(ORIGIN, FORWARD, flatWith({ volumes: low }));
+    expect(out.reason).toBe('building');
+    const hit = out.hit as Vec3;
+    expect(hit[2]).toBeLessThan(-4.3);
+    expect(hit[2]).toBeGreaterThan(-4.31);
+    expect(hit[1]).toBeGreaterThan(0);
+    expect(hit[1]).toBeLessThanOrEqual(0.2);
+  });
+
+  it('cuts an arc that falls onto a roof from above, at the top', () => {
+    const out = trace([0, 6, -3.2], [0, -1, -0.1], flatWith({ volumes: box }));
+    expect(out.reason).toBe('building');
+    expect((out.hit as Vec3)[1]).toBeCloseTo(3, 1);
+  });
+
+  it('stops at the first of two buildings and ignores a world with none', () => {
+    const two = boxVolumes([BOX, { ...BOX, z0: -12, z1: -10 }]);
+    const out = trace(ORIGIN, FORWARD, flatWith({ volumes: two }));
+    expect((out.hit as Vec3)[2]).toBeGreaterThan(-3.01);
+    expect(trace(ORIGIN, FORWARD, flatWith({ volumes: boxVolumes([]) })).reason).toBe('ok');
+  });
+
+  it('decides `building` before any landing reason', () => {
+    const everything = {
+      volumes: box,
+      boundaryFactor: () => 1,
+      blocked: () => true,
+      treeBlocked: () => true,
+    };
+    expect(trace(ORIGIN, FORWARD, flatWith(everything)).reason).toBe('building');
+  });
+
+  it('orders the landing reasons: boundary, footprint, tree, then slope', () => {
+    const all = { boundaryFactor: () => 1, blocked: () => true, treeBlocked: () => true };
+    expect(trace(ORIGIN, FORWARD, flatWith(all)).reason).toBe('boundary');
+    const noEdge = { ...all, boundaryFactor: () => 0 };
+    expect(trace(ORIGIN, FORWARD, flatWith(noEdge)).reason).toBe('footprint');
+    expect(trace(ORIGIN, FORWARD, flatWith({ ...noEdge, blocked: () => false })).reason).toBe(
+      'tree',
+    );
+    expect(trace(ORIGIN, FORWARD, flatWith({ treeBlocked: () => false })).reason).toBe('ok');
+  });
+
+  it('rejects a landing inside a tree crown as a tree and still reports its hit', () => {
+    const out = trace(ORIGIN, FORWARD, flatWith({ treeBlocked: (_x, z) => z < -4 }));
+    expect(out.reason).toBe('tree');
+    expect(out.valid).toBe(false);
+    expect(out.hit).not.toBeNull();
+  });
+
+  it('does not cut an arc that flies through a crown: crowns reject landings only', () => {
+    const out = trace(ORIGIN, FORWARD, flatWith({ treeBlocked: (_x, z) => z > -3 && z < -2 }));
+    expect(out.reason).toBe('ok');
+  });
+});
+
+describe('an aim that starts inside a building volume', () => {
+  const house: Box = { x0: -1, x1: 1, z0: -4, z1: -3, top: 3 };
+  const second: Box = { x0: -1, x1: 1, z0: 3, z1: 4, top: 3 };
+  const inside: Vec3 = [0, 1, -3.5];
+
+  it('can aim out of it and land past it', () => {
+    const out = trace(inside, [0, 0.3, 1], flatWith({ volumes: boxVolumes([house]) }));
+    expect(out.reason).toBe('ok');
+    const hit = out.hit as Vec3;
+    expect(hit[2]).toBeGreaterThan(-3);
+    expect(out.count).toBe(MAX_SAMPLES);
+    expect(Math.hypot(hit[0] - inside[0], hit[2] - inside[2])).toBeGreaterThan(1);
+  });
+
+  it('can aim out of two overlapping volumes and is cut at a third building', () => {
+    const tower: Box = { x0: -1, x1: 1, z0: -4, z1: -3, top: 3 };
+    const nave: Box = { x0: -3, x1: 3, z0: -3.5, z1: -1, top: 3 };
+    const both = boxVolumes([tower, nave, second]);
+    const strip: Vec3 = [0, 1, -3.2];
+    expect(both.at(...strip)).toBeGreaterThanOrEqual(0);
+    const out = trace(strip, [0, 0.6, 1], flatWith({ volumes: both }));
+    expect(out.reason).toBe('building');
+    const hit = out.hit as Vec3;
+    expect(hit[2]).toBeGreaterThan(3);
+    expect(hit[2]).toBeLessThan(3.01);
+    const free = trace(strip, [0, 0.3, 1], flatWith({ volumes: boxVolumes([tower, nave]) }));
+    expect(free.reason).toBe('ok');
+    expect(
+      Math.hypot((free.hit as Vec3)[0] - strip[0], (free.hit as Vec3)[2] - strip[2]),
+    ).toBeGreaterThan(2);
+  });
+
+  it('is cut at a second building it crosses after leaving the first', () => {
+    const out = trace(inside, [0, 0.6, 1], flatWith({ volumes: boxVolumes([house, second]) }));
+    expect(out.reason).toBe('building');
+    const hit = out.hit as Vec3;
+    expect(hit[2]).toBeGreaterThan(3);
+    expect(hit[2]).toBeLessThan(3.01);
+  });
+});
+
+describe('arcs on the seed-1 village (real volumes)', () => {
+  const terrain = createTerrain(1);
+  const village = createVillage(1, terrain);
+  const cypress = createCypress(1, terrain);
+  const world: LandingWorld = {
+    ground: { heightAt: terrain.heightAt, normalAt: terrain.normalAt },
+    blocked: createFootprintTest(village),
+    volumes: createVolumes(village),
+    treeBlocked: createCrownTest(cypress, terrain.heightAt),
+  };
+
+  it('cuts a level shot at any house before it can land behind it', () => {
+    let cut = 0;
+    for (const house of village.houses) {
+      const [hx, , hz] = house.center;
+      const from = Math.hypot(hx, hz);
+      // Stand 6 m short of the house on the line from the spot, aim level at its walls.
+      const ux = hx / from;
+      const uz = hz / from;
+      const sx = hx - ux * 6;
+      const sz = hz - uz * 6;
+      const eye: Vec3 = [sx, terrain.heightAt(sx, sz) + 1.5, sz];
+      const out = trace(eye, [ux, 0.05, uz], world);
+      if (out.reason !== 'building') continue;
+      cut += 1;
+      const hit = out.hit as Vec3;
+      expect(out.valid).toBe(false);
+      expect(Math.hypot(hit[0] - hx, hit[2] - hz)).toBeLessThan(house.width + house.depth);
+    }
+    expect(cut).toBeGreaterThan(5);
+  });
+
+  it('lets no arc through a house volume between samples and still land `ok`', () => {
+    const volumes = createVolumes(village);
+    let cut = 0;
+    let landed = 0;
+    for (const house of village.houses) {
+      const [hx, , hz] = house.center;
+      const sin = Math.sin(house.yaw);
+      const cos = Math.cos(house.yaw);
+      for (const back of [3, 4, 5, 6, 7, 8, 9]) {
+        // On the house's local -z axis (toWorld: x = cx + lz sin, z = cz + lz cos).
+        const sx = hx - sin * back;
+        const sz = hz - cos * back;
+        const eye: Vec3 = [sx, terrain.heightAt(sx, sz) + 1.6, sz];
+        if (volumes.at(eye[0], eye[1], eye[2]) >= 0) continue;
+        for (let deg = -30; deg <= 75; deg += 0.25) {
+          const p = deg * DEG;
+          const dir: Vec3 = [sin * Math.cos(p), Math.sin(p), cos * Math.cos(p)];
+          const out = trace(eye, dir, world);
+          if (out.reason === 'building') cut += 1;
+          if (out.reason !== 'ok' || !out.hit) continue;
+          landed += 1;
+          // Walk the real parabola finely: an accepted arc never touches a volume.
+          const tEnd = Math.hypot(out.hit[0] - eye[0], out.hit[2] - eye[2]) / (8 * Math.cos(p));
+          for (let k = 0; k <= 4000; k += 1) {
+            const t = (k / 4000) * tEnd;
+            const y = eye[1] + 8 * dir[1] * t - 4.9 * t * t;
+            const x = eye[0] + 8 * dir[0] * t;
+            const z = eye[2] + 8 * dir[2] * t;
+            if (volumes.at(x, y, z) >= 0) {
+              throw new Error(`house ${hx},${hz} back ${back} deg ${deg}: ok arc inside a volume`);
+            }
+          }
+        }
+      }
+    }
+    expect(cut).toBeGreaterThan(50);
+    expect(landed).toBeGreaterThan(50);
+  });
+
+  describe('an eye in a wall margin, 0.15 m outside the wall of house 0', () => {
+    const house = village.houses[0] as (typeof village.houses)[number];
+    const [hx, , hz] = house.center;
+    const sin = Math.sin(house.yaw);
+    const cos = Math.cos(house.yaw);
+    const lz = house.depth / 2 + 0.15;
+    const ex = hx + lz * sin;
+    const ez = hz + lz * cos;
+    const eye: Vec3 = [ex, terrain.heightAt(ex, ez) + 1.5, ez];
+    /** Local z across the ridge of a world point. */
+    const across = (p: Vec3): number => (p[0] - hx) * sin + (p[2] - hz) * cos;
+    const volumes = createVolumes(village);
+
+    it('starts in the margin and outside the walls', () => {
+      expect(volumes.at(eye[0], eye[1], eye[2])).toBeGreaterThanOrEqual(0);
+      expect(Math.abs(across(eye))).toBeGreaterThan(house.depth / 2);
+    });
+
+    it('is cut at the wall when aimed through the house, not landed behind it', () => {
+      for (const pitch of [0.05, 0.15, 0.3]) {
+        const out = trace(eye, [-sin, pitch, -cos], world);
+        expect(out.reason, `pitch ${pitch}`).toBe('building');
+        const hit = out.hit as Vec3;
+        expect(Math.abs(Math.abs(across(hit)) - house.depth / 2)).toBeLessThan(0.05);
+        expect(Math.hypot(hit[0] - eye[0], hit[2] - eye[2])).toBeGreaterThan(0.1);
+      }
+    });
+
+    it('is free when aimed away from the house', () => {
+      for (const pitch of [0.05, 0.15, 0.3]) {
+        const out = trace(eye, [sin, pitch, cos], world);
+        // Another building further out may still cut it, but not this house, beside the eye.
+        const hit = out.hit as Vec3;
+        expect(Math.hypot(hit[0] - eye[0], hit[2] - eye[2]), `pitch ${pitch}`).toBeGreaterThan(1);
+      }
+    });
+  });
+
+  it('lets an eye inside a house aim out of it', () => {
+    const volumes = createVolumes(village);
+    const house = village.houses[0] as (typeof village.houses)[number];
+    const [hx, , hz] = house.center;
+    const eye: Vec3 = [hx, house.center[1] + 1.2, hz];
+    expect(volumes.at(eye[0], eye[1], eye[2])).toBeGreaterThanOrEqual(0);
+    let free = 0;
+    for (let az = 0; az < 360; az += 15) {
+      const a = az * DEG;
+      const out = trace(eye, [Math.sin(a) * 0.9, 0.4, Math.cos(a) * 0.9], world);
+      if (out.hit && Math.hypot(out.hit[0] - hx, out.hit[2] - hz) > 1) free += 1;
+    }
+    expect(free).toBeGreaterThan(12);
+  });
+
+  it('lets an eye in the church tower-nave overlap aim out, and cuts it at another building', () => {
+    const volumes = createVolumes(village);
+    const [tower, nave] = village.church.walls;
+    const inTower = createFootprintTest({ houses: [], church: { walls: [tower, tower] } });
+    const inNave = createFootprintTest({ houses: [], church: { walls: [nave, nave] } });
+    // The overlap strip: inside both grown rectangles.
+    let eye: Vec3 | null = null;
+    for (let x = -60; x <= 60 && !eye; x += 0.05) {
+      for (let z = -80; z <= 0 && !eye; z += 0.05) {
+        if (!inTower(x, z) || !inNave(x, z)) continue;
+        const y = terrain.heightAt(x, z) + 1.6;
+        if (volumes.at(x, y, z) >= 0) eye = [x, y, z];
+      }
+    }
+    expect(eye, 'a tower-nave overlap point').not.toBeNull();
+    const origin = eye as Vec3;
+    let aims = 0;
+    let moved = 0;
+    let cutAtWall = 0;
+    for (let az = 0; az < 360; az += 15) {
+      const a = az * DEG;
+      for (const pitch of [0, 20, 45]) {
+        const c = Math.cos(pitch * DEG);
+        const out = trace(origin, [Math.sin(a) * c, Math.sin(pitch * DEG), Math.cos(a) * c], world);
+        aims += 1;
+        if (out.hit && Math.hypot(out.hit[0] - origin[0], out.hit[2] - origin[2]) > 0.5) moved += 1;
+        if (out.reason === 'building') cutAtWall += 1;
+      }
+    }
+    // Never collapsed onto the origin: at most the aims that run into the church's own far walls.
+    expect(moved).toBeGreaterThan(aims * 0.9);
+    // Aims into the church are cut at its wall, not let through.
+    expect(cutAtWall).toBeGreaterThan(0);
+  });
+
+  it('rejects a landing in the cypress near the spawn as a tree', () => {
+    const [bx, , bz] = cypress.main.base;
+    const reasons = new Set<string>();
+    for (let deg = 0; deg >= -60; deg -= 2) {
+      const p = deg * DEG;
+      const d = Math.hypot(bx, bz);
+      const out = trace(
+        [0, terrain.heightAt(0, 0) + 1.6, 0],
+        [(bx / d) * Math.cos(p), Math.sin(p), (bz / d) * Math.cos(p)],
+        world,
+      );
+      reasons.add(out.reason);
+      if (out.reason === 'tree') {
+        const hit = out.hit as Vec3;
+        expect(world.treeBlocked?.(hit[0], hit[2])).toBe(true);
+        expect(out.valid).toBe(false);
+      }
+    }
+    expect(reasons.has('tree')).toBe(true);
   });
 });

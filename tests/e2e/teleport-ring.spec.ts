@@ -6,7 +6,11 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
-import { createFootprintTest } from '../../src/paintings/starry-night/footprints.ts';
+import {
+  createCrownTest,
+  createFootprintTest,
+} from '../../src/paintings/starry-night/footprints.ts';
+import { createCypress } from '../../src/world/cypress.ts';
 import { createTerrain } from '../../src/world/terrain.ts';
 import { createVillage } from '../../src/world/village.ts';
 import { expect, test, type Vec3, type Xr } from './fixtures';
@@ -14,6 +18,8 @@ import { expect, test, type Vec3, type Xr } from './fixtures';
 const terrain = createTerrain(1);
 const village = createVillage(1, terrain);
 const blocked = createFootprintTest(village);
+const cypress = createCypress(1, terrain);
+const treeBlocked = createCrownTest(cypress, terrain.heightAt);
 const WORLD = 'painting=starry-night&noanim&nogov&shot';
 const PREFIX = process.env.RING_SHOT_PREFIX ?? 'ring';
 const OUT = '.superpowers/sdd';
@@ -262,55 +268,53 @@ test('the landing ring is visible at near, mid and far landings on flat ground a
   }
 });
 
-test('a house between the eye and the landing hides the ring', async ({ page, xr }) => {
+test('a cypress between the eye and the landing hides the ring', async ({ page, xr }) => {
   test.setTimeout(600_000);
   mkdirSync(OUT, { recursive: true });
   await boot(page, xr);
-  // Eyes just south of each house, aiming north over it: keep the first valid landing past a wall
-  // (the sight line from the eye to the hit runs under the eave inside the house footprint).
+  // An arc is cut at a house, so no valid landing lies behind one. Foliage is soft: an arc passes
+  // through the cypress and lands behind it. Eyes just south of the main mass, aiming north: keep
+  // the first valid landing whose sight line runs through the crown.
   let found: (Sample & { png: Buffer }) | null = null;
-  for (const house of village.houses) {
-    const [hx, , hz] = house.center;
-    for (const back of [6, 8, 10]) {
-      const eye: Vec3 = [hx, terrain.heightAt(hx, hz + back) + 1.6, hz + back];
-      if (blocked(eye[0], eye[2])) continue;
-      for (let deg = -10; deg <= 30 && found === null; deg += 1) {
-        const aim = await place(page, xr, eye, 0, (deg * Math.PI) / 180);
-        if (!aim.valid || !aim.hit) continue;
-        const hit = aim.hit;
-        // A wall between: at least 15 of 80 sight-line samples inside a footprint under the eaves,
-        // the first one 1.5 m or more from the eye, and the hit itself clear of every footprint.
-        let inside = 0;
-        let first = Number.POSITIVE_INFINITY;
-        for (let i = 1; i < 80; i += 1) {
-          const t = i / 80;
-          const x = eye[0] + (hit[0] - eye[0]) * t;
-          const z = eye[2] + (hit[2] - eye[2]) * t;
-          const sight = eye[1] + (hit[1] - eye[1]) * t;
-          if (blocked(x, z) && sight < terrain.heightAt(x, z) + 3.5) {
-            inside += 1;
-            first = Math.min(first, t * Math.hypot(hit[0] - eye[0], hit[2] - eye[2]));
-          }
+  const [bx, , bz] = cypress.main.base;
+  for (const back of [9, 8, 7, 6]) {
+    const eye: Vec3 = [bx, terrain.heightAt(bx, bz + back) + 1.6, bz + back];
+    if (blocked(eye[0], eye[2]) || treeBlocked(eye[0], eye[2])) continue;
+    for (let deg = -10; deg <= 30 && found === null; deg += 1) {
+      const aim = await place(page, xr, eye, 0, (deg * Math.PI) / 180);
+      if (!aim.valid || !aim.hit) continue;
+      const hit = aim.hit;
+      // The crown between: at least 15 of 80 sight-line samples inside it, the first one 1.5 m or
+      // more from the eye, and the hit itself clear of it (a crown landing is rejected anyway).
+      let inside = 0;
+      let first = Number.POSITIVE_INFINITY;
+      for (let i = 1; i < 80; i += 1) {
+        const t = i / 80;
+        const x = eye[0] + (hit[0] - eye[0]) * t;
+        const z = eye[2] + (hit[2] - eye[2]) * t;
+        const sight = eye[1] + (hit[1] - eye[1]) * t;
+        if (treeBlocked(x, z) && sight < terrain.heightAt(x, z) + 3.5) {
+          inside += 1;
+          first = Math.min(first, t * Math.hypot(hit[0] - eye[0], hit[2] - eye[2]));
         }
-        if (inside < 15 || first < 1.5 || blocked(hit[0], hit[2])) continue;
-        if (Math.hypot(hit[0] - eye[0], hit[2] - eye[2]) < 6) continue;
-        const { pixels, inView, png } = await ringPixels(page, xr, hit);
-        if (!inView) continue;
-        found = {
-          station: 'house',
-          eye,
-          hit,
-          distance: Math.hypot(hit[0] - eye[0], hit[2] - eye[2]),
-          slopeDeg: slopeOf(hit[0], hit[2]),
-          pixels,
-          png,
-        };
       }
-      if (found) break;
+      if (inside < 15 || first < 1.5 || treeBlocked(hit[0], hit[2])) continue;
+      if (Math.hypot(hit[0] - eye[0], hit[2] - eye[2]) < 6) continue;
+      const { pixels, inView, png } = await ringPixels(page, xr, hit);
+      if (!inView) continue;
+      found = {
+        station: 'cypress',
+        eye,
+        hit,
+        distance: Math.hypot(hit[0] - eye[0], hit[2] - eye[2]),
+        slopeDeg: slopeOf(hit[0], hit[2]),
+        pixels,
+        png,
+      };
     }
     if (found) break;
   }
-  expect(found, 'no landing behind a house').not.toBeNull();
+  expect(found, 'no landing behind the cypress').not.toBeNull();
   const r = found as Sample & { png: Buffer };
   writeFileSync(`${OUT}/${PREFIX}-occluded.png`, r.png);
   console.log(
