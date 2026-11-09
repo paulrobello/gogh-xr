@@ -5,7 +5,8 @@
  *
  * World: metres, +Y up, the painter's spot at the origin facing −Z.
  * UV (as in src/demo/canvas/field.ts): u left to right, v bottom to top, (0, 0) the painting's
- * bottom-left corner. regions.json has v pointing down: convert with v = 1 − v_json.
+ * bottom-left corner, with the mat excluded (see CANVAS_ASPECT). regions.json has v pointing
+ * down: convert with v = 1 − v_json.
  */
 import { REGION, type RegionId } from '../../demo/canvas/field';
 import type { Vec3 } from '../../render/strokes/frame';
@@ -23,8 +24,15 @@ export const PAINTER_EYE: Vec3 = Object.freeze([
   PAINTER_SPOT[2],
 ]) as Vec3;
 
-/** The scan's pixel aspect (3840 × 3041), which every bake raster shares. */
-export const CANVAS_ASPECT: number = 3840 / 3041;
+/**
+ * The painted canvas's pixel aspect, 3750 × 3011: the 3840 × 3041 scan inset past its mat by
+ * COLOR_INSET (45 px at the sides, 15 px at top and bottom; scripts/bake/bake.ts canvasRect).
+ * Canvas uv [0, 1]² is that rectangle for every source: the colour (frame.webp past the same
+ * inset), flow.png, regions.png and regions.json. Restated because placement.ts pulls in GLSL
+ * `?raw` imports that Playwright cannot load; tests/starry-night-canvas-camera.test.ts keeps it
+ * equal to the inset rectangle.
+ */
+export const CANVAS_ASPECT: number = 3750 / 3011;
 
 /**
  * Vertical field of view, degrees. Must sit in the 45–70° range of a plausible painter's view;
@@ -34,10 +42,10 @@ export const CANVAS_FOV_Y_DEG: number = 60;
 
 /**
  * Canvas v of the true horizon (level rays at infinity). Must lie in the distant ridge's band
- * (regions.json hills top edge, v_down 0.50–0.72) and above the central village roofline (v_down
- * 0.737–0.768 at u 0.45–0.6), which is below eye level. v_down 0.72, the band's bottom edge: only
- * the ridge's far left (v_down up to 0.726 at u 0.11–0.17) dips under it, where the plain meets
- * the horizon.
+ * (regions.json hills top edge, v_down 0.507–0.728) and above the central village roofline (v_down
+ * 0.739–0.771 at u 0.45–0.6), which is below eye level. v_down 0.72, near the band's bottom edge:
+ * only the ridge's far left (v_down up to 0.728 at u 0.10–0.16) dips under it, where the plain
+ * meets the horizon.
  */
 export const HORIZON_V: number = 0.28;
 

@@ -200,7 +200,7 @@ test('SSIM averages valid 11 × 11 windows only and rejects mismatched or tiny i
   expect(() => ssim(new Float64Array(100), new Float64Array(100), 10, 10)).toThrow();
 });
 
-test('block edges partition 203 rows into 12 blocks and 256 columns into 16', () => {
+test('block edges partition 206 rows into 12 blocks and 256 columns into 16', () => {
   for (const [size, count] of [
     [FIDELITY_HEIGHT, GRID_ROWS],
     [FIDELITY_WIDTH, GRID_COLS],
@@ -216,7 +216,7 @@ test('block edges partition 203 rows into 12 blocks and 256 columns into 16', ()
     }
   }
   expect(FIDELITY_WIDTH).toBe(256);
-  expect(FIDELITY_HEIGHT).toBe(Math.round(256 / (3840 / 3041)));
+  expect(FIDELITY_HEIGHT).toBe(206);
 });
 
 test('block means average in linear light, row-major from the top-left', () => {
@@ -261,11 +261,13 @@ test('compareFidelity: identical images give SSIM 1 and ΔE 0, and the worst blo
   expect(() => compareFidelity(a, textured(10, 10))).toThrow();
 });
 
-test('the thresholds are the first accepted render with the fixed margins (OQ6)', () => {
+test('the thresholds are the accepted anchor, moved by the canvas uv change, with the fixed margins (OQ6)', () => {
   expect(SSIM_MARGIN).toBe(0.03);
   expect(DELTA_E_MARGIN).toBe(1.5);
-  expect(SSIM_THRESHOLD).toBe(0.2643);
-  expect(DELTA_E_THRESHOLD).toBe(7.1961);
+  expect(MEASURED_SSIM).toBe(0.3068);
+  expect(MEASURED_DELTA_E).toBe(5.6243);
+  expect(SSIM_THRESHOLD).toBe(0.2768);
+  expect(DELTA_E_THRESHOLD).toBe(7.1243);
   expect(SSIM_THRESHOLD).toBeCloseTo(MEASURED_SSIM - SSIM_MARGIN, 12);
   expect(DELTA_E_THRESHOLD).toBeCloseTo(MEASURED_DELTA_E + DELTA_E_MARGIN, 12);
 });

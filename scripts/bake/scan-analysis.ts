@@ -20,7 +20,7 @@ export interface OrientationOptions {
   tensorSigma?: number;
   /**
    * Painting width / height when the field was resampled to a different shape (the bake squashes
-   * a 3840 × 3041 scan into 1024²). The y gradient is scaled by it so θ is in painting space,
+   * the scan's 3750 × 3011 painted canvas into 1024²). The y gradient is scaled by it so θ is in painting space,
    * not in the squashed field. 1 for a field with the painting's own proportions.
    */
   aspect?: number;
@@ -313,8 +313,9 @@ export function kmeansPalette(pixels: Uint8Array, k: number, seed: number): Swat
 }
 
 /**
- * Hand-authored region shapes (regions.json). Coordinates are normalized painting UV with the
- * origin at the top-left and v pointing down (image space); three.js UV with flipY is
+ * Hand-authored region shapes (regions.json). Coordinates are normalized canvas uv (the painted
+ * canvas, mat excluded, as bake.ts canvasRect crops it) with the origin at the top-left and v
+ * pointing down (image space); three.js UV with flipY is
  * (u, 1 − v). A circle radius is in painting-width units, so with `aspect` = width / height a
  * circle stays round on the painting even though the raster is square.
  */
@@ -331,7 +332,7 @@ export interface Region {
 
 export interface RegionsDoc {
   about?: string;
-  /** Painting width / height. */
+  /** Canvas width / height (the painted canvas, mat excluded). */
   aspect: number;
   /** Rasterized in order: later entries paint over earlier ones. Unpainted pixels are 0. */
   regions: Region[];

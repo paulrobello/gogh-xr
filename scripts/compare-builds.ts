@@ -4,7 +4,9 @@
  * ab.spec.ts compares variants within one build; this compares a change's default path against
  * the commit before it.
  *
- *   bun scripts/compare-builds.ts <base-origin> <branch-origin> [--size 1280x1014]
+ *   bun scripts/compare-builds.ts <base-origin> <branch-origin> [--size WxH]
+ *
+ * The size defaults to CAPTURE_SIZE, the canvas aspect the painter camera keeps.
  *
  * Each origin serves a `--mode e2e` build (`vite preview --mode e2e`), so `?motiont` is honoured.
  * Exits 1 when any boot differs or a page logs an error.
@@ -12,13 +14,16 @@
 import { chromium, type Page } from '@playwright/test';
 import sharp from 'sharp';
 import { gpuArgs } from '../tests/e2e/gpu';
+import { CAPTURE_SIZE } from './fidelity-io.ts';
 
 const args = process.argv.slice(2);
 const option = (name: string): string | undefined => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args.splice(i, 2)[1] : undefined;
 };
-const [width, height] = (option('size') ?? '1280x1014').split('x').map(Number);
+const [width, height] = (option('size') ?? `${CAPTURE_SIZE.width}x${CAPTURE_SIZE.height}`)
+  .split('x')
+  .map(Number);
 const [baseOrigin, branchOrigin] = args;
 if (!baseOrigin || !branchOrigin) {
   console.error('usage: bun scripts/compare-builds.ts <base-origin> <branch-origin> [--size WxH]');

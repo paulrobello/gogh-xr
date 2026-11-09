@@ -282,8 +282,8 @@ export interface CanvasSource {
 
 /**
  * Paint for a surface point on `layer`. In frame and on the layer's own region it reads the
- * canvas at the projected uv (the colour inset past the mat by COLOR_INSET, region and flow at the
- * raw uv) and leaves `rng` untouched; otherwise, or where that colour is outside the region's
+ * canvas at the projected uv (the colour inset past the mat by COLOR_INSET; region and flow at the
+ * raw uv, since the bake already cropped them to the same inset rectangle) and leaves `rng` untouched; otherwise, or where that colour is outside the region's
  * palette (`inRegionPalette`), it draws from the region's histogram.
  */
 export function sampleCanvas(

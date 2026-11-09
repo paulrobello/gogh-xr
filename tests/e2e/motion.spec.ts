@@ -586,9 +586,10 @@ test.describe('star and moon rings (P4.3)', () => {
   /**
    * A frame-geometry guard, not the P4.3 colour clip (that is the moon-disc test below): bounds on
    * the share of the moon's band, its radius to its rim, that falls outside the painter frame at its
-   * top edge (measured 16.7%), so a moved moon or camera fails.
+   * top edge (measured 24.0% since canvas uv excludes the mat, 16.7% before), so a moved moon or
+   * camera fails.
    */
-  const FRAME_OUT_SHARE: readonly [number, number] = [0.15, 0.19];
+  const FRAME_OUT_SHARE: readonly [number, number] = [0.22, 0.26];
 
   /** A shot of the running page after moving the `?motiont` pin to `t` (`__goghMotionT`). */
   async function shotAt(page: Page, xr: Xr, t: number): Promise<Buffer> {

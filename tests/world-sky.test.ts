@@ -25,15 +25,15 @@ test('every anchor reprojects to its canvas uv within 0.5%', () => {
 
 test('anchors sit on the dome with v flipped from regions.json', () => {
   const moon = skyAnchors().find((a) => a.kind === 'moon');
-  expect(moon?.uv[0]).toBeCloseTo(0.904, 6);
-  expect(moon?.uv[1]).toBeCloseTo(1 - 0.171, 6);
+  expect(moon?.uv[0]).toBeCloseTo(0.9137, 6);
+  expect(moon?.uv[1]).toBeCloseTo(1 - 0.1677, 6);
   for (const a of skyAnchors()) {
     const d = a.position.map((p, i) => p - PAINTER_EYE[i]);
     expect(Math.hypot(d[0], d[1], d[2])).toBeCloseTo(SKY_DOME_RADIUS, 6);
     expect(a.angularRadius).toBeGreaterThan(0.01);
     expect(a.angularRadius).toBeLessThan(0.2);
   }
-  const ray = canvasRay(0.904, 1 - 0.171);
+  const ray = canvasRay(0.9137, 1 - 0.1677);
   const m = moon?.position ?? [0, 0, 0];
   expect(m[0]).toBeCloseTo(PAINTER_EYE[0] + ray[0] * SKY_DOME_RADIUS, 6);
 });
@@ -84,25 +84,25 @@ test('anchor uvs match regions.json literals with the v flip written out', () =>
   // [u_json, v_json] from assets/bake/starry-night/regions.json, v pointing down.
   const topLeft = byNote('top left');
   expect(topLeft.kind).toBe('star');
-  expect(topLeft.uv[0]).toBeCloseTo(0.107, 9);
-  expect(topLeft.uv[1]).toBeCloseTo(1 - 0.044, 9);
+  expect(topLeft.uv[0]).toBeCloseTo(0.0976, 9);
+  expect(topLeft.uv[1]).toBeCloseTo(1 - 0.0395, 9);
   const large = byNote('large, lower left of centre');
-  expect(large.uv[0]).toBeCloseTo(0.354, 9);
-  expect(large.uv[1]).toBeCloseTo(1 - 0.529, 9);
+  expect(large.uv[0]).toBeCloseTo(0.3505, 9);
+  expect(large.uv[1]).toBeCloseTo(1 - 0.5293, 9);
   const moon = byNote('crescent and inner glow');
   expect(moon.kind).toBe('moon');
-  expect(moon.uv[0]).toBeCloseTo(0.904, 9);
-  expect(moon.uv[1]).toBeCloseTo(1 - 0.171, 9);
+  expect(moon.uv[0]).toBeCloseTo(0.9137, 9);
+  expect(moon.uv[1]).toBeCloseTo(1 - 0.1677, 9);
 });
 
 test('angularRadius matches a small-angle estimate r * 2 * tan(hfov / 2)', () => {
   const tanHalfX = CANVAS_ASPECT * Math.tan((30 * Math.PI) / 180);
   const tanHalfY = Math.tan((30 * Math.PI) / 180);
   const radii: Record<string, number> = {
-    'large, lower left of centre': 0.065,
-    'crescent and inner glow': 0.068,
-    'top left': 0.043,
-    'mid left, small': 0.03,
+    'large, lower left of centre': 0.0666,
+    'crescent and inner glow': 0.0696,
+    'top left': 0.044,
+    'mid left, small': 0.0307,
   };
   for (const [note, r] of Object.entries(radii)) {
     const a = byNote(note);
@@ -114,5 +114,5 @@ test('angularRadius matches a small-angle estimate r * 2 * tan(hfov / 2)', () =>
   }
   // Near the optical axis the estimate holds within 6%.
   const large = byNote('large, lower left of centre');
-  expect(Math.abs(large.angularRadius / (0.065 * 2 * tanHalfX) - 1)).toBeLessThan(0.06);
+  expect(Math.abs(large.angularRadius / (0.0666 * 2 * tanHalfX) - 1)).toBeLessThan(0.06);
 });

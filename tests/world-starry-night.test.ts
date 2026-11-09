@@ -316,32 +316,32 @@ const GENERATOR_PINS: Readonly<Record<string, MeshPin>> = {
   houses: {
     vertices: 600,
     triangles: 200,
-    min: [-21.562, -6.048, -38.761],
-    max: [21.308, 2.217, -12.675],
+    min: [-21.35, -6.04, -40.715],
+    max: [23.553, 2.156, -10.214],
   },
   roofs: {
     vertices: 240,
     triangles: 80,
-    min: [-21.872, -3.654, -39.083],
-    max: [21.661, 2.217, -12.406],
+    min: [-21.658, -3.631, -40.973],
+    max: [23.87, 2.156, -9.908],
   },
   windows: {
-    vertices: 426,
-    triangles: 142,
-    min: [-21.185, -4.988, -38.188],
-    max: [20.406, -1.407, -12.763],
+    vertices: 390,
+    triangles: 130,
+    min: [-19.775, -4.974, -40.682],
+    max: [23.05, -1.476, -10.565],
   },
   church: {
     vertices: 78,
     triangles: 26,
-    min: [-0.676, -5.448, -41.177],
-    max: [5.424, 5.203, -35.727],
+    min: [-0.594, -5.535, -41.671],
+    max: [5.506, 5.196, -36.221],
   },
   cypress: {
     vertices: 1370,
     triangles: 2688,
-    min: [-5.048, -5.343, -11.05],
-    max: [-0.217, 9.38, -8.015],
+    min: [-5.085, -5.344, -11.024],
+    max: [-0.203, 9.424, -7.968],
   },
   sky: { vertices: 561, triangles: 960, min: [-120, -118.4, -120], max: [120, 121.6, 120] },
 };
@@ -944,24 +944,24 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       eavesHash: hashStrokeBuffers(eaves),
     };
     expect(pins).toEqual({
-      total: 538_116,
+      total: 554_834,
       layers: {
         sky: 283_858,
         star: 0,
         moon: 0,
-        cypress: 36_964,
+        cypress: 37_078,
         ground: 129_925,
-        building: 87_369,
+        building: 103_973,
       },
-      hash: 'f49484bf',
-      opaqueHash: 'cf326988',
-      lights: 4_935,
-      lightsHash: '0ba1901f',
+      hash: '38922948',
+      opaqueHash: 'd46272d4',
+      lights: 4_960,
+      lightsHash: 'b4a55fd9',
       haze: 30_000,
       hazeUnflagged: 0,
-      hazeHash: '49bf0339',
-      eaves: 9_145,
-      eavesHash: '8cf37162',
+      hazeHash: '01933fb0',
+      eaves: 10_053,
+      eavesHash: '6b13c209',
     });
   });
 
@@ -1285,10 +1285,10 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     expect(lights.map((c) => c.mesh.name)).toEqual(['strokes-lights-sky']);
     expect(lights[0].pinned).toBe(lights[0].count);
     expect(lights[0].count).toBe(assembled.counts.star + assembled.counts.moon);
-    // Seed 1: 435 dome parts, 34 sky sectors, and the 15 parts flight can bring near kept alone.
+    // Seed 1: 436 dome parts, 34 sky sectors, and the 15 parts flight can bring near kept alone.
     const sectors = dome.filter((c) => c.mesh.name.startsWith('strokes-dome-'));
     const alone = dome.filter((c) => !c.mesh.name.startsWith('strokes-dome-'));
-    expect(of(plain, 'dome')).toHaveLength(435);
+    expect(of(plain, 'dome')).toHaveLength(436);
     expect(sectors).toHaveLength(34);
     expect(alone).toHaveLength(15);
     for (const chunk of alone) {

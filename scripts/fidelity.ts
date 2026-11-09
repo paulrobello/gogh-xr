@@ -20,6 +20,8 @@ import {
   blockEdges,
   compareFidelity,
   DELTA_E_THRESHOLD,
+  FIDELITY_HEIGHT,
+  FIDELITY_WIDTH,
   GRID_COLS,
   GRID_ROWS,
   type RgbImage,
@@ -63,7 +65,7 @@ const result = compareFidelity(scan, capture);
 
 console.log(`fidelity: capture ${capturePath}`);
 console.log(
-  `fidelity: SSIM ${result.ssim.toFixed(4)} (Rec. 709 luma, 256 × 203), threshold ≥ ${SSIM_THRESHOLD}`,
+  `fidelity: SSIM ${result.ssim.toFixed(4)} (Rec. 709 luma, ${FIDELITY_WIDTH} × ${FIDELITY_HEIGHT}), threshold ≥ ${SSIM_THRESHOLD}`,
 );
 console.log(
   `fidelity: mean ΔE2000 ${result.meanDeltaE.toFixed(4)} over ${GRID_COLS} × ${GRID_ROWS} blocks, threshold ≤ ${DELTA_E_THRESHOLD}`,

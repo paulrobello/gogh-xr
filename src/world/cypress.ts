@@ -44,43 +44,44 @@ import { TERRAIN_CELL, type Terrain } from './terrain';
 export const CYPRESS_OUTLINE: readonly Vec2[] = Object.freeze(
   (
     [
-      [0.197, 0.058],
-      [0.207, 0.1],
-      [0.212, 0.168],
-      [0.218, 0.242],
-      [0.229, 0.316],
-      [0.243, 0.389],
-      [0.25, 0.463],
-      [0.26, 0.547],
-      [0.275, 0.6],
-      [0.293, 0.584],
-      [0.3, 0.642],
-      [0.333, 0.705],
-      [0.379, 0.742],
-      [0.417, 0.774],
-      [0.435, 0.768],
-      [0.446, 0.842],
-      [0.463, 0.916],
-      [0.457, 1],
-      [0.125, 1],
-      [0.121, 0.905],
-      [0.125, 0.8],
-      [0.138, 0.695],
-      [0.146, 0.589],
-      [0.148, 0.474],
-      [0.148, 0.347],
-      [0.157, 0.316],
-      [0.167, 0.253],
-      [0.177, 0.168],
-      [0.183, 0.105],
+      [0.1897, 0.0536],
+      [0.2, 0.096],
+      [0.2051, 0.1647],
+      [0.2112, 0.2394],
+      [0.2225, 0.3142],
+      [0.2368, 0.3879],
+      [0.244, 0.4626],
+      [0.2542, 0.5475],
+      [0.2696, 0.601],
+      [0.288, 0.5848],
+      [0.2952, 0.6434],
+      // biome-ignore lint/suspicious/noApproximativeNumericConstant: a painted v_json value, not √½.
+      [0.329, 0.707],
+      [0.3761, 0.7444],
+      [0.415, 0.7767],
+      [0.4334, 0.7707],
+      [0.4447, 0.8454],
+      [0.4621, 0.9201],
+      [0.456, 1],
+      [0.116, 1],
+      [0.1119, 0.909],
+      [0.116, 0.803],
+      [0.1293, 0.6969],
+      [0.1375, 0.5899],
+      [0.1396, 0.4737],
+      [0.1396, 0.3455],
+      [0.1488, 0.3142],
+      [0.159, 0.2505],
+      [0.1692, 0.1647],
+      [0.1754, 0.1011],
     ] as const
   ).map(([u, vDown]) => Object.freeze([u, 1 - vDown]) as Vec2),
 );
 
 /** The painted cypress apex, the polygon's topmost vertex, v up. The main tip projects exactly here. */
-export const CYPRESS_APEX_UV: Vec2 = Object.freeze([0.197, 1 - 0.058]) as Vec2;
-/** Canvas tip of the lower mass, v up: under the outline's notch at (0.293, 0.416). */
-export const CYPRESS_LOWER_TIP_UV: Vec2 = Object.freeze([0.288, 0.405]) as Vec2;
+export const CYPRESS_APEX_UV: Vec2 = Object.freeze([0.1897, 1 - 0.0536]) as Vec2;
+/** Canvas tip of the lower mass, v up: under the outline's notch at (0.288, 0.4152). */
+export const CYPRESS_LOWER_TIP_UV: Vec2 = Object.freeze([0.2829, 0.4041]) as Vec2;
 
 /**
  * Horizontal distance of both tips from the spot, metres. Canvas framing sets it: along the apex

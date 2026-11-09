@@ -1,7 +1,8 @@
 /**
  * The painter's-spot fidelity metric (P2.8, P2-A2): the painter-camera view of the Starry Night
  * world against the scan, with the shared metric of scripts/fidelity-lib.ts. The thresholds are the
- * first accepted render's values with a fixed margin (docs/verification.md P2-A2).
+ * accepted render's values moved by the canvas uv change's measured delta (MEASURED_SSIM,
+ * MEASURED_DELTA_E), with a fixed margin (docs/verification.md P2-A2).
  *
  * `?painter` puts the desktop camera on the world's painter camera, so the frame is exactly canvas
  * uv [0, 1]². The viewport is the canvas aspect, the size the thresholds were measured at.

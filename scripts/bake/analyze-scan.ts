@@ -3,11 +3,15 @@
  * regions.png and lights.webp to public/paintings/starry-night/, then records their hashes (and the hash of the
  * hand-authored regions.json input) in the bake block of assets/PROVENANCE.md.
  *
+ * palette.json, flow.png and regions.png cover the painted canvas only: the scan cropped past its
+ * mat by COLOR_INSET (bake.ts canvasRect, 3750 × 3011 at (45, 15)), the extent canvas uv [0, 1]²
+ * names everywhere. regions.json is authored in the same canvas uv.
+ *
  * Outputs (see scan-analysis.ts for the conventions):
  * - palette.json: 24 k-means swatches (Oklab, seeded k-means++), sorted dark to light.
  * - flow.png: 1024² RGB8. R = 0.5 + 0.5·cos 2θ, G = 0.5 + 0.5·sin 2θ, B = coherence (stroke-length
  *   hint). θ is the stroke direction from +x, counterclockwise, y up, in painting space. Decode
- *   with θ = ½·atan2(2G − 1, 2R − 1). The scan is squashed to the square, so sample by UV.
+ *   with θ = ½·atan2(2G − 1, 2R − 1). The canvas is squashed to the square, so sample by UV.
  * - regions.png: 1024² 8-bit greyscale, pixel value = region id. Sample with NearestFilter and no
  *   mipmaps or ids blend. Ids: 0 sky (fallback), 1 stars, 2 moon, 3 cypress, 4 village, 5 hills,
  *   6 church.
@@ -19,7 +23,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import sharp from 'sharp';
 import { sha256Of } from '../asset-lib.ts';
-import { bakeScan, bakeSkyLights } from './bake.ts';
+import { bakeScan, bakeSkyLights, canvasRect } from './bake.ts';
 import type { RegionsDoc } from './scan-analysis.ts';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -36,9 +40,10 @@ const regionsText = readFileSync(resolve(root, REGIONS_INPUT), 'utf8');
 const regionsDoc = JSON.parse(regionsText) as RegionsDoc;
 
 const meta = await sharp(scan).metadata();
-const scanAspect = (meta.width ?? 0) / (meta.height ?? 1);
-if (Math.abs(scanAspect - regionsDoc.aspect) > 0.005) {
-  throw new Error(`${REGIONS_INPUT}: aspect ${regionsDoc.aspect} != scan aspect ${scanAspect}`);
+const canvas = canvasRect(meta.width ?? 0, meta.height ?? 1);
+const canvasAspect = canvas.width / canvas.height;
+if (Math.abs(canvasAspect - regionsDoc.aspect) > 0.005) {
+  throw new Error(`${REGIONS_INPUT}: aspect ${regionsDoc.aspect} != canvas aspect ${canvasAspect}`);
 }
 
 const { palette, flow, regions } = await bakeScan(scan, regionsDoc);

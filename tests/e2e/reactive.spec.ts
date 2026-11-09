@@ -10,11 +10,12 @@
  *
  * The cypress and village poses come from the seed-1 geometry (src/world/cypress.ts, village.ts):
  * the main cypress's axis ring 9 is centred at (-3.36, -1.55, -9.35), its hull 1.29 m from the
- * axis towards the painter along (0.338, 0, 0.941). House 10's front wall centre is at
- * (4.56, -2.63, -16.68), facing (-0.186, 0, 0.983).
+ * axis towards the painter along (0.338, 0, 0.941). The village pose is derived from
+ * `createVillage(1, createTerrain(1))` (`GUARD_HOUSE`).
  */
 import type { Page } from '@playwright/test';
 import sharp from 'sharp';
+import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
 import { MAX_MOTION_DT_S } from '../../src/motion/clock.ts';
 import { REACTIVE_MOTION_BIT } from '../../src/motion/layers.ts';
 import {
@@ -26,10 +27,13 @@ import {
   reactiveMotion,
   WAKE_WINDOW_S,
 } from '../../src/motion/reactive.ts';
+import { createTerrain } from '../../src/world/terrain.ts';
+import { createVillage } from '../../src/world/village.ts';
 import { luma, shiftAt } from './block-match';
 import { expect, glErrors, test, type Vec3, type Xr } from './fixtures';
 
-const VIEW = { width: 1280, height: 1014 } as const;
+/** The capture size block-match.ts reads frames at. */
+const VIEW = CAPTURE_SIZE;
 /** Most bare share allowed at any pose (P2-A3). */
 const MAX_BARE = 0.005;
 /** Rig-local, 60 m under the floor: no stroke is within the radius of it. */
@@ -77,9 +81,27 @@ function cypressView(distance: number): View {
     pitch: 0,
   };
 }
-const HOUSE_WALL: Vec3 = [4.56, -2.63, -16.68];
-const HOUSE_OUT: Vec3 = [-0.186, 0, 0.983];
-/** The eye `distance` metres out from house 10's front wall, facing it. */
+/**
+ * The village rows' house: the seed-1 house with a 3.89 × 3.76 m footprint, which the guard has
+ * faced since P4.5 (house 10 at 5171098, house 11 since the canvas uv change). It is found by its
+ * footprint, which a village move keeps, rather than by index or position, which it does not.
+ */
+const GUARD_HOUSE = { width: 3.89, depth: 3.76 } as const;
+const village = createVillage(1, createTerrain(1));
+const footprintMatch = (h: { width: number; depth: number }): boolean =>
+  Math.abs(h.width - GUARD_HOUSE.width) < 0.01 && Math.abs(h.depth - GUARD_HOUSE.depth) < 0.01;
+const houseIndex = village.houses.findIndex(footprintMatch);
+const house = village.houses[houseIndex];
+/** The house's front wall (local +z) faces out along this unit normal. */
+const HOUSE_OUT: Vec3 = [Math.sin(house.yaw), 0, Math.cos(house.yaw)];
+/** The front wall's centre, at half the eave height. Its first window, always lit, hangs here. */
+const HOUSE_WALL: Vec3 = [
+  house.center[0] + (HOUSE_OUT[0] * house.depth) / 2,
+  house.center[1] + house.eaveHeight / 2,
+  house.center[2] + (HOUSE_OUT[2] * house.depth) / 2,
+];
+const FIRST_WINDOW = village.windows.find((w) => w.house === houseIndex);
+/** The eye `distance` metres out from the guard house's front wall, at half its eave height, facing it. */
 function villageView(distance: number): View {
   return {
     eye: [
@@ -368,6 +390,15 @@ test.describe('reactive strokes (P4.5)', () => {
     xr,
   }) => {
     test.setTimeout(600_000);
+    // The village pose faces the guard house's first window: on the front wall, within 0.05 m of
+    // the wall point along it, facing out.
+    expect(houseIndex).toBeGreaterThanOrEqual(0);
+    // Exactly one house matches, so the guard never picks between two by order.
+    expect(village.houses.filter(footprintMatch)).toHaveLength(1);
+    expect(FIRST_WINDOW).toBeDefined();
+    const w = FIRST_WINDOW as NonNullable<typeof FIRST_WINDOW>;
+    expect(w.normal[0] * HOUSE_OUT[0] + w.normal[2] * HOUSE_OUT[2]).toBeGreaterThan(0.999);
+    expect(Math.hypot(w.center[0] - HOUSE_WALL[0], w.center[2] - HOUSE_WALL[2])).toBeLessThan(0.05);
     // Every motion layer open, as shipped, at the pinned-coverage checks' two times
     // (world-coverage.spec.ts), so the cypress flame's wrap and the push meet in one frame and the
     // pair of frames differs by the push alone. Each row is [eye metres off the surface, controller

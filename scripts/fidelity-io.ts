@@ -5,6 +5,7 @@
  */
 import { fileURLToPath } from 'node:url';
 import sharp, { type Sharp } from 'sharp';
+import { CANVAS_ASPECT } from '../src/paintings/starry-night/canvas-camera.ts';
 import { FIDELITY_HEIGHT, FIDELITY_WIDTH, type RgbImage } from './fidelity-lib.ts';
 
 /** The 3840 px Starry Night scan, the bake input. */
@@ -22,10 +23,13 @@ export const SCAN_INSET: readonly [number, number] = Object.freeze([
   4 / 811,
 ]) as readonly [number, number];
 
-/** The viewport the painter camera is captured at: the canvas aspect, 1280 px wide. */
+/**
+ * The viewport the painter camera is captured at: 1280 px wide at CANVAS_ASPECT, height rounded
+ * (1280 × 1028), so the capture and the inset scan share one aspect.
+ */
 export const CAPTURE_SIZE: Readonly<{ width: number; height: number }> = Object.freeze({
   width: 1280,
-  height: 1014,
+  height: Math.round(1280 / CANVAS_ASPECT),
 });
 
 async function toRgb(image: Sharp): Promise<RgbImage> {

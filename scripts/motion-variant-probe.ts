@@ -1,7 +1,7 @@
 /**
  * The sky wrap A/B variant probe (src/motion/variants.ts, docs/verification.md, "Sky wrap
  * variants: opacity and pingpong" and "Sky wrap variants: wave"). Headless Chromium on the GPU at
- * 1280 × 1014 with the e2e suite's launch flags, against a running `--mode e2e` build (`make preview`), because `?motiont`,
+ * the canvas aspect (CAPTURE_SIZE) with the e2e suite's launch flags, against a running `--mode e2e` build (`make preview`), because `?motiont`,
  * `?motionphase` and `__goghMotionT` only exist there.
  *
  *   bun scripts/motion-variant-probe.ts capture <base-url> <out-dir> [extra-query]
@@ -35,6 +35,7 @@ import { chromium, type Page } from '@playwright/test';
 import sharp from 'sharp';
 import { gpuArgs } from '../tests/e2e/gpu.ts';
 import { COVERAGE_POSES } from '../tests/world-poses.ts';
+import { CAPTURE_SIZE } from './fidelity-io.ts';
 import { temporalFlicker } from './zfight-lib.ts';
 
 const [mode, base, out, extra = '', more = ''] = process.argv.slice(2);
@@ -49,8 +50,8 @@ if (
   process.exit(2);
 }
 
-const WIDTH = 1280;
-const HEIGHT = 1014;
+const WIDTH = CAPTURE_SIZE.width;
+const HEIGHT = CAPTURE_SIZE.height;
 const MAX_LOAD = 15;
 /** `LOAD_WAIT_MS` shortens the wait, for a session that already waited out the load once. */
 const LOAD_WAIT_MS = Number(process.env.LOAD_WAIT_MS ?? 15 * 60_000);

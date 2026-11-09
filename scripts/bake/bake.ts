@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { COLOR_INSET } from '../../src/demo/canvas/placement.ts';
 import { SKY_SCAN_SIZE, skyScanAtlasSize, skyScanCrops } from '../../src/world/sky-scan.ts';
 import {
   encodeFlow,
@@ -50,10 +51,30 @@ function paletteJson(k: number, seed: number, swatches: Swatch[]): string {
   ].join('\n');
 }
 
+/** A pixel rectangle of an image, left and top inclusive. */
+export interface PixelRect {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 /**
- * Runs the scan bake on one image. The flow field and region raster are square
- * (`fieldSize`²) and cover the whole painting, so the painting is squashed to fit and both are
- * sampled by painting UV. θ in flow.png is corrected back to painting space (see
+ * The painted canvas inside a `width` × `height` scan: the scan inset past its mat by COLOR_INSET,
+ * rounded to whole pixels. Canvas uv [0, 1]² covers exactly this rectangle, as it covers
+ * frame.webp past the same inset. On the 3840 × 3041 scan it is 3750 × 3011 at (45, 15).
+ */
+export function canvasRect(width: number, height: number): PixelRect {
+  const left = Math.round(COLOR_INSET[0] * width);
+  const top = Math.round(COLOR_INSET[1] * height);
+  return { left, top, width: width - 2 * left, height: height - 2 * top };
+}
+
+/**
+ * Runs the scan bake on one image. Every output covers the painted canvas only, the scan cropped
+ * to {@link canvasRect}, so the mat never reaches a swatch, a flow texel or a region texel. The
+ * flow field and region raster are square (`fieldSize`²), so the canvas is squashed to fit and
+ * both are sampled by canvas uv. θ in flow.png is corrected back to painting space (see
  * {@link orientationField}'s `aspect`).
  */
 export async function bakeScan(
@@ -64,8 +85,10 @@ export async function bakeScan(
   const { fieldSize = 1024, paletteWidth = 256, k = 24, seed = 1 } = opts;
   const meta = await sharp(input).metadata();
   if (!meta.width || !meta.height) throw new Error('bakeScan: input has no dimensions');
+  const canvas = canvasRect(meta.width, meta.height);
 
   const field = await sharp(input)
+    .extract(canvas)
     .removeAlpha()
     .toColourspace('srgb')
     .resize(fieldSize, fieldSize, { fit: 'fill', kernel: 'lanczos3' })
@@ -80,7 +103,7 @@ export async function bakeScan(
       255;
   }
   const { angle, coherence } = orientationField(lum, fieldSize, fieldSize, {
-    aspect: meta.width / meta.height,
+    aspect: canvas.width / canvas.height,
   });
   const raw = { width: fieldSize, height: fieldSize };
   const flow = await sharp(encodeFlow(angle, coherence), { raw: { ...raw, channels: 3 } })
@@ -94,6 +117,7 @@ export async function bakeScan(
     .toBuffer();
 
   const sample = await sharp(input)
+    .extract(canvas)
     .removeAlpha()
     .toColourspace('srgb')
     .resize({ width: paletteWidth, kernel: 'lanczos3' })

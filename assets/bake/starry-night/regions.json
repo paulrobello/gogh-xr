@@ -1,6 +1,6 @@
 {
-  "about": "Hand-authored region shapes for scripts/bake/analyze-scan.ts. UV origin top-left, v down. Circle radius in painting-width units. Later regions paint over earlier ones. Unpainted pixels are sky (0). The id is the value written to regions.png.",
-  "aspect": 1.2627,
+  "about": "Hand-authored region shapes for scripts/bake/analyze-scan.ts. UV is canvas uv: the painted canvas with the mat excluded, the 3840 x 3041 scan inset by COLOR_INSET (45 px at the sides, 15 px at top and bottom, so 3750 x 3011), the same extent as the colour sampling, flow.png and regions.png. Vertices on the canvas edge sit at exactly 0 or 1. UV origin top-left, v down. Circle radius in painting-width units. Later regions paint over earlier ones. Unpainted pixels are sky (0). The id is the value written to regions.png.",
+  "aspect": 1.2454,
   "regions": [
     {
       "name": "sky",
@@ -14,26 +14,26 @@
         {
           "type": "polygon",
           "points": [
-            [0, 0.707],
-            [0.05, 0.716],
-            [0.108, 0.726],
-            [0.167, 0.726],
-            [0.367, 0.703],
-            [0.408, 0.689],
-            [0.45, 0.682],
-            [0.492, 0.658],
-            [0.533, 0.632],
-            [0.583, 0.621],
-            [0.633, 0.623],
-            [0.683, 0.637],
-            [0.725, 0.647],
-            [0.767, 0.621],
-            [0.817, 0.589],
-            [0.867, 0.542],
-            [0.9, 0.518],
-            [0.933, 0.507],
-            [0.975, 0.509],
-            [1, 0.518],
+            [0, 0.7091],
+            [0.0392, 0.7182],
+            [0.0986, 0.7283],
+            [0.159, 0.7283],
+            [0.3638, 0.705],
+            [0.4058, 0.6909],
+            [0.4488, 0.6838],
+            [0.4918, 0.6596],
+            [0.5338, 0.6333],
+            [0.585, 0.6222],
+            [0.6362, 0.6242],
+            [0.6874, 0.6384],
+            [0.7304, 0.6485],
+            [0.7734, 0.6222],
+            [0.8246, 0.5899],
+            [0.8758, 0.5424],
+            [0.9096, 0.5182],
+            [0.9434, 0.5071],
+            [0.9864, 0.5091],
+            [1, 0.5182],
             [1, 1],
             [0, 1]
           ]
@@ -47,17 +47,17 @@
         {
           "type": "polygon",
           "points": [
-            [0, 0.832],
-            [0.125, 0.821],
-            [0.367, 0.768],
-            [0.45, 0.749],
-            [0.517, 0.737],
-            [0.6, 0.737],
-            [0.683, 0.726],
-            [0.75, 0.707],
-            [0.833, 0.703],
-            [0.917, 0.703],
-            [1, 0.695],
+            [0, 0.8353],
+            [0.116, 0.8242],
+            [0.3638, 0.7707],
+            [0.4488, 0.7515],
+            [0.5174, 0.7394],
+            [0.6024, 0.7394],
+            [0.6874, 0.7283],
+            [0.756, 0.7091],
+            [0.841, 0.705],
+            [0.927, 0.705],
+            [1, 0.6969],
             [1, 1],
             [0, 1]
           ]
@@ -71,68 +71,68 @@
         {
           "type": "circle",
           "note": "top left",
-          "center": [0.107, 0.044],
-          "radius": 0.043
+          "center": [0.0976, 0.0395],
+          "radius": 0.044
         },
         {
           "type": "circle",
           "note": "top, left of centre",
-          "center": [0.231, 0.032],
-          "radius": 0.025
+          "center": [0.2245, 0.0273],
+          "radius": 0.0256
         },
         {
           "type": "circle",
           "note": "top centre",
-          "center": [0.344, 0.044],
-          "radius": 0.035
+          "center": [0.3403, 0.0395],
+          "radius": 0.0358
         },
         {
           "type": "circle",
           "note": "top, right of centre",
-          "center": [0.411, 0.065],
-          "radius": 0.028
+          "center": [0.4089, 0.0607],
+          "radius": 0.0287
         },
         {
           "type": "circle",
           "note": "top right",
-          "center": [0.613, 0.086],
-          "radius": 0.048
+          "center": [0.6157, 0.0819],
+          "radius": 0.0492
         },
         {
           "type": "circle",
           "note": "beside the cypress tip",
-          "center": [0.236, 0.171],
-          "radius": 0.038
+          "center": [0.2297, 0.1677],
+          "radius": 0.0389
         },
         {
           "type": "circle",
           "note": "right of the central swirl",
-          "center": [0.707, 0.232],
-          "radius": 0.048
+          "center": [0.712, 0.2293],
+          "radius": 0.0492
         },
         {
           "type": "circle",
           "note": "mid left, small",
-          "center": [0.328, 0.328],
-          "radius": 0.03
+          "center": [0.3239, 0.3263],
+          "radius": 0.0307
         },
         {
           "type": "circle",
           "note": "far left",
-          "center": [0.046, 0.451],
-          "radius": 0.025
+          "center": [0.0351, 0.4505],
+          "radius": 0.0256
         },
         {
           "type": "circle",
           "note": "left, against the cypress",
-          "center": [0.131, 0.479],
-          "radius": 0.032
+          "center": [0.1221, 0.4788],
+          "radius": 0.0328
         },
         {
           "type": "circle",
           "note": "large, lower left of centre",
-          "center": [0.354, 0.529],
-          "radius": 0.065
+          "center": [0.3505, 0.5293],
+          "radius": 0.0666
         }
       ]
     },
@@ -143,8 +143,8 @@
         {
           "type": "circle",
           "note": "crescent and inner glow",
-          "center": [0.904, 0.171],
-          "radius": 0.068
+          "center": [0.9137, 0.1677],
+          "radius": 0.0696
         }
       ]
     },
@@ -155,17 +155,17 @@
         {
           "type": "polygon",
           "points": [
-            [0.564, 0.632],
-            [0.57, 0.632],
-            [0.577, 0.737],
-            [0.583, 0.774],
-            [0.598, 0.8],
-            [0.598, 0.889],
-            [0.493, 0.889],
-            [0.493, 0.832],
-            [0.517, 0.8],
-            [0.55, 0.784],
-            [0.557, 0.737]
+            [0.5655, 0.6333],
+            [0.5717, 0.6333],
+            [0.5788, 0.7394],
+            [0.585, 0.7767],
+            [0.6004, 0.803],
+            [0.6004, 0.8929],
+            [0.4928, 0.8929],
+            [0.4928, 0.8353],
+            [0.5174, 0.803],
+            [0.5512, 0.7868],
+            [0.5584, 0.7394]
           ]
         }
       ]
@@ -177,35 +177,35 @@
         {
           "type": "polygon",
           "points": [
-            [0.197, 0.058],
-            [0.207, 0.1],
-            [0.212, 0.168],
-            [0.218, 0.242],
-            [0.229, 0.316],
-            [0.243, 0.389],
-            [0.25, 0.463],
-            [0.26, 0.547],
-            [0.275, 0.6],
-            [0.293, 0.584],
-            [0.3, 0.642],
-            [0.333, 0.705],
-            [0.379, 0.742],
-            [0.417, 0.774],
-            [0.435, 0.768],
-            [0.446, 0.842],
-            [0.463, 0.916],
-            [0.457, 1],
-            [0.125, 1],
-            [0.121, 0.905],
-            [0.125, 0.8],
-            [0.138, 0.695],
-            [0.146, 0.589],
-            [0.148, 0.474],
-            [0.148, 0.347],
-            [0.157, 0.316],
-            [0.167, 0.253],
-            [0.177, 0.168],
-            [0.183, 0.105]
+            [0.1897, 0.0536],
+            [0.2, 0.096],
+            [0.2051, 0.1647],
+            [0.2112, 0.2394],
+            [0.2225, 0.3142],
+            [0.2368, 0.3879],
+            [0.244, 0.4626],
+            [0.2542, 0.5475],
+            [0.2696, 0.601],
+            [0.288, 0.5848],
+            [0.2952, 0.6434],
+            [0.329, 0.707],
+            [0.3761, 0.7444],
+            [0.415, 0.7767],
+            [0.4334, 0.7707],
+            [0.4447, 0.8454],
+            [0.4621, 0.9201],
+            [0.456, 1],
+            [0.116, 1],
+            [0.1119, 0.909],
+            [0.116, 0.803],
+            [0.1293, 0.6969],
+            [0.1375, 0.5899],
+            [0.1396, 0.4737],
+            [0.1396, 0.3455],
+            [0.1488, 0.3142],
+            [0.159, 0.2505],
+            [0.1692, 0.1647],
+            [0.1754, 0.1011]
           ]
         }
       ]
@@ -216,29 +216,29 @@
     "shapes": [
       {
         "note": "central double swirl, left (large)",
-        "center": [0.518, 0.337],
-        "radius": 0.14,
+        "center": [0.5184, 0.3354],
+        "radius": 0.1434,
         "speed": 0.005,
         "spin": "clockwise"
       },
       {
         "note": "central double swirl, right",
-        "center": [0.681, 0.478],
-        "radius": 0.06,
+        "center": [0.6853, 0.4778],
+        "radius": 0.0614,
         "speed": 0.005,
         "spin": "clockwise"
       },
       {
         "note": "eddy round the moon's halo",
-        "center": [0.904, 0.171],
-        "radius": 0.1,
+        "center": [0.9137, 0.1677],
+        "radius": 0.1024,
         "speed": 0.003,
         "spin": "clockwise"
       },
       {
         "note": "eddy round the large star's halo, lower left of centre",
-        "center": [0.354, 0.529],
-        "radius": 0.08,
+        "center": [0.3505, 0.5293],
+        "radius": 0.0819,
         "speed": 0.003,
         "spin": "clockwise"
       }

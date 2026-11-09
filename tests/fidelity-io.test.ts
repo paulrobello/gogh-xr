@@ -14,9 +14,13 @@ import { CANVAS_ASPECT } from '../src/paintings/starry-night/canvas-camera.ts';
 test('the scan inset is the colour sampling inset, and the capture is at the canvas aspect', () => {
   expect(SCAN_INSET).toEqual(COLOR_INSET);
   expect(CAPTURE_SIZE.width / CAPTURE_SIZE.height).toBeCloseTo(CANVAS_ASPECT, 3);
+  expect(CAPTURE_SIZE).toEqual({ width: 1280, height: 1028 });
+  // tests/motion-cypress-flame.test.ts restates this size, since jsdom cannot load fidelity-io.ts:
+  // its probe fixture must stay at the size motion.spec.ts matches it at.
+  expect({ width: 1280, height: Math.round(1280 / CANVAS_ASPECT) }).toEqual(CAPTURE_SIZE);
 });
 
-test('the scan reference is 256 × 203 RGB', async () => {
+test('the scan reference is 256 × 206 RGB', async () => {
   const scan = await loadScanReference();
   expect([scan.width, scan.height, scan.data.length]).toEqual([
     FIDELITY_WIDTH,
@@ -25,7 +29,7 @@ test('the scan reference is 256 × 203 RGB', async () => {
   ]);
 });
 
-test('a capture is stretched to fill 256 × 203, not cropped', async () => {
+test('a capture is stretched to fill 256 × 206, not cropped', async () => {
   // Left half red, right half blue, with a green 8 px column at each edge.
   const { width, height } = CAPTURE_SIZE;
   const raw = Buffer.alloc(width * height * 3);

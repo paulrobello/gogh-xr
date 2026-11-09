@@ -10,6 +10,7 @@
  * - Mean CIEDE2000 over a GRID_COLS × GRID_ROWS grid of block-mean colours. Blocks average in
  *   linear light (sRGB decoded per IEC 61966-2-1), then convert to CIELAB under D65.
  */
+import { CANVAS_ASPECT } from '../src/paintings/starry-night/canvas-camera.ts';
 import {
   deltaE2000,
   type Lab,
@@ -29,20 +30,35 @@ export interface RgbImage {
   readonly data: Uint8Array | Uint8ClampedArray;
 }
 
-/** Both images are compared at 256 px wide at the canvas aspect 3840 / 3041. */
+/** Both images are compared at 256 px wide at CANVAS_ASPECT (3750 / 3011), so 256 × 206. */
 export const FIDELITY_WIDTH = 256;
-export const FIDELITY_HEIGHT = Math.round(FIDELITY_WIDTH / (3840 / 3041));
+export const FIDELITY_HEIGHT = Math.round(FIDELITY_WIDTH / CANVAS_ASPECT);
 export const GRID_COLS = 16;
 export const GRID_ROWS = 12;
 
 /**
- * The first accepted render (OQ6, accepted by Paul on 2026-11-06): the production
- * build at bf9d9a9 captured with `?painting=starry-night&diag&shot&noanim&seed=1&painter` at
- * 1280 × 1014 on ANGLE Metal, rounded to 4 decimals. See docs/verification.md P2-A2.
+ * The first accepted render (OQ6, accepted by Paul on 2026-11-06 as the regression floor): the
+ * production build at bf9d9a9 captured with `?painting=starry-night&diag&shot&noanim&seed=1&painter`
+ * at 1280 × 1014 on ANGLE Metal against a 256 × 203 reference, rounded to 4 decimals.
  */
-export const MEASURED_SSIM = 0.2943;
-export const MEASURED_DELTA_E = 5.6961;
-/** Fixed margins: the SSIM threshold sits 0.03 below the first render, ΔE 1.5 above it. */
+export const ACCEPTED_SSIM = 0.2943;
+export const ACCEPTED_DELTA_E = 5.6961;
+/**
+ * The measured metric delta of the canvas uv change (2026-11-09, card 01a1b27d2184), which changed
+ * the reference and the capture to 256 × 206 and 1280 × 1028: its base 5171098 read SSIM 0.3474
+ * and ΔE 5.2419 on the old ones, and its production build reads 0.3599 and 5.1701 on the new
+ * ones. The delta is the whole card's: the final build also carries its window pane coverage fix
+ * (SCATTER_VERSION 16, face-clamped placement and size cap), not only the uv change. The accepted
+ * anchor moves by this delta, so the floor keeps the headroom Paul accepted.
+ * See docs/verification.md P2-A2 and "One canvas uv extent".
+ */
+export const UV_CHANGE_SSIM_DELTA = 0.3599 - 0.3474;
+export const UV_CHANGE_DELTA_E_DELTA = 5.1701 - 5.2419;
+/** The anchor the margins apply to: the accepted render moved by the canvas uv change. */
+export const MEASURED_SSIM: number = Math.round((ACCEPTED_SSIM + UV_CHANGE_SSIM_DELTA) * 1e4) / 1e4;
+export const MEASURED_DELTA_E: number =
+  Math.round((ACCEPTED_DELTA_E + UV_CHANGE_DELTA_E_DELTA) * 1e4) / 1e4;
+/** Fixed margins: the SSIM threshold sits 0.03 below the anchor, ΔE 1.5 above it. */
 export const SSIM_MARGIN = 0.03;
 export const DELTA_E_MARGIN = 1.5;
 /** A capture passes with SSIM ≥ SSIM_THRESHOLD and mean ΔE2000 ≤ DELTA_E_THRESHOLD. */

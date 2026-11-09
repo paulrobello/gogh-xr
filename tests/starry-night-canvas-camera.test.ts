@@ -31,14 +31,14 @@ function cameraPoint(x: number, y: number, d: number): Vec3 {
   return [(x / len) * d, EYE_HEIGHT + (wy / len) * d, (wz / len) * d];
 }
 
-test('the painter stands at the origin with the eye 1.6 m up, framed at the scan aspect', () => {
+test('the painter stands at the origin with the eye 1.6 m up, framed at the canvas aspect', () => {
   expect(PAINTER_SPOT).toEqual([0, 0, 0]);
   expect(EYE_HEIGHT).toBe(1.6);
   expect(PAINTER_EYE).toEqual([0, 1.6, 0]);
-  expect(CANVAS_ASPECT).toBeCloseTo(3840 / 3041, 12);
+  expect(CANVAS_ASPECT).toBeCloseTo(3750 / 3011, 12);
   expect(CANVAS_FOV_Y_DEG).toBeGreaterThanOrEqual(45);
   expect(CANVAS_FOV_Y_DEG).toBeLessThanOrEqual(70);
-  // The ridge runs at v_down 0.50–0.72 in regions.json; HORIZON_V is v up.
+  // The ridge runs at v_down 0.507–0.728 in regions.json; HORIZON_V is v up.
   expect(1 - HORIZON_V).toBeGreaterThanOrEqual(0.5);
   expect(1 - HORIZON_V).toBeLessThanOrEqual(0.72);
   // The sky fills most of the canvas, so the camera looks up.

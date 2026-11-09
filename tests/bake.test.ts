@@ -4,8 +4,12 @@ import { resolve } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { sha256Of } from '../scripts/asset-lib.ts';
-import { bakeScan } from '../scripts/bake/bake.ts';
+import { bakeScan, canvasRect } from '../scripts/bake/bake.ts';
 import type { RegionsDoc } from '../scripts/bake/scan-analysis.ts';
+import { SCAN_INSET } from '../scripts/fidelity-io.ts';
+import { COLOR_INSET } from '../src/demo/canvas/placement.ts';
+import { CANVAS_ASPECT } from '../src/paintings/starry-night/canvas-camera.ts';
+import { SKY_SCAN_SIZE } from '../src/world/sky-scan.ts';
 
 const root = resolve(import.meta.dirname, '..');
 // A 64² fill-resize (sharp lanczos3) of assets/scans/starry-night.jpg.
@@ -33,5 +37,21 @@ describe('bakeScan', () => {
     expect([regions.width, regions.height, regions.channels]).toEqual([64, 64, 1]);
     const ids = await sharp(out.regions).toColourspace('b-w').raw().toBuffer();
     expect(new Set(ids)).toEqual(new Set([0, 1, 2, 3, 4, 5, 6]));
+  });
+});
+
+describe('one canvas uv extent', () => {
+  it('crops the scan past its mat by COLOR_INSET, the rectangle CANVAS_ASPECT names', () => {
+    const [width, height] = SKY_SCAN_SIZE;
+    const rect = canvasRect(width, height);
+    expect(rect).toEqual({ left: 45, top: 15, width: 3750, height: 3011 });
+    expect(rect.left).toBe(Math.round(COLOR_INSET[0] * width));
+    expect(rect.top).toBe(Math.round(COLOR_INSET[1] * height));
+    expect(SCAN_INSET).toEqual(COLOR_INSET);
+    expect(CANVAS_ASPECT).toBe(rect.width / rect.height);
+  });
+
+  it('has regions.json authored at the canvas aspect', () => {
+    expect(REGIONS.aspect).toBeCloseTo(CANVAS_ASPECT, 4);
   });
 });

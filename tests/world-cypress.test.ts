@@ -208,10 +208,10 @@ describe('cypress generator', () => {
     expect(geometry.getAttribute('position').count).toBe(1370);
     expect((geometry.getIndex()?.count ?? 0) / 3).toBe(2688);
     expect([box?.min.x, box?.min.y, box?.min.z].map((x) => mm(x as number))).toEqual([
-      -4.93, -5.096, -11.124,
+      -4.973, -5.096, -11.106,
     ]);
     expect([box?.max.x, box?.max.y, box?.max.z].map((x) => mm(x as number))).toEqual([
-      -0.304, 9.38, -7.908,
+      -0.29, 9.424, -7.901,
     ]);
   });
 

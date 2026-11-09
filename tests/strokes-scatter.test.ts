@@ -28,7 +28,7 @@ import {
   lowbias32,
   sizeShare,
 } from '../src/render/strokes/depth-tie-break.ts';
-import { BRUSH_FOOTPRINT } from '../src/render/strokes/face-clamp.ts';
+import { BRUSH_FOOTPRINT, facePolygons } from '../src/render/strokes/face-clamp.ts';
 import { strokeAxes, type Vec3 } from '../src/render/strokes/frame.ts';
 import {
   createStrokeBuffers,
@@ -39,6 +39,8 @@ import {
 } from '../src/render/strokes/instance.ts';
 import {
   FACE_CLAMPED_LAYERS,
+  FACE_SIZE_SHARE,
+  faceWidth,
   type GradedSize,
   LAYER_DENSITY,
   LAYER_SIZE,
@@ -516,6 +518,53 @@ test('window strokes keep the emissive warm colour, sRGB encoded', () => {
     }
     expect(s.layer).toBe(STROKE_LAYER.building);
   }
+});
+
+test('faceWidth is the narrowest width of a face hull', () => {
+  const pane = facePolygons(wall(0.7, 0.9, [0, 2, -15], 'window'));
+  expect(pane.faces).toHaveLength(1);
+  expect(faceWidth(pane.faces[0])).toBeCloseTo(0.7, 6);
+  const tri = tagged(
+    new BufferGeometry().setAttribute(
+      'position',
+      new BufferAttribute(new Float32Array([0, 0, -10, 3, 0, -10, 0, 4, -10]), 3),
+    ),
+    'church',
+  );
+  // A 3-4-5 right triangle: its least altitude, onto the hypotenuse, is 12 / 5.
+  expect(faceWidth(facePolygons(tri).faces[0])).toBeCloseTo(2.4, 5);
+});
+
+test('a clamped face caps the graded size at FACE_SIZE_SHARE of its width, and the count follows', () => {
+  const pane = wall(0.7, 0.9, [0, 2, -15], 'window');
+  const cap = FACE_SIZE_SHARE * 0.7;
+  // Graded 0.6 m about 15 m out (slope 1 to the far clamp), with a 0.2 m near size under the cap.
+  const size: GradedSize = { near: 0.2, far: 0.6, slope: 1 };
+  const options = { seed: 4, density: { window: 1000 }, size: { window: size } };
+  const buffers = scatterSurfaces([pane], MIXED, options);
+  // 1000 per m² at the 0.2 m near size, so (0.2 / cap)² of that at the capped size.
+  const expected = 0.63 * 1000 * (0.2 / cap) ** 2;
+  expect(buffers.count).toBeGreaterThan(expected * 0.9);
+  expect(buffers.count).toBeLessThan(expected * 1.1);
+  for (let i = 0; i < buffers.count; i++) {
+    expect(unpackInstance(buffers, i).size[0]).toBeLessThanOrEqual(
+      cap * (1 + SCATTER_SIZE_JITTER) + 1e-6,
+    );
+  }
+  // A face wider than size / FACE_SIZE_SHARE is not capped: 1000 × (0.2 / 0.6)² per m².
+  expect(scatterSurfaces([wall(4, 3, [0, 2, -15], 'window')], MIXED, options).count).toBeLessThan(
+    ((12 * 1000) / 9) * 1.1,
+  );
+});
+
+test('the face size cap never goes below the layer near size, so a sliver face stays bounded', () => {
+  // 1 cm × 3 m: half its width is 5 mm, 40 times under the 0.2 m near size, which unfloored would
+  // multiply its count by 40² = 1,600.
+  const sliver = wall(0.01, 3, [0, 2, -15], 'window');
+  const options = { seed: 5, density: { window: 1000 }, size: flat(0.2, 'window') };
+  const count = scatterSurfaces([sliver], MIXED, options).count;
+  expect(count).toBeGreaterThan(0.03 * 1000 * 0.8);
+  expect(count).toBeLessThan(0.03 * 1000 * 1.2);
 });
 
 test('only emissive (window) strokes carry the depth tie-break front flag', () => {

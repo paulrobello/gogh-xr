@@ -160,6 +160,10 @@ const VALUE_JITTER = 0.06;
 /**
  * frame.webp has a pale mat about 12 texels wide at the sides (4 at top and bottom); colour uv is
  * inset past it: painting uv u reads the image at COLOR_INSET[0] + u·(1 − 2·COLOR_INSET[0]).
+ * These fractions define canvas uv [0, 1]² for every source: the bake crops the scan by them
+ * before it writes flow.png and regions.png (scripts/bake/bake.ts canvasRect), regions.json is
+ * authored in that uv, and CANVAS_ASPECT is the cropped scan's aspect, so those three read at raw
+ * uv.
  */
 export const COLOR_INSET: readonly [number, number] = Object.freeze([
   12 / 1024,

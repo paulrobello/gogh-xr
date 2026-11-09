@@ -11,17 +11,17 @@ import type { CueId } from './cues';
 export type Vec3 = readonly [number, number, number];
 
 /** Seed-1 spire tip of the church (`ChurchRecord.steepleTip`). */
-export const STEEPLE_TIP: Vec3 = Object.freeze([3.57, 5.2, -36.83]) as Vec3;
+export const STEEPLE_TIP: Vec3 = Object.freeze([3.66, 5.2, -37.32]) as Vec3;
 /** The bell hangs this far below the spire tip, in the tower top. */
 export const BELL_BELOW_TIP = 3;
 /** Seed-1 base and tip of the main cypress mass (`CypressMass.base`, `.tip`). */
 export const CYPRESS_BASE: Vec3 = Object.freeze([-2.99, -5.19, -9.35]) as Vec3;
-export const CYPRESS_TIP: Vec3 = Object.freeze([-4.64, 9.38, -8.86]) as Vec3;
+export const CYPRESS_TIP: Vec3 = Object.freeze([-4.68, 9.42, -8.84]) as Vec3;
 /** Seed-1 half of the main mass's widest ring (`CypressMass.maxDiameter / 2`), rounded up. */
-export const CYPRESS_RADIUS = 1.45;
+export const CYPRESS_RADIUS = 1.47;
 /** Seed-1 base, tip and half widest ring of the lower cypress mass, rounded up. */
-export const CYPRESS_LOWER_BASE: Vec3 = Object.freeze([-1.51, -5.34, -9.85]) as Vec3;
-export const CYPRESS_LOWER_TIP: Vec3 = Object.freeze([-2.96, 2.94, -9.55]) as Vec3;
+export const CYPRESS_LOWER_BASE: Vec3 = Object.freeze([-1.5, -5.34, -9.86]) as Vec3;
+export const CYPRESS_LOWER_TIP: Vec3 = Object.freeze([-2.99, 2.93, -9.54]) as Vec3;
 export const CYPRESS_LOWER_RADIUS = 1.35;
 /** The wind sits this far up the cypress axis, base 0 to tip 1: the hillside crown of the tree. */
 export const WIND_AXIS_T = 0.5;

@@ -27,7 +27,11 @@ import {
 } from '../src/motion/cypress-flame.ts';
 import { MOTION_LAYER_MASK, motionOffset } from '../src/motion/motion.ts';
 import { SKY_SWIRL_FADE, SKY_SWIRL_PERIOD, skySwirl } from '../src/motion/sky-swirl.ts';
-import { PAINTER_EYE, projectToCanvas } from '../src/paintings/starry-night/canvas-camera.ts';
+import {
+  CANVAS_ASPECT,
+  PAINTER_EYE,
+  projectToCanvas,
+} from '../src/paintings/starry-night/canvas-camera.ts';
 import { WORLD_SCATTER_SIZE } from '../src/paintings/starry-night/world.ts';
 import { motionReachesOf, SKY_REACH_MARGIN } from '../src/render/strokes/batch.ts';
 import type { Vec3 } from '../src/render/strokes/frame.ts';
@@ -118,7 +122,7 @@ describe('flame byte', () => {
   });
 
   test('the scatter bakes every cypress stroke from its mesh, with the world count', () => {
-    expect(STROKES.count).toBe(36_964);
+    expect(STROKES.count).toBe(37_078);
     for (const s of ALL) {
       const flame = decodeFlame(s.alpha);
       expect(flame).not.toBeNull();
@@ -588,24 +592,33 @@ describe('sway at the painter eye (R-P4n)', () => {
 describe('GPU probe fixture (I3)', () => {
   /** Relative to the project root, where vitest runs. */
   const FIXTURE = 'tests/fixtures/cypress-probe.json';
-  const SIZE = { width: 1280, height: 1014 };
+  /** CAPTURE_SIZE of scripts/fidelity-io.ts, which this jsdom suite cannot import (fidelity-io.test.ts keeps the two equal). */
+  const SIZE = { width: 1280, height: Math.round(1280 / CANVAS_ASPECT) };
   const PHASE = 0;
   const HALF = 16;
   /**
    * Canvas centres (u, v down) on the lower trunks, normalised height about 0.3 to 0.6: the main
-   * trunk's projected axis (u 0.2), its flanks at v 0.6 and the lower mass (0.3, 0.9). The upper
+   * trunk's projected axis (u 0.1928), its flanks at v 0.601 and the lower mass (0.2952, 0.904).
+   * They are the first choice (u 0.2, v 0.8, 0.64 and 0.51, flanks 0.15 and 0.25 at v 0.6, lower
+   * mass (0.3, 0.9)) carried into the mat-excluded canvas uv with the regions.json transform. The upper
    * trunk (v 0.375 and 0.26 on the axis) block-matched with sharpness under 2.2 on the GPU, dark
    * strokes from lobes that sway against each other, so it carries no patch.
    */
   const AXIS: readonly (readonly [number, number])[] = [
-    [0.2, 0.8],
-    [0.2, 0.64],
-    [0.2, 0.51],
-    [0.3, 0.9],
+    [0.1928, 0.803],
+    [0.1928, 0.6414],
+    [0.1928, 0.5101],
+    [0.2952, 0.904],
   ];
+  /**
+   * The rise pair leaves out the axis patch at v 0.5101: since canvas uv excludes the mat, its 20 px
+   * climb block-matches at sharpness 2.0 to 2.2 on the GPU (the exclusion bar above) and locks onto
+   * a wrong stroke. Its sway, a whole loop apart, still matches sharply and stays checked.
+   */
+  const RISE_AXIS: readonly (readonly [number, number])[] = AXIS.filter(([, v]) => v !== 0.5101);
   const FLANKS: readonly (readonly [number, number])[] = [
-    [0.15, 0.6],
-    [0.25, 0.6],
+    [0.1416, 0.601],
+    [0.244, 0.601],
   ];
   /**
    * The rise pair sits at f = 0.15 and 0.85 of the loop, past both fades and 0.7 of the arc apart,
@@ -615,7 +628,7 @@ describe('GPU probe fixture (I3)', () => {
    * rise cancels and the patch moves by the sway alone: it checks dx and dy everywhere.
    */
   const PAIRS = [
-    { name: 'rise', times: [0.6, 3.4], checks: ['dy'], centres: AXIS },
+    { name: 'rise', times: [0.6, 3.4], checks: ['dy'], centres: RISE_AXIS },
     { name: 'sway', times: [0.6, 4.6], checks: ['dx', 'dy'], centres: [...AXIS, ...FLANKS] },
   ] as const;
 

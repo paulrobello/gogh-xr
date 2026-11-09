@@ -78,9 +78,13 @@ import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instanc
  * defensive bump that came with the dome's sector merge (`createWorldPartGroup`): the cache holds
  * the scattered stroke buffers, not the chunk layout, which every load rebuilds, so it only forces
  * one miss. 14 is another defensive bump, for the eave underside copies: they are assembled after
- * the cache read (`assembleWorldStrokes`), so the scattered buffers are unchanged.
+ * the cache read (`assembleWorldStrokes`), so the scattered buffers are unchanged. 15: canvas uv
+ * became the painted canvas past the mat for every source (regions, flow, regions.json and
+ * CANVAS_ASPECT), so the same inputs scatter differently. 16: face-clamped strokes are placed along
+ * a jittered R2 lattice (FACE_PLACEMENT_JITTER) and capped at FACE_SIZE_SHARE of their face's
+ * narrowest width, which covers the lit window panes.
  */
-export const SCATTER_VERSION: number = 14;
+export const SCATTER_VERSION: number = 16;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -177,19 +181,50 @@ const OUTLINE_SPACING = 0.8;
 /** Brush kinds an outline stroke may use: the long, straight-sided ones, where the style has them. */
 const OUTLINE_KINDS: readonly BrushKind[] = ['ridge', 'bristle'];
 
+/**
+ * On FACE_CLAMPED_LAYERS a triangle's strokes are placed along a randomly shifted R2 sequence
+ * (Roberts' plastic-number lattice), each jittered by ± this share of the lattice step, rather
+ * than independently at random. Independent draws clump and leave holes a face-clamped pane cannot
+ * fill from its neighbours: lit windows read up to 1.9% bare 0.3 m off. The lattice spreads the
+ * same count evenly, and the jitter keeps it from reading as a grid.
+ */
+export const FACE_PLACEMENT_JITTER: number = 0.5;
+/**
+ * On FACE_CLAMPED_LAYERS a stroke's graded size is capped at this share of its face's narrowest
+ * width (`faceWidth`), and the count follows the capped size as it follows the graded one, so the
+ * face keeps the layer's overdraw. Uncapped, a stroke nearly as large as its face is shrunk by the
+ * clamp, and a far window pane (0.7 m wide, 0.5-0.75 m strokes) lost its corners and rim. The cap
+ * never goes below the layer's near size (`faceSizeCaps`), so a sliver face cannot multiply its
+ * count without bound.
+ *
+ * It is also a budget lever: at 0.5 the seed-1 scatter totals 554,834 and the tightest pose of the
+ * 325k default budget, village uphill, draws 320,993 (about 4.0k, 1.2%, of headroom; spot ahead
+ * 317,959). At 0.4 village uphill drew 325,953, over the budget.
+ */
+export const FACE_SIZE_SHARE: number = 0.5;
+const R2_G = 1.324717957244746;
+const R2_A1 = 1 / R2_G;
+const R2_A2 = 1 / (R2_G * R2_G);
+const frac = (x: number): number => x - Math.floor(x);
+
 /** Stroke length varies uniformly by ± this share of the graded size. */
 export const SCATTER_SIZE_JITTER: number = 0.15;
 /** Strokes lift off the surface along the normal by up to this share of their length. */
 export const SCATTER_DEPTH_JITTER: number = 0.02;
 
-/** Mean stroke length at `distance` metres from PAINTER_EYE. */
-export function strokeSizeAt(size: GradedSize, distance: number): number {
-  return Math.min(size.far, Math.max(size.near, size.slope * distance));
+/** Mean stroke length at `distance` metres from PAINTER_EYE, at most `cap`. */
+export function strokeSizeAt(size: GradedSize, distance: number, cap = Infinity): number {
+  return Math.min(size.far, Math.max(size.near, size.slope * distance), cap);
 }
 
-/** Strokes per m² at `distance`, for `density` at the near size. */
-export function scatterDensityAt(density: number, size: GradedSize, distance: number): number {
-  const ratio = size.near / strokeSizeAt(size, distance);
+/** Strokes per m² at `distance`, for `density` at the near size, the size at most `cap`. */
+export function scatterDensityAt(
+  density: number,
+  size: GradedSize,
+  distance: number,
+  cap = Infinity,
+): number {
+  const ratio = size.near / strokeSizeAt(size, distance, cap);
   return density * ratio * ratio;
 }
 
@@ -559,8 +594,50 @@ interface Surface extends Ordered {
   readonly counts: Uint32Array;
   /** The mesh's faces, on FACE_CLAMPED_LAYERS. */
   readonly faces: FaceSet | null;
+  /** Each triangle's graded size cap (`faceSizeCaps`), on FACE_CLAMPED_LAYERS. */
+  readonly caps: Float64Array | null;
   /** Outline strokes per face side, in face then side order, on OUTLINED_LAYERS. */
   outline: Uint32Array | null;
+}
+
+/**
+ * The narrowest width of a convex face hull: the least, over its sides, of the farthest vertex
+ * from that side's line, metres.
+ */
+export function faceWidth(face: FacePolygon): number {
+  const v = face.vertices;
+  let width = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < v.length; i++) {
+    const a = v[i];
+    const b = v[(i + 1) % v.length];
+    const span = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (span <= 0) continue;
+    let far = 0;
+    for (const p of v) {
+      far = Math.max(
+        far,
+        Math.abs((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) / span,
+      );
+    }
+    width = Math.min(width, far);
+  }
+  return width;
+}
+
+/**
+ * Per triangle, the graded stroke size cap of its face: FACE_SIZE_SHARE of the face's narrowest
+ * width (`faceWidth`), but never below `floor`, the layer's near size, or no cap for a triangle in
+ * no face. The floor bounds a sliver face's count at the layer's near density and its strokes at
+ * the near size. It does not bind on seed 1, whose narrowest face (a 0.7 m window pane) caps at
+ * 1.62 times the window near size.
+ */
+function faceSizeCaps(faces: FaceSet, floor: number): Float64Array {
+  const widths = faces.faces.map(faceWidth);
+  const caps = new Float64Array(faces.faceOf.length);
+  faces.faceOf.forEach((f, t) => {
+    caps[t] = f >= 0 ? Math.max(floor, FACE_SIZE_SHARE * widths[f]) : Number.POSITIVE_INFINITY;
+  });
+  return caps;
 }
 
 /** The 3D position of a face-frame point. */
@@ -586,6 +663,7 @@ function planOutlines(surfaces: readonly Surface[], budget: number): void {
         const b = facePoint(face, face.vertices[(i + 1) % n]);
         const mid: Vec3 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
         const span = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+        // Uncapped, unlike the fill (FACE_SIZE_SHARE): see placeOutlinesSteps.
         raw.push(span / (OUTLINE_SPACING * strokeSizeAt(size, eyeDistance(mid))));
       }
     }
@@ -669,19 +747,20 @@ export function* scatterSurfacesSteps(
     checkSize(size, layer);
     const rng = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 0));
     const { areas, distances } = yield* triangleTableSteps(geometry);
+    const faces = FACE_CLAMPED_LAYERS.includes(layer) ? facePolygons(geometry) : null;
+    const caps = faces ? faceSizeCaps(faces, size.near) : null;
     const counts = new Uint32Array(areas.length);
     for (let t = 0; t < areas.length; t++) {
       if (t > 0 && t % TRIANGLE_SLICE === 0) yield;
-      const expected = areas[t] * scatterDensityAt(density, size, distances[t]);
+      const expected = areas[t] * scatterDensityAt(density, size, distances[t], caps?.[t]);
       const whole = Math.floor(expected);
       counts[t] = whole + (rng() < expected - whole ? 1 : 0);
       total += counts[t];
     }
     yield;
-    const faces = FACE_CLAMPED_LAYERS.includes(layer) ? facePolygons(geometry) : null;
     const sides = faces?.faces.reduce((sum, f) => sum + f.vertices.length, 0) ?? 0;
     const outline = faces && OUTLINED_LAYERS.includes(layer) ? new Uint32Array(sides) : null;
-    surfaces.push({ ...ordered, density, size, counts, faces, outline });
+    surfaces.push({ ...ordered, density, size, counts, faces, caps, outline });
     yield;
   }
   let clamped = 0;
@@ -702,7 +781,7 @@ export function* scatterSurfacesSteps(
   let index = 0;
   let sliceStart = 0;
   for (const surface of surfaces) {
-    const { geometry, layer, layerIndex, meshIndex, size, counts, faces } = surface;
+    const { geometry, layer, layerIndex, meshIndex, size, counts, faces, caps } = surface;
     const rand = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 1));
     const tags = tintTagsOf(geometry);
     yield;
@@ -738,9 +817,15 @@ export function* scatterSurfacesSteps(
       const na = normalAttr ? read(normalAttr, ia) : null;
       const nb = normalAttr ? read(normalAttr, ib) : null;
       const nc = normalAttr ? read(normalAttr, ic) : null;
+      const shift = faces ? [rand(), rand()] : null;
+      const step = 1 / Math.sqrt(counts[t]);
       for (let k = 0; k < counts[t]; k++) {
         let r1 = rand();
         let r2 = rand();
+        if (shift) {
+          r1 = frac(shift[0] + k * R2_A1 + (r1 - 0.5) * FACE_PLACEMENT_JITTER * step);
+          r2 = frac(shift[1] + k * R2_A2 + (r2 - 0.5) * FACE_PLACEMENT_JITTER * step);
+        }
         if (r1 + r2 > 1) {
           r1 = 1 - r1;
           r2 = 1 - r2;
@@ -768,7 +853,7 @@ export function* scatterSurfacesSteps(
 
         const sample = sampleCanvas(source, point, layer, rand);
         const brush = style.brushes[Math.floor(rand() * style.brushes.length)];
-        const graded = strokeSizeAt(size, eyeDistance(point));
+        const graded = strokeSizeAt(size, eyeDistance(point), caps?.[t]);
         const strokeLength = graded * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
         // The lift's former draw: the share now comes from the final quad size, and this keeps the
         // later draws where they were.
@@ -915,6 +1000,10 @@ function* placeOutlinesSteps(
         ];
         const sample = sampleCanvas(source, point, layer, rand);
         const brush = brushes[Math.floor(rand() * brushes.length)];
+        // Outlines keep the uncapped graded size, so on a capped face an outline's lift share can
+        // exceed its neighbouring fill strokes' and disagree with their tie-break order
+        // (depth-tie-break.ts). It only matters with depth writes on (`?ab=shimmer` write,
+        // `?zdiag`): under the nowrite default the chunk's importance order decides.
         const graded = strokeSizeAt(size, eyeDistance(point));
         const strokeLength = graded * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
         const sign = rand() < 0.5 ? -1 : 1;

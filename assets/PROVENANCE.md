@@ -58,11 +58,11 @@ Derived from `assets/scans/starry-night.jpg` by `make bake` (`scripts/bake/analy
 <!-- bake-hashes:start -->
 | file | SHA-256 | role |
 | --- | --- | --- |
-| `assets/bake/starry-night/regions.json` | bd226828116d927404ad8712fe9d2ac8962b437fd03b7ff032c4f14f45e21115 | bake input, hand-authored |
-| `public/paintings/starry-night/palette.json` | 8242fe99fe1acd445db97d47fba24f0afdb341d5ca22f29226a2f5957bb1859c | bake: 24-swatch palette |
-| `public/paintings/starry-night/flow.png` | 36dfa824a20303a670941b3aa380e78496f2f3380bd6f6ebdeef2e1fecc52d97 | bake: 1024² flow field |
-| `public/paintings/starry-night/regions.png` | c86235ee902a17185e63d568b18dd1837d3e3683da3339156818039bce7bf74a | bake: 1024² region ids |
-| `public/paintings/starry-night/lights.webp` | 9107ec83a3ae44f0dc7ed7de7df36b1514ef6c05405681ddc58bbb88cf964f3e | bake: full-resolution scan around the moon and stars |
+| `assets/bake/starry-night/regions.json` | beaab8acf25eaa9b200713a049bf17b1e6e409b66ef13511b765893e47f30b3a | bake input, hand-authored |
+| `public/paintings/starry-night/palette.json` | a93307b57de35e3a8363721cbae7d0b092a8fbdbb4eeae0368d0c3af7f69c4af | bake: 24-swatch palette |
+| `public/paintings/starry-night/flow.png` | 0564bd450835d179e5fbb44c6dbbb920a0a8b2df79b013af6a9e56afda3e6d6a | bake: 1024² flow field |
+| `public/paintings/starry-night/regions.png` | 0a017756241e4b1d1f5fa9142165cd187c34671fd10a2a61f0d1aadeefe7a2dd | bake: 1024² region ids |
+| `public/paintings/starry-night/lights.webp` | a08834c1c10a060e5ef6ce55741fc1dc5286dc97364534ce61c1a23e0ff2e306 | bake: full-resolution scan around the moon and stars |
 <!-- bake-hashes:end -->
 
 ## Audio sources (Suno score)

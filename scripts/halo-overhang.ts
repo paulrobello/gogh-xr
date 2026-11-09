@@ -4,7 +4,7 @@
  * under `?zdiag=write`, at the painter view and at given poses. The halo shows where the two
  * captures differ. A pixel where the halo shows under the default but not under `write` is one
  * where a world stroke wrote depth in front of the halo under `write`, and the halo now paints
- * over it. Headless Chromium on the GPU at 1280 × 1014, motion off.
+ * over it. Headless Chromium on the GPU at the canvas aspect (CAPTURE_SIZE), motion off.
  *
  *   bun scripts/halo-overhang.ts <base-url> [out-dir]
  */
@@ -12,6 +12,7 @@ import { chromium } from '@playwright/test';
 import sharp from 'sharp';
 import { gpuArgs } from '../tests/e2e/gpu.ts';
 import { COVERAGE_POSES } from '../tests/world-poses.ts';
+import { CAPTURE_SIZE } from './fidelity-io.ts';
 
 const base = process.argv[2];
 if (!base) {
@@ -28,7 +29,7 @@ const browser = await chromium.launch({ channel: 'chromium', headless: true, arg
 
 async function capture(view: string, query: string): Promise<Raw> {
   const page = await browser.newPage({
-    viewport: { width: 1280, height: 1014 },
+    viewport: CAPTURE_SIZE,
     deviceScaleFactor: 1,
   });
   const painter = view === 'painter' ? '&painter' : '';

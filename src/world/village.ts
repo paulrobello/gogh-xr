@@ -47,30 +47,29 @@ import { TERRAIN_CELL, type Terrain } from './terrain';
 export const VILLAGE_ROOFLINE: readonly Vec2[] = Object.freeze(
   (
     [
-      [0, 0.832],
-      [0.125, 0.821],
-      [0.367, 0.768],
-      [0.45, 0.749],
-      [0.517, 0.737],
-      [0.6, 0.737],
-      [0.683, 0.726],
-      // biome-ignore lint/suspicious/noApproximativeNumericConstant: a painted v_json value, not √½.
-      [0.75, 0.707],
-      [0.833, 0.703],
-      [0.917, 0.703],
-      [1, 0.695],
+      [0, 0.8353],
+      [0.116, 0.8242],
+      [0.3638, 0.7707],
+      [0.4488, 0.7515],
+      [0.5174, 0.7394],
+      [0.6024, 0.7394],
+      [0.6874, 0.7283],
+      [0.756, 0.7091],
+      [0.841, 0.705],
+      [0.927, 0.705],
+      [1, 0.6969],
     ] as const
   ).map(([u, vDown]) => Object.freeze([u, 1 - vDown]) as Vec2),
 );
 
 /** The regions.json `church` polygon's apex (midpoint of its two top vertices), v up. */
-export const CHURCH_APEX_UV: Vec2 = Object.freeze([0.567, 1 - 0.632]) as Vec2;
+export const CHURCH_APEX_UV: Vec2 = Object.freeze([0.5686, 1 - 0.6333]) as Vec2;
 
 /**
  * The regions.json `church` polygon's u extent. No house's silhouette may cross it: the church
  * stands at the far edge of the band, so any house there would stand in front of it.
  */
-export const CHURCH_U_EXTENT: Vec2 = Object.freeze([0.493, 0.598]) as Vec2;
+export const CHURCH_U_EXTENT: Vec2 = Object.freeze([0.4928, 0.6004]) as Vec2;
 
 /** Horizontal distance band from the spot that houses and church stand in, metres. */
 export const VILLAGE_BAND: Readonly<{ min: number; max: number }> = Object.freeze({
@@ -121,7 +120,7 @@ const WINDOW_H = 0.9;
 const CHURCH = Object.freeze({
   /** Steeple tower half-width, metres. */
   towerHalf: 1.1,
-  /** Nave extent left and right of the steeple axis (painted u 0.493–0.598 around 0.567). */
+  /** Nave extent left and right of the steeple axis (painted u 0.4928–0.6004 around 0.5686). */
   naveLeft: 4,
   naveRight: 1.6,
   /**
@@ -142,7 +141,7 @@ const CHURCH = Object.freeze({
   naveRise: 1.6,
   /** Nave roof overhang, metres; the church outline covers it. */
   overhang: 0.25,
-  /** Tower top above the nave ridge, metres. Puts the spire foot near the painted v_json 0.737. */
+  /** Tower top above the nave ridge, metres. Puts the spire foot near the painted v_json 0.7394. */
   towerOverRidge: 1.4,
   /**
    * Upward nudges of the steeple tip off the painted apex, in v, tried in order. A nudge is used

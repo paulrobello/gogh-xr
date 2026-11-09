@@ -30,14 +30,18 @@ import { createSlicer, type Steps } from '../src/util/slicer.ts';
  * The portal builds (P5.5) split into many short slicer steps produce exactly what the coarse,
  * unsplit builders did. Each literal below was taken from the unsplit builders at d2d3e84, where
  * `createWorldGeometrySteps` ran one generator per step and the batch's cell loop, the village, the
- * terrain, the importance orders and the gallery filter had no yields of their own.
+ * terrain, the importance orders and the gallery filter had no yields of their own. The five world
+ * literals (geometry to base) were re-pinned from the split builders when canvas uv became the
+ * painted canvas past the mat (SCATTER_VERSION 15), since that moves every world input, and the
+ * scattered, assembled and batch literals again for the face-clamped placement and size cap
+ * (SCATTER_VERSION 16); the gallery literals are still the d2d3e84 values.
  */
 const UNSPLIT: Readonly<Record<string, string>> = {
-  geometry: 'f01e5682',
-  scattered: '15625022',
-  assembled: 'bee37a2a',
-  batch: '058c3946',
-  base: 'ba91745f',
+  geometry: 'bca9ae58',
+  scattered: 'f0a8f167',
+  assembled: 'd73f1899',
+  batch: '24161a74',
+  base: '1a18b3f6',
   gallery: '6f6580f0',
   galleryBatch: 'be87405e',
 };
