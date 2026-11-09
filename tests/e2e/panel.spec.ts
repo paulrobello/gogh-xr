@@ -5,78 +5,23 @@
  * pitches the held panel and neither aims a teleport nor turns the rig. The trigger that presses
  * Recenter never reaches `select`, a close mid-grip saves the pose, and a closed panel draws
  * nothing. These run in the bare scene (`?scene=bare`), which keeps them fast: no world build. One
- * more opens and operates the panel in the gallery, the default boot, where Return to gallery stays
- * disabled until P5.5 registers its callback.
+ * more opens and operates the panel in the gallery, the default boot, where Return to gallery is
+ * hidden, since it shows only inside a painting's world.
  *
  * `P53_SHOT=1` also writes the XR shot to docs/shots/p53-panel.jpg.
  */
-import type { Page } from '@playwright/test';
 import sharp from 'sharp';
 import { Quaternion, Vector3 } from 'three';
-import { CONTROL_Z } from '../../src/ui/panel-core.ts';
-import { controlLayout, controlRect, setControlHidden } from '../../src/ui/panel-layout.ts';
+import { setControlHidden } from '../../src/ui/panel-layout.ts';
 import { DEFAULT_OFFSET } from '../../src/ui/panel-pose.ts';
-import { expect, type Quat, test, type Vec3, type Xr } from './fixtures';
+import { expect, test, type Vec3 } from './fixtures';
+import { aim, controlPoint, SETTINGS_KEY as KEY, panel, setButton, settings } from './helpers';
 
-const KEY = 'gogh-xr.settings.v1';
 const POSE_KEY = 'gogh-xr.panel.v1';
-
-interface PanelDiag {
-  built: boolean;
-  open: boolean;
-  surface: string | null;
-  pose: { position: Vec3; quaternion: Quat } | null;
-  scale: number | null;
-  hover: { left: string | null; right: string | null } | null;
-  typeset: boolean;
-  locked: Record<string, string>;
-}
-
-interface SettingsDiag {
-  stored: Record<string, unknown>;
-  effective: Record<string, unknown>;
-  saves: number;
-}
 
 // No test here enters a painting's world, so the page always hides Return to gallery and centres
 // Recenter. The layout module mirrors that, so `controlPoint` aims where the page draws.
 setControlHidden('gallery', true);
-
-async function panel(xr: Xr): Promise<PanelDiag> {
-  return (await xr.diag()).panel as PanelDiag;
-}
-
-async function settings(xr: Xr): Promise<SettingsDiag> {
-  return (await xr.diag()).settings as SettingsDiag;
-}
-
-/** A control's centre on the panel's control plane, rig-local (the rig sits at the origin here). */
-function controlPoint(p: PanelDiag, id: string, fraction = 0.5): Vector3 {
-  const layout = controlLayout(id);
-  if (!layout || !p.pose || p.scale === null) throw new Error(`no ${id} or no pose`);
-  const rect = controlRect(layout);
-  const x = rect.x - rect.w / 2 + rect.w * fraction;
-  return new Vector3(x, rect.y, CONTROL_Z)
-    .multiplyScalar(p.scale)
-    .applyQuaternion(new Quaternion(...p.pose.quaternion))
-    .add(new Vector3(...p.pose.position));
-}
-
-/** Points the right controller from `from` at `target`. */
-async function aim(xr: Xr, from: Vector3, target: Vector3): Promise<void> {
-  const dir = target.clone().sub(from).normalize();
-  const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, -1), dir);
-  await xr.setPose({
-    right: { position: from.toArray() as Vec3, quaternion: q.toArray() as Quat },
-  });
-}
-
-function setButton(page: Page, button: string, value: number): Promise<void> {
-  return page.evaluate(
-    ([b, v]) => window.__goghIwer?.controllers.right?.updateButtonValue(b as string, v as number),
-    [button, value] as const,
-  );
-}
 
 test('right A opens the panel; grip on a slider changes nothing; the trigger sets the vignette, which applies and persists', async ({
   page,

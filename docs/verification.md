@@ -2049,3 +2049,31 @@ Nothing byte-compared to a committed golden moved. The fidelity metric and every
   
   These are pixel and count measures at pinned times, so load slows them without changing them.
 - The full `make e2e` was not run here.
+
+## P5.7 gallery, portal and settings journey (2026-11-08, card 01a1ae07)
+
+`tests/e2e/journey.spec.ts` is the P5-A2 test. It has two tests, one under IWER and one on the desktop preview, and both walk the same path with real input:
+
+1. Boot the gallery and check the vignette reads its default, 0.6.
+2. Walk from the gallery spawn (0, 0, 0) into Starry Night's frame with the left stick (IWER) or W held (desktop). The test asserts that the portal's `lastTrigger` is `{ id: 'starry-night', cause: 'walk' }` and that `painting` is `starry-night`.
+3. Open the settings panel. Under IWER that is the left thumbrest, button index 6, which is the app's `menu` slot. On the desktop it is M, which opens the DOM panel.
+4. Set the vignette. Under IWER the right laser goes onto the slider at 20% of its width, and the trigger is pressed and released. On the desktop it is a mouse click at 20% of the DOM range input. Both set 0.2. The test waits until no save is pending and localStorage holds the value.
+5. Press Return to gallery: the XR panel's button by laser and trigger, or a click on the DOM button. The test asserts that `lastTrigger` is `{ id: 'gallery', cause: 'return' }` and that the gallery has settled.
+6. Reload with `page.reload()`. The test asserts that `settings.stored.vignette` and `settings.effective.vignette` are both 0.2. Under IWER it then re-enters XR and walks backward at full stick, and `rig.vignette` settles at 0.2, so the kept value reaches locomotion. On the desktop the vignette never draws, so instead the test reopens the panel with M, and the slider reads 0.2.
+
+The journey changes the setting inside the world and then returns, which is the plan's order. PRD.md's P5-A2 lists the return before the change, and both orders cover the same PRD steps. The spec asserts state only, so it is in the `e2e` project, not `timing`. Its diag readers, and the panel aiming helpers that portal.spec and panel.spec used to hold privately, now live in `tests/e2e/helpers.ts`.
+
+Runs used headless Chromium on ANGLE Metal (Apple M4 Max), `--project=e2e --no-deps`, `E2E_PORT=4297`. Loads are the 1-minute averages.
+
+| Run | Result | Load before | Load after |
+| --- | --- | --- | --- |
+| 1 (before the `[e2e]` log line was added) | 2 passed | 20.55 (load-affected: still above 15 after the 15-minute wait) | 15.81 |
+| 2 | 2 passed | 14.98 | 14.43 |
+| 3 | 2 passed | 14.43 | 14.36 |
+| 4 | 2 passed | 14.25 | 13.71 |
+
+Runs 2 to 4 ran the committed spec, so it passed 3 times out of 3 at a load of 15 or less. Each test takes about 15 s.
+
+The helper move was checked once each: panel.spec passed 5 of 5 (load 14.05 before, 18.25 after), and portal.spec passed 3 of 3 in the `timing` project (load 14.96 before, 31.01 after, so the frame bars met at a rising load). The full `make e2e` was not run here.
+
+Not verified: whether a real Quest exposes its left menu button at index 6 (see Controls in CLAUDE.md). The test presses IWER's thumbrest there, because that is the button the app binds.

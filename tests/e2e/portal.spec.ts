@@ -7,30 +7,7 @@
  */
 import type { Page } from '@playwright/test';
 import { expect, glErrors, test, type Xr } from './fixtures';
-
-interface PortalDiag {
-  state: 'idle' | 'entering' | 'returning';
-  progress: number;
-  lastTrigger: { id: string; cause: string; t: number } | null;
-  longestFrameMs: number | null;
-  longestStepMs: number | null;
-  longestStep: string | null;
-  stepsMs: Record<string, number>;
-  durationMs: number | null;
-  longestWorkMs: number | null;
-  longestWorkPhase: string | null;
-  flying: boolean;
-  frames: FrameRecord[];
-}
-
-interface FrameRecord {
-  phase: string;
-  intervalMs: number;
-  workMs: number;
-  slicerMs: number;
-  renderMs: number;
-  task: string | null;
-}
+import { type PortalDiag, portal, settled } from './helpers';
 
 interface Memory {
   geometries: number;
@@ -80,26 +57,6 @@ async function warmVeil(page: Page, xr: Xr): Promise<void> {
   await xr.waitFrames(3);
   await page.evaluate(() => window.__goghVeil?.(0));
   await xr.waitFrames(3);
-}
-
-const portal = async (xr: Xr): Promise<PortalDiag> => (await xr.diag()).portal as PortalDiag;
-
-async function settled(xr: Xr, painting: string): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        const d = await xr.diag();
-        const world = d.world as { plaques?: { state: string } } | undefined;
-        return (
-          d.painting === painting &&
-          (d.portal as PortalDiag).state === 'idle' &&
-          world !== undefined &&
-          world.plaques?.state !== 'pending'
-        );
-      },
-      { timeout: 90_000 },
-    )
-    .toBe(true);
 }
 
 const LOOKS: readonly [number, number][] = [0, Math.PI / 2, Math.PI, -Math.PI / 2].flatMap((yaw) =>
