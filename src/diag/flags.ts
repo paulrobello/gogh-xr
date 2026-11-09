@@ -99,6 +99,8 @@ export interface Flags {
    * keeps the default. A running governor still sets its own foveation.
    */
   readonly fov: Fov | null;
+  /** `?mute`: the audio mixer's master gain starts at 0 (src/audio/mixer.ts). The buses still run. */
+  readonly mute: boolean;
 }
 
 /** The fixed foveation levels `?fov` pins: off, the governor's first step and its last. */
@@ -295,6 +297,7 @@ export function parseFlags(search: string): Flags {
     scene: parseScene(params.get('scene')),
     densityLaw: parseVariant(DENSITY_LAWS, params.get('densitylaw')),
     fov: parseFov(params.get('fov')),
+    mute: parseBool(params, 'mute'),
   });
 }
 

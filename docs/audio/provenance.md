@@ -25,6 +25,17 @@ These four statuses are tracked separately, per the Suno guide.
 | Status | score-night | score-gallery |
 | --- | --- | --- |
 | Source selection | Done. Paul generated and delivered the take | Done. Paul generated and delivered the take |
-| Technical preparation (seamless loop, runtime encode) | Not started (P6.4) | Not started (P6.4) |
+| Technical preparation (seamless loop, runtime encode) | P6.4: 141.000 s loop, Opus and MP3 in `public/audio/`. `make asset-check` passes. See [derivatives.md](derivatives.md). Done except browser decode and runtime load (P6.5, P6.6). | P6.4: 120.080 s loop, Opus and MP3 in `public/audio/`. `make asset-check` passes. See [derivatives.md](derivatives.md). Done except browser decode and runtime load (P6.5, P6.6). |
 | Creative acceptance in the headset mix | Not started | Not started |
 | Release rights | Paid-plan output. Check the current Suno terms before release (P7) | Paid-plan output. Check the current Suno terms before release (P7) |
+
+## ElevenLabs SFX
+
+The source rows (prompts, settings, hashes) are in [assets/PROVENANCE.md](../../assets/PROVENANCE.md). The runtime derivatives, with every processing step and command, are in [derivatives.md](derivatives.md).
+
+| Status | wind-hill | crickets | church-bell | portal-whoosh | stroke-rustle |
+| --- | --- | --- | --- | --- | --- |
+| Source selection | Done. Paul picked take 2 | Done. Paul picked take 6 | Done. Paul picked take 2 | Done. Paul picked take 1 | Done. Paul picked take 1 |
+| Technical preparation | Deviation, pending owner decision (P6.4): 23.000 s mono loop. Linear gain to the -2 dBTP ceiling stops near -29.4 LUFS, so the shipping file uses about 5 dB of peak limiting to reach -24 LUFS. Paul picks the limited or the linear take: `make audio-audition` writes both to `build/audio/audition/` | P6.4: 23.500 s mono loop. Done except browser decode and runtime load (P6.5, P6.6). | P6.4: 10.000 s mono one-shot. Done except browser decode and runtime load (P6.5, P6.6). | Deviation, pending owner decision (P6.4): 2.000 s mono one-shot. The 0.5L + 0.5R fold of the stereo source loses 2.48 dB, against the 2 dB limit. Paul accepts the mono fold or asks for another take | P6.4: 0.900 s mono one-shot, +26.33 dB of gain. Done except browser decode and runtime load (P6.5, P6.6). |
+| Creative acceptance in the headset mix | Not started | Not started | Not started | Not started | Not started |
+| Release rights | Not verified. Check the ElevenLabs terms before release (P7) | Not verified (P7) | Not verified (P7) | Not verified (P7) | Not verified (P7) |

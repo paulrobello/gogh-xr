@@ -41,12 +41,13 @@ test('defaults when search is empty', () => {
     scene: null,
     densityLaw: null,
     fov: null,
+    mute: false,
   });
 });
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&update&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20&densitylaw=%20Count&fov=0.5',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&update&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20&densitylaw=%20Count&fov=0.5&mute',
   );
   expect(f).toEqual({
     seed: 42,
@@ -87,6 +88,7 @@ test('parses every flag', () => {
     scene: 'bare',
     densityLaw: 'count',
     fov: 0.5,
+    mute: true,
   });
 });
 

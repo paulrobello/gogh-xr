@@ -160,7 +160,11 @@ export const test = base.extend<{ xr: Xr; pageErrors: string[] }>({
         const text = message.text();
         const url = message.location().url;
         // Chromium requests a favicon the app does not ship; nothing else is allowed.
-        if (new URL(url || 'about:blank').pathname === '/favicon.ico') return;
+        const path = new URL(url || 'about:blank').pathname;
+        if (path === '/favicon.ico') return;
+        // A missing /audio/ file 404s on a host without Vite's index.html fallback (Pages), and the
+        // mixer then runs that cue silent (P6.5). vite preview answers it with index.html instead.
+        if (path.startsWith('/audio/') && text.startsWith('Failed to load resource')) return;
         if (message.type() === 'error' || GL_ERROR.test(text)) {
           errors.push(`console.${message.type()}: ${text}${url ? ` (${url})` : ''}`);
         }

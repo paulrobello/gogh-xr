@@ -1,4 +1,4 @@
-.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check bake e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit
+.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check audio audio-audition bake e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit
 
 install:
 	bun install --frozen-lockfile
@@ -30,8 +30,18 @@ bundle-check:
 	if [ -n "$$chunks" ]; then echo "$$chunks"; echo "bundle-check: iwer-install chunk found in $(BUNDLE_DIR)/"; fail=1; fi; \
 	if [ $$fail -ne 0 ]; then exit 1; fi; \
 	echo "bundle-check: $(BUNDLE_DIR)/ contains no IWER code"
+# The validator and its self-test need ffmpeg on PATH and run on any build. The byte-identity
+# rebuild (master.ts --check) needs ffmpeg 9.0.2 and skips with a WARN on any other build.
 asset-check:
 	bun scripts/asset-check.ts
+	bun scripts/audio/validate.ts --self-test
+	bun scripts/audio/master.ts --check
+# Masters assets/audio/source/ into public/audio/ and rewrites docs/audio/derivatives.md.
+audio:
+	bun scripts/audio/master.ts
+# Renders the limited and linear takes of each pending crest-limit deviation into build/audio/audition/.
+audio-audition:
+	bun scripts/audio/master.ts --audition
 # Rewrites public/paintings/starry-night/{palette.json,flow.png,regions.png} and their PROVENANCE.md rows.
 bake:
 	bun scripts/bake/analyze-scan.ts

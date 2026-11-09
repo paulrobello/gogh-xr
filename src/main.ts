@@ -6,6 +6,7 @@ import {
   Vector3,
   WebGLRenderer,
 } from 'three';
+import { createAudioHost } from './audio/audio';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { bootWorld, GALLERY_WORLD, resolveBootMode } from './boot-mode';
 import { installDesktopControls } from './desktop/controls';
@@ -92,6 +93,26 @@ const settings = settingsStore.effective;
 if (settingsRecovered) {
   console.warn(`settings: ${settingsRecovered}; using the defaults`);
 }
+/**
+ * The audio (P6.5, src/audio/): no AudioContext until the first gesture, the Enter VR button or a
+ * pointerdown. The bench has none.
+ */
+const audio =
+  flags.bench === null
+    ? createAudioHost({
+        base: import.meta.env.BASE_URL,
+        muted: flags.mute,
+        volumes: () => ({
+          music: settingsStore.effective.musicVolume,
+          sfx: settingsStore.effective.sfxVolume,
+        }),
+        presenting: () => renderer.xr.isPresenting,
+        disturbers: {
+          positions: reactiveTracker.uniforms.uDisturbers.value,
+          velocities: reactiveTracker.uniforms.uDisturberVelocities.value,
+        },
+      })
+    : null;
 // `?noanim` freezes the clock.
 motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
@@ -526,12 +547,22 @@ settingsStore.subscribe((effective, key) =>
     hud: hud ? hudLive : null,
   }),
 );
+settingsStore.subscribe((effective, key) => {
+  if (key === 'musicVolume' || key === 'sfxVolume') {
+    audio?.setVolumes(effective.musicVolume, effective.sfxVolume);
+  }
+});
 renderer.xr.addEventListener('sessionstart', () => {
   sessionQuality = settingsStore.effective.quality;
   panel?.sessionStart();
+  const xrSession = renderer.xr.getSession();
+  if (xrSession) audio?.sessionStart(xrSession);
 });
 // XR exit saves the panel's pose against the last XR head pose, before the desktop look moves it.
-renderer.xr.addEventListener('sessionend', () => panel?.sessionEnd());
+renderer.xr.addEventListener('sessionend', () => {
+  panel?.sessionEnd();
+  audio?.sessionEnd();
+});
 /** A frame with no movement, turn, aim or toggle: what locomotion reads during a transition. */
 function frozenActions(a: Actions): Actions {
   return {
@@ -608,6 +639,8 @@ function renderFrame(time: number): void {
   if (runLocomotion) {
     switcher.frame(dtMs);
     const busy = switcher.busy;
+    // The score crossfade and the whoosh start with the transition, read once at its first frame.
+    if (busy && !portalBusy) audio?.transition(switcher.diag().target);
     const transitionEnded = portalBusy && !busy;
     portalBusy = busy;
     if (transitionEnded) updates?.settle();
@@ -620,6 +653,11 @@ function renderFrame(time: number): void {
   renderer.render(scene, camera);
   const renderMs = performance.now() - renderStart;
   drawCalls = renderer.info.render.calls;
+  // After render, which updates three's XR camera to this frame's head pose.
+  audio?.frame(
+    renderer.xr.isPresenting ? renderer.xr.getCamera() : camera,
+    settingsStore.effective.calm,
+  );
   if (abSwitchStart !== null && abSwitch) {
     abSwitch.frameMs = performance.now() - abSwitchStart;
     abSwitchStart = null;
@@ -661,6 +699,7 @@ if (flags.diag) {
   registerDiag('abSwitch', () => abSwitch && { ...abSwitch });
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
   registerDiag('motion', () => motionClock.diag());
+  if (audio) registerDiag('audio', () => audio.diag());
   registerDiag('variants', () => motionVariants.diag());
   if (abActive?.group === 'wrap' || flags.wrap !== null) {
     registerDiag('wrap', () =>
@@ -832,11 +871,13 @@ function bindWorld({ id, module, handle }: LiveWorld): void {
   reactiveBatch = batch;
   void strokes.bind(batch);
   registerGalleryReturn(id === GALLERY_ID ? null : () => void switcher.go(GALLERY_ID, 'return'));
+  audio?.setWorld(id, handle);
 }
 
 /** Releases every binding to the active world, before its module disposes it. */
 function unbindWorld(): void {
   registerGalleryReturn(null);
+  audio?.clearWorld();
   if (strokes.batch) void strokes.bind(null);
   world = null;
   haloWorld = null;
@@ -867,7 +908,10 @@ const switcher = createSwitcher({
     spawnYaw = yaw;
     locomotion.spawn(position[0], position[1], position[2], yaw);
   },
-  bare: () => locomotion.setWorld(null),
+  bare: () => {
+    locomotion.setWorld(null);
+    audio?.setWorld(null, null);
+  },
   suppressInput: () => input.suppressHeld(),
   setVeil: setPortalVeil,
   calm: () => settingsStore.effective.calm,
@@ -918,6 +962,8 @@ if (worldEntry) {
 void isVrSupported(navigator.xr).then((supported) => {
   session.state.supported = supported;
   createEnterVrButton(supported, () => {
+    // The click is the gesture that may create the AudioContext.
+    audio?.unlock();
     enteringXr = true;
     void session.enter().finally(() => {
       enteringXr = false;

@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "sampleRate": 48000,
+  "ffmpeg": "9.0.2",
+  "cues": [
+    {
+      "id": "score-night",
+      "kind": "music",
+      "loop": true,
+      "channels": 2,
+      "duration": 141,
+      "frames": 6768000,
+      "loudness": {
+        "target": -18,
+        "tolerance": 1
+      },
+      "files": {
+        "ogg": "score-night.ogg",
+        "mp3": "score-night.mp3"
+      },
+      "bytes": {
+        "ogg": 1945097,
+        "mp3": 1974716
+      },
+      "sha256": {
+        "ogg": "1eb200a8e47f7cf851e5cc2fa152cdb02224ffd49a8d47b5366281f3ef29767e",
+        "mp3": "3cf136b2c7c519de172ba8a106b633e99aff4c0420993bb8beb91cdc6c0ab149"
+      }
+    },
+    {
+      "id": "score-gallery",
+      "kind": "music",
+      "loop": true,
+      "channels": 2,
+      "duration": 120.08,
+      "frames": 5763840,
+      "loudness": {
+        "target": -18,
+        "tolerance": 1
+      },
+      "files": {
+        "ogg": "score-gallery.ogg",
+        "mp3": "score-gallery.mp3"
+      },
+      "bytes": {
+        "ogg": 1731593,
+        "mp3": 1682060
+      },
+      "sha256": {
+        "ogg": "75bea688f2a93f875f9c4d980ed472995a6160e6f45154b3e185e02e7bfabc67",
+        "mp3": "28bec41526a8d87a61a252dfb4d874f6e541d9d4eac97762c46a00a75a06c1cf"
+      }
+    },
+    {
+      "id": "wind-hill",
+      "kind": "sfx",
+      "loop": true,
+      "channels": 1,
+      "duration": 23.00025,
+      "frames": 1104012,
+      "loudness": {
+        "target": -24,
+        "tolerance": 2
+      },
+      "files": {
+        "ogg": "wind-hill.ogg",
+        "mp3": "wind-hill.mp3"
+      },
+      "bytes": {
+        "ogg": 126338,
+        "mp3": 184556
+      },
+      "sha256": {
+        "ogg": "b2b54f4593481ce2cc076b86e1aec96e0d911f2e0b4046eb36d1a92fc68afeba",
+        "mp3": "f96fa5bd05888823d6e319e2a0225fff7fe12e4513b5b5a52e3a112b4ce0fd68"
+      }
+    },
+    {
+      "id": "crickets",
+      "kind": "sfx",
+      "loop": true,
+      "channels": 1,
+      "duration": 23.50025,
+      "frames": 1128012,
+      "loudness": {
+        "target": -24,
+        "tolerance": 2
+      },
+      "files": {
+        "ogg": "crickets.ogg",
+        "mp3": "crickets.mp3"
+      },
+      "bytes": {
+        "ogg": 141999,
+        "mp3": 188588
+      },
+      "sha256": {
+        "ogg": "72ba9f0dd4f750c9a413303001dd78612cbc2ba30aa37c28ea640689b4f4480d",
+        "mp3": "b6a46d1efd04a7942362919b14b8825cc169fced826faef2a46c070d283304b5"
+      }
+    },
+    {
+      "id": "church-bell",
+      "kind": "sfx",
+      "loop": false,
+      "channels": 1,
+      "duration": 10,
+      "frames": 480000,
+      "loudness": {
+        "target": -24,
+        "tolerance": 2
+      },
+      "files": {
+        "ogg": "church-bell.ogg",
+        "mp3": "church-bell.mp3"
+      },
+      "bytes": {
+        "ogg": 62748,
+        "mp3": 80492
+      },
+      "sha256": {
+        "ogg": "d6ae5a8f823f9c411b98d33fbbc27078737782727b681f9556ae4ef88ee61e5d",
+        "mp3": "a3794888d92d05deb0265e69efb8a3c219dc4f8d14876661ad33c5cdb0b0cb8b"
+      }
+    },
+    {
+      "id": "portal-whoosh",
+      "kind": "sfx",
+      "loop": false,
+      "channels": 1,
+      "duration": 2,
+      "frames": 96000,
+      "loudness": {
+        "target": -24,
+        "tolerance": 2
+      },
+      "files": {
+        "ogg": "portal-whoosh.ogg",
+        "mp3": "portal-whoosh.mp3"
+      },
+      "bytes": {
+        "ogg": 10908,
+        "mp3": 16556
+      },
+      "sha256": {
+        "ogg": "d3beca95fb7958c9702df843ec0938647d570ee91c073b8ea76619ede6dda352",
+        "mp3": "ff06ebe90c0ffc46f7377a52e5f3dcf6885886afde374f3ac40e82b984e603f7"
+      }
+    },
+    {
+      "id": "stroke-rustle",
+      "kind": "sfx",
+      "loop": false,
+      "channels": 1,
+      "duration": 0.9,
+      "frames": 43200,
+      "loudness": {
+        "target": -24,
+        "tolerance": 2
+      },
+      "files": {
+        "ogg": "stroke-rustle.ogg",
+        "mp3": "stroke-rustle.mp3"
+      },
+      "bytes": {
+        "ogg": 5786,
+        "mp3": 7724
+      },
+      "sha256": {
+        "ogg": "10a0734c26ed28dbccb94cb5244b3f36c32e9bcf9195aa952bcc8420604c59ca",
+        "mp3": "31a4dc83717254770487b04c0e1ca24b23696ecf73c95c4482cf322f48d03bb6"
+      }
+    }
+  ]
+}
