@@ -1020,6 +1020,56 @@ describe('reveal (P5.5)', () => {
   });
 });
 
+describe('held chunk order (view-angle strip)', () => {
+  /** Two mirror-image chunks either side of x = 0, in the cells x = -1 and x = 0 of a 4 m grid. */
+  function mirrorBatch(): StrokeBatch {
+    return createStrokeBatch(concat(cluster(30, [-2, 1.6, -6], 1), cluster(30, [2, 1.6, -6], 2)), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+    });
+  }
+  /** The centre x of the chunk drawn last, on top under the back-to-front default. */
+  function onTop(batch: StrokeBatch, camera: PerspectiveCamera, x: number): number {
+    camera.position.set(x, 1.6, 0);
+    render(batch, camera);
+    const order = batch.drawOrder();
+    expect(order).toHaveLength(2);
+    const top = batch.chunks.find((chunk) => chunk.mesh.name === order[1]);
+    if (!top) throw new Error('no chunk drawn last');
+    return Math.sign(top.bounds.center.x);
+  }
+
+  test('a head swaying across the bisector keeps one order', () => {
+    const batch = mirrorBatch();
+    const camera = originCamera();
+    const sweep: number[] = [];
+    for (let i = -20; i <= 20; i++) sweep.push(i / 100);
+    for (let i = 20; i >= -20; i--) sweep.push(i / 100);
+    // The first update sorts by plain distance: from x = -0.2 the chunk at x = -2 is nearer.
+    const tops = new Set(sweep.map((x) => onTop(batch, camera, x)));
+    expect([...tops]).toEqual([-1]);
+    batch.dispose();
+  });
+
+  test('walking on flips the pair once, and a jump sorts by plain distance', () => {
+    const batch = mirrorBatch();
+    const camera = originCamera();
+    let flips = 0;
+    let last = onTop(batch, camera, -0.2);
+    for (let i = -4; i <= 40; i++) {
+      const top = onTop(batch, camera, i * 0.05);
+      if (top !== last) flips++;
+      last = top;
+    }
+    // Far to near holds once the distances part by twice the hold: the nearer chunk is on top.
+    expect(flips).toBe(1);
+    expect(last).toBe(1);
+    // From x = 2 to x = -0.2 is a jump past ORDER_KEY_RESET_M.
+    expect(onTop(batch, camera, -0.2)).toBe(-1);
+    batch.dispose();
+  });
+});
+
 describe('per-frame cull buffers (M3)', () => {
   test('update passes the same order and distance arrays to cullAndSortInto every frame', () => {
     const batch = bandedBatch();

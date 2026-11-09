@@ -3,17 +3,18 @@
  * then comes in:
  *
  * - `fly` (about 2 s): out 0.6 s, the painting's strokes lift off and the old world dissolves into
- *   black; in 1.4 s, they fly out to the new world's strokes as it shows behind them.
- * - `fade` (calm below 0.3, 0.6 s): out 0.3 s to black, in 0.3 s back. No strokes fly.
+ *   the painted night sky (night-sky.ts); in 1.4 s, they fly out to the new world's strokes as it
+ *   shows behind them.
+ * - `fade` (calm below 0.3, 0.6 s): out 0.3 s to the painted sky, in 0.3 s back. No strokes fly.
  *
  * The new world builds from the trigger, the old one is disposed at the end of `out`, and `wait`
- * lasts until the new one is built and uploaded. The veil holds at 1 through the wait, but the
- * view keeps moving over it (wait-motion.ts): in `fly` the strokes swirl about where they hover,
- * eased in from liftoff and out over the `in` leg on the switcher's clock from the trigger, so
- * neither phase end pops however long the wait; in `fade` a dim, fixed field of night-coloured
- * strokes grows in with the veil, breathes slowly in brightness while waiting and shrinks away as
- * the veil lifts. A transition never queues: `request` is refused while one runs, so a trigger
- * during a transition is dropped, not kept for later.
+ * lasts until the new one is built and uploaded. The veil holds at 1 through the wait, the painted
+ * sky turning slowly over it, and the view keeps moving (wait-motion.ts): in `fly` the strokes
+ * swirl about where they hover, eased in from liftoff and out over the `in` leg on the switcher's
+ * clock from the trigger, so neither phase end pops however long the wait; in `fade` a dim, fixed
+ * field of night-coloured strokes grows in with the veil, breathes slowly in brightness while
+ * waiting and shrinks away as the veil lifts. A transition never queues: `request` is refused
+ * while one runs, so a trigger during a transition is dropped, not kept for later.
  */
 
 export type PortalState = 'idle' | 'entering' | 'returning';
@@ -156,7 +157,10 @@ export function ease(t: number): number {
   return x * x * (3 - 2 * x);
 }
 
-/** The black veil's opacity over a transition frame: up during `out`, held, down during `in`. */
+/**
+ * The veil's opacity over a transition frame: up during `out`, held, down during `in`. The painted
+ * sky grows with it (`skyGrow`).
+ */
 export function veilAt(frame: TransitionFrame, style: TransitionStyle): number {
   if (frame.phase === 'out') return ease(frame.t);
   if (frame.phase === 'wait') return 1;

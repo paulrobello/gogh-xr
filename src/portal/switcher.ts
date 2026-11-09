@@ -11,9 +11,14 @@
  * (`STALL_TIMEOUT_S`), falls back to the gallery once the old world is gone, then to the bare
  * scene.
  *
+ * The veil goes to a painted night sky (night-sky.ts), not black: the veil's deep blue under a
+ * world-fixed field of swirling brushstrokes around the eye, which grows in as the old world fades,
+ * moves at a calm-scaled pace while the world builds and shrinks away as the new one shows. It is
+ * one stroke mesh, built when the first world is adopted and reused by every transition.
+ *
  * The view is never still while the world builds (wait-motion.ts): in the fly style the strokes
  * swirl where they hover, from liftoff into the `in` leg, and in the fade style a dim, fixed field
- * of night-coloured strokes (`portal-cue`) breathes under the veil.
+ * of night-coloured strokes (`portal-cue`) breathes over the sky.
  *
  * main.ts owns every binding to a world (governor, zdiag, A/B, reactive batch, HUD, diag keys,
  * locomotion) and hands them in as `bind` and `unbind`.
@@ -50,6 +55,7 @@ import {
   type FlightLeg,
   type FlyStrokes,
 } from './fly-strokes';
+import { createNightSky, type NightSky, skyGrow, skyMotionRate } from './night-sky';
 import {
   createPortalDetector,
   livePortals,
@@ -249,7 +255,7 @@ export interface SwitcherDeps {
   bare(): void;
   /** Mode switch: every held button and aim reports nothing until released. */
   suppressInput(): void;
-  /** The black veil over the whole view, 0-1. */
+  /** The veil over the whole view, 0-1: the painted sky's deep blue under it. */
   setVeil(alpha: number): void;
   calm(): number;
   loadRaster(url: string): Promise<Raster>;
@@ -285,6 +291,10 @@ export interface PortalDiag {
    * `pulse` field, or null while idle.
    */
   cue: 'swirl' | 'pulse' | null;
+  /** True while the painted sky draws. */
+  sky: boolean;
+  /** True once the painted sky has a program bound: it has drawn once, before any trip. */
+  skyReady: boolean;
   /**
    * The running or last transition's wait, its frame intervals summed, ms; null before the first.
    */
@@ -333,6 +343,15 @@ export interface Switcher {
   go(id: string, cause: NonNullable<PortalDiag['lastTrigger']>['cause']): boolean;
   /** The slicer's budget for this frame: OUT_BUILD_BUDGET_MS during `out`, else undefined. */
   slicerBudgetMs(): number | undefined;
+  /**
+   * While idle, draws the veil and the painted sky at `alpha` (0 hides them), so a GPU baseline
+   * can include the sky's one geometry. e2e only.
+   */
+  previewSky(alpha: number): void;
+  /** e2e only: false keeps the painted sky from drawing, for the pixel checks' negative control. */
+  setSkyEnabled(on: boolean): void;
+  /** Releases the painted sky; the switcher is not used after. */
+  dispose(): void;
   diag(): PortalDiag;
 }
 
@@ -358,6 +377,12 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
   let cueField: CueField | null = null;
   const cueColors = new Uint8Array(CUE_COUNT * 3);
   const cueSizes = new Float32Array(CUE_COUNT * 2);
+  /** The painted sky, built once, and its motion's own clock: seconds scaled by calm. */
+  let sky: NightSky | null = null;
+  let skyTime = 0;
+  /** True from `adopt` until the render after it has drawn the sky once (`warm`). */
+  let skyWarming = false;
+  let skyEnabled = true;
   /** Seconds since the trigger, and seconds spent waiting, by the frames' intervals. */
   let clock = 0;
   /** The clock when the out leg was ready: strokes that land late grow in from it. */
@@ -448,6 +473,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     fallback: null,
     flying: false,
     cue: null,
+    sky: false,
+    skyReady: false,
     waitMs: null,
     frames: [],
     longestWorkMs: null,
@@ -862,6 +889,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       const eyeAfter = eye();
       carry(eyeBefore, eyeAfter);
       carried = { before: eyeBefore, after: eyeAfter, turn: turn.clone() };
+      // Once only: a first leg that lands later is carried again, the sky is not.
+      sky?.mesh.quaternion.premultiply(turn);
     }
   }
 
@@ -1005,6 +1034,12 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     cueField = null;
   }
 
+  /** The painted sky, built on first need on the shared atlas, under the rig. */
+  function nightSky(): NightSky {
+    sky ??= createNightSky(deps.rig, deps.atlas());
+    return sky;
+  }
+
   /**
    * The camera's heading, rig-local and level: its forward with the pitch dropped. Straight up or
    * down the forward has no level part, so its up vector, which then points along the heading,
@@ -1038,6 +1073,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     swirl = null;
     outWait = null;
     disposeCue();
+    sky?.hide();
     leaving = null;
     deps.setVeil(0);
     deps.suppressInput();
@@ -1063,6 +1099,12 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       active = world;
       deps.bind(world);
       prefetch(world);
+      // A world's build has made the atlas by now. The next render uploads the sky's buffers and
+      // binds its program, so a trip's first frame pays for neither.
+      if (transition.state === 'idle' && !sky) {
+        nightSky().warm(eye());
+        skyWarming = true;
+      }
     },
     frame(dtMs) {
       if (transition.state === 'idle') return;
@@ -1110,6 +1152,11 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       const veil = veilAt(step, style);
       deps.setVeil(veil);
       const at = eye();
+      skyTime += (Math.max(0, dtMs) / 1000) * skyMotionRate(deps.calm());
+      if (step.phase !== 'done') {
+        if (skyEnabled) nightSky().draw(skyGrow(veil), skyTime, at);
+        else sky?.hide();
+      }
       // The swirl runs on the transition's own clock from the trigger: each leg weighs it by its
       // strokes' progress, so it is continuous across both phase ends whatever the wait.
       const offsets = fly && outLeg && swirl ? drift : null;
@@ -1182,6 +1229,10 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       }
     },
     endFrame(workMs, renderMs) {
+      if (skyWarming) {
+        skyWarming = false;
+        if (transition.state === 'idle') sky?.hide();
+      }
       const record = current;
       if (!record) return;
       current = null;
@@ -1240,6 +1291,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       diagState.longestWorkPhase = null;
       diagState.longestWorkFrame = null;
       deps.slicer.resetStats();
+      skyTime = 0;
+      nightSky().reset();
       diagState.lastTrigger = { id, cause, t: startedAt };
       deps.suppressInput();
       // Before the old world's dispose releases its programs, and before the next world builds.
@@ -1286,6 +1339,18 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     slicerBudgetMs() {
       return transition.phase === 'out' ? OUT_BUILD_BUDGET_MS : undefined;
     },
+    previewSky(alpha) {
+      if (transition.state !== 'idle') return;
+      deps.setVeil(alpha);
+      nightSky().draw(skyGrow(alpha), 0, eye());
+    },
+    setSkyEnabled(on) {
+      skyEnabled = on;
+    },
+    dispose() {
+      sky?.dispose();
+      sky = null;
+    },
     diag() {
       diagState.state = transition.state;
       diagState.progress = transition.state === 'idle' ? 0 : transition.progress;
@@ -1295,6 +1360,11 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       diagState.armed = detector.armed();
       diagState.flying = fly !== null;
       diagState.cue = swirl !== null ? 'swirl' : cue !== null ? 'pulse' : null;
+      diagState.sky = sky?.mesh.visible === true;
+      diagState.skyReady =
+        sky !== null &&
+        (deps.renderer.properties.get(sky.mesh.material) as { currentProgram?: unknown })
+          .currentProgram !== undefined;
       return diagState;
     },
   };

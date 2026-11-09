@@ -79,6 +79,25 @@ export async function panel(xr: Xr): Promise<PanelDiag> {
   return (await xr.diag()).panel as PanelDiag;
 }
 
+/**
+ * Stores the Hand orbs setting off before every load, keeping any other stored field. For specs
+ * that compare XR pixels or count blended draws with a controller in view, which the orbs (an
+ * additive pass round each hand) would change.
+ */
+export async function handOrbsOff(page: Page): Promise<void> {
+  await page.addInitScript((key) => {
+    let stored: { version?: number; settings?: Record<string, unknown> } = {};
+    try {
+      stored = JSON.parse(localStorage.getItem(key) ?? '{}') ?? {};
+    } catch {
+      stored = {};
+    }
+    const version = typeof stored.version === 'number' ? stored.version : 3;
+    const settings = { ...(stored.settings ?? {}), handOrbs: false };
+    localStorage.setItem(key, JSON.stringify({ version, settings }));
+  }, SETTINGS_KEY);
+}
+
 export async function settings(xr: Xr): Promise<SettingsDiag> {
   return (await xr.diag()).settings as SettingsDiag;
 }

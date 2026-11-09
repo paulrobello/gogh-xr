@@ -7,7 +7,15 @@
  * Parented to the camera: three moves the camera to its XR camera each frame and updates its
  * children (parked note M8: head-locked objects go under the camera, not the scene).
  */
-import { BackSide, GLSL3, Mesh, type Object3D, RawShaderMaterial, SphereGeometry } from 'three';
+import {
+  BackSide,
+  GLSL3,
+  Mesh,
+  type Object3D,
+  RawShaderMaterial,
+  SphereGeometry,
+  Vector3,
+} from 'three';
 import fragmentShader from './vignette.frag.glsl?raw';
 import vertexShader from './vignette.vert.glsl?raw';
 
@@ -33,6 +41,9 @@ export interface VignetteUniforms {
   [name: string]: { value: unknown };
   uAlpha: { value: number };
   uFade: { value: number };
+  uVeil: { value: number };
+  /** Display-referred RGB, 0-1. */
+  uVeilColor: { value: Vector3 };
 }
 
 export type VignetteMaterial = RawShaderMaterial & { uniforms: VignetteUniforms };
@@ -46,6 +57,13 @@ export interface Vignette {
    * over the tunnel. It overrides the tunnel wherever it is darker.
    */
   setFade(fade: number): void;
+  /**
+   * The portal's veil (P5.5): the veil colour over the whole view at this alpha, drawn over the
+   * tunnel and the blink.
+   */
+  setVeil(alpha: number): void;
+  /** The veil's colour, sRGB bytes, written as given like a stroke's. */
+  setVeilColor(rgb: readonly [number, number, number]): void;
   dispose(): void;
 }
 
@@ -54,7 +72,12 @@ const glslFloat = (value: number): string => value.toExponential(8);
 
 export function createVignette(camera: Object3D): Vignette {
   const geometry = new SphereGeometry(VIGNETTE_RADIUS, 32, 16);
-  const uniforms: VignetteUniforms = { uAlpha: { value: 0 }, uFade: { value: 0 } };
+  const uniforms: VignetteUniforms = {
+    uAlpha: { value: 0 },
+    uFade: { value: 0 },
+    uVeil: { value: 0 },
+    uVeilColor: { value: new Vector3() },
+  };
   const material = new RawShaderMaterial({
     glslVersion: GLSL3,
     vertexShader,
@@ -78,7 +101,8 @@ export function createVignette(camera: Object3D): Vignette {
   camera.add(mesh);
 
   const show = (): void => {
-    mesh.visible = uniforms.uAlpha.value > 0 || uniforms.uFade.value > 0;
+    mesh.visible =
+      uniforms.uAlpha.value > 0 || uniforms.uFade.value > 0 || uniforms.uVeil.value > 0;
   };
 
   return {
@@ -90,6 +114,13 @@ export function createVignette(camera: Object3D): Vignette {
     setFade(fade) {
       uniforms.uFade.value = fade;
       show();
+    },
+    setVeil(alpha) {
+      uniforms.uVeil.value = alpha;
+      show();
+    },
+    setVeilColor([r, g, b]) {
+      uniforms.uVeilColor.value.set(r / 255, g / 255, b / 255);
     },
     dispose() {
       mesh.removeFromParent();

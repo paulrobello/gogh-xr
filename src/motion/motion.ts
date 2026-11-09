@@ -16,7 +16,7 @@ import { STROKE_LAYER } from '../render/strokes/instance';
 import { CYPRESS_FLAME_NONE, cypressFlame } from './cypress-flame';
 import { motionGate, reactiveGate } from './layers';
 import { REACTIVE_REACH, reactiveMotion, reactiveTracker } from './reactive';
-import { ringOf, skyRing } from './sky-rings';
+import { moonRing, ringOf, skyRing } from './sky-rings';
 import { SKY_SWIRL_MAX_ANGLE, skySwirl } from './sky-swirl';
 
 export {
@@ -104,8 +104,7 @@ export const LIVE_MOTION: MotionFunctions = Object.freeze({
   }),
   star: ({ position, phaseByte, time }: MotionInput) =>
     skyRing(ringOf(false, phaseByte), position, time),
-  moon: ({ position, phaseByte, time }: MotionInput) =>
-    skyRing(ringOf(true, phaseByte), position, time),
+  moon: ({ position, phaseByte, time }: MotionInput) => moonRing(position, phaseByte, time),
   cypress: ({ position, normal, phase, flameByte, time }: MotionInput) =>
     cypressFlame(position, normal, phase, flameByte, time),
   reactive: ({ position, normal, calm }: MotionInput) =>

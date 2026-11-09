@@ -11,8 +11,13 @@
  *   `inner`, peaks halfway to `outer` and is 0 again at `outer`, the rim the haze cones are sized
  *   from. With swell ≤ 1 a moved stroke centre never passes `outer`, so the cones need no growth
  *   (R-P4b). Strokes from `inner` out also brighten by `bright × wave`. The stars ring from their
- *   centre (`inner` 0). The moon's `inner` is its own circle, so the crescent neither moves nor
- *   brightens, and only the glow band round it rings.
+ *   centre (`inner` 0). The moon's `inner` is its own circle: no moon stroke inside it moves, so
+ *   the ranks the rest world picks from the ring reach stay as they are. The cream disc's strokes
+ *   inside it brighten by `innerBright × wave` instead, so the same crest ripples across the disc
+ *   before it reaches the band.
+ * - Every moon stroke whose footprint touches the crescent's gold carries SKY_MOON_STILL_PHASE in
+ *   its phase byte (src/world/sky-lights.ts) and neither moves nor brightens (`moonRing`). The
+ *   others carry a per-stroke shimmer phase and flicker by ±SKY_MOON_SHIMMER on top of the ring.
  * - The halo pass draws one soft additive glow per anchor over the strokes, carrying the same
  *   travelling rings in its brightness and swelling as a crest passes its peak radius. A star's glow
  *   peaks at its centre. The moon's is an annulus over 1.0-1.5 of its circle, peaking at 1.25, so no
@@ -46,11 +51,24 @@ export const SKY_RING_WAVELENGTH: number = 1;
  * its rim reach, halfway out. At most 1, so no stroke centre passes the rim.
  */
 export const SKY_RING_STAR_SWELL: number = 0.4;
-/** The moon's glow band swells less, and its crescent not at all. */
+/** The moon's glow band swells less. No moon stroke inside `inner` moves. */
 export const SKY_RING_MOON_SWELL: number = 0.3;
 /**
+ * A cream disc stroke, inside the moon's `inner`, draws at `1 + innerBright × wave` of its colour.
+ * With SKY_MOON_SHIMMER on top it stays under 1.2: the disc's brightest cream, R and G about 211
+ * in the painter view, then stays under the 254 the P4.3 clip test counts.
+ */
+export const SKY_RING_MOON_DISC_BRIGHT: number = 0.14;
+/** A moon stroke with this phase byte touches the crescent's gold and never moves or brightens. */
+export const SKY_MOON_STILL_PHASE: number = 255;
+/** Peak brightness each other moon stroke's shimmer adds or takes away. */
+export const SKY_MOON_SHIMMER: number = 0.04;
+/** The shimmer's period, seconds: 3600 / 1440, a divisor of the wrap (R-P4d). */
+export const SKY_MOON_SHIMMER_PERIOD: number = 2.5;
+/**
  * A star stroke draws at `1 + bright × wave` of its colour: 35% brighter on a crest. The moon's
- * band strokes brighten by up to 20%, and its crescent strokes, inside `inner`, not at all.
+ * band strokes brighten by up to 20%, and its cream disc strokes, inside `inner`, by
+ * SKY_RING_MOON_DISC_BRIGHT. Still-tagged moon strokes (SKY_MOON_STILL_PHASE) never brighten.
  */
 export const SKY_RING_STAR_BRIGHT: number = 0.35;
 export const SKY_RING_MOON_BRIGHT: number = 0.2;
@@ -94,7 +112,10 @@ export interface SkyRing {
   readonly period: number;
   /** The wave's phase at t = 0 at the centre, in [0, 1). */
   readonly phase: number;
-  /** Strokes nearer the centre than this, metres, neither move nor brighten (the moon's crescent). */
+  /**
+   * Strokes nearer the centre than this, metres, never move, and brighten by `innerBright`
+   * rather than `bright` (the moon's circle).
+   */
   readonly inner: number;
   /** The rim reach, metres: `anchorReach(anchor, SKY_LIGHT_RIM)`, the haze cones' rim. */
   readonly outer: number;
@@ -102,8 +123,10 @@ export interface SkyRing {
   readonly wavelength: number;
   /** Radial swell at a crest, at most 1. */
   readonly swell: number;
-  /** Brightness at a crest. */
+  /** Brightness at a crest, from `inner` out. */
   readonly bright: number;
+  /** Brightness at a crest inside `inner`: the moon's cream disc. 0 for a star. */
+  readonly innerBright: number;
   /** The halo's peak radius at rest, metres: 0 for a star's centred glow, the band for the moon. */
   readonly haloCentre: number;
   /** The halo's half-width at rest, metres: its glow falls to 0 at `haloCentre ± haloSize`. */
@@ -146,6 +169,7 @@ export function skyRings(anchors: readonly SkyAnchor[] = skyAnchors()): readonly
         wavelength: SKY_RING_WAVELENGTH * outer,
         swell: moon ? SKY_RING_MOON_SWELL : SKY_RING_STAR_SWELL,
         bright: moon ? SKY_RING_MOON_BRIGHT : SKY_RING_STAR_BRIGHT,
+        innerBright: moon ? SKY_RING_MOON_DISC_BRIGHT : 0,
         haloCentre: moon ? SKY_HALO_MOON_CENTRE * disc : 0,
         haloSize: moon ? SKY_HALO_MOON_WIDTH * disc : SKY_HALO_SIZE * outer,
         haloRest: moon ? SKY_HALO_MOON_REST : SKY_HALO_STAR_REST,
@@ -201,9 +225,36 @@ export function skyRing(ring: SkyRing, position: Vec3, time: number): SkyRingMot
   const r = d2 * inv;
   const w = ringWave(ring, r, time);
   const k = ring.swell * w * ringHat(ring, r) * inv;
-  // GLSL step(inner, r): 0 below inner, 1 from it.
-  const bright = r < ring.inner ? 0 : ring.bright * w;
+  // GLSL mix(innerBright, bright, step(inner, r)): innerBright below inner, bright from it.
+  const bright = (r < ring.inner ? ring.innerBright : ring.bright) * w;
   return { offset: [k * dx, k * dy, k * dz], turn: 0, gain: 0, bright };
+}
+
+const STILL: SkyRingMotion = Object.freeze({
+  offset: Object.freeze([0, 0, 0]) as Vec3,
+  turn: 0,
+  gain: 0,
+  bright: 0,
+});
+
+/**
+ * The shimmer's brightness for phase byte `phaseByte` at motion time `time`:
+ * `SKY_MOON_SHIMMER × (2 ringBump − 1)`, in ±SKY_MOON_SHIMMER.
+ */
+export function moonShimmer(phaseByte: number, time: number): number {
+  return (
+    SKY_MOON_SHIMMER * (2 * ringBump(fract(time / SKY_MOON_SHIMMER_PERIOD + phaseByte / 256)) - 1)
+  );
+}
+
+/**
+ * A moon stroke's motion, before calm, at motion time `time`: still for SKY_MOON_STILL_PHASE,
+ * else the moon's ring plus its shimmer. Matches moonMotion in motion.glsl.
+ */
+export function moonRing(position: Vec3, phaseByte: number, time: number): SkyRingMotion {
+  if (phaseByte === SKY_MOON_STILL_PHASE) return STILL;
+  const m = skyRing(SKY_RINGS[SKY_MOON_RING], position, time);
+  return { ...m, bright: m.bright + moonShimmer(phaseByte, time) };
 }
 
 /**
@@ -298,9 +349,12 @@ export function skyRingGlslDefines(
     SKY_RING_WAVES: `vec4[${n}](${rings
       .map((r) => vec4([r.phase, 1 / r.wavelength, r.inner, r.outer]))
       .join(', ')})`,
-    SKY_RING_GAINS: `vec2[${n}](${rings
-      .map((r) => `vec2(${glslFloat(r.swell / (r.outer - r.inner))}, ${glslFloat(r.bright)})`)
+    SKY_RING_GAINS: `vec3[${n}](${rings
+      .map((r) => vec3([r.swell / (r.outer - r.inner), r.bright, r.innerBright]))
       .join(', ')})`,
+    SKY_MOON_STILL_PHASE: `${SKY_MOON_STILL_PHASE}u`,
+    SKY_MOON_SHIMMER: glslFloat(SKY_MOON_SHIMMER),
+    SKY_MOON_SHIMMER_INV_PERIOD: glslFloat(1 / SKY_MOON_SHIMMER_PERIOD),
   };
 }
 

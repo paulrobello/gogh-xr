@@ -23,7 +23,7 @@
 import type { Raster } from '../demo/canvas/field';
 import { REGION, type RegionId, sampleColor, sampleFlow } from '../demo/canvas/field';
 import { COLOR_INSET, decodedNormal, REGION_STYLES, strokeShade } from '../demo/canvas/placement';
-import { ringOf, SKY_RING_REACH, skyRingReach } from '../motion/sky-rings';
+import { ringOf, SKY_MOON_STILL_PHASE, SKY_RING_REACH, skyRingReach } from '../motion/sky-rings';
 import { CANVAS_ASPECT, canvasRay, PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import type { CanvasSource } from '../paintings/starry-night/canvas-histogram';
 import {
@@ -88,6 +88,12 @@ export const SKY_LIGHT_MOON_EDGE_OVERDRAW: number = 3;
  * bites into and the halo stay under it (b* about 35 to 45; the gold is 55 to 75).
  */
 export const SKY_LIGHT_GOLD_B: number = 50;
+/**
+ * CIELAB b* over which a moon stroke inside the moon's circle stays still (src/motion/sky-rings.ts),
+ * a margin under SKY_LIGHT_GOLD_B: the cream strokes nearest gold also draw the crescent's
+ * antialiased outline, so they keep it still too.
+ */
+export const SKY_LIGHT_MOON_STILL_B: number = 45;
 /** Samples of the crescent mask, of 15 over an edge stroke's footprint, needed on each side. */
 const EDGE_SIDE_SAMPLES = 3;
 /** Split path of a moon edge-stroke cell; the main grid's paths start at 1. */
@@ -385,8 +391,8 @@ export function* createSkyLightsSteps(
     const region = REGION_OF[anchor.kind];
     const layer = REGION_STYLES[region].layer;
     const crop = crops[a] ?? null;
-    // The phase byte names the anchor the stroke rings round (src/motion/sky-rings.ts), not a
-    // per-stroke phase: the rings' phase is per anchor.
+    // A star stroke's phase byte names the star it rings round (src/motion/sky-rings.ts), not a
+    // per-stroke phase: the rings' phase is per anchor. A moon stroke's is `moonPhase`.
     const ring = indices[a] < 0 ? a : indices[a];
     const perWidth = metresPerWidth(anchor);
     const drawn = (stored * DEFAULT_BAND_SIZE.far) / perWidth;
@@ -462,6 +468,35 @@ export function* createSkyLightsSteps(
       return gold >= EDGE_SIDE_SAMPLES && labs.length - gold >= EDGE_SIDE_SAMPLES;
     };
 
+    /**
+     * A moon stroke's phase byte (src/motion/sky-rings.ts). SKY_MOON_STILL_PHASE keeps the
+     * crescent still: a stroke the ring never moves (`reach` 0, inside the moon's circle) is still
+     * when its colour `rgb` is near the crescent's gold (SKY_LIGHT_MOON_STILL_B) or the scan under
+     * its centre is gold, so a crescent stroke whose length averages in the cream stays still too;
+     * one it slides is still when its footprint, `length` stored and `aspect` wide, samples any
+     * gold, so no sliding stroke covers or uncovers the crescent. Any other stroke gets a shimmer phase hashed
+     * from its offset, so no random draw is added.
+     */
+    const moonPhase = (
+      x: number,
+      y: number,
+      length: number,
+      aspect: number,
+      reach: number,
+      rgb: readonly number[],
+    ): number => {
+      const along = (length * DEFAULT_BAND_SIZE.far) / perWidth;
+      const gold =
+        reach > 0
+          ? footprint(x, y, along, along * aspect, FOOTPRINT_ACROSS).some(
+              (c) => lab(c)[2] > SKY_LIGHT_GOLD_B,
+            )
+          : lab(rgb)[2] > SKY_LIGHT_MOON_STILL_B ||
+            lab(colourAtUv(source, scan, crop, offsetUv(anchor.uv, x, y)))[2] > SKY_LIGHT_GOLD_B;
+      if (gold) return SKY_MOON_STILL_PHASE;
+      return lowbias32(float32Bits(x) ^ lowbias32(float32Bits(y))) % SKY_MOON_STILL_PHASE;
+    };
+
     const emit = (x: number, y: number, level: number, rand: () => number, top = false): void => {
       const scale = 0.5 ** level;
       const [u, v] = offsetUv(anchor.uv, x, y);
@@ -471,7 +506,8 @@ export function* createSkyLightsSteps(
       const flip = rand() < 0.5 ? Math.PI : 0;
       // Still drawn, so every later draw, ranks included, is unchanged.
       rand();
-      const phase = ring;
+      const p = domePoint(u, v);
+      const reach = skyRingReach(ringOf(layer === STROKE_LAYER.moon, ring), p[0], p[1], p[2]);
       // The lower half, so a moon edge stroke, which takes the highest free rank, lands on top.
       const start = Math.floor((rand() * BACKDROP_FRONT_RANKS) / 2);
       const finish = (rank: number): StrokeInstance => {
@@ -494,11 +530,13 @@ export function* createSkyLightsSteps(
           (k) => samples.reduce((sum, c) => sum + c[k], 0) / samples.length,
         );
         const shade = strokeShade(decoded);
+        const color = [rgb[0] / shade, rgb[1] / shade, rgb[2] / shade];
+        const phase = moon ? moonPhase(x, y, length, aspect, reach, color) : ring;
         return {
           position,
           normal,
           tangent,
-          color: [rgb[0] / shade, rgb[1] / shade, rgb[2] / shade, 255],
+          color: [color[0], color[1], color[2], 255],
           size: [length, length * aspect],
           brush,
           layer,
@@ -506,13 +544,12 @@ export function* createSkyLightsSteps(
           flags: DEPTH_BACKDROP_FLAG,
         };
       };
-      const p = domePoint(u, v);
       pending.push({
         level,
         finish,
         p,
         half: skyLightHalfDiagonal(length, aspect),
-        reach: skyRingReach(ringOf(layer === STROKE_LAYER.moon, phase), p[0], p[1], p[2]),
+        reach,
         start,
         top,
       });

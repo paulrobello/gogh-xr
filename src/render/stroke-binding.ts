@@ -11,7 +11,9 @@ import type { GovernorMode } from './governor';
 import type { GovernedBatch, GovernorDiag, GovernorRuntime } from './governor-runtime';
 import type { StrokeBatch } from './strokes/batch';
 
-export type BoundBatch = GovernedBatch & Pick<StrokeBatch, 'visibleCount' | 'visibleChunkCount'>;
+export type BoundBatch = GovernedBatch &
+  Pick<StrokeBatch, 'visibleCount' | 'visibleChunkCount'> &
+  Partial<Pick<StrokeBatch, 'drawOrder'>>;
 
 /** Starts the quality governor for one batch. */
 export type GovernorStarter = (batch: GovernedBatch) => GovernorRuntime;

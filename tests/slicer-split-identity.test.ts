@@ -35,13 +35,14 @@ import { createSlicer, type Steps } from '../src/util/slicer.ts';
  * painted canvas past the mat (SCATTER_VERSION 15), since that moves every world input, and the
  * scattered, assembled and batch literals again for the face-clamped placement and size cap
  * (SCATTER_VERSION 16), and geometry once more when its village and cypress records were hashed at
- * float32 (`text32`); the gallery literals are still the d2d3e84 values.
+ * float32 (`text32`), and assembled and batch once more when the moon strokes' phase bytes took
+ * their still tag or shimmer phase; the gallery literals are still the d2d3e84 values.
  */
 const UNSPLIT: Readonly<Record<string, string>> = {
   geometry: '535afd02',
   scattered: 'f0a8f167',
-  assembled: 'd73f1899',
-  batch: '24161a74',
+  assembled: 'c8603701',
+  batch: '87bac0a8',
   base: '1a18b3f6',
   gallery: '6f6580f0',
   galleryBatch: 'be87405e',

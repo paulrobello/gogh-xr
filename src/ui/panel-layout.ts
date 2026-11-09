@@ -42,7 +42,7 @@ export interface ControlDef {
 }
 
 export const PANEL_W = 0.62;
-export const PANEL_H = 0.58;
+export const PANEL_H = 0.644;
 const MARGIN = 0.024;
 export const COLUMN_W = (PANEL_W - 3 * MARGIN) / 2;
 const COLUMN_X: readonly [number, number] = [
@@ -145,6 +145,15 @@ export const CONTROLS: readonly ControlDef[] = [
     help: 'The eye height seated mode sets, raising or lowering you',
     column: 0,
     row: 5,
+  },
+  {
+    id: 'handOrbs',
+    kind: 'toggle',
+    label: 'Hand orbs',
+    field: 'handOrbs',
+    help: 'A soft glow at each hand',
+    column: 0,
+    row: 6,
   },
   {
     id: 'calm',

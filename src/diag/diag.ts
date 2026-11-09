@@ -58,6 +58,7 @@ declare global {
     __goghPortal?: (id: string) => boolean;
     /** e2e builds only, with `?diag`: the portal veil at `alpha` while no transition runs. */
     __goghVeil?: (alpha: number) => void;
+    __goghSkyControl?: (mode: 'sky' | 'hidden' | 'black') => void;
   }
 }
 

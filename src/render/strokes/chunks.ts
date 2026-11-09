@@ -182,11 +182,52 @@ export function partitionStrokes(
 }
 
 /**
+ * How far a chunk's order key (`holdOrderKeys`) may trail its centre distance, metres. The held
+ * order can put the farther of two chunks on top only while their centre distances are within
+ * 2 × this of each other. A head that sways or turns in place, across the bisector of two
+ * mirror-image chunks such as the cells either side of a grid plane through the eye, therefore
+ * keeps their order and the strokes overlapping on their seam.
+ */
+export const ORDER_KEY_HOLD_M = 0.5;
+
+/**
+ * An eye move between two updates longer than this, metres, resets every order key to its
+ * distance, so that update sorts exactly by distance. Shorter moves, short teleports and
+ * `__goghPose` placements included, keep the held keys. Above the farthest continuous move in one
+ * update: locomotion is at most 3 m/s across, 2 m/s up and a 3 m/s boundary push, over a dt clamped
+ * to 0.1 s.
+ */
+export const ORDER_KEY_RESET_M = 1;
+
+/**
+ * Updates `keys`, one per sphere, to each centre's distance from `eye` held within
+ * ORDER_KEY_HOLD_M: a key outside [d - hold, d + hold] moves to the nearer end, so it changes only
+ * once the distance has moved past the hold. With `reset`, every key is its distance. Every
+ * sphere's key, culled or not, so a head turn changes none.
+ */
+export function holdOrderKeys(
+  spheres: readonly Sphere[],
+  eye: Vector3,
+  keys: Float64Array,
+  reset: boolean,
+): void {
+  if (keys.length < spheres.length) {
+    throw new RangeError(`order keys hold ${keys.length}, needs ${spheres.length}`);
+  }
+  for (let i = 0; i < spheres.length; i++) {
+    const d = spheres[i].center.distanceTo(eye);
+    keys[i] = reset ? d : Math.min(d + ORDER_KEY_HOLD_M, Math.max(d - ORDER_KEY_HOLD_M, keys[i]));
+  }
+}
+
+/**
  * Indices of the spheres that intersect `frustum`, nearest centre first, ties by index: opaque
  * front-to-back order lets the depth test reject hidden strokes before shading. Allocates nothing:
  * writes the kept indices to `order` and their squared distances to `distances`, both at least
  * `spheres.length` long, and returns how many were kept. Sorts in place by insertion on
- * (distance, index), a total order. Throws RangeError when either array is shorter than `spheres`.
+ * (distance, index), a total order. With `keys` (`holdOrderKeys`), sphere `i` sorts by `keys[i]`
+ * instead, and `distances` receives the keys. Throws RangeError when an array is shorter than
+ * `spheres`.
  */
 export function cullAndSortInto(
   spheres: readonly Sphere[],
@@ -194,17 +235,21 @@ export function cullAndSortInto(
   eye: Vector3,
   order: Uint32Array,
   distances: Float64Array,
+  keys?: Float64Array,
 ): number {
   if (order.length < spheres.length || distances.length < spheres.length) {
     throw new RangeError(
       `cull output holds ${Math.min(order.length, distances.length)}, needs ${spheres.length}`,
     );
   }
+  if (keys && keys.length < spheres.length) {
+    throw new RangeError(`order keys hold ${keys.length}, needs ${spheres.length}`);
+  }
   let n = 0;
   for (let index = 0; index < spheres.length; index++) {
     const sphere = spheres[index];
     if (!frustum.intersectsSphere(sphere)) continue;
-    const distance = sphere.center.distanceToSquared(eye);
+    const distance = keys ? keys[index] : sphere.center.distanceToSquared(eye);
     // Indices arrive ascending, so a distance tie keeps the earlier index first.
     let k = n;
     while (k > 0 && distances[k - 1] > distance) {

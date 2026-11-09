@@ -12,8 +12,9 @@
  * The fade style's pulse field uses the same mesh with its own count and name (`portal-cue`).
  *
  * The mesh is parented to the rig, so its instances are rig-local and ride along when the rig jumps
- * into the new world. It draws over everything (no depth test), above the vignette's veil and
- * below the perf HUD. Hidden, it costs no draw call; it is built on the first transition only.
+ * into the new world. It draws over everything (no depth test), above the vignette's veil and the
+ * painted sky (night-sky.ts), and below the perf HUD. Hidden, it costs no draw call; it is built on
+ * the first transition only.
  */
 import {
   BufferAttribute,
@@ -27,8 +28,10 @@ import {
   type Texture,
 } from 'three';
 import { BRUSHES } from '../render/strokes/brush-atlas-data';
+import { surfaceBasis } from '../render/strokes/frame';
 import {
   createStrokeBuffers,
+  octDecode,
   octEncode,
   STROKE_ATTRIBUTES,
   STROKE_LAYER,
@@ -140,13 +143,15 @@ export interface FlyStrokes {
   ): void;
   /**
    * Writes every stroke as given (xyz, rgb bytes, length and width per stroke), its quad facing
-   * `eye`. Shows it while any quad has a size.
+   * `eye`. With `axes` (xyz per stroke, any length), each quad's long axis lies along its own
+   * axis projected into the quad. Shows it while any quad has a size.
    */
   place(
     positions: Float32Array,
     colors: Uint8Array,
     sizes: Float32Array,
     eye: readonly [number, number, number],
+    axes?: Float32Array | null,
   ): void;
   /** The positions of the last `draw`, xyz per stroke, rig-local. */
   readonly positions: Float32Array;
@@ -185,9 +190,11 @@ export function createFlyStrokes(
     ),
   );
   geometry.setIndex(new BufferAttribute(new Uint16Array([0, 1, 2, 0, 2, 3]), 1));
-  // The meta and tangent never change, so only the first render uploads them.
+  // The meta never changes, and the tangent only with `place`'s axes, so the first render uploads
+  // them.
   const live: InstancedBufferAttribute[] = [];
   let position: InstancedBufferAttribute | null = null;
+  let tangent: InstancedBufferAttribute | null = null;
   for (const spec of STROKE_ATTRIBUTES) {
     const attribute = new InstancedBufferAttribute(
       buffers[spec.key],
@@ -198,7 +205,8 @@ export function createFlyStrokes(
     attribute.setUsage(DynamicDrawUsage);
     geometry.setAttribute(spec.name, attribute);
     if (spec.key === 'position') position = attribute;
-    else if (spec.key !== 'meta' && spec.key !== 'tangent') live.push(attribute);
+    else if (spec.key === 'tangent') tangent = attribute;
+    else if (spec.key !== 'meta') live.push(attribute);
   }
   // Written once, not with each draw: with depth test and write off, the key only nudges clip z
   // inside the tie-break range, so it cannot change a pixel.
@@ -228,10 +236,14 @@ export function createFlyStrokes(
   const sizes = buffers.size;
 
   /**
-   * Faces every quad to `eye`, copies `colors` in and uploads what can change, the positions only
-   * when `moved`; shown while any quad has a size.
+   * Faces every quad to `eye`, turns it along `axes` when given, copies `colors` in and uploads
+   * what can change, the positions only when `moved`; shown while any quad has a size.
    */
-  function commit(eye: readonly [number, number, number], moved: boolean): void {
+  function commit(
+    eye: readonly [number, number, number],
+    moved: boolean,
+    axes: Float32Array | null = null,
+  ): void {
     let shown = false;
     for (let i = 0; i < count; i++) {
       const i3 = i * 3;
@@ -240,8 +252,25 @@ export function createFlyStrokes(
       let nz = eye[2] - positions[i3 + 2];
       if (nx * nx + ny * ny + nz * nz < 1e-8) nz = 1;
       [nx, ny] = octEncode(nx, ny, nz);
-      buffers.normal[i * 2] = Math.round(nx * 32767);
-      buffers.normal[i * 2 + 1] = Math.round(ny * 32767);
+      const qx = Math.round(nx * 32767);
+      const qy = Math.round(ny * 32767);
+      buffers.normal[i * 2] = qx;
+      buffers.normal[i * 2 + 1] = qy;
+      if (axes) {
+        // Against the basis of the normal the GPU decodes: across n.z = 0 the source normal's
+        // basis can turn by π from it and flip the stroke end for end.
+        const { b1, b2 } = surfaceBasis(octDecode(qx / 32767, qy / 32767));
+        const ax = axes[i3];
+        const ay = axes[i3 + 1];
+        const az = axes[i3 + 2];
+        const angle = Math.atan2(
+          ax * b2[0] + ay * b2[1] + az * b2[2],
+          ax * b1[0] + ay * b1[1] + az * b1[2],
+        );
+        buffers.tangent[i] = Math.round(
+          ((angle + 2 * Math.PI) % (2 * Math.PI)) * (65535 / (2 * Math.PI)),
+        );
+      }
       // The alpha byte carries the cypress flame data (CYPRESS_FLAME_NONE is 255), not opacity,
       // so a stroke fades by shrinking.
       buffers.color[i * 4] = colors[i3];
@@ -252,6 +281,7 @@ export function createFlyStrokes(
     }
     for (const attribute of live) attribute.needsUpdate = true;
     if (moved && position) position.needsUpdate = true;
+    if (axes && tangent) tangent.needsUpdate = true;
     mesh.visible = shown;
   }
 
@@ -265,7 +295,7 @@ export function createFlyStrokes(
       flightFrame(leg, t, fade, drift, weight, positions, colors, sizes);
       commit(eye, true);
     },
-    place(at, rgb, size, eye) {
+    place(at, rgb, size, eye, axes = null) {
       let moved = false;
       for (let i = 0; i < count * 3; i++) {
         if (positions[i] !== at[i]) {
@@ -276,7 +306,7 @@ export function createFlyStrokes(
       if (moved) positions.set(at.subarray(0, count * 3));
       colors.set(rgb.subarray(0, count * 3));
       sizes.set(size.subarray(0, count * 2));
-      commit(eye, moved);
+      commit(eye, moved, axes);
     },
     hide() {
       mesh.visible = false;

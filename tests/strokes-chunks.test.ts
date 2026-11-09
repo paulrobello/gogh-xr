@@ -3,6 +3,8 @@ import { describe, expect, test } from 'vitest';
 import {
   computeBounds,
   cullAndSortInto,
+  holdOrderKeys,
+  ORDER_KEY_HOLD_M,
   partitionIndices,
   partitionStrokes,
 } from '../src/render/strokes/chunks.ts';
@@ -298,5 +300,55 @@ describe('cullAndSortInto', () => {
     }
     // The tie-break is exercised, not just possible.
     expect(ties).toBeGreaterThan(10);
+  });
+});
+
+describe('holdOrderKeys', () => {
+  const spheres = [new Sphere(new Vector3(-2, 0, -6), 1), new Sphere(new Vector3(2, 0, -6), 1)];
+  const at = (x: number): Vector3 => new Vector3(x, 0, 0);
+
+  test('a reset sets every key to its centre distance', () => {
+    const keys = new Float64Array(2).fill(99);
+    holdOrderKeys(spheres, at(0.3), keys, true);
+    expect(keys[0]).toBeCloseTo(Math.hypot(2.3, 6), 12);
+    expect(keys[1]).toBeCloseTo(Math.hypot(1.7, 6), 12);
+  });
+
+  test('a key holds while its distance stays within the hold, then trails it by the hold', () => {
+    const keys = new Float64Array(2);
+    holdOrderKeys(spheres, at(0), keys, true);
+    const start = keys[0];
+    holdOrderKeys(spheres, at(0.4), keys, false);
+    expect(keys[0]).toBe(start);
+    expect(keys[1]).toBe(start);
+    holdOrderKeys(spheres, at(3), keys, false);
+    expect(keys[0]).toBeCloseTo(Math.hypot(5, 6) - ORDER_KEY_HOLD_M, 12);
+    expect(keys[1]).toBe(start);
+  });
+
+  test('throws a RangeError when keys is shorter than spheres', () => {
+    expect(() => holdOrderKeys(spheres, at(0), new Float64Array(1), true)).toThrow(RangeError);
+    expect(() =>
+      cullAndSortInto(
+        spheres,
+        new Frustum(),
+        at(0),
+        new Uint32Array(2),
+        new Float64Array(2),
+        new Float64Array(1),
+      ),
+    ).toThrow(RangeError);
+  });
+
+  test('cullAndSortInto sorts by the keys when given, and writes them to distances', () => {
+    const order = new Uint32Array(2);
+    const distances = new Float64Array(2);
+    // A default Frustum keeps spheres reaching x >= 0. The keys put sphere 1 first although
+    // sphere 0 is nearer the eye.
+    const inLine = [new Sphere(new Vector3(0, 0, -6), 1), new Sphere(new Vector3(0, 0, -8), 1)];
+    const keys = new Float64Array([7, 6]);
+    expect(cullAndSortInto(inLine, new Frustum(), at(0), order, distances, keys)).toBe(2);
+    expect(Array.from(order)).toEqual([1, 0]);
+    expect(Array.from(distances)).toEqual([6, 7]);
   });
 });

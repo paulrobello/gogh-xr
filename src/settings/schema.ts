@@ -59,6 +59,8 @@ export interface Settings {
   readonly qualityLevel: QualityLevel;
   /** The perf HUD's starting visibility. */
   readonly hud: boolean;
+  /** A small glowing orb at each tracked hand in XR. */
+  readonly handOrbs: boolean;
   /** 0-1. Stored for P6; nothing consumes it yet. */
   readonly musicVolume: number;
   /** 0-1. Stored for P6; nothing consumes it yet. */
@@ -76,6 +78,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   quality: 'adaptive-72',
   qualityLevel: 5,
   hud: false,
+  handOrbs: true,
   musicVolume: 0.7,
   sfxVolume: 0.7,
 });
@@ -163,6 +166,7 @@ export function sanitizeSettings(raw: unknown): Settings {
       : d.quality,
     qualityLevel: qualityLevel(r.qualityLevel, d.qualityLevel),
     hud: bool(r.hud, d.hud),
+    handOrbs: bool(r.handOrbs, d.handOrbs),
     musicVolume: unit(r.musicVolume, d.musicVolume),
     sfxVolume: unit(r.sfxVolume, d.sfxVolume),
   });

@@ -11,8 +11,10 @@ import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
 import { MAX_MOTION_DT_S } from '../../src/motion/clock.ts';
 import { MOTION_LAYER_MASK } from '../../src/motion/layers.ts';
 import { STROKE_LAYER } from '../../src/render/strokes/instance.ts';
+import { srgb8ToLab } from '../../src/util/cielab.ts';
 import { luma, shiftAt } from './block-match';
 import { expect, glErrors, test, type Xr } from './fixtures';
+import { handOrbsOff } from './helpers';
 
 interface MotionDiag {
   time: number;
@@ -583,6 +585,34 @@ test.describe('star and moon rings (P4.3)', () => {
    * its layer is closed here. The measured band stops there.
    */
   const MOON_OUTER = 0.79;
+  /** CIELAB b* over which a rest pixel inside the moon disc is the crescent's gold. */
+  const CRESCENT_B = 50;
+  /** The crescent's core: b* over this, with every neighbour over it too. */
+  const CRESCENT_CORE_B = 55;
+  /** CIELAB b* under which a rest pixel inside the moon disc is its cream. */
+  const CREAM_B = 40;
+  /**
+   * How far the crescent's outline may change while the disc ripples, from cream strokes whose
+   * antialiased edges blend over it: no crescent stroke moves or brightens, but a cream stroke at
+   * its brightest, 1 + 0.14 + 0.04 of a cream R or G of about 211, adds at most 38 levels at full
+   * cover. The transition pixels may take up to that; the gold round the core, which a cream edge
+   * covers only in part, up to 30 levels on at most 6% of its pixels (measured 26 and 4.1% over
+   * ten times at seed 1).
+   */
+  const OUTLINE_TOLERANCE = { goldLevels: 30, goldShare: 0.06, transitionLevels: 40 };
+  /**
+   * The cream's relative lift per unit of the mirror's predicted ripple brightening: about 1 when
+   * the GPU applies SKY_RING_MOON_DISC_BRIGHT (measured 0.82 to 1.01), so a gain off by half or
+   * double fails.
+   */
+  const RIPPLE_SLOPE: readonly [number, number] = [0.7, 1.3];
+  /** The cream's mean absolute luma change at the ripple's peak over the ten times (measured 21.6). */
+  const CREAM_PEAK_LIFT: readonly [number, number] = [15, 30];
+  /**
+   * The RMS change, from one time to the next, of the cream's lift that the ripple leaves
+   * unexplained: 0.052 with the shimmer and 0.016 with motion.glsl's shimmer line deleted.
+   */
+  const SHIMMER_RESIDUAL_MIN = 0.03;
   /**
    * A frame-geometry guard, not the P4.3 colour clip (that is the moon-disc test below): bounds on
    * the share of the moon's band, its radius to its rim, that falls outside the painter frame at its
@@ -888,6 +918,162 @@ test.describe('star and moon rings (P4.3)', () => {
     expect(await glErrors(page)).toEqual([]);
   });
 
+  test('the moon disc ripples outward and shimmers as the TS mirror predicts while the crescent stays still, and calm 0 freezes it', async ({
+    page,
+    xr,
+  }) => {
+    test.setTimeout(420_000);
+    const { width, height } = CAPTURE_SIZE;
+    const rest = await lightsShot(page, xr, 'noanim');
+    const disc = await moonDisc(page);
+    const channels = rest.length / (width * height);
+    const labB = (raw: Buffer, i: number): number =>
+      srgb8ToLab(raw[i * channels], raw[i * channels + 1], raw[i * channels + 2])[2];
+    const inDisc = new Set(disc);
+    const restB = new Map(disc.map((i) => [i, labB(rest, i)]));
+    const above = (i: number, b: number): boolean => (restB.get(i) ?? -Infinity) > b;
+    const neighbours = (i: number): number[] => [i - 1, i + 1, i - width, i + width];
+    // The crescent's whole shape: every gold pixel, and the 1 px ring round it where the outline's
+    // antialiasing blends it with the cream. Its core, gold with gold neighbours, is held byte for
+    // byte; the rest of it, the outline, to OUTLINE_TOLERANCE.
+    const shape = disc.filter(
+      (i) => above(i, CRESCENT_B) || neighbours(i).some((j) => above(j, CRESCENT_B)),
+    );
+    const core = disc.filter(
+      (i) => above(i, CRESCENT_CORE_B) && neighbours(i).every((j) => above(j, CRESCENT_CORE_B)),
+    );
+    const coreSet = new Set(core);
+    // The outline: the gold round the core, and the transition to the cream (b* 40 to 50). The
+    // ring's pixels under b* 40 are the cream's own, or the dome showing between strokes.
+    const goldEdge = shape.filter((i) => !coreSet.has(i) && above(i, CRESCENT_B));
+    const transition = shape.filter((i) => !above(i, CRESCENT_B) && above(i, CREAM_B));
+    const outline = [...goldEdge, ...transition];
+    const shapeSet = new Set(shape);
+    // The cream disc the crescent bites into, clear of the crescent's shape.
+    const restL = lumaOf(rest);
+    const cream = disc.filter(
+      (i) =>
+        !shapeSet.has(i) &&
+        (restB.get(i) ?? Infinity) < CREAM_B &&
+        restL[i] > 120 &&
+        neighbours(i).every((j) => inDisc.has(j)),
+    );
+    expect(core.length).toBeGreaterThan(1000);
+    expect(outline.length).toBeGreaterThan(500);
+    expect(cream.length).toBeGreaterThan(1000);
+
+    // Calm 0 at a pinned time is the rest world, byte for byte.
+    const calm0 = await lightsShot(page, xr, 'calm=0&motiont=2.5');
+    expect(calm0.equals(rest)).toBe(true);
+
+    await expect.poll(() => page.evaluate(() => window.__goghRingShift !== undefined)).toBe(true);
+    // Ten times across the ripple's 10 s period, so a crest crosses the crescent between samples;
+    // a step of 1 s is off the shimmer's 2.5 s cycle, so its phase differs from sample to sample.
+    const times = Array.from({ length: 10 }, (_, k) => k);
+    // The mirror's ripple brightening (the ring, no shimmer) at every cream pixel and time.
+    const predicted = await page.evaluate(
+      ([k, pixels, ts, w, h]) => {
+        const probe = window.__goghRingShift;
+        if (!probe) throw new Error('__goghRingShift is e2e-only');
+        return ts.map((t) =>
+          pixels.map(
+            (i) => probe(k, ((i % w) + 0.5) / w, (Math.floor(i / w) + 0.5) / h, t)?.bright ?? 0,
+          ),
+        );
+      },
+      [MOON, cream, times, width, height] as const,
+    );
+    await xr.boot('painting=starry-night&seed=1&shot&painter&nogov&motionphase=0&motiont=0');
+    await expect
+      .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
+      .toBe(true);
+    await xr.waitFrames(5);
+    /** Least squares of b on a: slope, intercept, correlation and the residuals' RMS. */
+    const leastSquares = (a: readonly number[], b: readonly number[]) => {
+      const n = a.length;
+      const ma = a.reduce((s, v) => s + v, 0) / n;
+      const mb = b.reduce((s, v) => s + v, 0) / n;
+      let ab = 0;
+      let aa = 0;
+      let bb = 0;
+      for (let i = 0; i < n; i++) {
+        ab += (a[i] - ma) * (b[i] - mb);
+        aa += (a[i] - ma) ** 2;
+        bb += (b[i] - mb) ** 2;
+      }
+      const slope = ab / aa;
+      const residual = a.map((v, i) => b[i] - mb - slope * (v - ma));
+      const rms = Math.sqrt(residual.reduce((s, v) => s + v * v, 0) / n);
+      return { slope, r: ab / Math.sqrt(aa * bb), residual, rms };
+    };
+    const report: string[] = [];
+    const residuals: number[][] = [];
+    const samples: Array<{ coreMoved: number; r: number; slope: number; clipped: number }> = [];
+    let worstGold = 0;
+    let worstTransition = 0;
+    let goldEdgeMoved = 0;
+    let peakLift = 0;
+    for (const [n, t] of times.entries()) {
+      const shot = await shotAt(page, xr, t);
+      const delta = (i: number): number =>
+        Math.max(
+          ...[0, 1, 2].map((c) => Math.abs(shot[i * channels + c] - rest[i * channels + c])),
+        );
+      const coreMoved = core.filter((i) => delta(i) > 0);
+      const goldDeltas = goldEdge.map(delta);
+      const transitionDeltas = transition.map(delta);
+      const outlineDeltas = [...goldDeltas, ...transitionDeltas];
+      const moved = outlineDeltas.filter((d) => d > 0).length;
+      const goldMoved = goldDeltas.filter((d) => d > 0).length;
+      worstGold = Math.max(worstGold, ...goldDeltas);
+      worstTransition = Math.max(worstTransition, ...transitionDeltas);
+      goldEdgeMoved = Math.max(goldEdgeMoved, goldMoved);
+      const l = lumaOf(shot);
+      // The cream's relative lift follows the mirror's ripple, pixel by pixel.
+      const lift = cream.map((i) => l[i] / restL[i] - 1);
+      const f = leastSquares(predicted[n], lift);
+      residuals.push(f.residual);
+      const meanLift = cream.reduce((s, i) => s + Math.abs(l[i] - restL[i]), 0) / cream.length;
+      peakLift = Math.max(peakLift, meanLift);
+      const clipped = clippedShare(shot, disc);
+      report.push(
+        `t ${t}: core moved ${coreMoved.length}/${core.length}, outline moved ${moved}/${outline.length} (gold edge ${goldMoved}/${goldEdge.length}, max ${Math.max(...goldDeltas)}; transition max ${Math.max(...transitionDeltas)}), cream mean |lift| ${meanLift.toFixed(2)}, ripple r ${f.r.toFixed(3)} slope ${f.slope.toFixed(2)} residual rms ${f.rms.toFixed(4)}, disc clipped ${(clipped * 100).toFixed(2)}%`,
+      );
+      samples.push({ coreMoved: coreMoved.length, r: f.r, slope: f.slope, clipped });
+    }
+    // The shimmer: what the ripple leaves unexplained changes from one time to the next, stroke by
+    // stroke. Without it the residual is the mirror's per-pixel error, which barely moves.
+    let shimmer = 0;
+    for (let n = 1; n < times.length; n++) {
+      let sum = 0;
+      for (let i = 0; i < cream.length; i++) sum += (residuals[n][i] - residuals[n - 1][i]) ** 2;
+      shimmer += Math.sqrt(sum / cream.length);
+    }
+    shimmer /= times.length - 1;
+    console.log(
+      `[e2e] moon disc ripple: ${core.length} core px, ${outline.length} outline px, ${cream.length} cream px; peak cream mean |lift| ${peakLift.toFixed(2)}; gold edge worst ${worstGold}, most moved ${goldEdgeMoved}/${goldEdge.length}; transition worst ${worstTransition}; shimmer residual change rms ${shimmer.toFixed(4)}; ${report.join('; ')}`,
+    );
+    for (const sample of samples) {
+      expect(sample.coreMoved).toBe(0);
+      expect(sample.r).toBeGreaterThan(0.4);
+      expect(sample.slope).toBeGreaterThan(RIPPLE_SLOPE[0]);
+      expect(sample.slope).toBeLessThan(RIPPLE_SLOPE[1]);
+      expect(sample.clipped).toBeLessThan(0.01);
+    }
+    // The ripple explains the cream's lift pixel by pixel (measured 0.45 to 0.79 per time with the
+    // shimmer, whose per-stroke noise it cannot predict).
+    expect(samples.reduce((sum, sample) => sum + sample.r, 0) / samples.length).toBeGreaterThan(
+      0.55,
+    );
+    expect(peakLift).toBeGreaterThan(CREAM_PEAK_LIFT[0]);
+    expect(peakLift).toBeLessThan(CREAM_PEAK_LIFT[1]);
+    expect(shimmer).toBeGreaterThan(SHIMMER_RESIDUAL_MIN);
+    expect(worstGold).toBeLessThanOrEqual(OUTLINE_TOLERANCE.goldLevels);
+    expect(goldEdgeMoved).toBeLessThanOrEqual(OUTLINE_TOLERANCE.goldShare * goldEdge.length);
+    expect(worstTransition).toBeLessThanOrEqual(OUTLINE_TOLERANCE.transitionLevels);
+    expect(await glErrors(page)).toEqual([]);
+  });
+
   test('the halo brightens and dims between two pinned times by the TS mirror, and calm 0 draws the rest halo (P4.3 b, c)', async ({
     page,
     xr,
@@ -1053,6 +1239,8 @@ test.describe('star and moon rings (P4.3)', () => {
         };
       }
     });
+    // The hand orbs are an additive pass of their own, round each controller.
+    await handOrbsOff(page);
     await xr.boot('painting=starry-night&seed=1&nogov&motiont=3');
     await expect
       .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })

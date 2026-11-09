@@ -38,6 +38,8 @@ import {
   computeBounds,
   cullAndSortInto,
   DEFAULT_CELL_SIZE,
+  holdOrderKeys,
+  ORDER_KEY_RESET_M,
   partitionIndicesSteps,
   type StrokeBounds,
 } from './chunks';
@@ -242,7 +244,10 @@ export interface StrokeBatch {
   /**
    * Moves every chunk, culled or not, between bands by the distance from `camera` to its 1x
    * bounds (with hysteresis). Then culls chunks against the frustum with their bounds widened for
-   * the band's size multiplier, and sets the survivors' render order by the order policy.
+   * the band's size multiplier, and sets the survivors' render order by the order policy, from
+   * each chunk's held centre distance (`holdOrderKeys`). The held order can put the farther of two
+   * chunks on top only while their centre distances are within 2 × ORDER_KEY_HOLD_M of each other.
+   * An eye move over ORDER_KEY_RESET_M since the last update resets it to plain distance.
    */
   update(camera: Camera): void;
   /**
@@ -293,6 +298,8 @@ export interface StrokeBatch {
    * three uploads every chunk's buffers over those frames instead of on the first turn after.
    */
   reveal(n: number): void;
+  /** The names of the chunks the last `update` showed, in render order. Allocates. */
+  drawOrder(): string[];
   /** Replaces the order policy from the next `update` on. */
   setOrderPolicy(policy: StrokeOrderPolicy): void;
   /** The policy the batch starts with: DEFAULT_ORDER_POLICY, or WRITE_ORDER_POLICY with `depthWrite`. */
@@ -1192,6 +1199,10 @@ export function* createStrokeBatchSteps(
   /** Cull output, reused every frame: kept chunk indices front to back, and their distances. */
   const cullOrder = new Uint32Array(chunks.length);
   const cullDistances = new Float64Array(chunks.length);
+  /** Each chunk's held centre distance (`holdOrderKeys`), the key the cull sorts by. */
+  const orderKeys = new Float64Array(chunks.length);
+  /** The eye of the last `update`, which resets the keys after a jump; null before the first. */
+  let orderEye: Vector3 | null = null;
   let policy: StrokeOrderPolicy = { ...defaultOrder };
   /** Frozen ranks by chunk index, -1 until a chunk first passes the cull under `freeze`. */
   const frozenRank = new Int32Array(chunks.length).fill(-1);
@@ -1275,7 +1286,10 @@ export function* createStrokeBatchSteps(
       bandVisible.near = 0;
       bandVisible.mid = 0;
       bandVisible.far = 0;
-      const kept = cullAndSortInto(cullSpheres, frustum, eye, cullOrder, cullDistances);
+      const jumped = !orderEye || orderEye.distanceToSquared(eye) > ORDER_KEY_RESET_M ** 2;
+      holdOrderKeys(cullSpheres, eye, orderKeys, jumped);
+      orderEye = (orderEye ?? new Vector3()).copy(eye);
+      const kept = cullAndSortInto(cullSpheres, frustum, eye, cullOrder, cullDistances, orderKeys);
       for (let rank = 0; rank < kept; rank++) {
         const index = cullOrder[rank];
         const { mesh } = chunks[index];
@@ -1305,6 +1319,12 @@ export function* createStrokeBatchSteps(
         if (bandOf[i] !== null) chunks[i].mesh.visible = true;
       }
       warmFrom = Number.POSITIVE_INFINITY;
+    },
+    drawOrder() {
+      return chunks
+        .filter((chunk) => chunk.mesh.visible)
+        .sort((a, b) => a.mesh.renderOrder - b.mesh.renderOrder)
+        .map((chunk) => chunk.mesh.name);
     },
     setOrderPolicy(next: StrokeOrderPolicy) {
       policy = { ...next };

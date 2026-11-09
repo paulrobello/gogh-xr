@@ -31,6 +31,7 @@ import { createTerrain } from '../../src/world/terrain.ts';
 import { createVillage } from '../../src/world/village.ts';
 import { luma, shiftAt } from './block-match';
 import { expect, glErrors, test, type Vec3, type Xr } from './fixtures';
+import { handOrbsOff } from './helpers';
 
 /** The capture size block-match.ts reads frames at. */
 const VIEW = CAPTURE_SIZE;
@@ -128,12 +129,13 @@ function world(view: View, local: Vec3): Vec3 {
 }
 
 async function bootXr(page: Page, xr: Xr, extra: string): Promise<void> {
+  // The hand orbs would add their glow to the frames these tests compare.
+  await handOrbsOff(page);
   await xr.boot(`painting=starry-night&seed=1&shot&nogov&nohalo&${extra}`);
   await expect
     .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
     .toBe(true);
   await xr.enterXR();
-  void page;
 }
 
 /** Places the rig and the head for `view`, and both controllers at rig-local `left` and `right`. */

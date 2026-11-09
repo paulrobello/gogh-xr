@@ -152,6 +152,38 @@ test('walking into Starry Night enters its world; G returns to the gallery facin
   expect(await glErrors(page)).toEqual([]);
 });
 
+test('a cold first trip, with nothing drawn before it, holds the bar: the sky was ready at boot', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(180_000);
+  await xr.boot('noanim');
+  await settled(xr, 'gallery');
+  // No warmVeil: the switcher drew the painted sky once at adopt, so it has its program and its
+  // buffers already, and the first trip's `out` frames pay for neither.
+  const ready = (await portal(xr)) as PortalDiag & { skyReady: boolean; sky: boolean };
+  expect(ready.skyReady).toBe(true);
+  expect(ready.sky).toBe(false);
+  await page.evaluate(() => window.__goghPose?.(0, 1.6, -2.6, 0, 0));
+  await xr.waitFrames(3);
+  const { enter, back } = await roundTrip(page, xr);
+  const firstOut = (p: PortalDiag) =>
+    p.frames
+      .filter((f) => f.phase === 'out')
+      .slice(0, 4)
+      .map((f) => ({ intervalMs: f.intervalMs, workMs: f.workMs, renderMs: f.renderMs }));
+  console.log(
+    'portal cold',
+    JSON.stringify({
+      enter: { ...summary(enter), firstOut: firstOut(enter) },
+      back: { ...summary(back), firstOut: firstOut(back) },
+    }),
+  );
+  expectWithinBar(enter, 'cold enter');
+  expectWithinBar(back, 'cold return');
+  expect(await glErrors(page)).toEqual([]);
+});
+
 test('a round trip returns the GPU geometry and texture counts to the baseline (desktop)', async ({
   page,
   xr,

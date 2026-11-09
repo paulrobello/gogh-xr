@@ -964,6 +964,105 @@ describe('createSwitcher', () => {
     warn.mockRestore();
   });
 
+  test('the painted sky: one mesh for every trip, whole through the wait, hidden when idle', async () => {
+    const r = setup();
+    // Built and drawn shrunk to nothing when the gallery is adopted, so the next render uploads
+    // its buffers and binds its program; hidden again after that render.
+    const sky = must(meshOf(r, 'portal-sky'));
+    expect(sky.visible).toBe(true);
+    const warm = sky.geometry.getAttribute('iSize').array as Float32Array;
+    expect(Math.max(...warm)).toBeLessThan(1e-3);
+    r.switcher.frame(FRAME_MS);
+    expect(sky.visible).toBe(true);
+    r.switcher.endFrame(1, 0.5);
+    expect(sky.visible).toBe(false);
+    for (const target of ['starry-night', GALLERY_ID, 'starry-night']) {
+      let open = (): void => {};
+      r.gates.set(target, new Promise<void>((resolve) => (open = resolve)));
+      expect(r.switcher.go(target, 'api')).toBe(true);
+      const shots = await record(r, 'portal-sky', FRAME_MS, { open: () => open(), holdFrames: 90 });
+      const wait = shots.filter((s) => s.phase === 'wait');
+      expect(wait.length).toBeGreaterThan(30);
+      for (const s of wait) expect(s.visible).toBe(true);
+      // Full size while waiting, and moving: calm 1 turns the swirls.
+      // The first strokes are the deep field's, which never breathe as the stars do.
+      expect(wait[0].size.slice(0, 200)).toEqual(must(wait.at(-1)).size.slice(0, 200));
+      expect(wait[0].position).not.toEqual(must(wait.at(-1)).position);
+      // Grown in during out, gone by the end of in.
+      expect(shots[0].phase).toBe('out');
+      expect(Math.max(...shots[0].size)).toBeLessThan(Math.max(...wait[0].size));
+      expect(sky.visible).toBe(false);
+      expect(r.switcher.diag().sky).toBe(false);
+      expect(r.rig.children.filter((c) => c.name === 'portal-sky')).toEqual([sky]);
+    }
+  });
+
+  test('with the sky disabled (the e2e negative control) the wait draws no sky', async () => {
+    const r = setup();
+    r.switcher.endFrame(1, 0.5);
+    r.switcher.setSkyEnabled(false);
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    const shots = await record(r, 'portal-sky', FRAME_MS);
+    expect(shots.some((s) => s.visible)).toBe(false);
+  });
+
+  test('dispose releases the sky', () => {
+    const r = setup();
+    const sky = must(meshOf(r, 'portal-sky'));
+    const disposed = vi.fn();
+    sky.geometry.addEventListener('dispose', disposed);
+    r.switcher.dispose();
+    expect(disposed).toHaveBeenCalledTimes(1);
+    expect(meshOf(r, 'portal-sky')).toBeUndefined();
+  });
+
+  test('fade at calm 0: the sky holds still through the wait', async () => {
+    const r = setup();
+    r.calm = 0;
+    let open = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (open = resolve)));
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    const shots = await record(r, 'portal-sky', 50, { open: () => open(), holdFrames: 100 });
+    const wait = shots.filter((s) => s.phase === 'wait');
+    expect(wait.length).toBeGreaterThan(50);
+    for (const s of wait) {
+      expect(s.visible).toBe(true);
+      expect(s.position).toEqual(wait[0].position);
+      expect(s.size).toEqual(wait[0].size);
+    }
+  });
+
+  test('a desktop spawn turns the sky with the look once, however late the scan lands', async () => {
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const r = setup({
+      loadRaster: vi.fn(async () => {
+        await held;
+        return raster();
+      }),
+      onSpawn: (camera) => camera.quaternion.identity(),
+    });
+    const look = new Quaternion().setFromEuler(new Euler(-0.4, 0.6, 0, 'YXZ'));
+    r.camera.quaternion.copy(look);
+    r.chunkCounts.set('starry-night', LONG_REVEAL);
+    const sky = must(meshOf(r, 'portal-sky'));
+    r.switcher.go('starry-night', 'api');
+    for (let i = 0; i < 120 && r.switcher.busy; i++) {
+      if (i === 60) release();
+      r.switcher.frame(FRAME_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(r.spawns.length).toBe(1);
+    // The camera turned by look⁻¹ in the rig, so the sky did too, and only once.
+    expect(sky.quaternion.angleTo(look.clone().invert())).toBeLessThan(1e-6);
+    await run(r);
+    // The next trip starts it facing the rig's own heading again.
+    r.switcher.go(GALLERY_ID, 'return');
+    expect(sky.quaternion.angleTo(new Quaternion())).toBeLessThan(1e-9);
+    await run(r);
+  });
+
   test('the live portals are the frames with a world', () => {
     expect(livePortals().map((p) => p.id)).toEqual(['starry-night']);
   });

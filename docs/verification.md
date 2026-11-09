@@ -1109,6 +1109,73 @@ On fe9649f (the dome on the prefix), one run each, in this order:
 
 The e2e run's walk-speed spec logged load 32 mid-run, from another session, and still passed. The first version's `make e2e` (127 passed, 1 failed) is in The dome keeps the prefix, above.
 
+## View-angle strip through the painter's spot (2026-11-09, on 3a4ff50)
+
+Paul's report from the Quest 3, in every mode: a strip divides the world in half and passes through the painter's spot, the spawn at eye (0, 1.6, 0). When the head moves to either side of it, the strokes inside the strip change, on the ground, the buildings and the sky. A still image does not show it.
+
+### Cause
+
+- Strokes write no depth (nowrite default, above), so draw order decides every overlap. Inside a chunk that order is the instance order. Between chunks, the batch sorted the culled chunks by the distance from the eye to each chunk's centre, every frame, back to front.
+- The world's 24 m grid is aligned to the origin, so the spawn is a corner of four cells. The cells either side of x = 0 nearly mirror each other, so their centres are the same distance from any eye on that plane. The plane where their order flips is the seam plane itself, and it passes through the eye. The same holds for z = 0 at some headings. The dome sectors are built around the painter's eye, so some of their seams pass close to it too.
+- Moving the head across the plane swapped the two chunks' order, so every stroke that overhangs their seam swapped on top. From an eye on the plane, the seam is seen edge-on, as a line up the middle of the view.
+- Both eyes in XR always share one order. The batch updates once per frame, in `scene.onBeforeRender`, with three's XR ArrayCamera. That camera sits on the eyes' midline, a few cm behind their midpoint (`setProjectionFromUnion` in WebXRManager.js moves it back by ipd / (rightFov − leftFov)). three sorts the render list once and replays it for each eye (WebGLRenderer.js, `currentRenderList.sort` and then the `cameras` loop). The strip is therefore the same in both eyes: both flip on the frame where that camera crosses the plane. Because it sits behind the eyes, a head turn alone also moves it by a few cm, so a turn at the spawn could flip the strip too.
+
+### Evidence
+
+`scripts/strip-probe.ts` sweeps the eye along x and along z through the spawn, at offsets of −20, −10, −5, −2, −1, −0.5, 0.5, 1, 2, 5, 10 and 20 cm. It does this at six headings and again at a control spot, (6, 1.6, 7). For each step it prints the share of pixels that change by more than 24 summed RGB, and the chunk pairs whose order swapped (`__goghDiag().chunkOrder`, new). A 1 cm step changes 4 to 10% of the frame by parallax alone, so the strip shows up as an excess on the 1 cm step that crosses the plane, compared with the 1 cm steps on either side of it.
+
+| Painter spot, sweep | Crossing step, before | 1 cm steps beside it, before | Crossing step, after | Beside it, after |
+| --- | --- | --- | --- | --- |
+| north, along x | 10.452% (3 swaps) | 9.692% | 9.701% | 9.709% |
+| village (yaw 0.6), along x | 10.331% (3 swaps) | 9.434% | 9.463% | 9.440% |
+| south, along x | 8.647% (8 swaps) | 8.159% | 8.151% | 8.157% |
+| north, 0.35 up, along x | 4.032% (4 swaps) | 3.986% | 4.009% | 3.986% |
+
+- At north along x, the swapped pairs on the crossing are the two ground cells `strokes-0_-1_-1` and `strokes--1_-1_-1`, the dome sectors `strokes-dome-0_6` and `strokes-dome-0_3`, and one far pair. `docs/shots/strip-before.png` is that step, the −0.5 cm frame dimmed with every changed pixel red. The solid band up the middle of the ground is the strip. `docs/shots/strip-after.png` is the same step on the fix: the band is gone and only the parallax edges stay.
+- The other eight painter sweeps show no excess at the crossing, before or after the fix. The control spot shows none either.
+- Over all twelve painter sweeps, chunk pairs swapped 191 times before the fix and 0 times after. At the control spot it was 60 before and 0 after.
+- Against the brief's bar, "the level of an ordinary 1 cm move elsewhere", the crossing's excess over the 1 cm steps beside it is the measure, since parallax alone differs between views:
+
+  | Where (north, along x) | 1 cm crossing | 1 cm beside | Excess |
+  | --- | --- | --- | --- |
+  | Painter spot, before | 10.452% | 9.692% | +7.8% |
+  | Painter spot, after | 9.701% | 9.691% | +0.1% |
+  | Control spot (6, 1.6, 7) | 9.291% | 9.269% | +0.2% |
+
+  The gap between 9.70% at the painter spot and 9.29% at the control is that view's parallax: the frozen order below also reads 9.70% there.
+- With `?zdiag=nosort`, which freezes the order, the north crossing reads 9.701% against 9.693% and 9.725% beside it. The order is therefore the whole cause. The band switch, the sky-light cull, the tie key and the backdrop rank are ruled out.
+
+### Fix
+
+- `holdOrderKeys` (`src/render/strokes/chunks.ts`) gives each chunk a sort key: its centre distance, held within `ORDER_KEY_HOLD_M` (0.5 m). A key moves only when the distance leaves [key − 0.5, key + 0.5]. Every chunk's key is updated, culled or not, so a head turn changes no key. The cull sorts the chunks by key, ties by index, in place of the squared distance (`cullAndSortInto`, new `keys` argument).
+- The held order can put the farther of two chunks on top only while their centre distances are within 1 m of each other. A head that sways, leans or turns in place keeps one order. From a reset at the spawn, the mirror pair there swaps after about 0.7 m of sideways travel.
+- An eye move of more than `ORDER_KEY_RESET_M` (1 m) between two updates sets every key back to its plain distance. A move over 1 m, such as a boot or a long teleport or placed pose, therefore sorts exactly as before. Shorter moves, short teleports and `__goghPose` placements included, keep the held keys. Continuous locomotion moves at most 0.8 m in one update (3 m/s across, 2 m/s up and a 3 m/s boundary push, over a dt clamped to 0.1 s).
+- Cost: back to front can be wrong between two chunks whose centre distances are within 1 m of each other, compared with 24 m cells. While walking, a pair still swaps once each time the eye crosses the plane where their distances are equal, delayed until their distances have parted by up to 1 m. A head that sways or leans in place no longer swaps any.
+
+### Coverage, fidelity and flicker
+
+Production builds of 3a4ff50 (with the `chunkOrder` diag only) and of the fix, served by `vite preview`, on headless Chromium on ANGLE Metal at 1280 × 1014.
+
+- Coverage: all 24 coverage poses, in the spec's order, with and without `?coverage`, are byte-identical between the two builds. That is 48 frames compared by SHA-256. Each pose is more than 1 m from the one before it or at the same eye, so every pose sorts by plain distance. The world-coverage thresholds are unchanged.
+- Fidelity: the `?painter` capture is byte-identical (SHA-256 `e8c5fd17…bad8afe`), at SSIM 0.3140 and ΔE 5.8213 on both builds. Both differ from the committed `docs/shots/p2-painter-spot.png`, which predates later changes to main. This change does not regenerate it.
+- `scripts/zfight-probe.ts`: 10 of the 11 poses read the same. At `paul-strobe1` the 0.1 mm shift reads 0.216% on both builds, and the 1 mm shift reads 1.869% before and 1.883% after. The probe reaches that pose 8 cm from the one before it, so its order comes from keys held since the painter spot instead of from plain distance.
+- `scripts/shimmer-probe.ts` (base, 10 frames): every pose reads the same except `paul-strobe1`, for the same reason. Flicker, per frame and clustered read 10.012 / 4.003 / 2.282 before and 10.024 / 4.012 / 2.282 after.
+- The probes ran at loads of 130 down to 30. Their results are pixels, not times.
+
+### Tests
+
+- `tests/strokes-chunks.test.ts`, `holdOrderKeys`: a reset sets each key to its distance, a key holds inside the hold and then trails the distance by it, and the keyed sort orders by the keys.
+- `tests/strokes-batch.test.ts`, held chunk order: two mirror chunks either side of x = 0. A sway from −0.2 to +0.2 m and back keeps one order. Walking on to x = 2 m flips the pair exactly once, so the nearer chunk ends on top. A jump back past 1 m sorts by plain distance. The sway test fails when the keys are reset every update.
+- `tests/e2e/strip.spec.ts`: at the painter spot, heading north, the eye sweeps x from −0.2 to +0.2 m and back, and `chunkOrder` must stay the same throughout. The 1 cm step across x = 0 must change at most 1.02 × the mean of the 1 cm steps beside it. It reads 9.701% against 9.691% beside it, and the control spot's 1 cm step reads 9.291% (logged as the baseline, not gated, because the scene there differs). With the keys reset every update, the spec fails on the order check. The pixel gate fails on the old order too: 10.452 / 9.692 is 1.078, over the 1.02 bar. Load was 16.4 at the end of the green run, and 13.9 before and 19.6 after the red run.
+
+- `tests/e2e/strip.spec.ts`, held coverage (fix round 1): the coverage poses spot ahead, hill west and village street, each reached by a move of 0.9 m from four sides after a reset, keep their held order and stay within the 0.5% bare bar. In 10 of the 12 approaches the held order differed from the plain-distance order at the pose. Bare read 0.292%, 0.306% and 0.124% from every side, the same as the plain order, at the spec's 1280 × 1014 viewport (world-coverage.spec.ts runs at 1280 × 720). The coverage poses themselves are unchanged.
+- Fix round 1 gates: `make checkall` exited 0 (1654 of 1654). `strip.spec.ts` alone passed both cases at load 39.5 before and 33.4 after. `world-coverage.spec.ts` alone passed, max bare 0.459% at hill west, at load 33.4 before and 20.0 after.
+- Gates on 197201e: `make checkall` and `make checkall-ci` exited 0 (unit suite 1654 of 1654). `E2E_PORT=4293 make e2e` exited 0, with 131 passed and 5 skipped. The 1-minute load was 19.5 before the run and 20.6 after it.
+
+### Not verified
+
+- The Quest. Paul's check: stand at the spawn and sway across the old strip.
+
 ## Headset shimmer diagnosis (2026-11-06, on 6d82235)
 
 Paul saw a lot of z-fight on the ground, the buildings and the sky on the Quest 3. It looked the same whether he moved or held still. No fix is applied here. The evidence below does not support a depth-separation change within the Q21 cap (the 2 m cap does reach the nowrite bound). The one change that would cut stroke depth ties is a wider tie-break cap, and that reverses ruling Q21, so it is Paul's call.
@@ -1485,7 +1552,7 @@ Before the fix, the base-only pixels under the cypress were a thin rim at the bo
 **Accepted (N4, N6).**
 
 - N4: the merged cypress chunk takes its band from its nearest point, like every chunk (`chunkDistance` is the distance to the centre minus the radius). The whole tree therefore changes band at once, and its top takes near-band size and density as soon as its foot is near. That follows the band contract, and it removes the density mismatch at the seam. It costs a little more near-band work, and a near-density shed thins the whole tree.
-- N6, a known limit: draw order also decides overlaps on other surfaces whose strokes can cross a chunk seam or overlap inside one chunk. These are the dome under the sky swirl, reactive ground and village strokes, and the static overhang at any `world` seam, where chunk centre distance decides the overlap and can flip with head translation. The moon and stars are immune, because they write depth with tie-free ranks. No test covers this yet.
+- N6, a known limit: draw order also decides overlaps on other surfaces whose strokes can cross a chunk seam or overlap inside one chunk. These are the dome under the sky swirl, reactive ground and village strokes, and the static overhang at any `world` seam, where chunk centre distance decides the overlap and can flip with head translation. The moon and stars are immune, because they write depth with tie-free ranks. Since 2026-11-09 a chunk pair at a seam no longer swaps under head sway, and `tests/e2e/strip.spec.ts` covers it (View-angle strip through the painter's spot, above). A pair still swaps once while walking, and the overlaps inside one chunk are unchanged.
 
 **Captures.** The default changes the Starry Night world and the gallery, so their reference captures are regenerated on this change:
 

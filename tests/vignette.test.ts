@@ -50,6 +50,28 @@ describe('the vignette mesh', () => {
     expect(uniforms.uAlpha.value).toBe(0);
   });
 
+  it('the portal veil shows on its own, in its own colour, and hides only once all are 0', () => {
+    const vignette = createVignette(new PerspectiveCamera());
+    const { uniforms } = vignette.mesh.material;
+    vignette.setVeilColor([14, 22, 54]);
+    expect(uniforms.uVeilColor.value.toArray()).toEqual([14 / 255, 22 / 255, 54 / 255]);
+    vignette.setVeil(0.5);
+    expect(uniforms.uVeil.value).toBe(0.5);
+    expect(vignette.mesh.visible).toBe(true);
+    // The blink and the tunnel stay black: the veil is a channel of its own.
+    expect(uniforms.uFade.value).toBe(0);
+    vignette.setAlpha(0);
+    expect(vignette.mesh.visible).toBe(true);
+    vignette.setVeil(0);
+    expect(vignette.mesh.visible).toBe(false);
+  });
+
+  it('composites the veil colour over the black, so a veil alone is its own colour', () => {
+    const { material } = createVignette(new PerspectiveCamera()).mesh;
+    expect(material.fragmentShader).toMatch(/1\.0 - \(1\.0 - black\) \* \(1\.0 - uVeil\)/);
+    expect(material.fragmentShader).toMatch(/uVeilColor \* \(uVeil \/ alpha\)/);
+  });
+
   it('draws the fade as full-view black over the ring, not inside it', () => {
     const { material } = createVignette(new PerspectiveCamera()).mesh;
     // The ring is 0 at the centre, so the fade cannot be a factor of it.

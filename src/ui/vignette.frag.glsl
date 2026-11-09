@@ -6,6 +6,10 @@ precision highp float;
 uniform float uAlpha;
 // The teleport blink (src/locomotion/teleport.ts): uniform black over the whole view.
 uniform float uFade;
+// The portal's veil (src/portal/switcher.ts): uniform uVeilColor over the whole view, display
+// referred like the strokes drawn over it.
+uniform float uVeil;
+uniform vec3 uVeilColor;
 
 in vec3 vView;
 
@@ -17,5 +21,9 @@ void main() {
   // both eyes see it at the same angle and it carries no stereo disparity.
   float angle = acos(clamp(-normalize(vView).z, -1.0, 1.0));
   float ring = smoothstep(CLEAR_RADIUS, CLEAR_RADIUS + FALLOFF, angle);
-  fragColor = vec4(0.0, 0.0, 0.0, max(uAlpha * ring, uFade));
+  float black = max(uAlpha * ring, uFade);
+  // The veil over the black, composited as two layers.
+  float alpha = 1.0 - (1.0 - black) * (1.0 - uVeil);
+  vec3 color = alpha > 0.0 ? uVeilColor * (uVeil / alpha) : vec3(0.0);
+  fragColor = vec4(color, alpha);
 }

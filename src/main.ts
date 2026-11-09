@@ -39,7 +39,9 @@ import {
   type WorldHandle,
   type WorldModule,
 } from './paintings/world-module';
+import { SKY_VEIL_COLOR } from './portal/night-sky';
 import { createSwitcher, GALLERY_ID, type LiveWorld } from './portal/switcher';
+import { createHandOrbs, type HandOrbsFrame, type Mutable } from './render/hand-orbs';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
@@ -189,21 +191,17 @@ const desktop = installDesktopControls(renderer.domElement, camera);
 const runLocomotion = flags.bench === null;
 const vignette = runLocomotion ? createVignette(camera) : undefined;
 /**
- * The portal's veil (P5.5) shares the vignette's full-view fade with the teleport blink: the mesh
- * shows the larger of the two. Unlike the blink it also shows on the desktop.
+ * The portal's veil (P5.5) is the vignette's own full-view channel, the painted sky's backing
+ * colour over the tunnel and the teleport blink, which stay black. Unlike the blink it also shows
+ * on the desktop.
  */
-let portalVeil = 0;
-let blinkFade = 0;
 const vignetteTarget = vignette && {
   setAlpha: (alpha: number) => vignette.setAlpha(alpha),
-  setFade: (fade: number) => {
-    blinkFade = fade;
-    vignette.setFade(Math.max(blinkFade, portalVeil));
-  },
+  setFade: (fade: number) => vignette.setFade(fade),
 };
+vignette?.setVeilColor(SKY_VEIL_COLOR);
 function setPortalVeil(alpha: number): void {
-  portalVeil = alpha;
-  vignette?.setFade(Math.max(blinkFade, portalVeil));
+  vignette?.setVeil(alpha);
 }
 /** Frame-budgeted work: a world built behind a portal transition, and the gallery's plaques. */
 const slicer = createSlicer(6);
@@ -283,6 +281,36 @@ function trackDisturbers(time: number, presenting: boolean, frame?: XRFrame): vo
     locomotion.rig.matrixWorld.elements,
   );
 }
+/** The hand orbs (outside the bench): built at boot, hidden until a tracked hand in XR. */
+const handOrbs = runLocomotion ? createHandOrbs(scene) : null;
+const handSlots: [number, number] = [-1, -1];
+/** Reused every frame, so driving the orbs allocates nothing. */
+const handOrbsState: Mutable<HandOrbsFrame> = {
+  enabled: false,
+  presenting: false,
+  disturbers: reactiveTracker.uniforms.uDisturbers.value,
+  velocities: reactiveTracker.uniforms.uDisturberVelocities.value,
+  slots: handSlots,
+  calm: 1,
+  dt: 0,
+};
+const handGetters = [leftController, rightController] as const;
+/** Places the orbs on this frame's hand disturbers: a hand's index is 1 + its controller slot. */
+function frameHandOrbs(presenting: boolean, dt: number): void {
+  if (!handOrbs) return;
+  for (let h = 0; h < 2; h += 1) {
+    const space = handGetters[h]?.() ?? null;
+    const slot = space ? controllerSpaces.indexOf(space as (typeof controllerSpaces)[number]) : -1;
+    handSlots[h] = slot >= 0 ? slot + 1 : -1;
+  }
+  handOrbsState.enabled = settingsStore.effective.handOrbs;
+  handOrbsState.presenting = presenting;
+  handOrbsState.calm = settingsStore.effective.calm;
+  handOrbsState.dt = dt;
+  handOrbs.frame(handOrbsState);
+}
+// three compiles a program on its first visible draw, and `compile` also takes hidden meshes.
+if (handOrbs) renderer.compile(handOrbs.meshes[0], camera, scene);
 // The system recenter resets the reference space, so the head and the controllers jump.
 renderer.xr.addEventListener('sessionstart', () => {
   renderer.xr.getReferenceSpace()?.addEventListener('reset', () => locomotion.markDiscontinuity());
@@ -667,6 +695,7 @@ function renderFrame(time: number, frame?: XRFrame): void {
     locomotion.frame(busy ? frozenActions(actions) : actions, renderer.xr.isPresenting);
     if (!busy) detectPortals();
     trackDisturbers(time, renderer.xr.isPresenting, frame);
+    frameHandOrbs(renderer.xr.isPresenting, dt);
   }
   zdiag.beforeRender(camera);
   const renderStart = performance.now();
@@ -718,6 +747,7 @@ if (flags.diag) {
   registerDiag('ab', () => ab?.diag() ?? null);
   registerDiag('abSwitch', () => abSwitch && { ...abSwitch });
   registerDiag('draw', () => ({ calls: drawCalls, visibleChunks: strokes.visibleChunkCount() }));
+  registerDiag('chunkOrder', () => strokes.batch?.drawOrder?.() ?? null);
   registerDiag('motion', () => motionClock.diag());
   if (audio) registerDiag('audio', () => audio.diag());
   registerDiag('variants', () => motionVariants.diag());
@@ -762,6 +792,7 @@ if (flags.diag) {
       ...reactiveTracker.diag(),
       boxStrokes: reactiveBoxStrokes(),
     }));
+    if (handOrbs) registerDiag('handOrbs', () => handOrbs.diag());
   }
   installPose(locomotion.setPose);
 }
@@ -959,9 +990,13 @@ if (flags.diag) {
   registerDiag('portal', () => switcher.diag());
   window.__goghPortal = (id: string) => switcher.go(id, 'api');
   if (import.meta.env.MODE === 'e2e') {
-    // Lets a spec draw the vignette sphere once, so its geometry uploads before a GPU baseline.
-    window.__goghVeil = (alpha: number) => {
-      if (!switcher.busy) setPortalVeil(alpha);
+    // Lets a spec draw the veil's sphere and the painted sky once, so their geometries upload
+    // before a GPU baseline.
+    window.__goghVeil = (alpha: number) => switcher.previewSky(alpha);
+    // The pixel checks' negative controls: no painted sky, over the blue veil or a black one.
+    window.__goghSkyControl = (mode) => {
+      switcher.setSkyEnabled(mode === 'sky');
+      vignette?.setVeilColor(mode === 'black' ? [0, 0, 0] : SKY_VEIL_COLOR);
     };
   }
 }

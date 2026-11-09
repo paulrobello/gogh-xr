@@ -31,8 +31,19 @@ test('right A opens the panel; grip on a slider changes nothing; the trigger set
   await xr.boot('noanim&shot&scene=bare');
   expect(await panel(xr)).toMatchObject({ built: false, open: false });
   await xr.enterXR();
-  // Start with the right controller pointing away, so nothing is hovered at open.
+  // Start with both controllers pointing away, so nothing is hovered at open and the hover help
+  // below is the right laser's.
   await aim(xr, new Vector3(0.2, 1.3, -0.3), new Vector3(2, 1.3, 0));
+  const awayLeft = new Quaternion().setFromUnitVectors(
+    new Vector3(0, 0, -1),
+    new Vector3(-1, 0, 0),
+  );
+  await xr.setPose({
+    left: {
+      position: [-0.2, 1.3, -0.3],
+      quaternion: awayLeft.toArray() as [number, number, number, number],
+    },
+  });
   const closedCalls = ((await xr.diag()).draw as { calls: number }).calls;
 
   await xr.press('right', 'a-button');

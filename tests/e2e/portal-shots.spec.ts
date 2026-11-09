@@ -1,7 +1,8 @@
 /**
  * Desktop captures of the portal's wait (P5.5), written to docs/shots when `PORTAL_SHOTS=1`: the fly
  * style's swirl twice, 0.5 s apart, and the fade style's pulse field (calm 0.2, seeded through the
- * stored settings), each mid-wait while Starry Night builds behind the veil.
+ * stored settings), each mid-wait while Starry Night builds behind the veil, and the painted sky
+ * under the swirl at two moments of one wait (portal-wait-sky-a and -b).
  */
 import type { Page } from '@playwright/test';
 import { expect, test, type Xr } from './fixtures';
@@ -69,5 +70,26 @@ test('docs/shots captures of the portal wait (PORTAL_SHOTS=1)', async ({ page, x
   const fade = await intoWait(page, xr, 2500);
   expect(fade.cue).toBe('pulse');
   await page.screenshot({ path: 'docs/shots/p55-wait-fade.jpg', type: 'jpeg', quality: 90 });
+  await settled(xr, 'starry-night');
+});
+
+test('docs/shots captures of the painted sky in the wait (PORTAL_SHOTS=1)', async ({
+  page,
+  xr,
+}) => {
+  test.skip(!process.env.PORTAL_SHOTS, 'set PORTAL_SHOTS=1 to write docs/shots');
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await xr.boot('noanim&nogov&shot');
+  await settled(xr, 'gallery');
+  await hideButton(page);
+  // Turned a little off the frame, so the sky fills most of the view behind the swirl.
+  await page.evaluate(() => window.__goghPose?.(0, 1.6, -2.6, 0.5, 0.25));
+  await xr.waitFrames(3);
+  await intoWait(page, xr, 300);
+  await page.screenshot({ path: 'docs/shots/portal-wait-sky-a.png' });
+  await page.waitForTimeout(700);
+  expect(((await portal(xr)) as WaitDiag).phase).toBe('wait');
+  await page.screenshot({ path: 'docs/shots/portal-wait-sky-b.png' });
   await settled(xr, 'starry-night');
 });

@@ -62,6 +62,7 @@ test('the defaults reproduce the pre-settings boot (fidelity)', () => {
   expect(DEFAULT_SETTINGS.calm).toBe(1);
   expect(DEFAULT_SETTINGS.quality).toBe('adaptive-72');
   expect(DEFAULT_SETTINGS.hud).toBe(false);
+  expect(DEFAULT_SETTINGS.handOrbs).toBe(true);
   expect(applyUrlFlags(DEFAULT_SETTINGS, noFlags)).toEqual(DEFAULT_SETTINGS);
 });
 
@@ -97,6 +98,7 @@ test('round trip: a saved settings object loads back equal', () => {
     quality: 'beauty-72',
     qualityLevel: 7,
     hud: true,
+    handOrbs: false,
     musicVolume: 0.3,
     sfxVolume: 0.9,
   };
@@ -313,4 +315,33 @@ test('the lock map names the flag that decides each overridden field', () => {
   });
   expect(lockedSettings({ ...noFlags, hz: 90 })).toEqual({ quality: '?hz=90' });
   expect(lockedSettings({ ...noFlags, hz: 72 })).toEqual({ quality: '?hz=72' });
+});
+
+test('hand orbs: on by default; a stored v3 object without the field loads On and keeps the rest', () => {
+  expect(SETTINGS_VERSION).toBe(3);
+  const v3 = JSON.stringify({
+    version: 3,
+    settings: { moveSpeed: 2.5, hud: true, calm: 0.4, qualityLevel: 9 },
+  });
+  expect(parseSettings(v3)).toEqual({
+    settings: { ...DEFAULT_SETTINGS, moveSpeed: 2.5, hud: true, calm: 0.4, qualityLevel: 9 },
+    recovered: null,
+  });
+  // Older versions migrate and pick up the default too.
+  const v2 = JSON.stringify({ version: 2, settings: { qualityLevel: 'auto', seated: true } });
+  expect(parseSettings(v2).settings).toMatchObject({
+    handOrbs: true,
+    seated: true,
+    qualityLevel: 5,
+  });
+  // A wrong-typed value falls back to the default.
+  const bad = JSON.stringify({ version: 3, settings: { handOrbs: 'no' } });
+  expect(parseSettings(bad).settings.handOrbs).toBe(true);
+});
+
+test('hand orbs: Off survives a save and load', () => {
+  const storage = memoryStorage();
+  expect(saveSettings({ ...DEFAULT_SETTINGS, handOrbs: false }, storage)).toBe(true);
+  expect(JSON.parse(storage.text ?? '').settings.handOrbs).toBe(false);
+  expect(loadSettings(storage).settings.handOrbs).toBe(false);
 });

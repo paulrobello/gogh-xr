@@ -5,6 +5,8 @@ import { loadRealSource, loadSkyScan } from '../scripts/scatter-time.ts';
 import { motionClock } from '../src/motion/clock.ts';
 import { MOTION_LAYER_MASK, motionLayerMask, motionOffset } from '../src/motion/motion.ts';
 import {
+  moonRing,
+  moonShimmer,
   ringBump,
   ringHat,
   ringOf,
@@ -12,6 +14,9 @@ import {
   SKY_HALO_NDC,
   SKY_HALO_SWELL,
   SKY_MOON_RING,
+  SKY_MOON_SHIMMER,
+  SKY_MOON_SHIMMER_PERIOD,
+  SKY_MOON_STILL_PHASE,
   SKY_RING_MOON_PERIOD,
   SKY_RING_REACH,
   SKY_RING_STAR_PERIODS,
@@ -36,8 +41,14 @@ import { backdropNdc, DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop
 import { motionReachesOf, motionReachOf, SKY_REACH_MARGIN } from '../src/render/strokes/batch.ts';
 import { createStrokeBuffers, packInstance, STROKE_LAYER } from '../src/render/strokes/instance.ts';
 import { createStrokeMaterial } from '../src/render/strokes/material.ts';
+import { srgb8ToLab } from '../src/util/cielab.ts';
 import { skyAnchors } from '../src/world/sky.ts';
-import { createSkyLights, SKY_LIGHT_RIM, skyLightCones } from '../src/world/sky-lights.ts';
+import {
+  createSkyLights,
+  SKY_LIGHT_GOLD_B,
+  SKY_LIGHT_RIM,
+  skyLightCones,
+} from '../src/world/sky-lights.ts';
 
 const motionGlsl = readFileSync('src/motion/motion.glsl', 'utf8');
 const ringsGlsl = readFileSync('src/motion/sky-rings.glsl', 'utf8');
@@ -79,6 +90,17 @@ describe('ring phase maths (R-P4d)', () => {
       }
     }
     expect(SKY_RINGS[SKY_MOON_RING].period).toBe(10);
+    // The moon's shimmer divides the wrap too, and is periodic in its period and the wrap.
+    const shimmer = 3600 / SKY_MOON_SHIMMER_PERIOD;
+    expect(Math.abs(shimmer - Math.round(shimmer))).toBeLessThan(1e-9);
+    for (const byte of [0, 77, 254]) {
+      for (const t of [0.3, 1.9, 7.25]) {
+        const v = moonShimmer(byte, t);
+        expect(Math.abs(v)).toBeLessThanOrEqual(SKY_MOON_SHIMMER + 1e-12);
+        expect(moonShimmer(byte, t + SKY_MOON_SHIMMER_PERIOD)).toBeCloseTo(v, 9);
+        expect(moonShimmer(byte, t + 3600)).toBeCloseTo(v, 9);
+      }
+    }
     expect(SKY_RING_MOON_PERIOD).toBeGreaterThanOrEqual(9);
     expect(SKY_RING_MOON_PERIOD).toBeLessThanOrEqual(12);
     // Spread phases and periods: no two stars share both.
@@ -151,10 +173,11 @@ describe('ring phase maths (R-P4d)', () => {
 });
 
 describe('ring brightness and halo brightness are bounded', () => {
-  test('a ring stroke brightens by 0 to `bright`, times calm, and never changes size', () => {
+  test('a ring stroke brightens by 0 to `bright`, a moon stroke shimmers past it by at most SKY_MOON_SHIMMER, times calm, and never changes size', () => {
     for (const s of LIGHTS) {
       const moon = s.layer === STROKE_LAYER.moon;
       const ring = ringOf(moon, s.phase);
+      const shimmer = moon ? SKY_MOON_SHIMMER : 0;
       for (const t of TIMES.slice(0, 24)) {
         for (const calm of [0.25, 1]) {
           const m = motionOffset(s.layer, s.phase, s.position, s.normal, {
@@ -162,8 +185,10 @@ describe('ring brightness and halo brightness are bounded', () => {
             calm,
             layerMask: ALL,
           });
-          expect(m.bright).toBeGreaterThanOrEqual(0);
-          expect(m.bright).toBeLessThanOrEqual(calm * ring.bright + 1e-12);
+          expect(m.bright).toBeGreaterThanOrEqual(-calm * shimmer - 1e-12);
+          expect(m.bright).toBeLessThanOrEqual(
+            calm * (Math.max(ring.bright, ring.innerBright) + shimmer) + 1e-12,
+          );
           expect(m.gain).toBe(0);
           expect(m.turn).toBe(0);
         }
@@ -205,7 +230,7 @@ describe('ring brightness and halo brightness are bounded', () => {
     }
   });
 
-  test("the moon's crescent gets no light: no stroke brightening inside it, a halo band round it", () => {
+  test("the moon's crescent gets no light: the ring brightens the disc by innerBright, a halo band round it", () => {
     const moon = SKY_RINGS[SKY_MOON_RING];
     const disc = moon.inner;
     // The band covers 1.0-1.5 of the moon's circle and peaks at 0.12 at a crest (I1).
@@ -225,8 +250,9 @@ describe('ring brightness and halo brightness are bounded', () => {
         const r = (i / 40) * moon.outer;
         const p: [number, number, number] = [moon.centre[0] + r, moon.centre[1], moon.centre[2]];
         const m = skyRing(moon, p, t);
-        if (r < disc) expect(m.bright).toBe(0);
-        else expect(m.bright).toBeCloseTo(moon.bright * ringWave(moon, r, t), 12);
+        const gain = r < disc ? moon.innerBright : moon.bright;
+        // The mirror clamps the distance to 1 mm, as the shader does, which the centre sample feels.
+        expect(m.bright).toBeCloseTo(gain * ringWave(moon, r, t), r < disc ? 4 : 12);
       }
     }
     // The stars keep their centred glow and brighten from the centre out.
@@ -235,6 +261,7 @@ describe('ring brightness and halo brightness are bounded', () => {
       expect(ring.haloCentre).toBe(0);
       const p: [number, number, number] = [ring.centre[0] + 1, ring.centre[1], ring.centre[2]];
       expect(skyRing(ring, p, 1.7).bright).toBeCloseTo(ring.bright * ringWave(ring, 1, 1.7), 12);
+      expect(ring.innerBright).toBe(0);
     }
   });
 });
@@ -248,7 +275,7 @@ describe('ring reach (R-P4a) and the haze cones (R-P4b)', () => {
       const isMoon = s.layer === STROKE_LAYER.moon;
       if (isMoon) {
         moon++;
-        expect(s.phase).toBe(SKY_MOON_RING);
+        expect(s.phase).toBeLessThanOrEqual(SKY_MOON_STILL_PHASE);
       } else {
         star++;
         expect(s.phase).toBeLessThan(SKY_STAR_COUNT);
@@ -312,7 +339,34 @@ describe('ring reach (R-P4a) and the haze cones (R-P4b)', () => {
     }
   });
 
-  test("the moon's crescent stays still: only its glow band rings", () => {
+  test("the moon's crescent stays still: its gold strokes carry the still phase and never move or brighten", () => {
+    let still = 0;
+    let rings = 0;
+    for (const s of LIGHTS) {
+      if (s.layer !== STROKE_LAYER.moon) continue;
+      const [r, g, bl] = s.color.map((c) => Math.min(255, Math.round(c)));
+      // A stroke coloured gold is on the crescent.
+      if (srgb8ToLab(r, g, bl)[2] > SKY_LIGHT_GOLD_B) expect(s.phase).toBe(SKY_MOON_STILL_PHASE);
+      if (s.phase === SKY_MOON_STILL_PHASE) still++;
+      else rings++;
+      for (const t of TIMES.slice(0, 24)) {
+        const m = motionOffset(s.layer, s.phase, s.position, s.normal, {
+          time: t,
+          calm: 1,
+          layerMask: MOTION_LAYER_MASK,
+        });
+        if (s.phase === SKY_MOON_STILL_PHASE) {
+          expect(m.offset).toEqual([0, 0, 0]);
+          expect(m.bright).toBe(0);
+        } else {
+          expect(m.bright).toBeCloseTo(moonRing(s.position, s.phase, t).bright, 12);
+        }
+      }
+    }
+    // Both kinds are there: the crescent's strokes and the cream disc and band round it.
+    expect(still).toBeGreaterThan(50);
+    expect(rings).toBeGreaterThan(still);
+    // Only the moon's ring brightens the disc inside its circle; its strokes there never move.
     const moon = SKY_RINGS[SKY_MOON_RING];
     expect(moon.inner).toBeGreaterThan(0.6 * moon.outer);
     expect(moon.inner).toBeLessThan(moon.outer);
@@ -456,11 +510,14 @@ describe('GLSL wiring and cost (R-P4h)', () => {
       'float r = d2 * inv;',
       'float w = ringBump(fract(t * c.w + wave.x - r * wave.y));',
       'float hat = max(r - wave.z, 0.0) * max(wave.w - r, 0.0);',
-      'return Motion((gain.x * w * hat * inv) * d, 0.0, 0.0, gain.y * w * step(wave.z, r));',
+      'return Motion((gain.x * w * hat * inv) * d, 0.0, 0.0, w * mix(gain.z, gain.y, step(wave.z, r)));',
       'return ringMotion(int(min(phaseByte, uint(SKY_RING_STAR_COUNT - 1))), p, t);',
-      'Motion moonMotion(vec3 p, float t) { return ringMotion(SKY_RING_MOON, p, t); }',
+      'Motion moonMotion(vec3 p, uint phaseByte, float t) {',
+      'if (phaseByte == SKY_MOON_STILL_PHASE) return Motion(vec3(0.0), 0.0, 0.0, 0.0);',
+      'float f = fract(t * SKY_MOON_SHIMMER_INV_PERIOD + float(phaseByte) * (1.0 / 256.0));',
+      'm.bright += SKY_MOON_SHIMMER * (2.0 * ringBump(f) - 1.0);',
       'm = starMotion(p, phaseByte, t);',
-      'm = moonMotion(p, t);',
+      'm = moonMotion(p, phaseByte, t);',
     ]) {
       expect(motionGlsl).toContain(line);
     }
@@ -497,7 +554,8 @@ describe('GLSL wiring and cost (R-P4h)', () => {
     expect(material.defines.SKY_RING_STAR_COUNT).toBe(11);
     expect(material.defines.SKY_RING_MOON).toBe(11);
     expect(String(material.defines.SKY_RING_CENTRES).match(/vec4\(/g)).toHaveLength(12);
-    expect(String(material.defines.SKY_RING_GAINS).match(/vec2\(/g)).toHaveLength(12);
+    expect(String(material.defines.SKY_RING_GAINS).match(/vec3\(/g)).toHaveLength(12);
+    expect(material.defines.SKY_MOON_STILL_PHASE).toBe(`${SKY_MOON_STILL_PHASE}u`);
     // A stray star phase byte clamps to the last star, as the shader's min does.
     expect(ringOf(false, 200)).toBe(SKY_RINGS[SKY_STAR_COUNT - 1]);
     expect(ringOf(true, 3)).toBe(SKY_RINGS[SKY_MOON_RING]);
