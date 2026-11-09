@@ -34,10 +34,11 @@ import { createSlicer, type Steps } from '../src/util/slicer.ts';
  * literals (geometry to base) were re-pinned from the split builders when canvas uv became the
  * painted canvas past the mat (SCATTER_VERSION 15), since that moves every world input, and the
  * scattered, assembled and batch literals again for the face-clamped placement and size cap
- * (SCATTER_VERSION 16); the gallery literals are still the d2d3e84 values.
+ * (SCATTER_VERSION 16), and geometry once more when its village and cypress records were hashed at
+ * float32 (`text32`); the gallery literals are still the d2d3e84 values.
  */
 const UNSPLIT: Readonly<Record<string, string>> = {
-  geometry: 'bca9ae58',
+  geometry: '535afd02',
   scattered: 'f0a8f167',
   assembled: 'd73f1899',
   batch: '24161a74',
@@ -58,6 +59,16 @@ function fnv(views: readonly ArrayBufferView[]): string {
 }
 
 const text = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value));
+
+/**
+ * `text` with every number rounded to float32. V8's Math results can differ in the last ulp between
+ * ARM macOS and x86 Linux (seed 1's house 7 yaw, from `Math.atan2`), and every buffer the world
+ * builds from these records is float32, so the float64 records alone would pin the platform.
+ */
+const text32 = (value: unknown): Uint8Array =>
+  new TextEncoder().encode(
+    JSON.stringify(value, (_key, v: unknown) => (typeof v === 'number' ? Math.fround(v) : v)),
+  );
 
 function strokeViews(buffers: StrokeBuffers): ArrayBufferView[] {
   return [new Uint32Array([buffers.count]), ...STROKE_ATTRIBUTES.map((s) => buffers[s.key])];
@@ -135,8 +146,8 @@ test('the split builders give the unsplit builds byte for byte', async () => {
   const hashes = {
     geometry: fnv([
       ...world.surfaces.flatMap(geometryViews),
-      text([village.houses, village.windows, village.church, village.roofs]),
-      text([cypress.main, cypress.lower, cypress.lobeCount]),
+      text32([village.houses, village.windows, village.church, village.roofs]),
+      text32([cypress.main, cypress.lower, cypress.lobeCount]),
     ]),
     scattered: fnv(strokeViews(scattered)),
     assembled: fnv([
