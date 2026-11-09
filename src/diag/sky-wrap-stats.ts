@@ -124,7 +124,9 @@ export function skyWrapStats(
   batch.chunks.forEach((chunk, c) => {
     if (!chunk.mesh.visible) return;
     const local = strokes.local[c];
-    for (let k = 0; k < local.length && local[k] < chunk.drawCount; k++) {
+    const end = chunk.drawStart + chunk.drawCount;
+    for (let k = 0; k < local.length && local[k] < end; k++) {
+      if (local[k] < chunk.drawStart) continue;
       const s = strokes.start[c] + k;
       const loop = skyWrapLoop(wrap, loopPhase[s], time);
       returning[s] = loop.returning ? 1 : 0;

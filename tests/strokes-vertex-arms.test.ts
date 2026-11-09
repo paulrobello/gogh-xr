@@ -344,7 +344,7 @@ describe('the batch under the vtx arms', () => {
     expect(chunk.drawCount).toBe(chunk.pinned + bandDrawCount(VTX_FEWER_KEEP, unpinned));
     expect(batch.materials.near.uniforms.uSizeScale.value).toBeCloseTo(1.25 * VTX_SPARSE_SCALE, 12);
     expect(batch.sizeMultiplier('near')).toBe(1.25);
-    // The strokes are in random order, so the kept prefix's mean area is near, not at, the whole's.
+    // The strokes are in random order, so the kept suffix's mean area is near, not at, the whole's.
     expect(batch.drawnFootprint().areaM2 / area).toBeCloseTo(1, 1);
     // A size change under sparse keeps the factor; leaving it restores the plain band size.
     batch.setSizeMultiplier('near', 1.5);

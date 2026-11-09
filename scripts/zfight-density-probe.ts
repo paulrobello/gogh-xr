@@ -11,9 +11,10 @@
  *   bun scripts/zfight-density-probe.ts density <build-url> <out-dir> <tag> [extra query]
  *     Saves `<pose>-<tag>-d1.png` and `-d09.png` at near density 1 and 0.9. On the id build pass
  *     the query `coverage` and tag `id`; on the colour build tag `colour`.
- *   bun scripts/zfight-density-probe.ts classify <out-dir> [colour-tag] [id-tag]
+ *   bun scripts/zfight-density-probe.ts classify <out-dir> [colour-tag] [id-tag] [all]
  *     Over the building pixels of the id capture at density 1: the share that changes at all, the
  *     share that goes light (luma > 90) to dark (< 60), and what the id capture at 0.9 shows there.
+ *     `all` adds the same two shares over the whole frame.
  *
  * Extra query such as `zdiag=write` selects the old depth-writing policy. Pass it without a
  * leading `&`, and join several with `&`.
@@ -31,6 +32,22 @@ import { gpuArgs } from '../tests/e2e/gpu.ts';
 const POSES: readonly (readonly [string, number, number, number, number, number])[] = [
   ['h6-face-3m', -2.989, -3.503, -9.82, 0.0789, 0.1541],
   ['church-face-7m', 2.374, -2.733, -28.727, 0, 0.1815],
+  // church-face-7m moved with the church at SCATTER_VERSION 16 (cec2aae): the church's footprint
+  // moved by (0.09, -0.49) in xz, so this is again 7 m in front of its south end, 1.6 m above
+  // the ground.
+  ['church-face-7m-moved', 2.464, -2.675, -29.217, 0, 0.1815],
+  // The density sweep's village and ground poses: `wall` and `ground` from
+  // `scripts/shimmer-probe.ts`, `paul-strobe1` from `scripts/zfight-probe.ts`, the rest from
+  // tests/world-poses.ts (eye positions).
+  ['wall-h11-6m', 9.04, -3.27, -30.74, -0.286, 0.25],
+  ['village-street', 1, -3.25, -19, 0, 0],
+  ['village-west', 1, -2.97, -26, Math.PI / 2, 0.1],
+  ['village-church', 2, -2.49, -33, 0, 0.35],
+  ['village-uphill', 0, -2.81, -28, Math.PI, 0.1],
+  ['ground', 0, 1.6, 0, 0, -0.45],
+  ['paul-strobe1', 0.067, 1.551, 0, -0.571, -0.26],
+  ['hill-slope', 2, -2.54, -8, 0, -0.3],
+  ['under-cypress', -6, -2.03, -5, -0.56, 0.4],
 ];
 const CLASSES = ['ground', 'wall', 'roof', 'church', 'window', 'outline', 'cypress', 'sky'];
 const BUILDING = new Set(['wall', 'roof', 'church', 'window', 'outline']);
@@ -188,7 +205,14 @@ if (command === 'flips' && args[0] && args[1]) {
     }
   });
 } else if (command === 'classify' && args[0]) {
-  const [out, colourTag = 'colour', idTag = 'id'] = args as [string, string?, string?];
+  const [out, colourTag = 'colour', idTag = 'id', scope] = args as [
+    string,
+    string?,
+    string?,
+    string?,
+  ];
+  // `all` adds the frame-wide shares, for poses with few building pixels (ground, hill).
+  const all = scope === 'all';
   for (const [name] of POSES) {
     const c1 = await load(`${out}/${name}-${colourTag}-d1.png`);
     const c9 = await load(`${out}/${name}-${colourTag}-d09.png`);
@@ -199,7 +223,11 @@ if (command === 'flips' && args[0] && args[1]) {
     let changed = 0;
     let lightToDark = 0;
     const shown = new Map<string, number>();
+    let frameChanged = 0;
+    let frameLightToDark = 0;
     for (let i = 0; i < n; i++) {
+      if (all && differs(c1.data, c9.data, i)) frameChanged++;
+      if (all && luma(c1.data, i) > 90 && luma(c9.data, i) < 60) frameLightToDark++;
       if (!BUILDING.has(classOf(i1.data, i))) continue;
       building++;
       if (differs(c1.data, c9.data, i)) changed++;
@@ -216,12 +244,15 @@ if (command === 'flips' && args[0] && args[1]) {
         lightToDarkPct: pct(lightToDark, n),
         lightToDarkPx: lightToDark,
         shownAt09: Object.fromEntries([...shown].sort((p, q) => q[1] - p[1])),
+        ...(all
+          ? { frameChangedPct: pct(frameChanged, n), frameLightToDarkPct: pct(frameLightToDark, n) }
+          : {}),
       }),
     );
   }
 } else {
   console.error(
-    'usage: bun scripts/zfight-density-probe.ts flips <url> <out> [query] | density <url> <out> <tag> [query] | classify <out> [colour-tag] [id-tag]',
+    'usage: bun scripts/zfight-density-probe.ts flips <url> <out> [query] | density <url> <out> <tag> [query] | classify <out> [colour-tag] [id-tag] [all]',
   );
   process.exit(2);
 }

@@ -3,8 +3,8 @@
  * vertex cost from its fill on the headset, switched with no reload and no program link.
  *
  * - `base`: the batch as shipped.
- * - `fewer`: each chunk draws `VTX_FEWER_KEEP` of its unpinned instances, the head of its
- *   importance order (the density prefix, `applyDensity` in batch.ts), and the survivors do not
+ * - `fewer`: each chunk draws `VTX_FEWER_KEEP` of its unpinned instances, an even share of its
+ *   importance order (the density cut, `applyDensity` in batch.ts), and the survivors do not
  *   grow. Instances, vertex invocations and primitives all fall by about 30%, and so does the
  *   painted area, so gaps open: fewer cuts the vertex work and the fill together. A per-vertex hash
  *   test would not do this: every vertex of a dropped instance would still run, the binning pass
@@ -194,7 +194,7 @@ function addSkyStatic(geometry: InstancedBufferGeometry, turns: number): void {
   if (geometry.getAttribute('iSkyField')) return;
   const attribute = (name: string): InstancedBufferAttribute =>
     geometry.getAttribute(name) as InstancedBufferAttribute;
-  // Every instance, not the draw count: a density shed draws a prefix of them.
+  // Every instance, not the draw count: a density shed draws a run of them (`drawStart`).
   const { field, wave } = skyStatic(
     attribute('iPosition').array,
     attribute('iNormal').array,

@@ -70,6 +70,34 @@ describe('importanceOrder', () => {
     expect(raw.filter((c) => c > 0).length).toBeLessThanOrEqual(GRID * 2);
   });
 
+  test('a 10% suffix covers every cell of the plane evenly too', () => {
+    const position = scanlinePlane(80);
+    const n = 6400;
+    const order = importanceOrder(position, identity(n), 1);
+    const counts = cellCounts(position, order.slice().reverse(), n / 10);
+    const sd = Math.sqrt(counts.reduce((sum, c) => sum + (c - 10) ** 2, 0) / counts.length);
+    expect(sd).toBeLessThan(2.2);
+    expect(Math.min(...counts)).toBeGreaterThanOrEqual(5);
+  });
+
+  test('every suffix keeps the relative density of each region', () => {
+    const rand = mulberry32(3);
+    const n = 1800;
+    const position = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const dense = i < 900;
+      position[i * 3] = dense ? 1 + rand() * 0.5 : rand() * PLANE;
+      position[i * 3 + 2] = dense ? 1 + rand() * 0.5 : rand() * PLANE;
+    }
+    const order = importanceOrder(position, identity(n), 2);
+    for (const d of [0.05, 0.1, 0.25, 0.5]) {
+      const suffix = Math.floor(d * n);
+      let dense = 0;
+      for (let i = n - suffix; i < n; i++) if (order[i] < 900) dense++;
+      expect(Math.abs(dense / suffix - 0.5)).toBeLessThan(0.1);
+    }
+  });
+
   test('every prefix keeps the relative density of each region', () => {
     // 900 strokes packed into one 0.5 m patch and 900 spread over the whole plane.
     const rand = mulberry32(3);

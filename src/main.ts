@@ -290,7 +290,8 @@ function reactiveBoxStrokes(): number | null {
   let n = 0;
   for (const chunk of batch.chunks) {
     const a = chunk.geometry.getAttribute('iPosition').array;
-    for (let i = 0; i < chunk.drawCount; i += 1) {
+    const end = chunk.drawStart + chunk.drawCount;
+    for (let i = chunk.drawStart; i < end; i += 1) {
       p[0] = a[3 * i];
       p[1] = a[3 * i + 1];
       p[2] = a[3 * i + 2];

@@ -6,6 +6,8 @@ import {
   Group,
   InstancedBufferAttribute,
   InstancedBufferGeometry,
+  InstancedInterleavedBuffer,
+  InterleavedBufferAttribute,
   IntType,
   Matrix4,
   Mesh,
@@ -71,8 +73,15 @@ export interface StrokeChunk {
    * exist.
    */
   readonly pinned: number;
-  /** Instances drawn: a prefix of the chunk, `geometry.instanceCount`. */
+  /** Instances drawn, `geometry.instanceCount`: the run from `drawStart` on. */
   readonly drawCount: number;
+  /**
+   * First instance drawn. A world or overlay chunk of a nowrite batch (`drawsSuffix`) draws the
+   * last `drawCount` instances, so a density cut drops its earliest-drawn strokes, which lie under
+   * the rest, and `drawStart` is `count - drawCount` (0 while it draws none). Any other chunk
+   * draws a prefix, from 0.
+   */
+  readonly drawStart: number;
   /** World-space bounds at size multiplier 1; chunk meshes stay at the identity transform. */
   readonly bounds: Sphere;
   /** Every stroke in the chunk has this draw class. */
@@ -80,8 +89,9 @@ export interface StrokeChunk {
   /** Distance band, `null` until the first `update`; the mesh stays hidden until then. */
   readonly band: StrokeBand | null;
   /**
-   * Draws the first `n` instances, clamped to 0..count. The band density overwrites it whenever
-   * the chunk changes band or its band's density changes.
+   * Draws `n` instances, clamped to 0..count: the last `n` for a `drawsSuffix` chunk, else the
+   * first `n`. The band density overwrites it whenever the chunk changes band or its band's
+   * density changes.
    */
   setDrawCount(n: number): void;
 }
@@ -236,9 +246,10 @@ export interface StrokeBatch {
    */
   update(camera: Camera): void;
   /**
-   * Sets a band's density, clamped to [0, 1]: each of its chunks draws the first
-   * `pinned + bandDrawCount(d, count - pinned)` instances from now on. Only instance counts
-   * change. Throws RangeError on a non-finite `d`.
+   * Sets a band's density, clamped to [0, 1]: each of its chunks draws
+   * `pinned + bandDrawCount(d, count - pinned)` instances from now on, a suffix or a prefix
+   * (`StrokeChunk.drawStart`). Only instance counts and offsets change. Throws RangeError on a
+   * non-finite `d`.
    */
   setDensity(band: StrokeBand, d: number): void;
   density(band: StrokeBand): number;
@@ -332,9 +343,10 @@ export interface StrokeBatchOptions {
    * keeps a part a chunk of its own. Each part keeps its own importance order and its own bounds as
    * a band probe: the chunk takes the band of its nearest part, so while its parts share a band each
    * draws at the band it had as a chunk of its own. The chunk interleaves its parts' orders by each
-   * stroke's fraction through its part's order, as the cypress chunk does, so a density prefix stays
-   * the union of the parts' prefixes, within a stroke per part. The Starry Night world merges its
-   * dome by sky sector and its lights into one chunk (`createWorldPartGroup`).
+   * stroke's fraction through its part's order, as the cypress chunk does, so a density prefix or
+   * suffix stays the union of the parts' prefixes or suffixes, within a stroke per part. The
+   * Starry Night world merges its dome by sky sector and its lights into one chunk
+   * (`createWorldPartGroup`).
    */
   readonly mergeParts?: StrokePartMerge;
 }
@@ -392,11 +404,105 @@ function createQuadAttributes(): { position: BufferAttribute; index: BufferAttri
   };
 }
 
+/**
+ * Whether a chunk draws a suffix of its instances (`StrokeChunk.drawStart`). Without depth writes
+ * the stroke drawn last is on top, so a prefix cut would drop the topmost strokes and repaint the
+ * surface at every band switch and density shed (docs/verification.md, density cuts from below).
+ * A suffix drops the earliest drawn, under the rest. The importance order's keys are symmetric,
+ * so a suffix is as evenly stratified as a prefix. Only world and overlay chunks of a nowrite batch
+ * take it, so a new draw class keeps the prefix until it opts in:
+ *
+ * - The lights and the cypress write depth while they draw (`writeDepthWhileDrawn`), where the
+ *   depth order and not the draw order decides.
+ * - A suffix would drop pinned strokes first, so a chunk holding any keeps the prefix.
+ * - The dome keeps the prefix so it draws the same set as before this change: `motion.spec.ts`'s
+ *   pinned-phase check block-matches the far dome at its 0.4 density, and a suffix there lost the
+ *   match. A mid or far shed therefore still drops the dome's topmost sky strokes, which
+ *   docs/verification.md tracks under density cuts from below, "The dome keeps the prefix".
+ */
+export function drawsSuffix(
+  depthWrite: boolean,
+  drawClass: StrokeDrawClass,
+  pinned: number,
+): boolean {
+  return !depthWrite && pinned === 0 && (drawClass === 'world' || drawClass === 'overlay');
+}
+
+/**
+ * A chunk geometry that can draw from instance `drawStart` on. WebGL2 has no base instance, so
+ * each instanced attribute is bound as an InterleavedBufferAttribute `drawStart` items into an
+ * InstancedInterleavedBuffer of stride one item, one buffer per attribute, which three uploads
+ * once and keys its GPU buffer by. three rebinds a VAO only when an attribute object changes, so a
+ * new start sets a new wrapper on every attribute. Instanced attributes set later (vertex-arms.ts
+ * adds its sky attributes) are wrapped the same way.
+ *
+ * `setAttribute` keeps the source attribute's array, item size, divisor, normalisation, GPU type
+ * and usage, but not its identity or its `updateRanges`: `needsUpdate` on the attribute passed in
+ * uploads nothing. Write through `getAttribute(name)`'s `data` instead.
+ */
+export class SuffixGeometry extends InstancedBufferGeometry {
+  private start = 0;
+  private readonly sources = new Map<string, InstancedInterleavedBuffer>();
+
+  get drawStart(): number {
+    return this.start;
+  }
+
+  override setAttribute<K extends string>(
+    name: K,
+    attribute: BufferAttribute | InterleavedBufferAttribute,
+  ): this {
+    if (!(attribute instanceof InstancedBufferAttribute)) {
+      this.sources.delete(name);
+      return super.setAttribute(name, attribute);
+    }
+    const data = new InstancedInterleavedBuffer(
+      attribute.array,
+      attribute.itemSize,
+      attribute.meshPerAttribute,
+    ).setUsage(attribute.usage);
+    this.sources.set(name, data);
+    return super.setAttribute(name, this.wrap(data, attribute.normalized, attribute.gpuType));
+  }
+
+  override deleteAttribute(name: string): this {
+    this.sources.delete(name);
+    return super.deleteAttribute(name);
+  }
+
+  /** Binds every instanced attribute from instance `n` on. */
+  setDrawStart(n: number): void {
+    if (n === this.start) return;
+    this.start = n;
+    for (const [name, data] of this.sources) {
+      const old = this.attributes[name] as InterleavedBufferAttribute & { gpuType: number };
+      super.setAttribute(name, this.wrap(data, old.normalized, old.gpuType));
+    }
+  }
+
+  private wrap(
+    data: InstancedInterleavedBuffer,
+    normalized: boolean,
+    gpuType: number,
+  ): InterleavedBufferAttribute {
+    const attribute = new InterleavedBufferAttribute(
+      data,
+      data.stride,
+      this.start * data.stride,
+      normalized,
+    );
+    // three's binding reads gpuType off the attribute it binds, to pick the integer pointer.
+    (attribute as InterleavedBufferAttribute & { gpuType: number }).gpuType = gpuType;
+    return attribute;
+  }
+}
+
 function createChunkGeometry(
   buffers: StrokeBuffers,
   quad: ReturnType<typeof createQuadAttributes>,
+  suffix: boolean,
 ): InstancedBufferGeometry {
-  const geometry = new InstancedBufferGeometry();
+  const geometry = suffix ? new SuffixGeometry() : new InstancedBufferGeometry();
   geometry.setAttribute('position', quad.position);
   geometry.setIndex(quad.index);
   for (const spec of STROKE_ATTRIBUTES) {
@@ -668,8 +774,8 @@ function* groupPartsSteps(
 /**
  * One instance order from several parts' orders: every part's pinned strokes, then the rest, each
  * tier sorted by a stroke's fraction `(r + 0.5) / n` through its part's tier, ties by part. Every
- * stroke keeps its order among its own part's, so a density prefix of the whole is, within a
- * stroke per part, the union of the parts' prefixes.
+ * stroke keeps its order among its own part's, so a density prefix (or suffix) of the whole is,
+ * within a stroke per part, the union of the parts' prefixes (or suffixes).
  */
 export function interleaveOrders(parts: readonly { order: Uint32Array; pinned: number }[]): {
   order: Uint32Array;
@@ -748,7 +854,8 @@ function checkBand(band: StrokeBand): void {
  * Partitions `buffers` into spatial chunks, one `Mesh` + `InstancedBufferGeometry` per grid cell
  * and draw class (STROKE_DRAW_CLASSES), or per group of those that `mergeParts` merges, with each
  * chunk's instances in importance order (`importanceOrder`) so a density draws an even
- * prefix. Pinned strokes (`isPinnedStroke`) come first and are always drawn. Chunks share the
+ * suffix or prefix (`drawsSuffix`). Pinned strokes (`isPinnedStroke`) come first and are always
+ * drawn. Chunks share the
  * per-band materials and one atlas. Three's own frustum culling is off; call `update(camera)`
  * once per frame with the camera three renders with, which `attach(scene)` arranges.
  */
@@ -951,7 +1058,8 @@ export function* createStrokeBatchSteps(
     for (const part of partBounds) probes.push(...part.center, part.radius);
     probeStart[chunks.length + 1] = probes.length / 4;
     yield;
-    const geometry = createChunkGeometry(data, quad);
+    const suffix = drawsSuffix(depthWrite, drawClass, pinned);
+    const geometry = createChunkGeometry(data, quad, suffix);
     yield;
     // A lone part's scans run here, so the pushes below are one synchronous block.
     let ownReaches: MotionReaches | undefined;
@@ -998,11 +1106,18 @@ export function* createStrokeBatchSteps(
       get drawCount() {
         return geometry.instanceCount;
       },
+      get drawStart() {
+        return geometry instanceof SuffixGeometry ? geometry.drawStart : 0;
+      },
       get band() {
         return bandOf[index];
       },
       setDrawCount(n: number) {
         geometry.instanceCount = Math.min(count, Math.max(0, Math.floor(n)));
+        if (geometry instanceof SuffixGeometry) {
+          const drawn = geometry.instanceCount;
+          geometry.setDrawStart(drawn === 0 ? 0 : count - drawn);
+        }
         bandVisibleStale = true;
       },
     });
@@ -1271,7 +1386,8 @@ export function* createStrokeBatchSteps(
         const s = attribute('iSize');
         const meta = attribute('iMeta');
         const factor = sizes[band] * scale;
-        for (let j = 0; j < chunk.drawCount; j++) {
+        const end = chunk.drawStart + chunk.drawCount;
+        for (let j = chunk.drawStart; j < end; j++) {
           const level = (meta[j * 4 + 3] >> FIT_SCALE_SHIFT) & FIT_SCALE_MASK;
           const k =
             (level === 0 ? factor : Math.min(factor, 1 + (level - 1) * FIT_SCALE_STEP)) * vtx;

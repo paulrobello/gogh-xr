@@ -869,9 +869,245 @@ At the two poses measured, the default makes the step much larger. At church-fac
 - Under `write`, the lift decides which stroke is on top, independent of the order, so a cut uncovers only where a dropped stroke happened to win.
 - At these two poses, a 10% near-density cut (the 6 m band switch; the governor sheds the same way in XR) changes far more of the facade than under `write`. At church-face-7m it changes 29.9% of the building pixels against 4.2%, and at h6-face-3m 18.4% against 4.1%. Other poses were not measured.
 
+The cause is fixed since 2026-11-09: a nowrite chunk draws a suffix of its order, so a cut drops the strokes under the rest (Density cuts drop strokes from below, below).
+
 `docs/shots/church-density-step.jpg` shows church-face-7m at near density 0.9, under `?zdiag=write` on the left and the default on the right. Light-to-dark pixels are red where a stroke replaced them and magenta where a base mesh shows.
 
 ![Church front at 7 m at near density 0.9, write on the left and the default on the right, light-to-dark pixels in red](shots/church-density-step.jpg)
+
+## Density cuts drop strokes from below (2026-11-09, card 01a1bfd7a481)
+
+The church front's density step above had a stroke-level cause. A density drew a prefix of each chunk's importance order, and without depth writes the stroke drawn last is on top, so every cut removed exactly the topmost strokes. Every 6 m near-band switch (density 1 to 0.9, `NEAR_BAND_MAX_M`) and every governor density shed in XR repainted the near facades. A nowrite world or overlay chunk now draws a suffix of its order, so a cut removes the strokes drawn first, which lie under the rest. The dome, lights and cypress keep the prefix (below).
+
+### The change
+
+A density keeps the same number of each chunk's instances as before, `pinned + bandDrawCount(d, count - pinned)`. What changed is which ones (`drawsSuffix` and `SuffixGeometry` in `src/render/strokes/batch.ts`):
+
+- A chunk drawn without depth writes draws the end of its importance order. `StrokeChunk.drawStart` is its first drawn instance, `count - drawCount`, or 0 while it draws none.
+- WebGL2 and three 0.186 have no base instance, so a suffix chunk binds each instanced attribute at an offset:
+  - Each attribute is an `InterleavedBufferAttribute` over its own `InstancedInterleavedBuffer`, with a stride of one item and an offset of `drawStart` items.
+  - three uploads that buffer once and keys its GPU buffer by it, so a new start uploads nothing.
+  - three rebinds a VAO only when an attribute object changes, so a new start sets a new wrapper on every attribute.
+  - Attributes set later, such as `vertex-arms.ts`'s sky attributes under `?ab=vtx`, are wrapped the same way.
+  - `iMeta` keeps its integer binding through the wrapper's `gpuType`.
+- These chunks keep the prefix:
+  - The lights and the cypress, which write depth while they draw, so the depth order decides there and not the draw order.
+  - The dome. It has no facade to repaint, and its far set at 0.4 is what `tests/e2e/motion.spec.ts`'s pinned-phase check block-matches (The dome keeps the prefix, below).
+  - Every chunk of a depth-writing batch (the P1 canvas).
+  - Any chunk that holds pinned strokes, since a suffix would drop those first. In practice that is only the lights chunks. `drawClassOf` sends every pinned stroke to `lights`, so a lights chunk is all pinned and every other chunk holds none, which `tests/strokes-batch.test.ts` checks.
+- The order itself does not change. The importance keys, `(j + u_b) / n_b` per bucket and `(r + 0.5) / n` in `interleaveOrders`, are symmetric, so a suffix is as evenly stratified as a prefix, and a merged chunk's suffix is the union of its parts' suffixes. `tests/strokes-importance.test.ts` checks the suffix the way it checks the prefix.
+- Three places read the drawn strokes as `[0, drawCount)`. They now read `[drawStart, drawStart + drawCount)`: `drawnFootprint` in `batch.ts`, `reactiveBoxStrokes` in `src/main.ts`, and the drawn filter in `src/diag/sky-wrap-stats.ts`.
+
+Why a plain suffix:
+
+- The brief's candidate reversed each chunk's order and drew a suffix. That keeps the drawn set at every density but restacks every chunk at density 1, the near band included, which the cypress I3 checks and the reactive specs measure.
+- A plain suffix leaves every chunk at density 1 byte-identical, so the near band at its default density draws exactly as before.
+- It changes which strokes draw below density 1: the world chunks of the mid band at 0.9 and the far band at 0.4 by default draw another, equally stratified set.
+- A density fade was not needed, because the suffix keeps the pinned strokes.
+
+Invariants checked:
+
+- The stroke shader reads no instance index. The ranks, lift shares and tie keys come from the stored attributes, and the draw-class blocks from the chunk order, so none of them moves.
+- The dome, lights and cypress chunks are unchanged at every density.
+- A merged world chunk built by `interleaveOrders` takes a union of its parts' suffixes, within a stroke per part (tested in `tests/strokes-batch.test.ts`, though the shipped world merges only the dome and lights). The merged dome and lights chunks keep a union of prefixes.
+- The haze keeps its chunk and band and draws an equally stratified set.
+- `isPinnedStroke` strokes are drawn at every density.
+- The scatter output is unchanged, so its hashes and SCATTER_VERSION (16) stay.
+
+### The dome keeps the prefix
+
+The first version of the fix drew a suffix for the dome too. Its first full `make e2e` (load 11.96 before, 13.35 after) passed 127, skipped 5 and failed 1: `tests/e2e/motion.spec.ts:172`, "a pinned coherent phase moves the sky along the TS prediction".
+
+- Patch (0.35, 0.4) locked at calm 1 on (−0.06, −0.25) px, sharpness 2.4 and ratio 25.989, so the measured shift pointed 41.7° away from the prediction.
+- On cec2aae the same patch read (7.10, −13.19) px, sharpness 2.8 and ratio 0.489, and passed.
+- That patch looks at the far dome, which draws at 0.4. The suffix gave it another set of sky strokes, and the block match on that set found no clear shift.
+
+The dome has no facade that a cut could repaint, and the card's target is the near facades, so the dome went back to the prefix rather than the spec being retuned. After that, `motion.spec.ts` alone passed 4 of 4, and patch (0.35, 0.4) read exactly its cec2aae values. The suffix still changes the far ground and hill chunks under that view, so three horizon patches read slightly differently from cec2aae, all well inside their limits.
+
+A mid or far shed therefore still drops the dome's topmost sky strokes. The follow-up is kanban card 01a1c06cfc3a, "Let density sheds drop the dome's bottom strokes too", which needs `motion.spec.ts`'s pinned-phase patch re-baselined.
+
+### The sweep
+
+Method:
+
+- `scripts/zfight-density-probe.ts density` and `classify … all`, as in the residuals section above, on production builds patched by `scripts/zfight-id-patch.ts`, served by `vite preview`. Headless Chromium on ANGLE Metal (Apple M4 Max), 1280 × 1014, seed 1, `?nogov&nocache&noanim`.
+- Near density steps from 1 to 0.9. Light is luma > 90 at density 1, dark is < 60 at 0.9. Building pixels come from the id capture at density 1.
+- The probe gained nine poses. `wall-h11-6m` and `ground` come from `scripts/shimmer-probe.ts`, `paul-strobe1` from `scripts/zfight-probe.ts`, and the five village poses, hill slope and under the cypress from `tests/world-poses.ts`.
+- Builds:
+  - 9ca3fc0, the brief's base.
+  - cec2aae, the one canvas uv extent, which moved the seed-1 village up to 2.5 m.
+  - The fix, on cec2aae (debc2bd changes only a test), with the dome on the prefix. The first version of the fix also drew the dome's suffix. Its sweep read the same to within 0.001 points in both light-to-dark tables and 0.003 points in the changed share, and church-face-7m read 0.005% (61 px).
+- The village poses do not compare across 9ca3fc0 and cec2aae, because the houses moved under them. House 6 at 9ca3fc0 is house 7 at cec2aae and moved 0.05 m, so h6-face-3m still faces the same wall.
+- The church moved 0.09 m in x and 0.49 m back. `church-face-7m-moved` is church-face-7m moved with it: 7 m from its south end again, 1.6 m above the ground, at eye (2.464, -2.675, -29.217).
+- Load (1-minute average), before and after each run:
+
+  | Run | before | after |
+  | --- | --- | --- |
+  | 9ca3fc0 | 11.72 | 11.54 |
+  | cec2aae | 14.90 | 12.61 |
+  | fix | 12.55 | 15.02 |
+
+- Each capture set ran once. The 9ca3fc0 run reproduced the residuals section's figures to the pixel, 26,354 at church-face-7m and 1,826 at h6-face-3m, so these pixel counts do not move with load.
+
+Building pixels that go light to dark, % of the frame:
+
+| Pose | 9ca3fc0 default | 9ca3fc0 `write` | cec2aae default | cec2aae `write` | fix default | fix `write` |
+| --- | --- | --- | --- | --- | --- | --- |
+| h6-face-3m | 0.141 | 0.000 | 0.420 | 0.043 | 0.001 | 0.030 |
+| church-face-7m | 2.030 | 0.205 | 1.832 | 0.450 | 0.005 | 0.223 |
+| church-face-7m-moved | n/a | n/a | 2.015 | 0.510 | 0.006 | 0.239 |
+| wall-h11-6m | 0.377 | 0.030 | 2.182 | 0.143 | 0.013 | 0.038 |
+| village-street | 1.371 | 0.118 | 0.568 | 0.095 | 0.010 | 0.094 |
+| village-west | 0.811 | 0.034 | 0.389 | 0.076 | 0.000 | 0.090 |
+| village-church | 3.842 | 0.553 | 4.280 | 1.198 | 0.003 | 0.802 |
+| village-uphill | 0.939 | 0.043 | 0.253 | 0.043 | 0.001 | 0.032 |
+| ground | 0.213 | 0.021 | 0.310 | 0.032 | 0.000 | 0.023 |
+| paul-strobe1 | 0.143 | 0.014 | 0.156 | 0.022 | 0.000 | 0.017 |
+| hill-slope | 0.295 | 0.035 | 0.450 | 0.025 | 0.000 | 0.023 |
+| under-cypress | 0.114 | 0.011 | 0.140 | 0.088 | 0.000 | 0.008 |
+
+Building pixels that change at all, % of the building pixels:
+
+| Pose | 9ca3fc0 default | 9ca3fc0 `write` | cec2aae default | cec2aae `write` | fix default | fix `write` |
+| --- | --- | --- | --- | --- | --- | --- |
+| h6-face-3m | 18.417 | 4.128 | 21.421 | 4.092 | 0.047 | 4.504 |
+| church-face-7m | 29.926 | 4.208 | 30.845 | 6.930 | 0.357 | 3.862 |
+| church-face-7m-moved | n/a | n/a | 31.283 | 7.006 | 0.259 | 3.743 |
+| wall-h11-6m | 32.044 | 3.077 | 30.683 | 8.718 | 0.098 | 6.253 |
+| village-street | 23.812 | 4.556 | 24.185 | 5.111 | 0.615 | 4.294 |
+| village-west | 23.088 | 3.948 | 22.691 | 4.247 | 0.133 | 3.965 |
+| village-church | 37.087 | 5.601 | 37.513 | 7.373 | 0.262 | 5.137 |
+| village-uphill | 21.001 | 3.663 | 15.722 | 3.015 | 0.059 | 2.681 |
+| ground | 17.941 | 3.535 | 18.396 | 3.467 | 0.051 | 2.980 |
+| paul-strobe1 | 11.800 | 2.209 | 12.096 | 2.332 | 0.037 | 2.206 |
+| hill-slope | 17.701 | 3.493 | 17.937 | 2.730 | 0.030 | 3.473 |
+| under-cypress | 12.389 | 2.964 | 14.294 | 3.633 | 0.071 | 1.968 |
+
+Every pixel that goes light to dark, % of the frame. It covers the ground and hill poses, where buildings fill little of the view:
+
+| Pose | 9ca3fc0 default | 9ca3fc0 `write` | cec2aae default | cec2aae `write` | fix default | fix `write` |
+| --- | --- | --- | --- | --- | --- | --- |
+| h6-face-3m | 0.507 | 0.058 | 0.594 | 0.112 | 0.005 | 0.113 |
+| church-face-7m | 3.081 | 0.540 | 3.229 | 0.587 | 0.005 | 0.474 |
+| church-face-7m-moved | n/a | n/a | 3.367 | 0.680 | 0.007 | 0.477 |
+| wall-h11-6m | 0.783 | 0.096 | 2.596 | 0.231 | 0.022 | 0.058 |
+| village-street | 3.175 | 0.190 | 4.025 | 1.142 | 0.047 | 0.330 |
+| village-west | 2.501 | 0.269 | 3.307 | 0.830 | 0.000 | 0.333 |
+| village-church | 3.889 | 0.557 | 4.294 | 1.201 | 0.004 | 0.805 |
+| village-uphill | 2.183 | 0.238 | 3.162 | 0.284 | 0.006 | 0.332 |
+| ground | 3.742 | 0.803 | 2.914 | 0.484 | 0.016 | 0.809 |
+| paul-strobe1 | 3.430 | 0.703 | 2.833 | 0.576 | 0.008 | 0.582 |
+| hill-slope | 5.409 | 0.832 | 4.123 | 0.575 | 0.012 | 0.456 |
+| under-cypress | 0.326 | 0.027 | 0.179 | 0.103 | 0.015 | 0.024 |
+
+- At church-face-7m the default's light-to-dark share falls from 1.832% (23,781 px) to 0.005% (63 px), and from 2.015% to 0.006% (79 px) at the moved pose, against the 0.3% bar. Of the 63 pixels, 51 read `rim`, a blended stroke edge.
+- The default now changes less than `write` at every pose. A cut there leaves 0.03-0.6% of the building pixels changed, against 2-6% under `write`. Under `write` a dropped stroke that won its depth test still uncovers whatever lay under it.
+- `write` on the fix also draws the suffix, because the drawn range follows the chunk and not the order policy. Its rows differ from cec2aae's `write` by the strokes that set holds, for example 0.450% to 0.223% at church-face-7m.
+- The village church pose (looking up at the church from 5 m) was the worst before at 4.280%, and reads 0.003% now.
+
+### Flicker, fidelity and coverage
+
+Flicker probes on the colour builds of cec2aae and the fix (patched only to expose the batch), production builds served by `vite preview`, 8 frames.
+
+`scripts/shimmer-probe.ts`, flicker / per frame / clustered, % of the frame, with rotation and translation jitter:
+
+| Build | ground | paul-strobe1 | village | wall | ridge | sky |
+| --- | --- | --- | --- | --- | --- | --- |
+| cec2aae | 8.884 / 3.788 / 2.021 | 9.982 / 4.176 / 2.181 | 9.611 / 3.868 / 2.302 | 2.714 / 1.037 / 0.353 | 8.752 / 3.385 / 1.601 | 7.812 / 2.870 / 1.178 |
+| fix | 8.843 / 3.773 / 2.045 | 9.837 / 4.112 / 2.163 | 9.555 / 3.842 / 2.318 | 2.685 / 1.024 / 0.349 | 8.634 / 3.337 / 1.584 | 7.761 / 2.846 / 1.183 |
+
+Translation jitter only (`norot`):
+
+| Build | ground | paul-strobe1 | village | wall | ridge | sky |
+| --- | --- | --- | --- | --- | --- | --- |
+| cec2aae | 4.127 / 1.787 / 0.528 | 3.265 / 1.370 / 0.459 | 2.190 / 1.016 / 0.251 | 0.462 / 0.204 / 0.003 | 0.824 / 0.352 / 0.035 | 0.413 / 0.196 / 0.002 |
+| fix | 4.124 / 1.786 / 0.528 | 3.251 / 1.361 / 0.460 | 2.187 / 1.015 / 0.251 | 0.461 / 0.203 / 0.003 | 0.821 / 0.350 / 0.036 | 0.409 / 0.195 / 0.002 |
+
+`scripts/zfight-probe.ts`, % of the frame that changes under a 0.1 mm and a 1 mm shift. The unmoved repeat read 0.000 at every pose on both builds:
+
+| Pose | cec2aae 0.1 mm / 1 mm | fix 0.1 mm / 1 mm |
+| --- | --- | --- |
+| painter-level | 0.071 / 0.625 | 0.071 / 0.628 |
+| painter-down | 0.194 / 1.824 | 0.193 / 1.827 |
+| village-look | 0.172 / 1.428 | 0.173 / 1.427 |
+| back | 0.130 / 1.226 | 0.130 / 1.225 |
+| sky-up-0.5 | 0.041 / 0.361 | 0.043 / 0.360 |
+| sky-up-1.0 | 0.027 / 0.252 | 0.027 / 0.254 |
+| ridge-horizon | 0.060 / 0.447 | 0.059 / 0.450 |
+| paul-strobe1 | 0.217 / 1.869 | 0.216 / 1.869 |
+| cypress | 0.127 / 1.337 | 0.128 / 1.341 |
+| h6-face-3m | 0.044 / 0.436 | 0.044 / 0.436 |
+| church-face-7m | 0.056 / 0.522 | 0.056 / 0.524 |
+
+The shimmer totals fall by up to 0.15 points, and every shimmer cell is lower or within 0.03 points. The zfight shares are within 0.01 points. These probes hold the densities still, so they measure the stacking, not a cut.
+
+Load during the flicker runs was 12.7 before and 11.0 after on cec2aae, and 13.9 before and 11.8 after on the fix. Every unmoved repeat read 0, so load did not move these numbers.
+
+Fidelity, `scripts/fidelity.ts --url` with the painter URL, against the limits SSIM ≥ 0.2768 and ΔE2000 ≤ 7.1243:
+
+| Build | SSIM | mean ΔE2000 | Worst blocks (col, row) |
+| --- | --- | --- | --- |
+| cec2aae | 0.3599 | 5.1701 | (11, 11) 39.8, (1, 7) 24.6, (5, 7) 24.2, (10, 10) 23.6, (0, 9) 21.0 |
+| fix | 0.3585 | 5.3226 | (11, 11) 39.8, (1, 7) 32.0, (0, 7) 23.6, (15, 6) 23.6, (10, 10) 23.5 |
+
+The painter view draws mid and far chunks at 0.9 and 0.4, whose world chunks now draw another stratified set. Its scores move by 0.0014 SSIM and 0.15 ΔE, and block (1, 7), the far left of the ridge row, rises most. The cec2aae capture matches the one canvas uv extent section's figures to 4 decimals. `tests/e2e/fidelity.spec.ts` alone on the fix read the same SSIM 0.3585 and ΔE 5.3226, 4 of 4 passed (load 16.1 before, 16.3 after). The first version, with the dome on the suffix, read 0.3539 and 5.2739.
+
+Coverage (`tests/e2e/world-coverage.spec.ts` alone, e2e build, limit 0.5% bare): 11 of 11 passed, load 13.7 before and 15.2 after.
+
+- Maximum bare 0.460% and maximum weighted 0.610%, both at hill west, against cec2aae's 0.466% and 0.621% at hill west (One canvas uv extent, above).
+- The spot-ahead motion sweep's worst phase reads 0.341% at motiont 9, against 0.354%.
+- The pinned-motion rows read at most 0.327% bare at spot ahead, 0.295% in the painter view and 0.112% under the cypress.
+- The first version, with the dome on the suffix, read 0.458%, 0.607% and a worst phase of 0.310%.
+
+The suffix moves only the mid and far sets at their default densities. The drawn counts are the same by construction, since a density keeps as many strokes as before. Per-pose values for cec2aae were not recorded, so only the maxima compare.
+
+### The cost of a density step
+
+A suffix chunk swaps its attribute wrappers on every density change, and three then re-specifies that chunk's VAO on its next draw. Before, a step changed only `instanceCount`. To check what that costs, a probe (outside the tree) measured the CPU frame time:
+
+- Builds: debc2bd and the fix-round head (209836e), as production builds patched by `scripts/zfight-id-patch.ts`, served by `vite preview`. Headless Chromium on ANGLE Metal, 1280 × 1014, `?painting=starry-night&diag&nogov&nocache&noanim&seed=1&ab=vtx`, at the village-street pose (eye (1, -3.25, -19), yaw 0). The view held 13 mid chunks (15,491 strokes) and 39 far chunks (51,335 strokes).
+- A step is a whole-band `setDensity` called after the app's frame, plus the next frame. A frame is the time from its rAF timestamp to the end of a callback that runs after the app's. The idle row is the same frame with no step, taken between steps.
+- `?ab=vtx` `fewer` is the `abSwitch.frameMs` of the V key's switch into `fewer` (a 0.7 cut of every band) and out of it, into `smaller`.
+- 15 samples per row. Each build ran twice, in the order debc2bd, head, head, debc2bd.
+
+Median / max ms:
+
+| Row | debc2bd run 1 | head run 1 | head run 2 | debc2bd run 2 |
+| --- | --- | --- | --- | --- |
+| idle frame | 1.2 / 2.6 | 2.4 / 3.4 | 1.5 / 4.6 | 2.3 / 3.8 |
+| mid 0.9 to 0.8 | 0.9 / 2.1 | 2.6 / 3.5 | 1.4 / 2.9 | 1.7 / 3.3 |
+| mid 0.8 to 0.9 | 1.1 / 2.3 | 3.0 / 4.1 | 1.5 / 2.9 | 2.6 / 5.4 |
+| far 0.4 to 0.3 | 1.2 / 1.7 | 2.7 / 4.8 | 1.9 / 4.3 | 2.4 / 4.3 |
+| far 0.3 to 0.4 | 0.9 / 2.5 | 2.8 / 3.9 | 1.7 / 3.1 | 2.5 / 4.1 |
+| vtx base to fewer | 0.4 / 0.6 | 0.4 / 0.6 | 0.6 / 0.9 | 0.4 / 0.6 |
+| vtx fewer to smaller | 0.4 / 1.0 | 0.5 / 1.9 | 0.6 / 0.8 | 0.4 / 0.5 |
+
+Load (1-minute average), before and after: 13.2 and 11.7, 11.7 and 10.7, 10.8 and 12.0, 12.0 and 12.8.
+
+- The idle frame follows the run order, not the build: the second run of each pair reads slower. Compare each step with its own run's idle frame.
+- On that basis a step costs at most 0.6 ms more than idle on the head (mid 0.8 to 0.9, run 1) and at most 0.3 ms on debc2bd. The `fewer` switch moves by at most 0.2 ms at the median.
+- That is under the 1 ms bar the review set for caching the wrappers, so they are not cached. A Quest's CPU is slower than this desktop, so the headset shed frame is where to look if the governor's shed frames read high.
+
+### Pins
+
+Nothing is re-pinned. The scatter output is unchanged, so SCATTER_VERSION stays 16 and its hashes hold. debc2bd's `text32` geometry pin (535afd02) passes unchanged, because the change moves no geometry. `docs/shots/p2-painter-spot.png` and `p2-fidelity.png` are not regenerated, so they show cec2aae, where the mid and far chunks drew a prefix.
+
+### For the headset
+
+Check the 6 m band switch on the deployed build, after an approved push. Walk toward a house front, such as house 7 (h6-face-3m's house, about 15 m in front of the painter's spot) or the church's south end, and back across 6 m. Before this change the facade's top strokes vanished and returned at the switch. It should now hold still. Also watch the facade while the governor sheds near density in XR, with `?hud` to see the level.
+
+### Gates
+
+On fe9649f (the dome on the prefix), one run each, in this order:
+
+| Gate | Result | Load before / after |
+| --- | --- | --- |
+| `tests/e2e/world-coverage.spec.ts` alone | 11 passed | 13.7 / 15.2 |
+| `tests/e2e/fidelity.spec.ts` alone | 4 passed | 16.1 / 16.3 |
+| `make checkall-ci` | exit 0: 1612 of 1612 unit tests, gitleaks no leaks, `bun audit` no vulnerabilities, asset-check 28 files | 14.1 / 12.4 |
+| `make e2e` | 128 passed, 5 skipped, 0 failed | 12.4 / 11.9 |
+
+The e2e run's walk-speed spec logged load 32 mid-run, from another session, and still passed. The first version's `make e2e` (127 passed, 1 failed) is in The dome keeps the prefix, above.
 
 ## Headset shimmer diagnosis (2026-11-06, on 6d82235)
 
@@ -1919,14 +2155,14 @@ Each measuring arm cuts its target quantity by 30%.
 | Arm | Instances and vertex runs | Painted area | Fragment work, estimated | Vertex : fill ratio | How |
 | --- | --- | --- | --- | --- | --- |
 | `base` | 1 | 1 | 1 | 1 | as shipped |
-| `fewer` | 0.7 | 0.7 | 0.7 | 1 | each chunk draws 0.7 of its unpinned importance prefix, survivors unchanged |
+| `fewer` | 0.7 | 0.7 | 0.7 | 1 | each chunk draws 0.7 of its unpinned importance order, survivors unchanged |
 | `smaller` | 1 | 0.7 | about 0.74 to 0.77 | about 1.3 | `uVtxSize` = sqrt(0.7) |
 | `sparse` | 0.7 | 0.967 by `drawnSr`, 1.05 by world area (fit caps) | about 0.90 to 0.92 with the measured fit caps (0.92 to 0.95 without them) | about 0.78 | `fewer`'s strokes grown by 1/sqrt(0.7) through the band size: the `area` law at 0.7 on every band |
 | `hoist` | 1 | 1 | 1 | 1, with 42 to 55% fewer ops per ground and sky vertex (32% on the cypress, 13% on reactive strokes) | the `VTX_HOIST` define, 24 more instance bytes fetched (38 → 62) |
 
 - What each arm cuts. `fewer` cuts instances, vertex runs, primitives, binning and fill together, since strokes write no depth (the nowrite default) and every stroke fragment shades. `smaller` keeps every vertex run and primitive and cuts the painted area by 30%. Its fragment cut is smaller, because at about 25 px per triangle the partially covered 2 × 2 pixel quads along each edge are a large share s (about 0.3 to 0.5) of the fragment work, and the perimeter only falls to sqrt(0.7) = 0.84: 0.7 (1 - s) + 0.84 s. Its smaller quads also touch fewer bins, so it cuts some binning work. `sparse` cuts vertex runs and primitives by 30% and keeps the area where the strokes can grow, but its total perimeter falls to 0.7 × 1/sqrt(0.7) = 0.84, so it also cuts the overshaded edge work: up to about 16% of that share, (1 - s) + 0.84 s overall. Fit-capped strokes cannot grow past their cap, so where they bind `sparse` cuts some area too (the drawn solid angle below). Its larger quads each touch more bins and take a coarser brush mip. `hoist` cuts shader ALU only, and adds 24 bytes of fetch per drawn instance.
 - The consistency check. With frame time about a × vertex + b × fill, `fewer` saves 0.3 a + 0.3 b, `sparse` 0.3 a + (0.08 to 0.10) b and `smaller` (0.23 to 0.26) b, so `fewer` should save about what `sparse` and `smaller` save together, within about 15% of `fewer`'s saving, inside the 20% the outcome table allows. A sum far off that means the frame time is not additive in vertex and fill (the bound moves between arms), and the single-arm readings cannot be trusted.
-- `fewer` draws a density prefix rather than testing a per-instance hash in the shader. A hash test would still run every vertex of a dropped instance, the binning pass included, and kept and dropped instances share each shader wave, so neither the invocations nor the ALU would fall.
+- `fewer` draws a density cut (`applyDensity`) rather than testing a per-instance hash in the shader. A hash test would still run every vertex of a dropped instance, the binning pass included, and kept and dropped instances share each shader wave, so neither the invocations nor the ALU would fall.
 - No arm links a program mid-session. When the group activates, each stroke batch prepares once, on a microtask after its first frame (`renderer.compile` cannot run inside a render): it adds the sky attributes to every chunk geometry, then compiles its three band materials with `VTX_HOIST` on and then off. After that an arm switch only flips the define and `needsUpdate`, and three finds the cached program. `fewer` and `sparse` change draw counts and band sizes on the CPU, and `smaller` sets one uniform shared by the batch's band materials. Lone stroke meshes keep their own `uVtxSize` of 1 and never take the define.
 - `__goghDiag().vtx` reports per arm the instances, vertex invocations (instances × 4 × views), whether every batch has prepared (`prepared`), the active program (`program`, `base` or `hoist`), the drawn world area and `drawnSr`, the drawn strokes' summed solid angle, the fill proxy. Both walk each visible banded chunk's drawn strokes at their band size, with each stroke's fit cap applied and `uVtxSize` after it, as the shader does. `drawnSr` sums over every view, each stroke's area / d² inside that view's frustum from that view's eye, and `drawnSrViews` gives it per view. Both still leave out the haze growth, the sky-light thin, motion, occlusion and the angle to the eye, so `drawnSr` is an upper bound on the fragments shaded. The world area is dominated by the far dome, so it is not a fill measure.
 

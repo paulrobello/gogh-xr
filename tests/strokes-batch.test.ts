@@ -1,7 +1,9 @@
 import {
+  type BufferAttribute,
   DataTexture,
-  type InstancedBufferAttribute,
+  InstancedBufferAttribute,
   type InstancedBufferGeometry,
+  type InterleavedBufferAttribute,
   IntType,
   type Mesh,
   PerspectiveCamera,
@@ -10,6 +12,7 @@ import {
   Vector3,
 } from 'three';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { skyWrapStats } from '../src/diag/sky-wrap-stats.ts';
 import { motionClock } from '../src/motion/clock.ts';
 import { MOTION_LAYER_MASK, REACTIVE_MOTION_BIT } from '../src/motion/layers.ts';
 import {
@@ -34,6 +37,7 @@ import {
   createStrokeBatch,
   DEFAULT_ORDER_POLICY,
   drawClassOf,
+  drawsSuffix,
   holdsHaze,
   interleaveOrders,
   isCypressStroke,
@@ -42,6 +46,7 @@ import {
   STROKE_DRAW_CLASSES,
   STROKES_AFTER_BASE,
   type StrokeBatch,
+  SuffixGeometry,
   WRITE_ORDER_POLICY,
 } from '../src/render/strokes/batch.ts';
 import { cullAndSortInto } from '../src/render/strokes/chunks.ts';
@@ -167,6 +172,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The upload version of a chunk attribute: a suffix chunk binds a wrapper over its buffer. */
+function bufferVersion(attribute: BufferAttribute | InterleavedBufferAttribute): number {
+  return 'isInterleavedBufferAttribute' in attribute ? attribute.data.version : attribute.version;
+}
+
 describe('createStrokeBatch', () => {
   test('builds one instanced chunk per grid cell sharing the material and atlas', () => {
     const atlas = tinyAtlas();
@@ -224,6 +234,175 @@ describe('createStrokeBatch', () => {
   });
 });
 
+describe('suffix draw', () => {
+  /** Bound start of every instanced attribute of `geometry`, in instances. */
+  function boundStarts(geometry: InstancedBufferGeometry): number[] {
+    return Object.values(geometry.attributes)
+      .filter((a) => 'isInterleavedBufferAttribute' in a)
+      .map((a) => {
+        const wrapped = a as InterleavedBufferAttribute;
+        return wrapped.offset / wrapped.data.stride;
+      });
+  }
+
+  test('a nowrite chunk draws the end of its importance order, so a cut drops the earliest drawn', () => {
+    const batch = bandedBatch();
+    batch.update(originCamera());
+    const chunk = batch.chunks.find((c) => c.count === 100);
+    if (!chunk) throw new Error('no 100-stroke chunk');
+    expect(chunk.geometry).toBeInstanceOf(SuffixGeometry);
+    const data = (chunk.geometry.getAttribute('iPosition') as InterleavedBufferAttribute).data;
+    const stored = Float32Array.from(data.array as Float32Array);
+    expect(chunk.drawStart).toBe(0);
+    batch.setDensity('near', 0.29);
+    expect(chunk.drawCount).toBe(29);
+    expect(chunk.drawStart).toBe(71);
+    const starts = boundStarts(chunk.geometry);
+    expect(starts.length).toBe(Object.keys(chunk.geometry.attributes).length - 1);
+    expect(starts.every((s) => s === 71)).toBe(true);
+    // Same buffer, rebound at the offset: instance 0 of the draw is stored instance 71.
+    const position = chunk.geometry.getAttribute('iPosition') as InterleavedBufferAttribute;
+    expect(position.data).toBe(data);
+    expect([position.getX(0), position.getY(0), position.getZ(0)]).toEqual([
+      ...stored.subarray(71 * 3, 72 * 3),
+    ]);
+    // The integer meta attribute stays integer through the wrapper.
+    expect((chunk.geometry.getAttribute('iMeta') as unknown as { gpuType: number }).gpuType).toBe(
+      IntType,
+    );
+    batch.setDensity('near', 0);
+    expect([chunk.drawCount, chunk.drawStart]).toEqual([0, 0]);
+    batch.setDensity('near', 1);
+    expect([chunk.drawCount, chunk.drawStart]).toEqual([100, 0]);
+    batch.dispose();
+  });
+
+  test('an instanced attribute set later is bound at the current start', () => {
+    const batch = bandedBatch();
+    batch.update(originCamera());
+    const chunk = batch.chunks.find((c) => c.count === 100);
+    if (!chunk) throw new Error('no 100-stroke chunk');
+    batch.setDensity('near', 0.5);
+    chunk.geometry.setAttribute(
+      'iLate',
+      new InstancedBufferAttribute(
+        Float32Array.from({ length: 100 }, (_, i) => i),
+        1,
+      ),
+    );
+    const late = chunk.geometry.getAttribute('iLate') as InterleavedBufferAttribute;
+    expect(late.getX(0)).toBe(50);
+    batch.setDensity('near', 0.2);
+    expect((chunk.geometry.getAttribute('iLate') as InterleavedBufferAttribute).getX(0)).toBe(80);
+    batch.dispose();
+  });
+
+  test('drawnFootprint sums the drawn suffix, not the stored head', () => {
+    const batch = bandedBatch();
+    batch.update(originCamera());
+    const chunk = batch.chunks.find((c) => c.count === 100);
+    if (!chunk) throw new Error('no 100-stroke chunk');
+    // Only this chunk has area: its first 50 stored strokes are 1 × 1, the last 50 are 2 × 2.
+    for (const c of batch.chunks) {
+      const size = c.geometry.getAttribute('iSize').array as Float32Array;
+      for (let j = 0; j < c.count; j++) {
+        const side = c !== chunk ? 0 : j < 50 ? 1 : 2;
+        size[j * 2] = side;
+        size[j * 2 + 1] = side;
+      }
+    }
+    const whole = batch.drawnFootprint().areaM2;
+    batch.setDensity('near', 0.5);
+    expect([chunk.drawStart, chunk.drawCount]).toEqual([50, 50]);
+    // The suffix keeps the 2 × 2 strokes: 200 of 250. The head would keep 50.
+    expect(batch.drawnFootprint().areaM2 / whole).toBeCloseTo(0.8, 9);
+    batch.dispose();
+  });
+
+  test('skyWrapStats counts the drawn suffix of a chunk', () => {
+    const batch = bandedBatch();
+    batch.update(originCamera());
+    const chunk = batch.chunks.find((c) => c.count === 100);
+    if (!chunk) throw new Error('no 100-stroke chunk');
+    // Only this chunk's first 50 stored strokes are sky.
+    for (const c of batch.chunks) {
+      const meta = c.geometry.getAttribute('iMeta').array as Int32Array;
+      for (let j = 0; j < c.count; j++) {
+        meta[j * 4 + 1] = c === chunk && j < 50 ? STROKE_LAYER.sky : STROKE_LAYER.ground;
+      }
+    }
+    expect(skyWrapStats(batch, 'base', 0, null, 2).drawn).toBe(50);
+    batch.setDensity('near', 0.7);
+    // The suffix draws stored strokes 30 to 99, so 20 sky. The head would draw all 50.
+    expect(chunk.drawStart).toBe(30);
+    expect(skyWrapStats(batch, 'base', 0, null, 2).drawn).toBe(20);
+    batch.setDensity('near', 0.5);
+    expect(skyWrapStats(batch, 'base', 0, null, 2).drawn).toBe(0);
+    batch.dispose();
+  });
+
+  test('a merged world chunk draws the union of its parts’ suffixes, within a stroke per part', () => {
+    const buffers = concat(cluster(60, [1, 1, -3], 21), cluster(30, [1, 1, -7], 22));
+    const key = (p: {
+      getX(i: number): number;
+      getY(i: number): number;
+      getZ(i: number): number;
+    }) => {
+      return (i: number): string => [p.getX(i), p.getY(i), p.getZ(i)].join(',');
+    };
+    const plain = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    const merged = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: (drawClass) => (drawClass === 'world' ? 'w' : null),
+    });
+    for (const batch of [plain, merged]) batch.update(originCamera());
+    expect(plain.chunks.map((c) => c.count).sort((a, b) => a - b)).toEqual([30, 60]);
+    expect(merged.chunks.map((c) => c.count)).toEqual([90]);
+    // Each part's suffix, from its own stored order: the last half of each plain chunk.
+    const expected = new Set<string>();
+    for (const c of plain.chunks) {
+      const p = c.geometry.getAttribute('iPosition') as InterleavedBufferAttribute;
+      const data = p.data.array as Float32Array;
+      for (let j = c.count / 2; j < c.count; j++) {
+        expected.add([data[j * 3], data[j * 3 + 1], data[j * 3 + 2]].join(','));
+      }
+    }
+    merged.setDensity('near', 0.5);
+    const [chunk] = merged.chunks;
+    expect([chunk.drawStart, chunk.drawCount]).toEqual([45, 45]);
+    // What the merged chunk binds for its draw: instance k of the draw is stored drawStart + k.
+    const at = key(chunk.geometry.getAttribute('iPosition') as InterleavedBufferAttribute);
+    const drawn = Array.from({ length: chunk.drawCount }, (_, k) => at(k));
+    const missing = drawn.filter((s) => !expected.has(s)).length;
+    expect(missing).toBeLessThanOrEqual(2);
+    plain.dispose();
+    merged.dispose();
+  });
+
+  test('a depth-writing batch, the dome, the lights and the cypress keep the prefix', () => {
+    expect(drawsSuffix(false, 'world', 0)).toBe(true);
+    expect(drawsSuffix(false, 'dome', 0)).toBe(false);
+    expect(drawsSuffix(false, 'overlay', 0)).toBe(true);
+    expect(drawsSuffix(true, 'world', 0)).toBe(false);
+    expect(drawsSuffix(false, 'lights', 0)).toBe(false);
+    expect(drawsSuffix(false, 'cypress', 0)).toBe(false);
+    expect(drawsSuffix(false, 'world', 3)).toBe(false);
+    const batch = createStrokeBatch(cluster(100, [1, 1, -3]), {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      depthWrite: true,
+    });
+    batch.update(originCamera());
+    const [chunk] = batch.chunks;
+    expect(chunk.geometry).not.toBeInstanceOf(SuffixGeometry);
+    batch.setDensity('near', 0.29);
+    expect([chunk.drawCount, chunk.drawStart]).toEqual([29, 0]);
+    expect(boundStarts(chunk.geometry)).toEqual([]);
+    batch.dispose();
+  });
+});
+
 describe('bands', () => {
   test('update puts each chunk in the band of its nearest point, with that band material', () => {
     const batch = bandedBatch();
@@ -245,9 +424,7 @@ describe('bands', () => {
     const batch = bandedBatch();
     batch.update(originCamera());
     const byCount = (n: number) => batch.chunks.find((c) => c.count === n);
-    const versions = batch.chunks.map(
-      (c) => (c.geometry.getAttribute('iPosition') as InstancedBufferAttribute).version,
-    );
+    const versions = batch.chunks.map((c) => bufferVersion(c.geometry.getAttribute('iPosition')));
     expect(byCount(50)?.drawCount).toBe(Math.floor(DEFAULT_BAND_DENSITY.mid * 50));
     expect(byCount(40)?.drawCount).toBe(Math.floor(DEFAULT_BAND_DENSITY.far * 40));
 
@@ -270,11 +447,10 @@ describe('bands', () => {
     expect(() => batch.setDensity('far', Number.NaN)).toThrow(RangeError);
     expect(() => batch.setDensity('huge' as 'far', 0.5)).toThrow(RangeError);
 
-    // Only instance counts change: no attribute was rewritten or replaced.
+    // No buffer was rewritten or re-uploaded. A suffix chunk swaps its attribute wrappers on a
+    // density change, but they share the same data, whose version holds.
     batch.chunks.forEach((c, i) => {
-      expect((c.geometry.getAttribute('iPosition') as InstancedBufferAttribute).version).toBe(
-        versions[i],
-      );
+      expect(bufferVersion(c.geometry.getAttribute('iPosition'))).toBe(versions[i]);
     });
     // Later frames keep the counts while the bands hold.
     batch.update(originCamera());
@@ -939,6 +1115,9 @@ describe('pinned strokes', () => {
       for (const d of [0, 0.1, 0.28, 0.4, 1]) {
         batch.setDensity(band, d);
         expect(chunk.drawCount).toBe(chunk.pinned + bandDrawCount(d, chunk.count - chunk.pinned));
+        // A lights chunk draws its pinned strokes from 0; the rest draw a suffix.
+        if (chunk.pinned > 0) expect(chunk.drawStart).toBe(0);
+        else expect(chunk.drawStart + chunk.drawCount).toBe(chunk.drawCount ? chunk.count : 0);
       }
     }
     plain.dispose();

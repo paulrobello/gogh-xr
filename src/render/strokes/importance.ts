@@ -9,7 +9,8 @@ const MAX_BUCKETS_PER_AXIS = 32;
 /**
  * Reorders a chunk's strokes so that every prefix is a stratified sample of the whole chunk: the
  * first `d·n` entries take about `d` of the strokes in every region, within one stroke per
- * sub-cell. A density scalar then draws a prefix and thins the chunk evenly.
+ * sub-cell. The keys are symmetric, so every suffix is one too. A density scalar then draws a
+ * prefix or a suffix (`drawsSuffix` in batch.ts) and thins the chunk evenly.
  *
  * Strokes are bucketed into a sub-grid over the chunk's bounding box, sized for about 16 strokes
  * per sub-cell on a surface. Within a bucket of `n_b` strokes they are shuffled, and the stroke at
