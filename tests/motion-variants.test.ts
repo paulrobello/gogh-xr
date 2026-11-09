@@ -30,7 +30,12 @@ import {
   skyWrapPhase,
 } from '../src/motion/sky-swirl.ts';
 import { createMotionVariants, motionVariants } from '../src/motion/variant-uniforms.ts';
-import { motionVariantGlslDefines, SKY_WRAPS, type SkyWrap } from '../src/motion/variants.ts';
+import {
+  DEFAULT_SKY_WRAP,
+  motionVariantGlslDefines,
+  SKY_WRAPS,
+  type SkyWrap,
+} from '../src/motion/variants.ts';
 import { PAINTER_EYE } from '../src/paintings/starry-night/canvas-camera.ts';
 import type { Vec3 } from '../src/render/strokes/frame.ts';
 import { createStrokeMaterial } from '../src/render/strokes/material.ts';
@@ -111,8 +116,9 @@ function domeCounterFlow(
 }
 
 describe('sky wrap variants', () => {
-  test('the variants are base, pingpong and wave, base first: opacity is retired and flow not built', () => {
-    expect(SKY_WRAPS).toEqual(['base', 'pingpong', 'wave']);
+  test('the variants are wave, base and pingpong, the default wave first: opacity is retired and flow not built', () => {
+    expect(SKY_WRAPS).toEqual(['wave', 'base', 'pingpong']);
+    expect(DEFAULT_SKY_WRAP).toBe('wave');
   });
 
   test('base is the P4.2 loop exactly', () => {
@@ -185,14 +191,17 @@ describe('sky wrap variants', () => {
 
   test('the variant uniform switches live', () => {
     const variants = createMotionVariants();
-    expect(variants.diag()).toEqual({ wrap: 'base' });
-    variants.setWrap('wave');
-    expect(variants.uniforms.uSkyWrap.value).toBe(2);
+    // The default is wave, code 0, the cheap branch in motion.glsl.
     expect(variants.diag()).toEqual({ wrap: 'wave' });
-    variants.setWrap('pingpong');
-    expect(variants.uniforms.uSkyWrap.value).toBe(1);
-    variants.setWrap('base');
     expect(variants.uniforms.uSkyWrap.value).toBe(0);
+    variants.setWrap('base');
+    expect(variants.uniforms.uSkyWrap.value).toBe(1);
+    expect(variants.diag()).toEqual({ wrap: 'base' });
+    variants.setWrap('pingpong');
+    expect(variants.uniforms.uSkyWrap.value).toBe(2);
+    variants.setWrap('wave');
+    expect(variants.uniforms.uSkyWrap.value).toBe(0);
+    variants.setWrap('base');
     // The wave's waves per turn is a uniform too, so ?waveturns links no new program.
     expect(variants.waveTurns()).toBe(SKY_WAVE_PER_TURN);
     expect(variants.uniforms.uWaveTurns.value).toBe(2);
@@ -485,19 +494,34 @@ describe('wave', () => {
 });
 
 describe('GLSL', () => {
-  test('uSkyWrap is read only in the sky motion: one compare under base, a second inside skyWrapMotion', () => {
+  test('uSkyWrap is read only in the sky motion: one compare under the default wave, two under base and pingpong', () => {
     // The default program: the vtx hoist arm's skyMotion (VTX_HOIST) stripped.
     const hoist = /#ifdef VTX_HOIST\n([\s\S]*?)\n#else\n/.exec(motionGlsl)?.[1] ?? '';
     const base = motionGlsl.replace(/#ifdef VTX_HOIST\n[\s\S]*?\n#else\n/, '');
     const sky = base.slice(base.indexOf('Motion skyMotion('), base.indexOf('Motion ringMotion('));
-    expect(sky).toContain('if (uSkyWrap != 0u) return skyWrapMotion(');
-    // The declaration, skyWrapMotion's wave test and skyMotion's compare.
-    expect(base.match(/uSkyWrap/g)).toHaveLength(3);
+    // Wave, the default, is the first compare; base and pingpong pay the second.
+    const wave = sky.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {');
+    const notBase = sky.indexOf(
+      'if (uSkyWrap != SKY_WRAP_BASE) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);',
+    );
+    expect(wave).toBeGreaterThan(0);
+    expect(notBase).toBeGreaterThan(wave);
+    expect(sky).toContain('float wavePhase = skyWavePhase(dir) + SKY_WAVE_JITTER * (phase - 0.5);');
+    expect(sky).toContain(
+      'return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir), t);',
+    );
+    // The declaration and skyMotion's two compares.
+    expect(base.replace(/\/\/.*$/gm, '').match(/uSkyWrap/g)).toHaveLength(3);
     // uWaveTurns: the declaration and skyWavePhase's loop, which only the wave branch calls.
     expect(base.replace(/\/\/.*$/gm, '').match(/uWaveTurns/g)).toHaveLength(2);
-    // The hoist arm reads the rest field from its attributes: the same two compares, no field.
+    // The hoist arm reads the rest field from its attributes: the same two compares, wave first,
+    // no field.
     expect(hoist).toContain('Motion skyMotion(');
     expect(hoist.match(/uSkyWrap/g)).toHaveLength(2);
+    expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {')).toBeLessThan(
+      hoist.indexOf('} else if (uSkyWrap == SKY_WRAP_BASE) {'),
+    );
+    expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {')).toBeGreaterThan(0);
     expect(hoist).not.toMatch(/uWaveTurns|skyWavePhase|SKY_VORTEX|inversesqrt/);
     const wrap = motionGlsl.slice(
       motionGlsl.indexOf('Motion skyWrapMotion('),
@@ -505,10 +529,7 @@ describe('GLSL', () => {
     );
     // The formulas skyWrapPhase and skyWrapLoop mirror. tests/e2e/ab.spec.ts checks what the GPU
     // draws with them.
-    expect(wrap).toContain('float amplitude = SKY_SWIRL_PERIOD;');
-    expect(wrap).toContain('if (uSkyWrap == SKY_WRAP_WAVE) {');
-    expect(wrap).toContain('phase = skyWavePhase(dir) + SKY_WAVE_JITTER * (phase - 0.5);');
-    expect(wrap).toContain('amplitude *= skyWaveFade(dir);');
+    expect(wrap).not.toMatch(/uSkyWrap/);
     expect(wrap).toContain(
       'float tau = (smoothstep(0.0, 1.0, 1.0 - abs(2.0 * f - 1.0)) - 0.5) * amplitude;',
     );
@@ -545,7 +566,7 @@ describe('GLSL', () => {
     for (const [key, value] of Object.entries(motionVariantGlslDefines())) {
       expect(a.defines[key]).toBe(value);
     }
-    expect(motionVariantGlslDefines()).toEqual({ SKY_WRAP_WAVE: '2u' });
+    expect(motionVariantGlslDefines()).toEqual({ SKY_WRAP_WAVE: '0u', SKY_WRAP_BASE: '1u' });
     const defines = skySwirlGlslDefines();
     // A factor per non-zero winding: the central pair and the stagnation point.
     expect(String(defines.SKY_WAVE_PRODUCT).match(/= z - vec2\(/g)).toHaveLength(3);

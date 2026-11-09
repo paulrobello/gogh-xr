@@ -167,14 +167,16 @@ test.describe('sky swirl (P4.2)', () => {
     return rawPixels(url);
   }
 
+  // Base's own loop (`?wrap=base`): the wave, the default, sets each stroke's phase from its
+  // direction, so the pin would not move the sky coherently. Its own test is below.
   test('a pinned coherent phase moves the sky along the TS prediction, half as far at calm 0.5', async ({
     page,
     xr,
   }) => {
     test.setTimeout(480_000);
     const { width, height } = CAPTURE_SIZE;
-    const rest = await painterShot(page, xr, 'noanim');
-    const still = await painterShot(page, xr, `calm=0&motiont=${PINNED}`);
+    const rest = await painterShot(page, xr, 'noanim&wrap=base');
+    const still = await painterShot(page, xr, `calm=0&motiont=${PINNED}&wrap=base`);
     expect(await motion(xr)).toEqual({
       time: PINNED,
       delta: 0,
@@ -182,8 +184,9 @@ test.describe('sky swirl (P4.2)', () => {
       frozen: false,
       layers: SKY_ONLY,
     });
-    const half = await painterShot(page, xr, `calm=0.5&motiont=${PINNED}`);
-    const full = await painterShot(page, xr, `calm=1&motiont=${PINNED}`);
+    const half = await painterShot(page, xr, `calm=0.5&motiont=${PINNED}&wrap=base`);
+    const full = await painterShot(page, xr, `calm=1&motiont=${PINNED}&wrap=base`);
+    expect(((await xr.diag()).variants as { wrap: string }).wrap).toBe('base');
     expect(await motion(xr)).toEqual({
       time: PINNED,
       delta: 0,
@@ -202,7 +205,7 @@ test.describe('sky swirl (P4.2)', () => {
       ([points, time]) =>
         points.map(([u, v]) => {
           if (!window.__goghSkyShift) throw new Error('__goghSkyShift is e2e-only');
-          return window.__goghSkyShift(u, v, 1, time, 0);
+          return window.__goghSkyShift(u, v, 1, time, 0, 'base');
         }),
       [PATCHES, PINNED] as const,
     );

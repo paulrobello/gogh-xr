@@ -10,7 +10,8 @@
  *
  * `capture` writes the byte-compare PNGs (the `?noanim` painter view, the painter view at two pinned
  * times, and one sky and one cypress pose at a pinned time) with `extra-query` appended, so two
- * builds, or a build with and without `&wrap=base`, can be compared byte for byte.
+ * builds, or a build with and without `&wrap=wave` (the no-flag default), can be compared byte for
+ * byte.
  * `measure` boots each wrap variant with `?wrap=` and prints, per variant: the bare share under
  * `?coverage` at the 24 coverage poses (tests/world-poses.ts) over pinned times, binary and
  * coverage-weighted as tests/e2e/world-coverage.spec.ts counts them (the worst of each shown); the

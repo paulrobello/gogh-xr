@@ -231,7 +231,7 @@ test.describe('the painter view', () => {
     await bootWorld(xr, still);
     const rest = await rawPixels(page);
     const rows: string[] = [];
-    for (const extra of ['', '&wrap=wave']) {
+    for (const extra of ['&wrap=base', '']) {
       await bootWorld(
         xr,
         `painting=starry-night&seed=1&shot&painter&nogov&motiont=3.7${extra}&ab=vtx`,
@@ -246,7 +246,7 @@ test.describe('the painter view', () => {
       const moved = pixelDiff(base, rest, HOIST_LEVELS);
       const diff = pixelDiff(hoist, base, HOIST_LEVELS);
       rows.push(
-        `wrap ${extra ? 'wave' : 'base'}: motion moves ${(moved.share * 100).toFixed(3)}%, hoist differs ${(diff.share * 100).toFixed(4)}% (max ${diff.max})`,
+        `wrap ${extra ? 'base' : 'wave (default)'}: motion moves ${(moved.share * 100).toFixed(3)}%, hoist differs ${(diff.share * 100).toFixed(4)}% (max ${diff.max})`,
       );
       // The motion must move far more pixels than the tolerance allows, or a still sky would pass.
       expect(moved.share).toBeGreaterThan(10 * HOIST_MAX_SHARE);

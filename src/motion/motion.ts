@@ -91,7 +91,10 @@ export const STUB_MOTION: MotionFunctions = Object.freeze({
 
 /**
  * The motions motion.glsl runs: the sky swirl (P4.2), the star and moon rings (P4.3), the cypress
- * flame (P4.4) and the reactive push and wake (P4.5) of the app's tracker's current field.
+ * flame (P4.4) and the reactive push and wake (P4.5) of the app's tracker's current field. The sky
+ * entry calls skySwirl with no wrap, so it mirrors the `base` wrap, the TS mirror's default. The
+ * shader's default is `wave` (DEFAULT_SKY_WRAP, src/motion/variants.ts). A caller that needs
+ * another wrap passes it to skySwirl explicitly, as the wrap diag and the e2e probes do.
  */
 export const LIVE_MOTION: MotionFunctions = Object.freeze({
   ...STUB_MOTION,
@@ -139,7 +142,8 @@ export interface MotionUniformValues {
  * stroke's colour alpha byte, which only the cypress reads.
  * stroke.vert.glsl also tests the reactive box before the reactive term; outside it the term is
  * exactly 0 (reactive.ts), so this mirror leaves the box out. Its gated block also skips a haze
- * stroke its sky-light thin has collapsed (`thin` 0), which draws nothing either way.
+ * stroke its sky-light thin has collapsed (`thin` 0), which draws nothing either way. The sky layer
+ * mirrors the `base` wrap (LIVE_MOTION), not the shader's default `wave`.
  */
 export function motionOffset(
   layer: number,

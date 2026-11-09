@@ -16,8 +16,10 @@
  * `f = fract(t / PERIOD + phase)`, offset `τ (omega × d)`, so every stroke sweeps one short arc around
  * its rest position and never drifts off its region. The same rotation turns the stroke about its
  * own normal by `τ (omega · n)`, so its orientation follows the flow. Near the wrap the stroke
- * shrinks to nothing and grows back (`gain`), so the jump back is never a pop. The `pingpong` and
- * `wave` wrap variants (src/motion/variants.ts) replace the shrink for the A/B.
+ * shrinks to nothing and grows back (`gain`), so the jump back is never a pop. That is the `base`
+ * wrap. The app ships `wave` as the default (src/motion/variants.ts, Paul's 2026-11-08 choice), which
+ * replaces the shrink with a travel ahead and back in bands. `base` and `pingpong` stay as the A/B
+ * alternatives (`?wrap`, `?ab=wrap`).
  *
  * motion.glsl's `skyMotion` is the GLSL; `skySwirlGlslDefines` hands it these tables as defines, so
  * the two read one source. Change them together.
@@ -548,7 +550,8 @@ function skyWaveProductGlsl(splits: readonly WindingSplit[]): string {
 /**
  * The loop phase, in loops, that a sky stroke centred at `position` with phase fraction `phase`
  * runs under wrap `wrap`: its phase fraction, except under `wave`, where it is skyWavePhase of its
- * direction from PAINTER_EYE plus SKY_WAVE_JITTER × (phase − ½). Matches skyWrapMotion.
+ * direction from PAINTER_EYE plus SKY_WAVE_JITTER × (phase − ½). Matches the phase skyMotion in
+ * motion.glsl passes to skyWrapMotion.
  */
 export function skyWrapPhase(
   wrap: SkyWrap,
@@ -613,7 +616,9 @@ export function skyWrapLoop(wrap: SkyWrap, phase: number, time: number): SkyWrap
 /**
  * The sky motion of a stroke centred at `position` with unit normal `normal` and phase fraction
  * `phase`, at motion time `time`, before calm, under wrap variant `wrap`, and under `wave` at
- * `turns` waves per turn, its tau scaled by skyWaveFade. Matches skyMotion in motion.glsl.
+ * `turns` waves per turn, its tau scaled by skyWaveFade. Matches skyMotion in motion.glsl. `wrap`
+ * defaults to `base` here, while the shader defaults to `wave` (DEFAULT_SKY_WRAP), so a caller
+ * mirroring the app passes the wrap explicitly.
  */
 export function skySwirl(
   position: Vec3,

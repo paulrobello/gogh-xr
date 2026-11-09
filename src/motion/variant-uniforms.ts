@@ -4,11 +4,11 @@
  * and the teleport arc.
  */
 import { SKY_WAVE_PER_TURN, type SkyWaveTurns } from './sky-swirl';
-import { SKY_WRAPS, type SkyWrap, skyWrapCode } from './variants';
+import { DEFAULT_SKY_WRAP, SKY_WRAPS, type SkyWrap, skyWrapCode } from './variants';
 
 export interface MotionVariantUniforms {
   [name: string]: { value: unknown };
-  /** SKY_WRAPS index: 0 base, 1 pingpong, 2 wave. */
+  /** SKY_WRAPS index: 0 wave (the default), 1 base, 2 pingpong. */
   uSkyWrap: { value: number };
   /** The wave wrap's waves per turn (SKY_WAVE_TURNS), read only on the wave branch. */
   uWaveTurns: { value: number };
@@ -25,7 +25,7 @@ export interface MotionVariants {
 
 export function createMotionVariants(): MotionVariants {
   const uniforms: MotionVariantUniforms = {
-    uSkyWrap: { value: 0 },
+    uSkyWrap: { value: skyWrapCode(DEFAULT_SKY_WRAP) },
     uWaveTurns: { value: SKY_WAVE_PER_TURN },
   };
   return {
@@ -37,7 +37,7 @@ export function createMotionVariants(): MotionVariants {
       uniforms.uWaveTurns.value = turns;
     },
     waveTurns: () => uniforms.uWaveTurns.value as SkyWaveTurns,
-    diag: () => ({ wrap: SKY_WRAPS[uniforms.uSkyWrap.value] ?? 'base' }),
+    diag: () => ({ wrap: SKY_WRAPS[uniforms.uSkyWrap.value] ?? DEFAULT_SKY_WRAP }),
   };
 }
 

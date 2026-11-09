@@ -77,7 +77,7 @@ export interface Flags {
   readonly zdiag: ZdiagMode | null;
   /** `?ab=<group>`: the A/B group the A/B button cycles (src/diag/ab.ts). Lower-cased; null when absent. */
   readonly ab: string | null;
-  /** `?wrap=<variant>`: the sky swirl's wrap treatment (src/motion/variants.ts). null is base. */
+  /** `?wrap=<variant>`: the sky swirl's wrap treatment (src/motion/variants.ts). null is the default, wave. */
   readonly wrap: SkyWrap | null;
   /** `?waveturns=1|2|3`: the wave wrap's waves per turn (SKY_WAVE_TURNS). null is the default. */
   readonly waveTurns: SkyWaveTurns | null;

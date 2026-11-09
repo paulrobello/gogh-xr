@@ -413,7 +413,7 @@ test.describe('the painter view', () => {
   }
   // The wrap variants (src/motion/variants.ts) only show while the motion runs, so this boots with
   // a pinned ?motiont rather than ?noanim, where every variant draws the rest pose.
-  test('V cycles wrap live at a pinned motion time, each variant reports and draws its own wrap, and a full cycle back to base matches a fresh boot byte for byte', async ({
+  test('V cycles wrap live at a pinned motion time, each variant reports and draws its own wrap, and a full cycle back to the default wave matches a fresh boot byte for byte', async ({
     page,
     xr,
   }) => {
@@ -455,16 +455,24 @@ test.describe('the painter view', () => {
 
     await bootWorld('');
     const plain = await diag();
-    expect(plain.variants).toEqual({ wrap: 'base' });
+    // A boot with no flag draws the wave, the default since 2026-11-08.
+    expect(plain.variants).toEqual({ wrap: 'wave' });
     // With no wrap group or ?wrap, the wrap diag key is not registered.
     expect(plain.wrap).toBeUndefined();
     const fresh = await rawPixels(page);
 
+    // ?wrap=wave at the default 2 waves per turn draws the no-flag sky byte for byte.
+    await bootWorld('&wrap=wave');
+    await hideHud();
+    const explicit = await diag();
+    expect([explicit.wrap?.wrap, explicit.wrap?.waveTurns]).toEqual(['wave', 2]);
+    expect((await rawPixels(page)).equals(fresh), '?wrap=wave matches a no-flag boot').toBe(true);
+
     await bootWorld('&ab=wrap');
     const variants = ((await ab(xr)) as AbDiag).variants;
-    expect(variants).toEqual(['base', 'pingpong', 'wave']);
+    expect(variants).toEqual(['wave', 'base', 'pingpong']);
     await hideHud();
-    expect((await rawPixels(page)).equals(fresh), 'wrap base matches a fresh boot').toBe(true);
+    expect((await rawPixels(page)).equals(fresh), 'wrap wave matches a fresh boot').toBe(true);
     const programs = (await diag()).programs;
     const timings: string[] = [];
     const reports: string[] = [];
@@ -510,11 +518,11 @@ test.describe('the painter view', () => {
         expect(w.returningShare).toBeLessThan(0.8);
         expect(w.counterFlow.share).toBeLessThan(0.15);
       }
-      if (variant !== 'base') {
+      if (variant !== 'wave') {
         await hideHud();
         expect(
           (await rawPixels(page)).equals(fresh),
-          `wrap ${variant} moves the sky differently from base`,
+          `wrap ${variant} moves the sky differently from the default wave`,
         ).toBe(false);
       }
     }
@@ -522,7 +530,7 @@ test.describe('the painter view', () => {
     console.log(`[e2e] ab wrap desktop switches: ${timings.join('; ')}`);
     await hideHud();
     const cycled = await rawPixels(page);
-    expect(cycled.equals(fresh), 'a full cycle back to base renders a fresh boot').toBe(true);
+    expect(cycled.equals(fresh), 'a full cycle back to wave renders a fresh boot').toBe(true);
     expect(await glErrors(page)).toEqual([]);
 
     // ?waveturns sets a uniform: the same program count as the default wavelength, the diag's turns,
@@ -552,7 +560,7 @@ test.describe('the painter view', () => {
   // (tests/e2e/motion.spec.ts checks the wave's phase). ?motionphase=0 gives every stroke phase 0,
   // so f = t / 8, and ?motionlayers=sky stills every other motion, so two frames at different
   // pinned times differ only in the sky. At each pair the two variants compute the same tau and
-  // size exactly in float:
+  // size exactly in float (`?wrap=base` starts the group at base, which steps to pingpong, then wave):
   // - pingpong at f = 0.25 and base at f = 0.5: smoothstep(0, 1, 0.5) = 0.5, so tau 0.
   // - pingpong at f = 0.125 and base at f = 0.15625: smoothstep(0, 1, 0.25) = 0.15625, so both
   //   have tau −2.75 s on base's arc, and base is past its 0.06 wrap shrink, at full size.
@@ -563,7 +571,7 @@ test.describe('the painter view', () => {
   }) => {
     test.setTimeout(240_000);
     const query =
-      'painting=starry-night&seed=1&shot&painter&nogov&motionlayers=sky&motionphase=0&motiont=4&ab=wrap';
+      'painting=starry-night&seed=1&shot&painter&nogov&motionlayers=sky&motionphase=0&motiont=4&ab=wrap&wrap=base';
     const bootWorld = async (extra: string): Promise<void> => {
       await xr.boot(`${query}${extra}`);
       await expect

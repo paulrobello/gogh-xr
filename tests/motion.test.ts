@@ -22,6 +22,7 @@ import {
   reactiveGate,
   STUB_MOTION,
 } from '../src/motion/motion.ts';
+import { DEFAULT_SKY_WRAP } from '../src/motion/variants.ts';
 import { STROKE_LAYER, type StrokeLayer } from '../src/render/strokes/instance.ts';
 import {
   createStrokeMaterial,
@@ -34,6 +35,16 @@ const ALL_LAYERS = Object.values(STROKE_LAYER) as StrokeLayer[];
 const ALL_MASK = motionLayerMask(ALL_LAYERS);
 const motionGlsl = readFileSync('src/motion/motion.glsl', 'utf8');
 const strokeGlsl = readFileSync('src/render/strokes/stroke.vert.glsl', 'utf8');
+const mainTs = readFileSync('src/main.ts', 'utf8');
+
+describe('sky wrap boot default', () => {
+  test('main.ts sets the wave wrap, DEFAULT_SKY_WRAP, unless ?wrap names another', () => {
+    expect(DEFAULT_SKY_WRAP).toBe('wave');
+    expect(mainTs).toContain('motionVariants.setWrap(flags.wrap ?? DEFAULT_SKY_WRAP);');
+    expect(mainTs.match(/motionVariants\.setWrap\(/g)).toHaveLength(2);
+    expect(mainTs).not.toMatch(/setWrap\([^)]*'base'/);
+  });
+});
 
 describe('motion clock', () => {
   test('defaults: calm 1, not frozen, time 0, gate the live layers', () => {

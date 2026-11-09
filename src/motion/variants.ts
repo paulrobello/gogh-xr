@@ -1,9 +1,9 @@
 /**
- * Sky wrap A/B variants (src/diag/ab.ts, `?wrap`): alternatives to the sky swirl's wrap shrink
- * (P4.2), switched live by one shared uniform, `uSkyWrap`. motion.glsl reads it only in the sky
- * motion: under base a moving sky vertex pays one compare in skyMotion, pingpong and wave add a
- * second inside skyWrapMotion, and a still vertex pays none. At 0, base, the motion runs today's
- * code unchanged.
+ * Sky wrap A/B variants (src/diag/ab.ts, `?wrap`): the sky swirl's wrap treatments, switched live
+ * by one shared uniform, `uSkyWrap`. `wave` is the default, on Paul's headset verdict of 2026-11-08
+ * at 2 waves per turn. `base` is the P4.2 wrap shrink. motion.glsl reads the uniform only in the
+ * sky motion: under wave, code 0, a moving sky vertex pays one compare in skyMotion, base and
+ * pingpong a second, and a still vertex pays none.
  *
  * - wrap `pingpong`: the stroke sweeps base's arc forward over half the loop and eases back along
  *   it over the other half, `tau = PERIOD (smoothstep(0, 1, 1 − |2f − 1|) − ½)`, with no wrap and no
@@ -23,9 +23,15 @@
  * The uniform lives in variant-uniforms.ts, apart from this table.
  */
 
-/** The sky swirl's wrap treatments (`?wrap`, the `wrap` A/B group), base first. */
-export const SKY_WRAPS = ['base', 'pingpong', 'wave'] as const;
+/**
+ * The sky swirl's wrap treatments (`?wrap`, the `wrap` A/B group), the default first. The A/B
+ * group cycles them in this order, so base still steps to pingpong and pingpong back to wave.
+ */
+export const SKY_WRAPS = ['wave', 'base', 'pingpong'] as const;
 export type SkyWrap = (typeof SKY_WRAPS)[number];
+
+/** The wrap every boot draws without `?wrap`: wave (docs/verification.md, sky wrap default). */
+export const DEFAULT_SKY_WRAP: SkyWrap = SKY_WRAPS[0];
 
 /**
  * The `wave` wrap's wavelengths in waves per turn (`?waveturns`, the `uWaveTurns` uniform), the
@@ -41,5 +47,6 @@ export const skyWrapCode = (wrap: SkyWrap): number => SKY_WRAPS.indexOf(wrap);
 export function motionVariantGlslDefines(): Record<string, string | number> {
   return {
     SKY_WRAP_WAVE: `${skyWrapCode('wave')}u`,
+    SKY_WRAP_BASE: `${skyWrapCode('base')}u`,
   };
 }

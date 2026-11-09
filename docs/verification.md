@@ -1635,6 +1635,8 @@ The copies also change pixels away from the eaves. A copy joins an existing vill
 
 ## Sky wrap variants: wave (2026-11-07)
 
+Since 2026-11-08 wave is the default wrap, Paul's headset choice (Sky wrap default: wave, below).
+
 Paul ruled pingpong the best of base, opacity and pingpong, but each stroke's loop phase is its own phase byte, so about half of any patch of sky moves against its neighbours and the flow breaks up. `wave` keeps pingpong's motion and replaces that phase. `opacity` is retired, and the `wrap` group cycles base, pingpong and wave (CLAUDE.md, Motion A/B variants). Headset: `https://gogh-xr.pardev.net/?painting=starry-night&ab=wrap`.
 
 ### Design
@@ -1984,3 +1986,66 @@ The worst frames average 23.3 ms on both builds. Round 1 added one cost inside a
 - The fragment-work estimates for `smaller` and `sparse` assume an edge share s of 0.3 to 0.5 at about 25 px per triangle. It was not measured.
 - The level-4 levels are simulated from the 2026-11-06 frame times (foveation 0.5 ×0.84, foveation 1 ×0.955 more, 3.5% per density step), not read from a headset governor.
 - The `tieKeys` and `skyStatic` costs on the Quest's CPU, and the hitch of the `hoist` precompile on the first frame after each batch binds. A batch that binds later in a session (a portal swap to another world) prepares on a microtask after its own first frame, and draws its base program until then, even under `hoist`, so under `?ab=vtx` that frame pays the compile in XR.
+
+## Sky wrap default: wave (2026-11-08, card 01a1bbc7)
+
+Paul compared the wrap variants in the headset on 2026-11-08 and chose `wave` at the default 2 waves per turn. Every boot now draws the wave: the shipped boot, `?painting=starry-night`, the gallery and the canvas demo all take `DEFAULT_SKY_WRAP` through the one `motionVariants.setWrap` call in main.ts, and the canvas demo's strokes stay static anyway because its motion layers are closed. `?wrap=base` restores the P4.2 wrap and `?wrap=pingpong` still selects pingpong. Base and pingpong are not retired.
+
+### Order and cost
+
+- `SKY_WRAPS` is wave, base, pingpong, so `uSkyWrap` is 0 for wave, 1 for base and 2 for pingpong, and `?ab=wrap` starts at wave and cycles wave, base, pingpong. That keeps the default first and keeps base stepping to pingpong, so the fixed-phase test still cycles base, pingpong, wave.
+- Both `skyMotion` bodies, the default and `VTX_HOIST`, test `uSkyWrap == SKY_WRAP_WAVE` first. Base and pingpong pay a second compare. The uniform stays a uniform, so a switch still links no program. A define for the default would have cost `?ab=wrap` a second program.
+- `?noanim` is unchanged: `skyMotion` runs only behind the sky layer's gate in `motionOffset` (`layerMoves`), which `?noanim` closes, so a still vertex pays no wrap compare.
+- Ops per sky vertex in `skyMotion`, the SPIR-V proxy of the vtx card. A wrapper shader calls `skyMotion` once with the material's own defines. `uSkyWrap` is specialised to each code and `uWaveTurns` to 2, compiled with glslangValidator `-G`, loops marked `[[unroll]]`, and run through spirv-opt (merge-return, exhaustive inlining, loop unroll, `-O`). The counting weights are the vtx card's. The wave's turns loop has a `break` and does not unroll, so its executed count adds the second iteration and the exit test (11 ops) to the static 157. The compares come from the unspecialised program, which holds two `uSkyWrap` compares in each body before and after.
+
+| Path | Ops before (path + compares) | Ops after (path + compares) |
+| --- | --- | --- |
+| default wave | 168 + 2 = 170 | 168 + 1 = 169 |
+| default base | 77 + 1 = 78 | 77 + 2 = 79 |
+| default pingpong | 78 + 2 = 80 | 78 + 2 = 80 |
+| `hoist` wave | 18 + 2 = 20 | 18 + 1 = 19 |
+| `hoist` base | 13 + 1 = 14 | 13 + 2 = 15 |
+| `hoist` pingpong | 14 + 2 = 16 | 14 + 2 = 16 |
+
+  The specialised path ops are identical before and after, so the reorder moves one compare from wave to base and nothing else. The roughly 91 ops the default wave costs over base per sky vertex are the wave motion itself (the phase product, its atan and the three-pole fade), which no compare order removes. On the vtx card's full-shader totals (base sky 388, wave sky 481 on the default program) that is wave 480 and base 389.
+
+### Default and base checks
+
+- Captures at `?painting=starry-night&diag&shot&nogov&painter&seed=1&motiont=3.7`, 1280 × 1014, from e2e builds of 0b5f31e and of this change: 0b5f31e's no-flag capture and this change's `&wrap=base` capture are byte-identical (`cmp`), so `?wrap=base` restores the old default exactly. This change's no-flag capture against 0b5f31e's `&wrap=wave` differs in 12 pixels (0.0009%) by 1 level. The wave's arithmetic is the same, but `skyWrapMotion` now takes its phase and amplitude as arguments, and the driver's float contraction rounds a few vertices differently. Load 332 before, 434 after.
+- `tests/e2e/ab.spec.ts` checks that a no-flag boot reports `wrap` wave and draws byte for byte as `&wrap=wave` at 2 waves per turn.
+
+### Re-baselined checks
+
+Nothing byte-compared to a committed golden moved. The fidelity metric and every `?noanim` capture are unchanged, because the gate holds the sky still.
+
+- `tests/e2e/fidelity.spec.ts` (`?noanim`): SSIM 0.3474 and mean ΔE2000 5.2419, the values recorded at 863a58d, thresholds unchanged.
+- The world-coverage `?noanim` sweep: worst 0.460% (village uphill), the value recorded on main.
+- The world-coverage motion checks now measure the wave. Base values come from the same spec run once with `&wrap=base` added to those boots, then reverted. Its sweep worst, 0.481% at motiont 7, equals the value recorded for main. The limit stays 0.5% bare.
+
+| Check | Base (old default) | Wave (new default) |
+| --- | --- | --- |
+| spot ahead, motiont 0.5 / 3.7 | 0.460% / 0.451% | 0.417% / 0.419% |
+| painter view, motiont 0.5 / 3.7 | 0.335% / 0.320% | 0.299% / 0.289% |
+| under the cypress, motiont 0.5 / 3.7 | 0.126% / 0.145% | 0.125% / 0.101% |
+| spot ahead 24-phase sweep, worst | 0.481% at motiont 7 | 0.428% at motiont 11 |
+| spot ahead drawn, every layer and reactive bit closed | 283,796 | 283,796 |
+
+- The tests that check base's own formulas now pin `?wrap=base`, so their captures do not move. These are the motion.spec calm ratio test (`?motionphase=0`, the mirror asked for `'base'` explicitly, mean ratio 0.495), the ab.spec fixed-phase test (`&ab=wrap&wrap=base`, which starts at base, then pingpong, then wave), and the vtx.spec hoist-under-motion loop, now `&wrap=base` and the no-flag default. vtx.spec measured hoist off base by 0.0123% (max 94) under base and 0.0117% (max 94) under the default wave.
+- The ab.spec wrap cycle expects wave, base, pingpong. The first variant matches a fresh boot, and base and pingpong each draw a sky different from the default.
+- The motion.spec ring tests open the sky layer with `?motionphase=0` in the moon clip crest shot and the halo pair, so their sky follows the default and moves. Neither is byte-compared. The moon disc clips 0.00% at rest and at the crest (under 1%), and the halo test passes.
+- `tests/e2e/reactive.spec.ts` boots with the sky moving, so its coverage rows now measure the wave: 6 passed, load 131 before and 116 after. The worst held row is 0.326%, at the cypress at motiont 3.7 with the controller 0.1 m inside, and the worst row overall is 0.342%, which the spec measures but does not hold. The village rows read 0.054% or less. The limit is unchanged. No base reference was run for these rows.
+
+### Gates
+
+- `make checkall-ci` exit 0: vitest 1248 tests in 91 files, gitleaks, `bun audit`, asset-check 28 files.
+- Every e2e run here is load-affected: the 15-minute wait from 14:22 found no 1-minute load of 15 or less (258 to 581). Each spec ran alone with `--project=e2e --no-deps` on port 4294:
+  - world-coverage: 8 passed, load 581 before and 507 after.
+  - The base reference run of its 3 motion checks: load 403 before, 381 after.
+  - ab.spec: 14 passed, 391 and 327.
+  - motion.spec: 12 passed, 319 and 311.
+  - fidelity.spec: 1 passed, 311 and 304.
+  - vtx.spec: 4 passed and 2 skipped (the sweeps), 301 and 352.
+  - reactive.spec: 6 passed, 131 and 116.
+  
+  These are pixel and count measures at pinned times, so load slows them without changing them.
+- The full `make e2e` was not run here.

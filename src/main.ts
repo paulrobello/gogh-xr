@@ -27,6 +27,7 @@ import { MOTION_LAYER_MASK } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { SKY_WAVE_PER_TURN } from './motion/sky-swirl';
 import { motionVariants } from './motion/variant-uniforms';
+import { DEFAULT_SKY_WRAP } from './motion/variants';
 import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
 import type { PainterCamera, WorldDeps, WorldHandle, WorldModule } from './paintings/world-module';
 import { createSwitcher, GALLERY_ID, type LiveWorld } from './portal/switcher';
@@ -91,7 +92,7 @@ if (settingsRecovered) {
 motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
 // `?wrap` sets the sky wrap variant whatever A/B group wins: under another group it stays fixed.
-motionVariants.setWrap(flags.wrap ?? 'base');
+motionVariants.setWrap(flags.wrap ?? DEFAULT_SKY_WRAP);
 // `?waveturns` sets the wave wrap's waves per turn, read only under wave.
 motionVariants.setWaveTurns(flags.waveTurns ?? SKY_WAVE_PER_TURN);
 /**

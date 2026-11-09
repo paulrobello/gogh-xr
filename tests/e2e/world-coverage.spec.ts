@@ -231,7 +231,8 @@ test('with the sky swirl pinned mid-motion, the spot-ahead view stays within 0.5
   test.setTimeout(240_000);
   const [ahead] = COVERAGE_POSES;
   expect(ahead.name).toBe('spot ahead');
-  // The sweep above runs under ?noanim, so it never sees the motion's shrinking wrap strokes.
+  // The sweep above runs under ?noanim, so it never sees the motion. These shots run the shipped
+  // default, the wave wrap (src/motion/variants.ts), whose sky strokes travel ahead and back.
   for (const time of [0.5, 3.7]) {
     await xr.boot(`painting=starry-night&seed=1&shot&coverage&motiont=${time}`);
     expect((await world(xr)).debug).toBe('coverage');

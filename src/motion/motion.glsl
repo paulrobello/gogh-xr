@@ -20,8 +20,9 @@ uniform vec4 uDisturberVelocities[REACTIVE_DISTURBERS];
 uniform vec4 uWake[REACTIVE_WAKE_SAMPLES];
 uniform vec3 uReactiveCentre;
 uniform vec3 uReactiveHalf;
-// The sky wrap A/B variant (src/motion/variants.ts): 0 base, 1 pingpong or SKY_WRAP_WAVE, read
-// only in skyMotion and skyWrapMotion, so a moving sky vertex under base pays one compare.
+// The sky wrap A/B variant (src/motion/variants.ts): SKY_WRAP_WAVE (0, the default),
+// SKY_WRAP_BASE or pingpong, read only in skyMotion, so a moving sky vertex under the default
+// wave pays one compare and base and pingpong two.
 uniform uint uSkyWrap;
 // The wave wrap's waves per turn (SKY_WAVE_TURNS in sky-swirl.ts, ?waveturns), read only on the
 // wave branch.
@@ -95,16 +96,13 @@ float skyWaveFade(vec3 dir) {
   return fade;
 }
 
-// Matches the wrap variants of skySwirl in sky-swirl.ts (src/motion/variants.ts). Neither changes
-// the stroke's size. pingpong sweeps base's arc forward over half the loop and eases back over the
-// other half, so it never jumps and |tau| stays within half a period. wave runs the same loop at a
-// phase set by the stroke's direction (skyWavePhase), plus a small jitter from its phase byte.
-Motion skyWrapMotion(vec3 d, vec3 dir, vec3 omega, vec3 n, float phase, float t) {
-  float amplitude = SKY_SWIRL_PERIOD;
-  if (uSkyWrap == SKY_WRAP_WAVE) {
-    phase = skyWavePhase(dir) + SKY_WAVE_JITTER * (phase - 0.5);
-    amplitude *= skyWaveFade(dir);
-  }
+// Matches the wave and pingpong wraps of skySwirl in sky-swirl.ts (src/motion/variants.ts), at loop
+// phase `phase` and tau amplitude `amplitude`. Neither changes the stroke's size. pingpong sweeps
+// base's arc forward over half the loop and eases back over the other half, so it never jumps and
+// |tau| stays within half a period. wave runs the same loop at a phase set by the stroke's
+// direction (skyWavePhase), plus a small jitter from its phase byte, its amplitude scaled by
+// skyWaveFade.
+Motion skyWrapMotion(vec3 d, vec3 omega, vec3 n, float phase, float amplitude, float t) {
   float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
   float tau = (smoothstep(0.0, 1.0, 1.0 - abs(2.0 * f - 1.0)) - 0.5) * amplitude;
   return Motion(tau * cross(omega, d), tau * dot(omega, n), 0.0, 0.0);
@@ -112,32 +110,32 @@ Motion skyWrapMotion(vec3 d, vec3 dir, vec3 omega, vec3 n, float phase, float t)
 
 // Matches skySwirl in sky-swirl.ts. The field is one rotation vector about SKY_EYE: each vortex
 // turns at gamma / max(chord², core²) about its axis (Rankine, no square root), plus the drift about
-// the vertical. The stroke sweeps a short arc of it per SKY_SWIRL_PERIOD and wraps, shrinking to
-// nothing at the wrap. SKY_VORTEX_COUNT is a handful (4): each vortex costs a dot, a max, a divide
-// and a multiply-add per vertex.
+// the vertical. The stroke sweeps a short arc of it per SKY_SWIRL_PERIOD: forward and back in
+// bands under the default wave, and under base forward only, shrinking to nothing at the wrap. The
+// default wave is the first compare, so it pays one and base and pingpong two. SKY_VORTEX_COUNT is
+// a handful (4): each vortex costs a dot, a max, a divide and a multiply-add per vertex.
 #ifdef VTX_HOIST
 // The `vtx` group's hoist arm (src/render/strokes/vertex-arms.ts): the same motion from the
 // stroke's rest field, built on the CPU (iSkyField, iSkyWave in stroke.vert.glsl), so only the
 // time-dependent part runs per vertex.
 Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
-  if (uSkyWrap != 0u) {
-    float amplitude = SKY_SWIRL_PERIOD;
-    if (uSkyWrap == SKY_WRAP_WAVE) {
-      phase = iSkyWave.x + SKY_WAVE_JITTER * (phase - 0.5);
-      amplitude *= iSkyWave.y;
-    }
+  float amplitude = SKY_SWIRL_PERIOD;
+  if (uSkyWrap == SKY_WRAP_WAVE) {
+    phase = iSkyWave.x + SKY_WAVE_JITTER * (phase - 0.5);
+    amplitude *= iSkyWave.y;
+  } else if (uSkyWrap == SKY_WRAP_BASE) {
     float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
-    float tau = (smoothstep(0.0, 1.0, 1.0 - abs(2.0 * f - 1.0)) - 0.5) * amplitude;
-    return Motion(tau * iSkyField.xyz, tau * iSkyField.w, 0.0, 0.0);
+    float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
+    return Motion(
+      tau * iSkyField.xyz,
+      tau * iSkyField.w,
+      smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f)) - 1.0,
+      0.0
+    );
   }
   float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
-  float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
-  return Motion(
-    tau * iSkyField.xyz,
-    tau * iSkyField.w,
-    smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f)) - 1.0,
-    0.0
-  );
+  float tau = (smoothstep(0.0, 1.0, 1.0 - abs(2.0 * f - 1.0)) - 0.5) * amplitude;
+  return Motion(tau * iSkyField.xyz, tau * iSkyField.w, 0.0, 0.0);
 }
 #else
 Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
@@ -148,7 +146,11 @@ Motion skyMotion(vec3 p, vec3 n, float phase, float t) {
     vec4 v = SKY_VORTEX_AXIS[i];
     omega += v.xyz * (v.w / max(1.0 - dot(v.xyz, dir), SKY_VORTEX_CORE[i]));
   }
-  if (uSkyWrap != 0u) return skyWrapMotion(d, dir, omega, n, phase, t);
+  if (uSkyWrap == SKY_WRAP_WAVE) {
+    float wavePhase = skyWavePhase(dir) + SKY_WAVE_JITTER * (phase - 0.5);
+    return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir), t);
+  }
+  if (uSkyWrap != SKY_WRAP_BASE) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);
   float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
   float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
   return Motion(
