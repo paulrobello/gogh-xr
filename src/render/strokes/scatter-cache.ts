@@ -4,6 +4,7 @@
  * (happy-dom has no IndexedDB). Any cache failure degrades to a re-scatter and never throws.
  */
 import type { WorldLayer } from '../../paintings/starry-night/canvas-camera';
+import { withTimeout } from '../../util/timeout';
 import { STROKE_ATTRIBUTES, type StrokeBuffers } from './instance';
 import { type GradedSize, SCATTER_VERSION, type scatterOverrides } from './scatter';
 
@@ -158,15 +159,6 @@ export interface LoadOrScatterOptions {
   readonly timeoutMs?: number;
 }
 
-/** `promise`, or a rejection once `ms` pass without it settling. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`scatter cache read timed out after ${ms} ms`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
 /**
  * Cached buffers for `key`, or a fresh `scatter()` stored under it. A read that has not settled
  * within the timeout counts as a miss. The write runs in the background (`saved`), so a slow store
@@ -178,7 +170,11 @@ export async function loadOrScatter(options: LoadOrScatterOptions): Promise<Scat
     try {
       const read = Promise.resolve().then(() => storage.get(key));
       const cached = validEntry(
-        await withTimeout(read, options.timeoutMs ?? SCATTER_CACHE_TIMEOUT_MS),
+        await withTimeout(
+          read,
+          options.timeoutMs ?? SCATTER_CACHE_TIMEOUT_MS,
+          'scatter cache read timed out',
+        ),
       );
       if (cached) return { buffers: cached, hit: true, saved: Promise.resolve(false) };
     } catch {

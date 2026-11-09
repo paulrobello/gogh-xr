@@ -30,6 +30,7 @@ bundle-check:
 	if [ -n "$$chunks" ]; then echo "$$chunks"; echo "bundle-check: iwer-install chunk found in $(BUNDLE_DIR)/"; fail=1; fi; \
 	if [ $$fail -ne 0 ]; then exit 1; fi; \
 	echo "bundle-check: $(BUNDLE_DIR)/ contains no IWER code"
+	@bun scripts/bundle-budget.ts "$(BUNDLE_DIR)"
 # The validator and its self-test need ffmpeg on PATH and run on any build. The byte-identity
 # rebuild (master.ts --check) needs ffmpeg 9.0.2 and skips with a WARN on any other build.
 asset-check:

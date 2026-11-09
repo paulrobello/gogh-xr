@@ -9,6 +9,7 @@ import type { WalkBounds } from '../locomotion/walk-bounds';
 import type { StrokeBatch } from '../render/strokes/batch';
 import type { Vec3 } from '../render/strokes/frame';
 import { drain, type Slicer, type Steps } from '../util/slicer';
+import { withTimeout } from '../util/timeout';
 
 /** A standing pose: a floor position and a heading. Yaw 0 faces -Z, positive turns left. */
 export interface WorldPose {
@@ -149,4 +150,24 @@ export interface WorldModule {
   painterSpot(): WorldPose;
   /** The camera at the painter's spot that frames exactly the canvas (`?painter`). */
   painterCamera(): PainterCamera;
+}
+
+/**
+ * How long a world's dynamic chunk import may take before the build gives up, ms. Kept below the
+ * portal's stall watchdog (`STALL_TIMEOUT_S`), so a stalled import fails the build as a throw
+ * before the watchdog gives up: no abandoned build, no refusal window, no build after give-up.
+ */
+export const WORLD_IMPORT_TIMEOUT_MS: number = 12_000;
+
+/**
+ * `imports`, or a rejection once `ms` pass without it settling. Only the import is bounded: the
+ * caller's build step runs after the await, so a rejection means `WorldModule.build` was never
+ * called, and a chunk landing late only evaluates module code (a world's module-level `built`
+ * is set by `build`, never by the import). A stalled import therefore leaves nothing to dispose.
+ */
+export function boundedImport<T>(
+  imports: Promise<T>,
+  ms: number = WORLD_IMPORT_TIMEOUT_MS,
+): Promise<T> {
+  return withTimeout(imports, ms, `world import timed out after ${ms} ms`);
 }

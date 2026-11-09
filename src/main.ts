@@ -31,7 +31,13 @@ import { trackerTime } from './motion/tracker-time';
 import { motionVariants } from './motion/variant-uniforms';
 import { DEFAULT_SKY_WRAP } from './motion/variants';
 import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
-import type { PainterCamera, WorldDeps, WorldHandle, WorldModule } from './paintings/world-module';
+import {
+  boundedImport,
+  type PainterCamera,
+  type WorldDeps,
+  type WorldHandle,
+  type WorldModule,
+} from './paintings/world-module';
 import { createSwitcher, GALLERY_ID, type LiveWorld } from './portal/switcher';
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
@@ -905,7 +911,9 @@ const switcher = createSwitcher({
   build: async (id) => {
     const load = worldLoader(id);
     if (!load) throw new Error(`no world for ${id}`);
-    const [module, { loadRaster }] = await Promise.all([load(), import('./demo/canvas/demo')]);
+    const [module, { loadRaster }] = await boundedImport(
+      Promise.all([load(), import('./demo/canvas/demo')]),
+    );
     const handle = await module.build(worldDeps(true, loadRaster));
     return { id, module, handle };
   },

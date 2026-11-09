@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { parseFlags } from '../src/diag/flags.ts';
 import { createStrokeBuffers, type StrokeBuffers } from '../src/render/strokes/instance.ts';
 import { LAYER_DENSITY, LAYER_SIZE, SCATTER_VERSION } from '../src/render/strokes/scatter.ts';
@@ -259,4 +259,32 @@ test('the batch hash covers every packed array', () => {
     expect(hashStrokeBuffers(b)).not.toBe(base);
   }
   expect(hashStrokeBuffers(sample(4, 1))).not.toBe(base);
+});
+
+test('a read that never settles falls through to a miss at the default bound', async () => {
+  vi.useFakeTimers();
+  try {
+    const storage: ScatterCacheStorage = {
+      get: () => new Promise(() => {}),
+      put: async () => {},
+    };
+    let scattered = false;
+    const pending = loadOrScatter({
+      storage,
+      key: 'k',
+      bypass: false,
+      scatter: () => {
+        scattered = true;
+        return sample(2, 1);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(SCATTER_CACHE_TIMEOUT_MS - 1);
+    expect(scattered).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(scattered).toBe(true);
+    expect(result.hit).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });

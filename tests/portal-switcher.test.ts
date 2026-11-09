@@ -24,7 +24,12 @@ import {
 import { describe, expect, test, vi } from 'vitest';
 import type { Raster } from '../src/demo/canvas/field.ts';
 import { HANGINGS } from '../src/paintings/gallery/layout.ts';
-import type { WorldModule, WorldPose } from '../src/paintings/world-module.ts';
+import {
+  boundedImport,
+  WORLD_IMPORT_TIMEOUT_MS,
+  type WorldModule,
+  type WorldPose,
+} from '../src/paintings/world-module.ts';
 import { createFlyStrokes } from '../src/portal/fly-strokes.ts';
 import { insidePortal, livePortals, PORTAL_DEPTH, portalOf } from '../src/portal/portal.ts';
 import {
@@ -139,6 +144,8 @@ interface Rig {
   readonly gates: Map<string, Promise<void>>;
   /** Per id, the built world's `ready`. */
   readonly readies: Map<string, Promise<void>>;
+  /** Per id, a chunk import the build awaits through `boundedImport`, as main.ts does. */
+  readonly imports: Map<string, Promise<unknown>>;
   readonly slicer: ReturnType<typeof createSlicer>;
   loadRaster: (url: string) => Promise<Raster>;
   calm: number;
@@ -169,6 +176,7 @@ function setup(
   const chunkCounts = new Map<string, readonly number[]>();
   const gates = new Map<string, Promise<void>>();
   const readies = new Map<string, Promise<void>>();
+  const imports = new Map<string, Promise<unknown>>();
   const slicer = createSlicer(6);
   const renderer = {
     compileAsync: async (object: Object3D) => {
@@ -192,6 +200,8 @@ function setup(
     build: async (id) => {
       log.push(`build ${id}`);
       await Promise.resolve();
+      const imported = imports.get(id);
+      if (imported) await boundedImport(imported);
       const gate = gates.get(id);
       if (gate) await gate;
       if (failing.has(id)) throw new Error(`no world for ${id}`);
@@ -234,6 +244,7 @@ function setup(
     chunkCounts,
     gates,
     readies,
+    imports,
     slicer,
     get loadRaster() {
       return state.loadRaster;
@@ -1509,6 +1520,48 @@ describe('a fetch that never lands (N1)', () => {
     expect(r.switcher.active?.id).toBe('starry-night');
     expect(r.switcher.diag().fallback).toBe(null);
     warn.mockRestore();
+  });
+
+  test('the world import bound is below the stall watchdog, so the import fails the build first', () => {
+    expect(WORLD_IMPORT_TIMEOUT_MS).toBeLessThan(STALL_TIMEOUT_S * 1000);
+  });
+
+  test('a module import that never settles fails the build before the watchdog, and the world can be entered at once (F3)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const r = setup();
+      // The chunk fetch never answers.
+      r.imports.set('starry-night', never());
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      r.switcher.go('starry-night', 'api');
+      const frame = async (): Promise<void> => {
+        r.switcher.frame(SLOW_MS);
+        r.switcher.endFrame(1, 0.5);
+        await vi.advanceTimersByTimeAsync(SLOW_MS);
+      };
+      for (let i = 0; i < 600 && r.switcher.busy; i++) await frame();
+      expect(r.switcher.busy).toBe(false);
+      // The plain build-failure path ran: a throw, not a stall give-up.
+      expect(warn).toHaveBeenCalledWith(
+        'portal: world starry-night failed to build',
+        expect.objectContaining({ message: expect.stringContaining('world import timed out') }),
+      );
+      expect(r.switcher.diag().frames.some((f) => f.task === 'stall')).toBe(false);
+      expect(waitS(r)).toBeLessThan(STALL_TIMEOUT_S);
+      expect(r.switcher.diag().fallback).toBe('gallery');
+      expect(r.switcher.active?.id).toBe(GALLERY_ID);
+      expect(r.worlds.has('starry-night')).toBe(false);
+      // No give-up refusal: the world can be entered again immediately.
+      r.imports.delete('starry-night');
+      expect(r.switcher.go('starry-night', 'api')).toBe(true);
+      vi.useRealTimers();
+      await run(r);
+      expect(r.switcher.active?.id).toBe('starry-night');
+      expect(r.switcher.diag().fallback).toBe(null);
+      warn.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('a stalled scan is evicted when the first leg gives up on it (F5)', async () => {
