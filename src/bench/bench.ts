@@ -217,6 +217,14 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     drawHud(performance.now());
   });
 
+  // Desktop stepping of N, as the left stick does in XR: [ lowers it, ] raises it.
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.code === 'BracketRight') setCount(stepCount(n, 1));
+    else if (event.code === 'BracketLeft') setCount(stepCount(n, -1));
+  };
+  window.addEventListener('keydown', onKeyDown);
+
   registerDiag('bench', snapshot);
   registerDiag('benchResults', () => results);
 
@@ -231,6 +239,7 @@ export function startBench(deps: BenchDeps, config?: BenchConfig): BenchHandle |
     dispose: () => {
       removeBefore();
       removeAfter();
+      window.removeEventListener('keydown', onKeyDown);
       unregisterDiag('bench');
       unregisterDiag('benchResults');
       field.dispose();

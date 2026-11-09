@@ -1,7 +1,6 @@
 export type GpuMode = 'metal' | 'swiftshader';
 
-// Parallel worktrees collide on the reserved port; override with E2E_PORT=NNNN make e2e.
-export const E2E_PORT = Number(process.env.E2E_PORT ?? 4253);
+export { E2E_PORT } from '../../scripts/ports';
 
 export const gpuMode: GpuMode = process.env.PW_GPU === 'swiftshader' ? 'swiftshader' : 'metal';
 

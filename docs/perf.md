@@ -21,6 +21,13 @@ Blend holds 375,000 at 80 Hz but only 325,000 was confirmed at 72 Hz, because 72
 
 One gap remains: blend at 72 Hz between 325,000 and 425,000.
 
+### Bench caveats
+
+- **Blend sort is static.** The blend draw order is sorted far to near once, when the field is built, and is not re-sorted as the viewer moves. It is exact only near the centre of the sphere, so a head that moves far off-centre sees increasingly out-of-order blending. The numbers above were taken with the head near the centre.
+- **`gpuMs` covers the whole frame.** The GPU timer query wraps the frame's render pass, so it includes the grid, ground, the HUD panel and the strokes. It is not the stroke cost alone. Quest Browser exposes no timer query anyway (OQ2 below), so the headset rows rest on frame intervals.
+- **Stroke size is in screen pixels.** The bench's 24 px is a screen-space size, so a stroke covers the same pixels at any distance. The world's strokes are sized in world units (`LAYER_SIZE`), so the bench's fill cost is not the world's. The bench keeps pixels.
+- **Slow frames.** Below about 4 fps the HUD redraw used to exclude every interval, which left the mean and p99 empty. `FrameStats.exclude` now ignores a call made within `count` frames of the last one, so a slow bench keeps about one interval in three instead of none.
+
 ### Raw results
 
 | Mode | N | Target Hz | Actual Hz | fps | Mean ms | p95 ms | p99 ms |

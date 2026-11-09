@@ -111,6 +111,30 @@ test('excluded intervals (HUD redraws) stay out of mean and p99 but count toward
   expect(stats.fps()).toBe(24);
 });
 
+test('with a HUD redraw every frame, exclude keeps about one interval in three instead of none', () => {
+  const stats = new FrameStats(100, 0);
+  const step = clock(stats);
+  const intervals = Array.from({ length: 30 }, (_, i) => 400 + i);
+  for (const ms of intervals) {
+    stats.exclude(2);
+    step(ms);
+  }
+  // The first two intervals precede any applied exclusion; after that each applied call drops the
+  // next two intervals, so intervals 4, 7, 10 ... are the ones measured.
+  const kept = intervals.filter((_, i) => i < 2 || (i >= 4 && (i - 4) % 3 === 0));
+  expect(kept.length).toBe(11);
+  expect(stats.meanMs()).toBeCloseTo(kept.reduce((a, b) => a + b, 0) / kept.length);
+  expect(stats.p99Ms()).toBe(Math.max(...kept));
+  // At a normal rate the exclusion still applies after many frames.
+  const fast = new FrameStats(100, 0);
+  const fastStep = clock(fast);
+  fastStep(10, 20);
+  fast.exclude(2);
+  fastStep(30, 2);
+  fastStep(10);
+  expect(fast.meanMs()).toBe(10);
+});
+
 test('settling holds until the window refills', () => {
   const stats = new FrameStats(4, 1);
   expect(stats.settling()).toBe(true);
@@ -443,6 +467,35 @@ test('startBench registers diag, and setCount disposes the old field before rebu
   expect(bench.snapshot()).toMatchObject({ n: 125000, chunks: 2, instances: 125000 });
   bench.setCount(-10);
   expect(bench.snapshot()).toMatchObject({ n: 0, chunks: 0, instances: 0 });
+});
+
+test('the [ and ] keys step N by one stick step, and ignore auto-repeat', () => {
+  const bench = startBench(fakeDeps(), {
+    n: 100000,
+    mode: 'a2c',
+    order: 'random',
+    sizePx: 24,
+    seed: 1,
+  });
+  if (!bench) throw new Error('bench did not start');
+  benches.push(bench);
+  const press = (code: string, repeat = false, init: KeyboardEventInit = {}): void => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { code, repeat, ...init }));
+  };
+  press('BracketRight');
+  expect(bench.snapshot().n).toBe(125000);
+  press('BracketRight', false, { ctrlKey: true });
+  press('BracketRight', false, { metaKey: true });
+  press('BracketLeft', false, { altKey: true });
+  expect(bench.snapshot().n).toBe(125000);
+  press('BracketRight', true);
+  expect(bench.snapshot().n).toBe(125000);
+  press('BracketLeft');
+  press('BracketLeft');
+  expect(bench.snapshot().n).toBe(75000);
+  bench.dispose();
+  press('BracketRight');
+  expect(bench.snapshot().n).toBe(75000);
 });
 
 test('toggleMode swaps a2c and blend, resets order to the mode default, and rebuilds', () => {

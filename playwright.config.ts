@@ -34,7 +34,8 @@ export default defineConfig({
     { name: 'timing', testMatch: TIMING_SPECS, workers: 1 },
   ],
   webServer: {
-    command: `bunx vite build --mode e2e && bunx vite preview --mode e2e --port ${E2E_PORT} --strictPort`,
+    command: 'make preview',
+    env: { E2E_PORT: String(E2E_PORT) },
     url: `http://localhost:${E2E_PORT}`,
     reuseExistingServer: false,
     timeout: 120_000,

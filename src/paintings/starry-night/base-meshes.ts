@@ -77,21 +77,49 @@ function baseColor(geometry: BufferGeometry, histogram: CanvasHistogram): Color 
   return new Color().setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, SRGBColorSpace);
 }
 
+/** Surfaces `tintedUnderpaint` has already warned about, so it warns once per surface. */
+const warnedUntinted = new WeakSet<BufferGeometry>();
+
+/** Why a `userData.tint` geometry cannot be tinted, or null when it can. */
+function untintedReason(geometry: BufferGeometry): string | null {
+  const tags = geometry.userData.tint as TintTags | undefined;
+  if (!(tags?.owner instanceof Uint16Array && tags.role instanceof Uint8Array)) {
+    return 'its userData.tint is not a Uint16Array owner and Uint8Array role per triangle';
+  }
+  if (geometry.index) return 'it is indexed';
+  const triangles = geometry.getAttribute('position').count / 3;
+  if (tags.owner.length !== triangles || tags.role.length !== triangles) {
+    return `its tags cover ${tags.owner.length} owners and ${tags.role.length} roles for ${triangles} triangles`;
+  }
+  return null;
+}
+
 /**
  * A tinted village mesh with a per-vertex under-paint colour: each triangle its owner's tint for its
  * role, picked as the scatter picks it (`tintSeed` with the scatter seed and the layer's
- * WORLD_LAYERS index), times TINT_UNDERPAINT_SHADE. The position attribute is shared, not copied.
- * Null for an untagged or indexed geometry.
+ * WORLD_LAYERS index), times TINT_UNDERPAINT_SHADE. It owns its attributes: the position is a
+ * copy (a few KB: the walls are the only tinted surface without a soffit), so disposing it
+ * never releases a buffer of the surface it came from. Null, with one console warning per
+ * `surface`, for a geometry `untintedReason` rejects; the mesh then takes the region mean.
  */
 function tintedUnderpaint(
+  surface: BufferGeometry,
   geometry: BufferGeometry,
   bands: TintBands,
   seed: number,
 ): BufferGeometry | null {
-  const tags = geometry.userData.tint as TintTags | undefined;
-  if (!(tags?.owner instanceof Uint16Array && tags.role instanceof Uint8Array)) return null;
-  if (geometry.index) return null;
-  const position = geometry.getAttribute('position');
+  const reason = untintedReason(geometry);
+  if (reason) {
+    if (!warnedUntinted.has(surface)) {
+      warnedUntinted.add(surface);
+      console.warn(
+        `base-meshes: ${String(geometry.userData.layer)} under-paints in the region mean, not its house tints: ${reason}`,
+      );
+    }
+    return null;
+  }
+  const tags = geometry.userData.tint as TintTags;
+  const position = geometry.getAttribute('position').clone();
   const layer = WORLD_LAYERS.indexOf(geometry.userData.layer as WorldLayer);
   const colors = new Float32Array(position.count * 3);
   const picked = new Map<number, Color>();
@@ -186,7 +214,7 @@ export function* createBaseMeshesSteps(
     let tinted: BufferGeometry | null = null;
     if (paint === 'underpaint' && seed !== undefined && geometry.userData.tint) {
       bands ??= splitTintBands(histogram);
-      tinted = tintedUnderpaint(geometry, bands, seed);
+      tinted = tintedUnderpaint(surface, geometry, bands, seed);
     }
     const material = new MeshBasicMaterial({
       color: tinted
@@ -209,7 +237,11 @@ export function* createBaseMeshesSteps(
   return group;
 }
 
-/** Releases the meshes' materials and geometries and detaches the group. */
+/**
+ * Releases the meshes' materials and geometries and detaches the group. An untinted mesh draws its
+ * world surface (or the surface merged with its soffit) itself, so this releases that surface's GPU
+ * buffers; nothing else draws a surface. A tinted mesh's geometry owns all its attributes.
+ */
 export function disposeBaseMeshes(group: Group): void {
   group.removeFromParent();
   for (const child of group.children) {

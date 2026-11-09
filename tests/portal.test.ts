@@ -194,6 +194,26 @@ test('the slicer spends at most its budget per frame, in queue order', async () 
   expect(slicer.stats.longestStepByLabel).toEqual({});
 });
 
+test("a frame's own budget replaces the slicer's for that frame only", () => {
+  let clock = 0;
+  const slicer = createSlicer(3, () => clock);
+  const log: number[] = [];
+  function* slow(): Steps<void> {
+    for (let i = 0; i < 9; i++) {
+      clock += 1;
+      log.push(i);
+      yield;
+    }
+  }
+  void slicer.run(slow());
+  slicer.frame(1);
+  expect(log).toEqual([0]);
+  slicer.frame();
+  expect(log).toEqual([0, 1, 2, 3]);
+  slicer.frame(5);
+  expect(log).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
 test('nextFrame resolves at the next frame call', async () => {
   const slicer = createSlicer(5);
   let woke = false;

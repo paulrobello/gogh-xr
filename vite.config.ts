@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import { versionManifestPlugin } from './scripts/build-version.ts';
+import { DEV_PORT, E2E_PORT } from './scripts/ports.ts';
 
 const { version } = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
@@ -33,12 +34,12 @@ function buildSha(mode: string): string {
 export default defineConfig(({ mode }) => ({
   define: { __BUILD_SHA__: JSON.stringify(buildSha(mode)) },
   plugins: [versionManifestPlugin(version, fileURLToPath(new URL('./public', import.meta.url)))],
-  server: { host: '0.0.0.0', port: 4252, strictPort: true },
-  preview: { host: '0.0.0.0', port: 4253, strictPort: true },
+  server: { host: '0.0.0.0', port: DEV_PORT, strictPort: true },
+  preview: { host: '0.0.0.0', port: E2E_PORT, strictPort: true },
   build: {
     target: 'es2023',
-    sourcemap: true,
-    chunkSizeWarningLimit: 1000,
+    // The e2e build keeps linked maps for debugging; production maps are emitted but unreferenced.
+    sourcemap: mode === 'e2e' ? true : 'hidden',
     outDir: mode === 'e2e' ? 'dist-e2e' : 'dist',
   },
 }));

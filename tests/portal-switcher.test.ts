@@ -1,15 +1,18 @@
 /**
  * The switcher's own state machine (P5.5 review F11, F2, F3): the fly and fade paths end to end,
- * dispose before build, no trigger consumed or repeated while busy, nothing left running when idle,
- * and the failure paths, against fake worlds and a fake renderer.
+ * the next world built from the trigger behind the old one, which is disposed when `out` ends, no
+ * trigger consumed or repeated while busy, nothing left running when idle, the reveal's time
+ * budget, and the failure paths, against fake worlds and a fake renderer.
  */
 import {
+  Color,
   DataTexture,
   Euler,
   Group,
   Mesh,
   MeshBasicMaterial,
   NoBlending,
+  type Object3D,
   PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
@@ -28,7 +31,14 @@ import {
   createSwitcher,
   GALLERY_ID,
   type LiveWorld,
-  REVEAL_STROKES_PER_FRAME,
+  nextRevealQuota,
+  OUT_BUILD_BUDGET_MS,
+  REVEAL_BUDGET_MS,
+  REVEAL_GROWTH,
+  REVEAL_MAX_STROKES,
+  REVEAL_MIN_STROKES,
+  REVEAL_START_STROKES,
+  revealCost,
   revealEnd,
   STALL_TIMEOUT_S,
 } from '../src/portal/switcher.ts';
@@ -42,6 +52,10 @@ function must<T>(value: T | undefined | null): T {
   if (value === undefined || value === null) throw new Error('missing');
   return value;
 }
+
+const BACKGROUNDS: Record<string, number> = { [GALLERY_ID]: 0x202020, 'starry-night': 0x102040 };
+/** A fake world's own background: a fresh colour each build, as a module makes one. */
+const backgroundOf = (id: string): Color => new Color(BACKGROUNDS[id] ?? 0x777777);
 
 interface FakeWorld extends LiveWorld {
   readonly root: Group;
@@ -62,6 +76,9 @@ function fakeWorld(
   const root = new Group();
   const map = new DataTexture(new Uint8Array(4), 1, 1);
   root.add(new Mesh(new PlaneGeometry(), new MeshBasicMaterial({ map })));
+  // As a world module does: its own background in `build`, the one it found back in `dispose`.
+  const found = scene.background;
+  scene.background = backgroundOf(id);
   scene.add(root);
   const reveals: number[] = [];
   const batch = {
@@ -82,6 +99,7 @@ function fakeWorld(
         log.push(`dispose ${id}`);
         world.disposed = true;
         root.removeFromParent();
+        scene.background = found;
       },
       spawnPose: () => pose,
       painterSpot: () => pose,
@@ -111,6 +129,8 @@ interface Rig {
   readonly uploads: Texture[];
   readonly spawns: WorldPose[];
   readonly calls: { suppress: number; bare: number; compile: number };
+  /** Every object `compileAsync` was handed, in order. */
+  readonly compiled: Object3D[];
   /** Ids whose build throws. */
   readonly failing: Set<string>;
   /** Per id, the stroke counts of the built world's batch chunks. */
@@ -144,14 +164,16 @@ function setup(
   const uploads: Texture[] = [];
   const spawns: WorldPose[] = [];
   const calls = { suppress: 0, bare: 0, compile: 0 };
+  const compiled: Object3D[] = [];
   const failing = new Set<string>();
   const chunkCounts = new Map<string, readonly number[]>();
   const gates = new Map<string, Promise<void>>();
   const readies = new Map<string, Promise<void>>();
   const slicer = createSlicer(6);
   const renderer = {
-    compileAsync: async () => {
+    compileAsync: async (object: Object3D) => {
       calls.compile += 1;
+      compiled.push(object);
     },
     initTexture: (texture: Texture) => uploads.push(texture),
     xr: { isPresenting: options.presenting === true },
@@ -207,6 +229,7 @@ function setup(
     uploads,
     spawns,
     calls,
+    compiled,
     failing,
     chunkCounts,
     gates,
@@ -243,6 +266,12 @@ async function run(r: Rig, maxFrames = 600): Promise<number> {
   throw new Error('the transition never ended');
 }
 
+/**
+ * 60 chunks larger than any quota grows to in 40 doublings from 8192, so every reveal frame takes
+ * one whatever the quota logic does: the wait outlasts a scan landing at frame 50.
+ */
+const LONG_REVEAL: readonly number[] = Array(60).fill(Number.MAX_SAFE_INTEGER);
+
 const starryPortal = portalOf(must(HANGINGS.find((h) => h.painting.id === 'starry-night')));
 const standing = (pose: WorldPose): [number, number, number] => [
   pose.position[0],
@@ -265,19 +294,25 @@ describe('createSwitcher', () => {
     expect(r.loadRaster).toHaveBeenCalledTimes(1);
   });
 
-  test('fly: disposes the old world before building the new one, which stays hidden until ready', async () => {
+  test('fly: builds the new world from the trigger behind the old one, hidden, and moves the rig only once the old one is disposed', async () => {
     const r = setup();
     const gallery = must(r.worlds.get(GALLERY_ID));
     expect(r.switcher.go('starry-night', 'api')).toBe(true);
     expect(r.switcher.busy).toBe(true);
     expect(r.rig.children.some((c) => c.name === 'portal-fly')).toBe(true);
+    // The build starts at the trigger, while the gallery still shows.
+    expect(r.log).toEqual(['unbind', 'build starry-night']);
     let hiddenWhileWaiting = false;
+    let hiddenBehindGallery = false;
+    let spawnedBeforeDispose = false;
     let shown = false;
     for (let i = 0; i < 600 && r.switcher.busy; i++) {
       r.switcher.frame(FRAME_MS);
       r.switcher.endFrame(1, 0.5);
       await new Promise((resolve) => setTimeout(resolve, 0));
       const next = r.worlds.get('starry-night');
+      if (next && !gallery.disposed && !next.root.visible) hiddenBehindGallery = true;
+      if (r.spawns.length > 0 && !gallery.disposed) spawnedBeforeDispose = true;
       if (next && r.uploads.length === 0 && !next.root.visible) hiddenWhileWaiting = true;
       if (next?.root.visible) shown = true;
     }
@@ -285,11 +320,14 @@ describe('createSwitcher', () => {
     // `go` unbinds at the trigger and again before the dispose at the end of `out`.
     expect(r.log).toEqual([
       'unbind',
+      'build starry-night',
       'unbind',
       'dispose gallery',
-      'build starry-night',
       'bind starry-night',
     ]);
+    expect(hiddenBehindGallery).toBe(true);
+    expect(spawnedBeforeDispose).toBe(false);
+    expect(r.spawns.length).toBe(1);
     expect(gallery.disposed).toBe(true);
     const world = must(r.worlds.get('starry-night'));
     expect(hiddenWhileWaiting).toBe(true);
@@ -314,16 +352,286 @@ describe('createSwitcher', () => {
     expect(r.calls.suppress).toBe(2);
   });
 
-  test('the reveal takes whole chunks up to the stroke budget a frame, then binds (revealEnd)', async () => {
+  test('the reveal takes whole chunks up to its quota a frame, then binds (revealEnd)', async () => {
     const r = setup();
-    // 3000 + 3000 + 2000 fit 8192; the 40k chunk goes alone; the last chunk ends the reveal.
+    // 3000 + 3000 + 2000 fit the first 8192; the 40k chunk goes alone; the last chunk ends it.
     r.chunkCounts.set('starry-night', [3000, 3000, 2000, 40_000, 100]);
-    expect(REVEAL_STROKES_PER_FRAME).toBe(8192);
+    expect(REVEAL_START_STROKES).toBe(8192);
     expect(r.switcher.go('starry-night', 'api')).toBe(true);
     await run(r);
     const world = must(r.worlds.get('starry-night'));
     expect(world.reveals).toEqual([0, 3, 4, 5, Number.POSITIVE_INFINITY]);
     expect(r.switcher.active?.id).toBe('starry-night');
+  });
+
+  interface RenderModel {
+    /** A frame's render during `out`, and during every other phase, ms. */
+    readonly outMs?: number;
+    readonly baseMs?: number;
+    /** Per stroke a reveal frame shows for the first time, ms. */
+    readonly perNewMs?: number;
+    /** Per revealed stroke drawn, every frame from its reveal on, ms. */
+    readonly perSteadyMs?: number;
+    /** A one-off extra render on reveal frame `k`, ms. */
+    readonly extraMs?: (k: number) => number;
+    /** The interval of the frame after reveal frame `k`, ms. */
+    readonly interval?: (k: number) => number;
+  }
+
+  /** Runs a transition under `model`'s render costs. Returns each reveal frame's strokes. */
+  async function revealRun(
+    r: Rig,
+    counts: readonly number[],
+    model: RenderModel = {},
+  ): Promise<number[]> {
+    const { outMs = 2, baseMs = 0.5, perNewMs = 0, perSteadyMs = 0 } = model;
+    const interval = model.interval ?? (() => FRAME_MS);
+    const extraMs = model.extraMs ?? (() => 0);
+    r.chunkCounts.set('starry-night', counts);
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    const sizes: number[] = [];
+    let seen = 0;
+    let shown = 0;
+    let dt = FRAME_MS;
+    for (let i = 0; i < 600 && r.switcher.busy; i++) {
+      r.switcher.frame(dt);
+      const phase = r.switcher.diag().phase;
+      const world = r.worlds.get('starry-night');
+      const last = world?.reveals.at(-1) ?? 0;
+      let strokes = 0;
+      if (world && world.reveals.length > seen && Number.isFinite(last) && last > 0) {
+        const from = world.reveals.length >= 2 ? (world.reveals.at(-2) ?? 0) : 0;
+        for (let k = from; k < last; k++) strokes += counts[k];
+        sizes.push(strokes);
+      }
+      seen = world?.reveals.length ?? 0;
+      shown += strokes;
+      const base = phase === 'out' ? outMs : baseMs;
+      const extra = strokes > 0 ? extraMs(sizes.length - 1) : 0;
+      r.switcher.endFrame(1, base + extra + perNewMs * strokes + perSteadyMs * shown);
+      dt = strokes > 0 ? interval(sizes.length - 1) : FRAME_MS;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(r.switcher.busy).toBe(false);
+    return sizes;
+  }
+
+  /** The reveal frames the old fixed 8192-stroke quota takes over chunks of `size` strokes. */
+  const fixedFrames = (total: number, size: number): number =>
+    Math.ceil(total / (Math.floor(REVEAL_START_STROKES / size) * size));
+
+  test('on a fast machine the quota doubles a frame up to REVEAL_MAX_STROKES (F2)', async () => {
+    const r = setup();
+    const sizes = await revealRun(r, Array(100).fill(4000));
+    // 8192, then ×2 a frame: 2, 4, 8, 16 chunks, then 16 a frame to the 6 left.
+    expect(sizes).toEqual([8000, 16_000, 32_000, 64_000, 64_000, 64_000, 64_000, 64_000, 24_000]);
+    for (const size of sizes) expect(size).toBeLessThanOrEqual(REVEAL_MAX_STROKES);
+  });
+
+  test('between the floor and the cap, each reveal frame aims at the budget', async () => {
+    const r = setup();
+    // 0.2 µs a new stroke: the budget fits 20,000. The `out` frames render dearer than the wait,
+    // so the price is only right against the frame before the reveal.
+    const perNewMs = 0.0002;
+    const sizes = await revealRun(r, Array(160).fill(1000), { perNewMs });
+    expect(sizes).toEqual([8000, 16_000, ...Array(6).fill(20_000), 16_000]);
+    for (const size of sizes) {
+      expect(size * perNewMs).toBeLessThanOrEqual(REVEAL_BUDGET_MS + 1e-9);
+    }
+  });
+
+  test('on a slow machine the quota holds at the old fixed 8192, never below', async () => {
+    const r = setup();
+    // 1 µs a new stroke: the budget fits only 4000, but the floor is the shipped quota.
+    expect(REVEAL_MIN_STROKES).toBe(REVEAL_START_STROKES);
+    const sizes = await revealRun(r, Array(160).fill(250), { perNewMs: 0.001 });
+    expect(sizes).toEqual(Array(5).fill(8000));
+  });
+
+  test('drawing what is already revealed is not charged to each new reveal (F3)', async () => {
+    const r = setup();
+    // Each revealed stroke keeps costing half its first frame's price. Charged to each reveal,
+    // the quota would slide to the floor as the world fills in.
+    const sizes = await revealRun(r, Array(400).fill(1000), {
+      perNewMs: 0.0001,
+      perSteadyMs: 0.00005,
+    });
+    expect(sizes.length).toBeLessThanOrEqual(20);
+    expect(sizes.length).toBeLessThan(fixedFrames(400_000, 1000));
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(400_000);
+  });
+
+  test('one slow first reveal frame stops pricing the reveal once a cheaper one follows (N1)', async () => {
+    const r = setup();
+    // A one-off 30 ms on the first reveal frame (a GC pause, a deferred driver compile), then
+    // free renders: priced at that frame for good, the quota would sit at its floor throughout.
+    const sizes = await revealRun(r, Array(100).fill(4000), { extraMs: (k) => (k === 0 ? 30 : 0) });
+    expect(sizes.slice(0, 2)).toEqual([8000, 8000]);
+    expect(Math.max(...sizes)).toBe(64_000);
+    expect(sizes.length).toBeLessThanOrEqual(fixedFrames(400_000, 4000));
+    expect(sizes.length).toBeLessThanOrEqual(12);
+  });
+
+  test('a long interval after a reveal frame caps the rest at half its quota (F1)', async () => {
+    const r = setup();
+    // Free renders, but the second reveal frame's follower takes three frames.
+    const sizes = await revealRun(r, Array(64).fill(1000), {
+      interval: (k) => (k === 1 ? 3 * FRAME_MS : FRAME_MS),
+    });
+    expect(sizes.slice(0, 2)).toEqual([8000, 16_000]);
+    for (const size of sizes.slice(2)) expect(size).toBeLessThanOrEqual(8192);
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(64_000);
+  });
+
+  test('a steady overrun from the third reveal frame on never takes the quota below 8192 (N2)', async () => {
+    const r = setup();
+    // Every interval from the third reveal frame's follower on is two frames long, as when the
+    // revealed world's own draw overruns. Each one halves the ceiling, down to the floor.
+    const sizes = await revealRun(r, Array(160).fill(1000), {
+      interval: (k) => (k >= 2 ? 2 * FRAME_MS : FRAME_MS),
+    });
+    expect(sizes.slice(0, 3)).toEqual([8000, 16_000, 32_000]);
+    for (const size of sizes.slice(0, -1)) expect(size).toBeGreaterThanOrEqual(8000);
+    expect(sizes.length).toBeLessThanOrEqual(fixedFrames(160_000, 1000));
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(160_000);
+  });
+
+  test('every transition starts the reveal afresh: quota, cap and price (F4)', async () => {
+    const r = setup();
+    const a = await revealRun(r, Array(100).fill(4000), { baseMs: 0.1 });
+    expect(Math.max(...a)).toBe(64_000);
+    expect(r.switcher.go(GALLERY_ID, 'api')).toBe(true);
+    await run(r);
+    // 0.2 µs a new stroke, with a long follower after its third reveal frame: a price and a cap
+    // of its own. Priced at the first trip's free strokes it would grow past 20,000.
+    const b = await revealRun(r, Array(160).fill(1000), {
+      perNewMs: 0.0002,
+      interval: (k) => (k === 2 ? 3 * FRAME_MS : FRAME_MS),
+    });
+    expect(b).toEqual([8000, 16_000, 20_000, ...Array(11).fill(10_000), 6000]);
+    expect(r.switcher.go(GALLERY_ID, 'api')).toBe(true);
+    await run(r);
+    const c = await revealRun(r, Array(100).fill(4000));
+    expect(c[0]).toBe(8000);
+    expect(Math.max(...c)).toBe(64_000);
+  });
+
+  test('a scan that lands after the spawn is placed against the rig at the trigger (F6)', async () => {
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const r = setup({
+      loadRaster: vi.fn(async () => {
+        await held;
+        return raster();
+      }),
+      // The spawn moves the rig 20 m along +X, into the next world.
+      onSpawn: (camera) => camera.parent?.position.set(20, 0, 0),
+    });
+    r.chunkCounts.set('starry-night', LONG_REVEAL);
+    r.switcher.go('starry-night', 'api');
+    const shots = await record(r, 'portal-fly', FRAME_MS, {
+      open: () => release(),
+      holdFrames: 50,
+    });
+    expect(r.spawns.length).toBe(1);
+    const wait = shots.filter((s) => s.visible && s.phase === 'wait');
+    expect(wait.length).toBeGreaterThan(5);
+    const at = wait[2].position;
+    let x = 0;
+    let z = 0;
+    for (let k = 0; k < at.length; k += 3) {
+      x += at[k];
+      z += at[k + 2];
+    }
+    x /= at.length / 3;
+    z /= at.length / 3;
+    // Ahead of the viewer, toward the frame on the north wall. Placed against the spawned rig,
+    // the frame's points would sit 20 m along -X and the field would hover off to the left.
+    expect(starryPortal.centre[0]).toBeCloseTo(0);
+    expect(z).toBeLessThan(0);
+    expect(Math.abs(x)).toBeLessThan(0.5 * Math.abs(z));
+  });
+
+  test('a scan that lands after a desktop spawn reset the look is turned with it (F6)', async () => {
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const r = setup({
+      loadRaster: vi.fn(async () => {
+        await held;
+        return raster();
+      }),
+      onSpawn: (camera) => camera.quaternion.identity(),
+    });
+    // Looking left and down at the trigger; the spawn faces the view straight ahead again.
+    const look = new Quaternion().setFromEuler(new Euler(-0.4, 0.6, 0, 'YXZ'));
+    r.camera.quaternion.copy(look);
+    r.camera.position.set(0, 1.6, 0);
+    r.chunkCounts.set('starry-night', LONG_REVEAL);
+    r.switcher.go('starry-night', 'api');
+    const shots = await record(r, 'portal-fly', FRAME_MS, {
+      open: () => release(),
+      holdFrames: 50,
+    });
+    const wait = shots.filter((s) => s.visible && s.phase === 'wait');
+    expect(wait.length).toBeGreaterThan(5);
+    const at = wait[2].position;
+    const mean = new Vector3();
+    for (let k = 0; k < at.length; k += 3) mean.x += at[k];
+    for (let k = 1; k < at.length; k += 3) mean.y += at[k] - 1.6;
+    for (let k = 2; k < at.length; k += 3) mean.z += at[k];
+    mean.normalize();
+    // The camera now has no rotation, so the rig frame is its frame. The field sits where the
+    // frame stood in the view at the trigger, not straight ahead, where it would sit uncarried.
+    const frame = new Vector3(...starryPortal.centre)
+      .sub(new Vector3(0, 1.6, 0))
+      .normalize()
+      .applyQuaternion(look.clone().invert());
+    expect(mean.angleTo(frame)).toBeLessThan(0.25);
+  });
+
+  test('compiles only the new world, never the scene or the old world (F7)', async () => {
+    const r = setup();
+    const gallery = must(r.worlds.get(GALLERY_ID));
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    await run(r);
+    const world = must(r.worlds.get('starry-night'));
+    expect(r.compiled).toContain(world.root);
+    expect(r.compiled).not.toContain(r.scene);
+    expect(r.compiled).not.toContain(gallery.root);
+  });
+
+  test('an old world whose dispose throws still lets the transition end (F8)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = setup();
+    const gallery = must(r.worlds.get(GALLERY_ID));
+    Object.assign(gallery.module, {
+      dispose: () => {
+        throw new Error('dispose failed');
+      },
+    });
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    await run(r);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    expect(r.spawns.length).toBe(1);
+    expect(warn).toHaveBeenCalledWith('portal: world gallery failed to dispose', expect.any(Error));
+    warn.mockRestore();
+  });
+
+  test('the slicer runs at OUT_BUILD_BUDGET_MS during `out`, at its own budget otherwise', async () => {
+    const r = setup();
+    expect(r.switcher.slicerBudgetMs()).toBeUndefined();
+    let land = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (land = resolve)));
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    r.switcher.frame(FRAME_MS);
+    expect(r.switcher.diag().phase).toBe('out');
+    expect(r.switcher.slicerBudgetMs()).toBe(OUT_BUILD_BUDGET_MS);
+    for (let i = 0; i < 60; i++) r.switcher.frame(FRAME_MS);
+    expect(r.switcher.diag().phase).toBe('wait');
+    expect(r.switcher.slicerBudgetMs()).toBeUndefined();
+    land();
+    await run(r);
+    expect(r.switcher.slicerBudgetMs()).toBeUndefined();
   });
 
   test('fade (calm below 0.3): no fly strokes, and the same order in about 0.6 s', async () => {
@@ -335,9 +643,9 @@ describe('createSwitcher', () => {
     const frames = await run(r);
     expect(r.log).toEqual([
       'unbind',
+      'build starry-night',
       'unbind',
       'dispose gallery',
-      'build starry-night',
       'bind starry-night',
     ]);
     // 0.3 s out and 0.3 s in, plus the wait's few frames for the build, upload and show.
@@ -346,6 +654,72 @@ describe('createSwitcher', () => {
     // The gallery's prefetch is the only load: the fade needs no scan.
     expect(r.loadRaster).toHaveBeenCalledTimes(1);
     expect(r.rig.children.some((c) => c.name === 'portal-fly')).toBe(false);
+  });
+
+  test('a world that lands behind the old one keeps the old background until its dispose', async () => {
+    const r = setup();
+    const gallery = backgroundOf(GALLERY_ID);
+    const starry = backgroundOf('starry-night');
+    expect(r.scene.background).toEqual(gallery);
+    /** Runs a transition, checking each frame's background against the world that shows. */
+    const trip = async (to: string, from: Color, next: Color): Promise<boolean> => {
+      expect(r.switcher.go(to, 'api')).toBe(true);
+      let landedEarly = false;
+      for (let i = 0; i < 600 && r.switcher.busy; i++) {
+        const phase = r.switcher.diag().phase;
+        r.switcher.frame(FRAME_MS);
+        r.switcher.endFrame(1, 0.5);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const built = r.worlds.get(to);
+        const outStill = r.switcher.diag().phase === 'out' || phase === null;
+        if (outStill && built && !built.disposed) {
+          landedEarly = true;
+          expect(r.scene.background).toEqual(from);
+        }
+        if (r.switcher.diag().phase === 'in') expect(r.scene.background).toEqual(next);
+      }
+      expect(r.switcher.busy).toBe(false);
+      expect(r.scene.background).toEqual(next);
+      return landedEarly;
+    };
+    expect(await trip('starry-night', gallery, starry)).toBe(true);
+    expect(await trip(GALLERY_ID, starry, gallery)).toBe(true);
+    expect(await trip('starry-night', gallery, starry)).toBe(true);
+    // Every world gone: the background under all of them, as before the first build.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.failing.add(GALLERY_ID);
+    expect(r.switcher.go(GALLERY_ID, 'api')).toBe(true);
+    await run(r);
+    expect(r.switcher.diag().fallback).toBe('bare');
+    expect(r.scene.background).toBe(null);
+    warn.mockRestore();
+  });
+
+  test('a world that fails after landing behind the old one leaves the backgrounds right', async () => {
+    const r = setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Starry lands at once and its `ready` rejects during `out`: the gallery is rebuilt after.
+    r.readies.set('starry-night', Promise.reject(new Error('plaques')));
+    r.readies.get('starry-night')?.catch(() => {});
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    for (let i = 0; i < 600 && r.switcher.busy; i++) {
+      r.switcher.frame(FRAME_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (r.switcher.diag().phase === 'out') {
+        expect(r.scene.background).toEqual(backgroundOf(GALLERY_ID));
+      }
+    }
+    expect(r.switcher.diag().fallback).toBe('gallery');
+    expect(r.scene.background).toEqual(backgroundOf(GALLERY_ID));
+    // The rebuilt gallery found the base, so leaving it to the bare scene restores the base.
+    r.failing.add('starry-night');
+    r.failing.add(GALLERY_ID);
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    await run(r);
+    expect(r.switcher.diag().fallback).toBe('bare');
+    expect(r.scene.background).toBe(null);
+    warn.mockRestore();
   });
 
   test('a trigger during a transition is refused and the detector does not fire', async () => {
@@ -460,11 +834,12 @@ describe('createSwitcher', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     r.switcher.go('starry-night', 'api');
     await run(r);
+    // The gallery is rebuilt only once the old one is disposed: a world is a module singleton.
     expect(r.log).toEqual([
       'unbind',
+      'build starry-night',
       'unbind',
       'dispose gallery',
-      'build starry-night',
       'build gallery',
       'bind gallery',
     ]);
@@ -1224,8 +1599,8 @@ describe('a fetch that never lands (N1)', () => {
 describe('revealEnd', () => {
   const chunks = (...counts: number[]) => counts.map((count) => ({ count }));
 
-  test('reveals whole chunks up to the stroke budget a frame', () => {
-    const budget = REVEAL_STROKES_PER_FRAME;
+  test('reveals whole chunks up to the stroke quota a frame', () => {
+    const budget = REVEAL_START_STROKES;
     const list = chunks(3000, 3000, 2000, 500, 5000);
     expect(revealEnd(list, 0)).toBe(3);
     expect(revealEnd(list, 3)).toBe(5);
@@ -1237,5 +1612,57 @@ describe('revealEnd', () => {
     expect(revealEnd(list, 0)).toBe(1);
     expect(revealEnd(list, 1)).toBe(2);
     expect(revealEnd(list, 2)).toBe(3);
+  });
+
+  test('takes a quota of its own', () => {
+    const list = chunks(1000, 1000, 1000, 1000);
+    expect(revealEnd(list, 0, 2500)).toBe(2);
+    expect(revealEnd(list, 0, 100_000)).toBe(4);
+    expect(revealEnd(list, 1, 10)).toBe(2);
+  });
+});
+
+describe('nextRevealQuota', () => {
+  test('grows by at most REVEAL_GROWTH when a reveal frame costs nothing', () => {
+    expect(nextRevealQuota(8192, 8000, 0)).toBe(8192 * REVEAL_GROWTH);
+    expect(nextRevealQuota(8192, 8000, -0.1)).toBe(8192 * REVEAL_GROWTH);
+  });
+
+  test('aims at the budget from the measured cost per stroke', () => {
+    // 8000 strokes in 2 ms: 16k fit 4 ms, the growth cap.
+    expect(nextRevealQuota(8192, 8000, 2)).toBe(16_000);
+    // 32,000 strokes in 6 ms: 21,333 fit 4 ms.
+    expect(nextRevealQuota(32_768, 32_000, 6)).toBe(21_333);
+  });
+
+  test('falls by at most half a frame, and never below REVEAL_MIN_STROKES', () => {
+    expect(nextRevealQuota(32_768, 32_000, 100)).toBe(16_384);
+    expect(nextRevealQuota(8192, 8000, 100)).toBe(REVEAL_MIN_STROKES);
+    expect(REVEAL_MIN_STROKES).toBe(8192);
+  });
+
+  test('prices a chunk over the quota by its own strokes', () => {
+    // A 40k sector alone in 4 ms is right on budget: 40k fit, capped at ×2.
+    expect(nextRevealQuota(8192, 40_000, 4)).toBe(8192 * REVEAL_GROWTH);
+  });
+
+  test('never passes the ceiling, REVEAL_MAX_STROKES by default', () => {
+    expect(nextRevealQuota(65_536, 64_000, 0)).toBe(REVEAL_MAX_STROKES);
+    expect(nextRevealQuota(8192, 8000, 0, 12_000)).toBe(12_000);
+    // A ceiling below the floor still leaves the floor.
+    expect(nextRevealQuota(8192, 8000, 0, 10)).toBe(REVEAL_MIN_STROKES);
+  });
+});
+
+describe('revealCost', () => {
+  test('charges the new strokes their difference over the frame before', () => {
+    // The frame before drew everything else at 3 ms.
+    expect(revealCost(8000, 5, 3, 0)).toBe(2);
+  });
+
+  test('never prices the new strokes below their first-frame price per stroke', () => {
+    // The frame before cost the same: the steady difference is 0, the first price is 1 µs.
+    expect(revealCost(4000, 4.5, 4.5, 0.001)).toBeCloseTo(4);
+    expect(revealCost(4000, 4, 6, 0.0005)).toBeCloseTo(2);
   });
 });

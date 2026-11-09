@@ -812,6 +812,67 @@ The light-to-dark measure is the gap colour the fix changes, so it shows the gap
 
 ![Church front at 7 m and house 6 at 3 m, before and after, light-to-dark pixels in red](shots/building-zfight.png)
 
+### Residuals re-measured (2026-11-09, on 5171098, card 01a1b4447146)
+
+The two residuals above, the h6-face-3m wall flips and the church front's density step, were measured again on 5171098, which draws strokes without depth writes by default (Nowrite stroke policy, below).
+
+Method:
+
+- The 2026-11-06 scratch probes survived in another worktree and produced these tables, with the id patch changed to keep the colour's alpha byte (the cypress flame). The harness is now committed as two scripts:
+  - `scripts/zfight-id-patch.ts` patches a copy of the tree. It exposes the stroke batch so a probe can set band densities, and with `id` it colours each stroke by its class and index.
+  - `scripts/zfight-density-probe.ts` runs `flips` for the id flips, `density` for captures at near density 1 and 0.9, and `classify` for the light-to-dark tables. Their headers give the usage.
+  - Rerun on 5171098, `flips` reads wall 0.203 and clustered 0 at h6-face-3m. `classify` over the original captures reproduces both church rows below. Builds before 5171098 need the same patch on their own scatter source.
+  - Only the scatter's surface and outline strokes get ids. The moon and stars, the boundary haze and the halos keep their paint, and the eave underside copies carry a scaled roof id. Their pixels read `rim` or alias into a nearby class, so the small class counts below (cypress, sky) are approximate. The base count comes from the magenta test, not from R, and neither conclusion rests on the class split.
+- Each build is a production build served by `vite preview`, captured in headless Chromium on ANGLE Metal (Apple M4 Max) at 1280 × 1014, seed 1, `?nogov&nocache&noanim`.
+- The report's pose generator gives the same 16 poses on 5171098. h6-face-3m is eye (-2.989, -3.503, -9.82), yaw 0.0789, pitch 0.1541. church-face-7m is eye (2.374, -2.733, -28.727), yaw 0, pitch 0.1815. Both are now in `scripts/zfight-probe.ts`.
+- The harness reproduces the report: the a649d39 id build reads wall 0.329 and the 6dbfc09 one 0.255 at h6-face-3m, to the digit.
+- Load: the 5171098 id, density and `zfight-probe.ts` runs ran at a 1-minute load of 11 to 14. Load from other sessions kept the rest at 26 to 72: 6dbfc09 at 44, 240f498 at 27, 09ace7f at 50 to 72, and the two coverage density captures at 30 to 38. Repeat runs and the two calibration builds read the same to the last digit at every load, so load did not move these pixel counts.
+
+#### h6-face-3m wall flips: gone in the default, removed by 09ace7f
+
+Id flips under a 0.1 mm x shift, % of the frame. Clustered means at least 4 of the 8 neighbours flipped too, which is how a depth fight shows: it flips patches.
+
+| Build | All | Clustered | Wall | Clustered wall |
+| --- | --- | --- | --- | --- |
+| 6dbfc09 | 0.444 | 0.101 | 0.255 | 0.054 |
+| a649d39 | 0.521 | 0.182 | 0.329 | 0.123 |
+| 240f498, the last depth-writing default | 0.514 | 0.177 | 0.329 | 0.123 |
+| 09ace7f, nowrite becomes the default | 0.285 | 0 | 0.181 | 0 |
+| 09ace7f `?zdiag=write` | 0.469 | 0.134 | 0.251 | 0.048 |
+| 5171098 (two runs, identical) | 0.310 | 0 | 0.203 | 0 |
+| 5171098 `?zdiag=write` | 0.515 | 0.172 | 0.299 | 0.093 |
+
+- The a649d39 rise lasts unchanged to 240f498 and ends at 09ace7f, which stopped strokes writing depth. No clustered flip is left at 09ace7f or on 5171098.
+- The wall flips that remain, 0.203%, are isolated pixels with no clustered neighbourhood, so they are not depth ties. That is consistent with anti-aliased stroke edges whose coverage changes under the 0.03 px shift, which was not measured directly.
+- The near-tie wall pairs are still in the stroke data. `?zdiag=write` on 5171098 still reads 0.093% clustered wall flips, so they show only when strokes write depth: in that diagnostic mode and the headset A/B's `write` arm.
+- `?zdiag=write` on 09ace7f reads 0.251 against 240f498's 0.329, the C5 caveat below: `write` is not the old default byte for byte.
+- The rise's own cause between 6dbfc09 and a649d39 was not bisected, since the default no longer depth-tests strokes against each other.
+- The committed `zfight-probe.ts` colour flips on 5171098 at 0.1 mm (1 mm) are 0.041% (0.409%) at h6-face-3m and 0.063% (0.604%) at church-face-7m, against 0.081% and 0.079% after the tint fix.
+
+#### Church front at 7 m: not the under-paint, darker strokes under the dropped ones
+
+The density step counts the building pixels (by the density 1 id capture) that go from light (luma > 90) to dark (< 60) when near density drops from 1 to 0.9. For each such pixel, an id capture at density 0.9 with `&coverage` shows what replaced it: a stroke class, or magenta where a base mesh shows through a gap.
+
+| 5171098 | Light-to-dark, % of frame (px) | Building pixels that change at all | Shown at 0.9 |
+| --- | --- | --- | --- |
+| `?zdiag=write` | 0.205 (2,666) | 4.21% | church 1,517, outline 534, ground 513, rim 74, window 15, roof 5, base 5, sky 3 |
+| default | 2.030 (26,354) | 29.93% | outline 12,586, church 11,288, ground 1,042, rim 731, roof 518, window 174, cypress 6, base 5, sky 4 |
+
+- The nave roof's under-paint is ruled out. Under either policy, 5 pixels of the light-to-dark set show a base mesh, at mean RGB (10, 17, 24). Every other pixel shows a stroke: darker church strokes, mean RGB (38, 44, 50), and the dark outline trim, from under the pale strokes painted toward the painter (ruling Q30) that the density cut removed. This rules the nave roof's under-paint out for the current tree. The base-mesh code is unchanged since e0eac54 apart from a copied position attribute, but e0eac54 itself was not captured again, and `write` is not the old default byte for byte.
+- The rise over 6dbfc09's 0.073% stays unattributed. What is settled is that the under-paint does not cause it. The 0.205% under `write` on 5171098 and the 0.073% are not like for like, for three reasons. The depth policies differ (C5). The old figure came from the 2026-11-06 harness, which this one follows but whose density captures were not reproduced. And the step was not measured again on 6dbfc09 or e0eac54. This section explains which pixels replace the dropped strokes, not why there are more of them than on 6dbfc09.
+- At h6-face-3m the light-to-dark share is 0.000% (1 pixel) under `write` and 0.141% (1,826 pixels) by default, and none of it shows a base mesh. The default's pixels show outline 923, ground 453, roof 241, rim 160, window 48 and cypress 1. 18.42% of its building pixels change at all, against 4.13% under `write`.
+
+At the two poses measured, the default makes the step much larger. At church-face-7m it is about ten times larger. At h6-face-3m it goes from 1 pixel to 0.141%, small in absolute terms. This is a stroke-level cause for its own card, not fixed here, and its first criterion should be a sweep over many poses:
+
+- A density draws a prefix of each chunk's importance order (`importanceOrder`, `geometry.instanceCount` in `src/render/strokes/batch.ts`).
+- Without depth writes, the stroke drawn last is on top. The strokes a density cut drops are the last drawn, so they sit on top wherever they overlap a kept stroke.
+- Under `write`, the lift decides which stroke is on top, independent of the order, so a cut uncovers only where a dropped stroke happened to win.
+- At these two poses, a 10% near-density cut (the 6 m band switch; the governor sheds the same way in XR) changes far more of the facade than under `write`. At church-face-7m it changes 29.9% of the building pixels against 4.2%, and at h6-face-3m 18.4% against 4.1%. Other poses were not measured.
+
+`docs/shots/church-density-step.jpg` shows church-face-7m at near density 0.9, under `?zdiag=write` on the left and the default on the right. Light-to-dark pixels are red where a stroke replaced them and magenta where a base mesh shows.
+
+![Church front at 7 m at near density 0.9, write on the left and the default on the right, light-to-dark pixels in red](shots/church-density-step.jpg)
+
 ## Headset shimmer diagnosis (2026-11-06, on 6d82235)
 
 Paul saw a lot of z-fight on the ground, the buildings and the sky on the Quest 3. It looked the same whether he moved or held still. No fix is applied here. The evidence below does not support a depth-separation change within the Q21 cap (the 2 m cap does reach the nowrite bound). The one change that would cut stroke depth ties is a wider tie-break cap, and that reverses ruling Q21, so it is Paul's call.
@@ -2169,3 +2230,113 @@ Portal `stepsMs` from `tests/e2e/portal.spec.ts` on the dev machine, all runs lo
 | `gallery-scatter` | 1.3 to 1.4 | 1.2 to 1.6 |
 
 In bun (JavaScriptCore, load 30), the minimum over 7 runs of the longest `batch` step fell from 2.17 ms to 0.81 ms. The 6.5 ms gallery-scatter step seen once in the full gate was not reproduced here and is consistent with GC. The MiniMac criterion (3 isolated runs at load 15 or below, 4.5 ms) is for the controller to confirm.
+
+## Portal entry: build from the trigger, reveal on a time budget (card 01a1b83d2e2c, 2026-11-09)
+
+Measured with `tests/e2e/entry-time.ts` against a production build (`vite build`, `vite preview --port 4334`). The tool runs three round trips in one browser context, so the first entry misses the scatter cache and the later two hit it. The setup was an M4 Max, headless Chromium on ANGLE Metal at 60 Hz, 1280 × 720. Phases are the summed frame intervals of `__goghDiag().portal.frames`, and the entry time is `durationMs`, from the trigger to idle. Before is a30c919.
+
+Before, the warm entry split like this (entries 2 and 3, load 13.98 before and 14.57 after):
+
+- `out` took 600 ms. The slicer sat idle, at 0.5 ms of work a frame.
+- The build took 1150 to 1200 ms of `wait`. Its frames ran at 6.0 ms of slicer work: the build was bound by the slicer's budget, not by I/O. Only two idle frames came before it, for the raster fetches.
+- The reveal took 1133 ms over 68 frames. These frames did 0.5 to 0.7 ms of work and 0.2 to 0.3 ms of render, so the fixed 8192-stroke quota, not the cost, set the pace.
+- Show and bind took 33 ms, and `in` took 1400 ms.
+
+Two changes (`src/portal/switcher.ts`):
+
+1. The world builds from the trigger, behind the old world, which is still disposed at the end of `out`. The `out` frames now carry build steps.
+   - A world that lands before that dispose stays out of the draw, keeps the old world's background showing and leaves the rig alone until the dispose.
+   - Each world module swaps `scene.background` in its build and back in its dispose, so a world that lands early saves the old world's background as its own restore value. After every dispose the switcher puts back the background under every world, which it reads at the first dispose.
+   - A fallback gallery build waits for the dispose, because the old world may be the gallery and worlds are module singletons.
+   - The stall watchdog, the transition generation and the `abandoned` set are unchanged. The watchdog still counts only `wait` frames with the slicer idle.
+2. The reveal runs on a time budget.
+   - The quota starts at 8192 strokes.
+   - After each reveal frame, `nextRevealQuota` aims it at 4 ms of render, by at most ×2 up and ÷2 down, never below the old fixed 8192 and never above 65,536. The pricing is in "Fix round 1" and "Fix round 2" below, which replaced the first version's.
+   - A reveal frame followed by an interval over 1.5 times the median of the last 15 caps the rest of the reveal at half the quota it used, never below 8192. The upload runs mostly in the GPU process, so on a Quest the cost can show in the next interval and not in `renderMs`.
+
+The phase lengths are unchanged (out 0.6 s, in 1.4 s, fade 0.3 s and 0.3 s).
+
+| Transition | Before | After |
+| --- | --- | --- |
+| Enter, cache miss | 5567 ms | 3987 ms |
+| Enter, cache hit | 4371, 4341 ms | 2745, 2707 ms |
+| Return | 2817, 3005, 3007 ms | 2082, 2230, 2257 ms |
+| Warm-entry wait | 2367, 2317 ms | 733, 700 ms |
+| Reveal frames, Starry Night / gallery | 68 / 25 | 7 / 5 |
+| Longest entry frame | 16.8 ms | 16.8 ms |
+| Longest entry work | 7.4 ms | 8.1 ms |
+
+The after runs had a load of 12.08 before and 11.17 after. Return 1 read 166.7 ms in both builds. It is the first return of a session, a return and not an entry, and it predates this change.
+
+`tests/e2e/portal.spec.ts` alone on the e2e build (cache bypassed, E2E_PORT=4334, load 8.94 before and 10.12 after) passed 3 of 3:
+
+- Desktop: enter 4001 and 3782 ms (5.5 to 5.7 s before), return 2264 and 2259 ms, every longest frame 16.8 ms.
+- IWER: enter 3906 and 3826 ms, with longest frames 21.0 and 18.6 ms, and return 2237 and 2256 ms, with 18.5 and 18.7 ms, against the 27.8 ms bar.
+
+Criterion 1 (2.5 s or less) is not met: 2.71 to 2.75 s.
+
+- The warm build takes about 1.1 s of 6 ms slicer frames, and the fixed phases take 2.0 s, so overlapping `out` leaves about 0.55 s of build in `wait`.
+- One uncommitted variant quantifies the build lever. With `createSlicer(10)`, the warm entry read 2339 and 2349 ms with 16.8 ms frames. Those runs are load-affected (load 32.4 before and 69.3 after). The variant's frames did 11 to 15 ms of work, which overruns the 11.1 ms XR frame at 90 Hz, so a larger budget would have to follow the XR frame rate and the frame's other work.
+- Shortening `in` from 1.4 s to about 1.15 s would also reach 2.5 s, but PRD D11 asks for an unfurl of "about 2 s", and `tests/portal.test.ts` holds out plus in at 2 s.
+- Both levers are outside this card's scope, so the 2.7 s is the best result within it.
+- The scatter-cache read could not start earlier without editing `starry-night/index.ts`. The frame records show it is not the bottleneck: the build has no idle frames past the fetches.
+
+Not verified:
+
+- The headset.
+- On a Quest the `out` frames now carry 6 ms of build steps while the old world still draws. Whether that holds 72 or 90 Hz is for the P5.8 headset check.
+- Two worlds are resident for up to the 0.6 s `out`, a few tens of MB on the Quest.
+- MiniMac. The controller re-measures there.
+
+### Fix round 1 (review F1 to F9)
+
+The first version's reveal cost model had three defects, now fixed in `src/portal/switcher.ts`:
+
+- F3, the price. The first version priced each reveal frame against the cheapest frame before the reveal, so every frame was charged for drawing everything revealed so far, and on a draw-bound device the quota could collapse to 1024. `revealCost` now prices the new strokes as the frame's `renderMs` over the frame before, which already drew every chunk revealed so far. It never prices them below a per-stroke floor, because the difference misses a cost that recurs every frame in the new strokes alone. Fix round 2 changed how that floor is taken.
+- F2, the cap. The quota never passes 65,536 strokes (`REVEAL_MAX_STROKES`, 8 frames of the old fixed quota), whatever the main thread reports, because the upload and the forced draw land partly off it.
+- F1, the back-off. A long interval after a reveal frame now caps the rest of that transition's reveal at half the quota it used. The first version halved the quota once, and the next frame's growth brought the stalling size straight back.
+- Every transition starts the quota, the cap and the price afresh.
+
+The other findings:
+
+- F5. During `out` the slicer runs at `OUT_BUILD_BUDGET_MS` (6 ms, unchanged), which the switcher hands `main.ts` through `slicerBudgetMs()` and the slicer takes as a per-frame budget (`slicer.frame(budgetMs)`).
+- F6. A first leg whose scan lands after the spawn is now placed against the rig's inverse captured at the trigger, not against the spawned rig. If a desktop spawn reset the look before it landed, the late leg is turned with the look, as the earlier strokes were.
+- F7. `compileAsync` compiles only the new world's hidden objects, lit by the scene, so the old world's materials are not prepared again.
+- F8. The old world's dispose at the end of `out` is wrapped, and the release of the build's wait on it runs in a `finally`, so a throwing dispose no longer leaves the transition in `wait`.
+- F9. The `transition.ts` header comment is rewrapped to 100 columns.
+
+The unit tests in `tests/portal-switcher.test.ts` model a render cost per new stroke, per stroke already revealed and per phase (2 ms in `out`, 0.5 ms otherwise). They fail on each of these mutations: the price base set to 0, the pre-reveal minimum made a maximum, the price taken against the cheapest pre-reveal frame (the first version), the per-stroke floor removed, the cap removed, the ceiling not kept, each of the quota, cap and price resets removed, the late leg sampled against the live rig, the late leg not turned, the whole scene compiled, the dispose unwrapped and the `out` budget never returned.
+
+Re-measured on the production build with `tests/e2e/entry-time.ts` (load 12.55 before and 12.02 after):
+
+| Transition | First version | Fix round 1 |
+| --- | --- | --- |
+| Enter, cache miss | 3987 ms | 4119 ms |
+| Enter, cache hit | 2745, 2707 ms | 2868, 2799 ms |
+| Return | 2082, 2230, 2257 ms | 2103, 2219, 2257 ms |
+| Reveal frames, Starry Night / gallery | 7 / 5 | 13 / 5 |
+| Longest entry frame | 16.8 ms | 16.8 ms |
+| Longest entry work | 8.1 ms | 7.8 to 8.8 ms |
+
+The cap costs about 100 ms of the warm entry: Starry Night's reveal now takes 13 frames (217 ms) where the uncapped quota took 7. Return 1 still reads 166.7 ms, as before this card.
+
+Not verified, for the P5.8 headset check:
+
+- `OUT_BUILD_BUDGET_MS`. The `out` frames carry up to 6 ms of build steps while the old world still draws and the veil is only rising. If that judders at 72 or 90 Hz on the Quest, lower `OUT_BUILD_BUDGET_MS` alone. The build then runs longer into `wait`, where it is under the black veil.
+- `REVEAL_MAX_STROKES` was sized from the desktop and the old fixed quota, not from Quest headroom.
+- `main.ts` passing `slicerBudgetMs()` to the slicer has no unit test. The switcher's getter and the slicer's per-frame budget are each tested.
+
+### Fix round 2 (re-review N1 to N3)
+
+Controller ruling: the reveal must never be slower than the shipped fixed 8192 strokes a frame.
+
+- The quota's floor, `REVEAL_MIN_STROKES`, is now `REVEAL_START_STROKES`, 8192 (it was 1024). Neither the price nor the back-off ceiling can take a frame below it. The cap stays at 65,536.
+- N1. The per-stroke floor is now the lowest price per stroke any reveal frame has shown against the frame before the first reveal, the `show` frame, which draws the world but none of its strokes. A later frame's price also carries the draw of what was revealed before it, so it only overstates. A one-off slow first reveal frame (a GC pause, a deferred driver compile) therefore stops counting once a cheaper frame follows. The first version took the price from the first reveal frame alone, against the cheapest frame before the reveal, which also charged the shown world's base meshes to the strokes.
+- N2. A long interval still caps the rest of the reveal at half the quota it used, and the cap is still permanent within the transition, but it stops at 8192. A device that overruns steadily as the world fills the view therefore reveals at the old fixed rate, not at about one chunk a frame. A ceiling that grows back was not added: with the 8192 floor it would only speed up a device that is already overrunning.
+- N3. The two F6 tests now use chunks larger than any quota can grow to, so every reveal frame takes exactly one chunk whatever the quota logic does. Removing the cap no longer fails them.
+
+New unit tests: a one-off 30 ms first reveal frame recovers to 64,000 strokes a frame and finishes within the fixed quota's frame count (N1). Intervals that go long from the third reveal frame on and stay long never take a frame below 8000 strokes and finish within the fixed count (N2). A slow machine holds at 8000 a frame. Both the N1 and the N2 tests fail on the round 1 switcher, and the floor set back to 1024 fails both.
+
+Re-measured on the production build with `tests/e2e/entry-time.ts` (load 11.00 before and 9.87 after): cold entry 4070 ms, warm entries 2846 and 2797 ms, returns 2094, 2233 and 2249 ms. Starry Night still reveals in 13 frames on the desktop, where nothing triggers the floor or the back-off. Every entry frame was at most 16.8 ms, and the longest entry work 7.5 to 8.3 ms. Return 1 again read 166.6 ms.
+
+`tests/e2e/portal.spec.ts` alone (load 9.90 before and 9.34 after) passed 3 of 3. Desktop entries took 4118 and 3933 ms and returns 2253 and 2254 ms, all at 16.8 ms longest frames. IWER entries took 4091 and 3944 ms with 20.3 and 19.1 ms, and returns 2235 and 2232 ms with 19.3 and 18.8 ms.

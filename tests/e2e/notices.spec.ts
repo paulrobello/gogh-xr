@@ -265,6 +265,26 @@ test('on the desktop the page notice dismisses the queued notice', async ({ page
   expect((await notices(xr)).view).toBeNull();
 });
 
+/**
+ * A held pointer lock does not survive XR entry in IWER. This does NOT cover the `releaseLock`
+ * call in main.ts's sessionstart handler: with that call removed it still passes, because IWER
+ * moves the canvas into its own container when the render state is set, and Chromium drops the
+ * lock of a re-parented element. That call is covered by the unit test in tests/controls.test.ts.
+ */
+test('a held pointer lock does not survive XR entry', async ({ page, xr }) => {
+  await xr.boot('noanim&scene=bare');
+  await page.locator('canvas').first().click();
+  const locked = await page
+    .waitForFunction(() => document.pointerLockElement !== null, undefined, { timeout: 3000 })
+    .then(() => true)
+    .catch(() => false);
+  test.skip(!locked, 'headless Chromium did not grant pointer lock');
+  // Under lock the mouse cannot reach the button, so click it from the page.
+  await page.evaluate(() => document.getElementById('enter-vr')?.click());
+  await expect.poll(async () => (await xr.diag()).xr.presenting).toBe(true);
+  expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
+});
+
 test('the bench builds no notices', async ({ xr }) => {
   await xr.boot('bench=1000');
   await xr.waitFrames(3);

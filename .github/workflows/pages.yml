@@ -29,6 +29,8 @@ jobs:
       - run: make build
       # The production bundle must never carry the IWER emulator.
       - run: make bundle-check
+      # Maps are not referenced (sourcemap: 'hidden') and are checked above; they do not ship.
+      - run: find dist -name '*.map' -delete
       - uses: actions/configure-pages@v6.0.0
       - uses: actions/upload-pages-artifact@v5.0.0
         with:

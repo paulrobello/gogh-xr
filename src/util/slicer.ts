@@ -41,8 +41,11 @@ export interface Slicer {
   step<T>(work: () => T, label?: string): Promise<T>;
   /** Resolves at the next `frame()` call: the next animation frame. */
   nextFrame(): Promise<void>;
-  /** Call once per animation frame: runs queued steps until `budgetMs` is spent. */
-  frame(): void;
+  /**
+   * Call once per animation frame: runs queued steps until `budgetMs` is spent, or this frame's
+   * own budget when given (the portal's `out` phase, `OUT_BUILD_BUDGET_MS`).
+   */
+  frame(frameBudgetMs?: number): void;
   /** Queued jobs, the one running included. */
   readonly pending: number;
   readonly stats: SlicerStats;
@@ -95,12 +98,13 @@ export function createSlicer(
     nextFrame(): Promise<void> {
       return new Promise<void>((resolve) => waiters.push(resolve));
     },
-    frame() {
+    frame(frameBudgetMs) {
       const woken = waiters;
       waiters = [];
       for (const wake of woken) wake();
+      const budget = frameBudgetMs ?? budgetMs;
       const start = now();
-      while (queue.length > 0 && now() - start < budgetMs) {
+      while (queue.length > 0 && now() - start < budget) {
         const job = queue[0];
         const stepStart = now();
         let next: IteratorResult<void, unknown>;

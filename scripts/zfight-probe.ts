@@ -38,6 +38,10 @@ const POSES: readonly (readonly [string, number, number, number, number, number]
   ['paul-strobe1', 0.067, 1.551, 0, -0.571, -0.26],
   // 2.5 m out from the cypress hull at axis ring 9 (seed 1), facing the axis.
   ['cypress', -2.079, -1.55, -5.784, 0.345, 0],
+  // The building z-fighting report's residuals (docs/verification.md, seed 1): 3 m off house 6's
+  // painter-facing long wall, and 7 m in front of the church's south end.
+  ['h6-face-3m', -2.989, -3.503, -9.82, 0.0789, 0.1541],
+  ['church-face-7m', 2.374, -2.733, -28.727, 0, 0.1815],
 ];
 
 const browser = await chromium.launch({ channel: 'chromium', headless: true, args: gpuArgs });

@@ -1,6 +1,6 @@
 import { PerspectiveCamera } from 'three';
 import { expect, test, vi } from 'vitest';
-import { installDesktopControls, requestLock } from '../src/desktop/controls.ts';
+import { installDesktopControls, releaseLock, requestLock } from '../src/desktop/controls.ts';
 import { EYE_HEIGHT } from '../src/desktop/walk.ts';
 
 function canvasWith(requestPointerLock: () => unknown): HTMLCanvasElement {
@@ -53,4 +53,12 @@ test('setLook sets yaw and pitch exactly, straight down and up included', () => 
   controls.update();
   expect(camera.rotation.x).toBe(Math.PI / 2);
   expect(camera.rotation.y).toBe(0);
+});
+
+test('releaseLock exits a held pointer lock and does nothing otherwise', () => {
+  const exitPointerLock = vi.fn();
+  releaseLock({ pointerLockElement: document.createElement('canvas'), exitPointerLock });
+  expect(exitPointerLock).toHaveBeenCalledOnce();
+  releaseLock({ pointerLockElement: null, exitPointerLock });
+  expect(exitPointerLock).toHaveBeenCalledOnce();
 });

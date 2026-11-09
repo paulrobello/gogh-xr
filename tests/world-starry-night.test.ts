@@ -12,6 +12,7 @@ import {
   PerspectiveCamera,
   Raycaster,
   RGBAFormat,
+  SRGBColorSpace,
   Vector3,
 } from 'three';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
@@ -22,6 +23,7 @@ import { MAX_ALTITUDE, MAX_FLIGHT_RADIUS } from '../src/locomotion/flight.ts';
 import {
   BARE_COLOR,
   createBaseMeshes,
+  disposeBaseMeshes,
   TINT_UNDERPAINT_SHADE,
   UNDERPAINT_SHADE,
   underpaintColor,
@@ -42,6 +44,7 @@ import {
 import { EAVE_UNDERSIDE_SHADE } from '../src/paintings/starry-night/eave-undersides.ts';
 import { painterSpot, spawnPose } from '../src/paintings/starry-night/index.ts';
 import {
+  facesEye,
   pickTint,
   splitTintBands,
   type TintRole,
@@ -198,6 +201,14 @@ function paintBoxes(seed: number): { length: number; width: number }[] {
     return { length: 2 * halfU, width: 2 * halfV };
   });
 }
+
+/**
+ * ΔE2000 within which a tinted under-paint ÷ TINT_UNDERPAINT_SHADE is one of its owner's stroke
+ * colours: the byte rounding of a stroke's divided-out shade.
+ */
+const TINT_MATCH_DE = 1;
+/** ΔE2000 within which it lies of the per-channel median of those strokes: a tint's neighbours spread it. */
+const TINT_MEDIAN_DE = 8;
 
 const SOURCE = await loadRealSource();
 const SKY_SCAN = await loadSkyScan();
@@ -478,6 +489,109 @@ describe('base meshes', () => {
       expect(material.color.getHex()).toBe(BARE_COLOR);
   });
 
+  test('the debug paint with the scatter seed, as ?bare and ?coverage build it, has no tint', () => {
+    const group = createBaseMeshes(WORLD.surfaces, SOURCE.histogram, 'magenta', SEEDS.scatter);
+    expect(group.children).toHaveLength(WORLD.surfaces.length - 1);
+    for (const child of group.children) {
+      const { geometry, material } = child as Mesh<BufferGeometry, MeshBasicMaterial>;
+      const layer = String(geometry.userData.layer);
+      expect(material.color.getHex(), layer).toBe(BARE_COLOR);
+      expect(material.vertexColors, layer).toBe(false);
+      expect(geometry.getAttribute('color'), layer).toBeUndefined();
+    }
+  });
+
+  test('a tagged surface that cannot be tinted warns once and under-paints in its region mean', () => {
+    const walls = WORLD.surfaces.find((g) => g.userData.layer === 'building') as BufferGeometry;
+    const tags = walls.userData.tint as TintTags;
+    const untagged = walls.clone();
+    untagged.userData = {
+      ...walls.userData,
+      tint: { owner: Array.from(tags.owner), role: Array.from(tags.role) },
+    };
+    const short = walls.clone();
+    short.userData = {
+      ...walls.userData,
+      tint: { owner: tags.owner.subarray(1), role: tags.role.subarray(1) },
+    };
+    const indexed = walls.clone();
+    indexed.userData = { ...walls.userData };
+    indexed.setIndex(Array.from({ length: walls.getAttribute('position').count }, (_, i) => i));
+    const mean = underpaintColor(SOURCE.histogram, 'building').map((c) => c / 255);
+    const expected = new Color().setRGB(mean[0], mean[1], mean[2], SRGBColorSpace).getHex();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Twice, as a rebuilt world would: still one warning per surface.
+      for (let k = 0; k < 2; k++) {
+        const group = createBaseMeshes(
+          [untagged, indexed, short],
+          SOURCE.histogram,
+          'underpaint',
+          SEEDS.scatter,
+        );
+        expect(group.children).toHaveLength(3);
+        for (const child of group.children) {
+          const { geometry, material } = child as Mesh<BufferGeometry, MeshBasicMaterial>;
+          expect(material.vertexColors).toBe(false);
+          expect(geometry.getAttribute('color')).toBeUndefined();
+          expect(material.color.getHex()).toBe(expected);
+        }
+      }
+      expect(warn).toHaveBeenCalledTimes(3);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/building .*not a Uint16Array owner/);
+      expect(String(warn.mock.calls[1]?.[0])).toMatch(/building .*indexed/);
+      expect(String(warn.mock.calls[2]?.[0])).toMatch(/building .*for 200 triangles/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('base meshes own what they dispose: a tinted mesh shares no attribute with a surface', () => {
+    // A shared attribute would have its GL buffer released by whichever geometry is disposed first,
+    // under any other geometry still drawing it. Each mesh geometry's attributes are its own; an
+    // untinted mesh draws the surface itself, which nothing else draws, so it releases that.
+    const group = createBaseMeshes(WORLD.surfaces, SOURCE.histogram, 'underpaint', SEEDS.scatter);
+    const meshes = [...group.children] as Mesh<BufferGeometry, MeshBasicMaterial>[];
+    const holder = new Map<unknown, BufferGeometry>();
+    for (const { geometry } of [...meshes, ...WORLD.surfaces.map((g) => ({ geometry: g }))]) {
+      for (const attribute of Object.values(geometry.attributes)) {
+        const other = holder.get(attribute);
+        // Only an untinted mesh, which is its surface, may meet an attribute twice.
+        if (other) expect(other, String(geometry.userData.layer)).toBe(geometry);
+        holder.set(attribute, geometry);
+      }
+    }
+    const tinted = meshes.filter((m) => m.material.vertexColors).map((m) => m.geometry);
+    expect(tinted).toHaveLength(3);
+    for (const geometry of tinted) expect(WORLD.surfaces).not.toContain(geometry);
+
+    const disposed = new Map<BufferGeometry, number>();
+    const listeners = [...new Set([...WORLD.surfaces, ...meshes.map((m) => m.geometry)])].map(
+      (geometry) => {
+        const listener = (): void => {
+          disposed.set(geometry, (disposed.get(geometry) ?? 0) + 1);
+        };
+        geometry.addEventListener('dispose', listener);
+        return () => geometry.removeEventListener('dispose', listener);
+      },
+    );
+    try {
+      disposeBaseMeshes(group);
+      disposeBaseMeshes(group);
+    } finally {
+      for (const remove of listeners) remove();
+    }
+    expect(group.children).toHaveLength(0);
+    for (const { geometry } of meshes) expect(disposed.get(geometry)).toBe(1);
+    // The surfaces under a tinted mesh, or merged with a soffit, are never disposed.
+    const drawn = new Set(meshes.map((m) => m.geometry));
+    for (const surface of WORLD.surfaces) {
+      expect(disposed.get(surface) ?? 0, String(surface.userData.layer)).toBe(
+        drawn.has(surface) ? 1 : 0,
+      );
+    }
+  });
+
   test('the roof and church meshes close every overhang from below, facing down, past the walls only', () => {
     // Both paints, so the `?coverage` sweep sees the soffits too. Each triangle past a surface's
     // own is a soffit triangle: wound to face down, in the plane of a roof slope it faces away
@@ -550,7 +664,11 @@ describe('base meshes', () => {
         const under = soffit.getAttribute('position').array as Float32Array;
         expect(Array.from(geometry.getAttribute('position').array)).toEqual([...own, ...under]);
       } else {
-        expect(geometry.getAttribute('position')).toBe(source?.getAttribute('position'));
+        // A copy, so disposing the mesh releases no buffer of the surface (`tintedUnderpaint`).
+        expect(geometry.getAttribute('position')).not.toBe(source?.getAttribute('position'));
+        expect(geometry.getAttribute('position').array).toEqual(
+          source?.getAttribute('position').array,
+        );
       }
       const layer = WORLD_LAYERS.indexOf(geometry.userData.layer);
       const colors = geometry.getAttribute('color');
@@ -973,6 +1091,127 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     for (const band of bands) {
       expect(worst[band], band).toBeLessThanOrEqual(FACE_CLAMP_MARGIN + 1e-3);
     }
+  });
+
+  test("each tinted under-paint triangle is its owner's scattered stroke colour times the tint shade", () => {
+    // Against the scattered strokes, not pickTint: a village stroke on a face turned away from the
+    // painter takes its colour from its owner's tint choices alone (no scan mix, no lift), so per
+    // owner and role the per-channel median of those strokes, with the shade the scatter divided
+    // out restored, is the colour the under-paint must darken. Strokes are hosted by plane and
+    // triangle as in the overhang test; a stroke whose hosts disagree on owner or role is skipped.
+    // Outline trim strokes share the faces and stay in: no per-instance field tells them apart. They
+    // are at most OUTLINE_SHARE of a face's strokes, so the median ignores them, and a trim colour
+    // can only make `nearest` easier, never harder, so it cannot fail the own seed. On another seed
+    // it can only add matches, which the one-third bound below allows for.
+    const LAYERS = ['building', 'roof', 'church'] as const;
+    type Tri = { a: Vec3; b: Vec3; c: Vec3; n: Vec3; d: number; key: string; index: number };
+    const planes: { n: Vec3; d: number; tris: Tri[] }[] = [];
+    for (const layer of LAYERS) {
+      const g = WORLD.surfaces.find((s) => s.userData.layer === layer) as BufferGeometry;
+      const tags = g.userData.tint as TintTags;
+      const pos = g.getAttribute('position');
+      for (let t = 0; t * 3 < pos.count; t++) {
+        const [a, b, c] = [0, 1, 2].map(
+          (k) => [pos.getX(t * 3 + k), pos.getY(t * 3 + k), pos.getZ(t * 3 + k)] as Vec3,
+        );
+        const n = unit3(cross3(sub3(b, a), sub3(c, a)));
+        const key = `${layer}:${tags.owner[t]}:${tags.role[t]}`;
+        const tri = { a, b, c, n, d: dot3(n, a), key, index: t };
+        const plane = planes.find((q) => dot3(q.n, n) > 1 - 1e-6 && Math.abs(q.d - tri.d) < 1e-4);
+        if (plane) plane.tris.push(tri);
+        else planes.push({ n, d: tri.d, tris: [tri] });
+      }
+    }
+    const strokes = new Map<string, Vec3[]>();
+    let ambiguous = 0;
+    for (let i = 0; i < scattered.count; i++) {
+      if (scattered.meta[i * 4 + 1] !== STROKE_LAYER.building) continue;
+      const s = unpackInstance(scattered, i);
+      if (((s.flags ?? 0) & DEPTH_TIE_BREAK_FRONT_FLAG) !== 0) continue;
+      const keys = new Set<string>();
+      let host: Vec3 | null = null;
+      for (const p of planes) {
+        if (dot3(p.n, s.normal) < 0.9999) continue;
+        const lift = dot3(p.n, s.position) - p.d;
+        if (lift < -1e-3 || lift > 0.05) continue;
+        for (const t of p.tris) {
+          if (distanceToTriangle(s.position, t) < 1e-4) {
+            keys.add(t.key);
+            host = p.n;
+          }
+        }
+      }
+      if (keys.size !== 1 || !host) {
+        if (keys.size > 1) ambiguous++;
+        continue;
+      }
+      if (facesEye(s.position, host, PAINTER_EYE)) continue;
+      const shade = strokeShade(s.normal);
+      const key = [...keys][0] as string;
+      const list = strokes.get(key) ?? [];
+      list.push([s.color[0] * shade, s.color[1] * shade, s.color[2] * shade]);
+      strokes.set(key, list);
+    }
+    const median = (v: number[]): number => {
+      const sorted = [...v].sort((p, q) => p - q);
+      return sorted[sorted.length >> 1] as number;
+    };
+    const strokeMedian = new Map<string, Vec3>();
+    for (const [key, list] of strokes) {
+      if (list.length < 30) continue;
+      strokeMedian.set(key, [0, 1, 2].map((k) => median(list.map((c) => c[k]))) as unknown as Vec3);
+    }
+    const byte = (v: number): number => Math.min(255, Math.max(0, Math.round(v)));
+    const lab8 = (c: readonly number[]) => srgb8ToLab(byte(c[0]), byte(c[1]), byte(c[2]));
+    // Per owner and role: ΔE2000 from the under-paint ÷ the shade to the nearest of its strokes and
+    // to their median. It matches when it is one of its strokes' own colours, within the byte
+    // rounding of the restored shade, and sits among them rather than at an outlier.
+    const match = (seed: number): { nearest: number; median: number; matched: number } => {
+      const group = createBaseMeshes(WORLD.surfaces, SOURCE.histogram, 'underpaint', seed);
+      const worst = { nearest: 0, median: 0, matched: 0 };
+      for (const layer of LAYERS) {
+        const mesh = group.children.find(
+          (m) => (m as Mesh).geometry.userData.layer === layer,
+        ) as Mesh<BufferGeometry, MeshBasicMaterial>;
+        const colors = mesh.geometry.getAttribute('color');
+        const tags = mesh.geometry.userData.tint as TintTags;
+        const done = new Set<string>();
+        for (let t = 0; t < tags.owner.length; t++) {
+          const key = `${layer}:${tags.owner[t]}:${tags.role[t]}`;
+          const target = strokeMedian.get(key);
+          if (!target || done.has(key)) continue;
+          done.add(key);
+          const rgb = { r: 0, g: 0, b: 0 };
+          new Color(colors.getX(t * 3), colors.getY(t * 3), colors.getZ(t * 3)).getRGB(
+            rgb,
+            SRGBColorSpace,
+          );
+          const k = 255 / TINT_UNDERPAINT_SHADE;
+          const tint = lab8([rgb.r * k, rgb.g * k, rgb.b * k]);
+          let nearest = Number.POSITIVE_INFINITY;
+          for (const c of strokes.get(key) ?? []) {
+            nearest = Math.min(nearest, deltaE2000(tint, lab8(c)));
+          }
+          const median = deltaE2000(tint, lab8(target));
+          worst.nearest = Math.max(worst.nearest, nearest);
+          worst.median = Math.max(worst.median, median);
+          if (nearest <= TINT_MATCH_DE && median <= TINT_MEDIAN_DE) worst.matched++;
+        }
+      }
+      return worst;
+    };
+    const own = match(SEEDS.scatter);
+    const others = [1, 2, 3].map((k) => match(SEEDS.scatter + k).matched);
+    console.log(
+      `[world] tinted under-paint vs strokes over ${strokeMedian.size} owner roles (${ambiguous} ambiguous strokes): worst ΔE2000 nearest ${own.nearest.toFixed(2)}, median ${own.median.toFixed(2)}; other seeds match ${others.join(', ')}`,
+    );
+    expect(strokeMedian.size).toBeGreaterThan(20);
+    expect(own.nearest).toBeLessThanOrEqual(TINT_MATCH_DE);
+    expect(own.median).toBeLessThanOrEqual(TINT_MEDIAN_DE);
+    expect(own.matched).toBe(strokeMedian.size);
+    // A seed or layer mismatch with the scatter must show. Another seed's pick still matches where
+    // it lands among the true tint's neighbours (or near a trim colour), which is a minority.
+    for (const matched of others) expect(matched).toBeLessThan(strokeMedian.size / 3);
   });
 
   test('the face fit keeps most of the paint on each village layer and shrinks few strokes away', () => {

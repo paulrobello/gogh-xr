@@ -12,6 +12,7 @@ export class FrameStats {
   private readonly stamps: number[] = [];
   private last: number | null = null;
   private skip: number;
+  private sinceExclude = 0;
 
   constructor(
     private readonly capacity: number = FRAME_WINDOW,
@@ -30,14 +31,21 @@ export class FrameStats {
       }
     }
     this.last = timeMs;
+    this.sinceExclude++;
     this.stamps.push(timeMs);
     while (this.stamps.length > 0 && (this.stamps[0] ?? timeMs) <= timeMs - FPS_WINDOW_MS) {
       this.stamps.shift();
     }
   }
 
-  /** Leaves the next `count` intervals out of mean and p99 (FPS still counts them). */
+  /**
+   * Leaves the next `count` intervals out of mean and p99 (FPS still counts them). A call made
+   * with no more than `count` frames since the last one is ignored: a HUD redraw that lands every
+   * frame, below about 4 fps, would otherwise exclude every interval and starve the window.
+   */
   exclude(count: number): void {
+    if (this.sinceExclude <= count) return;
+    this.sinceExclude = 0;
     this.skip = Math.max(this.skip, count);
   }
 
@@ -46,6 +54,7 @@ export class FrameStats {
     this.stamps.length = 0;
     this.last = null;
     this.skip = this.warmup;
+    this.sinceExclude = 0;
   }
 
   /** True until the measured window has refilled after construction or reset. */

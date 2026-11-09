@@ -52,10 +52,11 @@ update-ab:
 	bun scripts/update-ab.ts
 dev dev-start:
 	bun run dev
-# Serves the IWER-enabled e2e build (not production) on E2E_PORT, default 4253.
+# Serves the IWER-enabled e2e build (not production) on E2E_PORT (scripts/ports.ts, default 4253).
+# Playwright's webServer runs this target, so the two cannot drift.
 preview:
 	bunx vite build --mode e2e
-	bunx vite preview --mode e2e --port $${E2E_PORT:-4253} --strictPort
+	bunx vite preview --mode e2e --strictPort
 dev-stop:
 	bun run scripts/dev-stop.ts
 dev-restart: dev-stop dev

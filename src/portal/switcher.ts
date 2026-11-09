@@ -1,13 +1,15 @@
 /**
  * Runtime world switching through the portal (P5.5): walking or teleporting into a live frame of
  * the gallery enters its world, and "Return to gallery" reverses it. One transition at a time
- * (transition.ts): input is suppressed and locomotion frozen while it runs, the old world is
- * disposed under the veil at the end of its `out` phase, and the new one builds behind it on the
- * slicer. The new world stays out of the draw until its programs are compiled and its textures
- * uploaded, one texture per frame. Then its chunks are revealed a few per frame, each drawn once
- * under the veil whether or not it is in view, so its buffers upload before the `in` phase shows
- * it. A world that fails to build, or stalls on a fetch (`STALL_TIMEOUT_S`), falls back to the
- * gallery, then to the bare scene.
+ * (transition.ts): input is suppressed and locomotion frozen while it runs. The new world builds
+ * on the slicer from the trigger, behind the old one, which is disposed under the veil at the end
+ * of its `out` phase. Until then the new world keeps the old background showing and leaves the
+ * rig alone. It stays out of the draw until its programs are compiled and its textures uploaded,
+ * one texture per frame. Then its chunks are revealed on a time budget
+ * (`nextRevealQuota`), each drawn once under the veil whether or not it is in view, so its buffers
+ * upload before the `in` phase shows it. A world that fails to build, or stalls on a fetch
+ * (`STALL_TIMEOUT_S`), falls back to the gallery once the old world is gone, then to the bare
+ * scene.
  *
  * The view is never still while the world builds (wait-motion.ts): in the fly style the strokes
  * swirl where they hover, from liftoff into the `in` leg, and in the fade style a dim, fixed field
@@ -77,27 +79,96 @@ import {
 
 export const GALLERY_ID = 'gallery';
 /**
- * Strokes revealed, and so drawn and uploaded, per frame while a new world comes up: whole chunks
- * up to this many, and at least one. Counted in strokes, not chunks, because a Starry Night dome
- * sector holds up to 39k strokes against about 1k in a 24 m chunk. At seed 1 Starry Night reveals
- * in 65 frames with at most 39k strokes in one (its largest sector). Eight chunks a frame took 72
- * frames with up to 80k on the 24 m layout, and would take 20 with up to 89k on the merged one.
+ * The reveal runs on a time budget. Each frame reveals, and so draws and uploads, whole chunks up
+ * to a stroke quota, and at least one. Counted in strokes, not chunks, because a Starry Night dome
+ * sector holds up to 39k strokes against about 1k in a 24 m chunk. The quota starts here, which
+ * was the fixed quota before the budget (65 frames for Starry Night at seed 1), and then follows
+ * what each reveal frame cost (`nextRevealQuota`).
  */
-export const REVEAL_STROKES_PER_FRAME = 8192;
+export const REVEAL_START_STROKES = 8192;
+/**
+ * The fewest strokes a frame's quota falls to: the old fixed quota, so the reveal is never slower
+ * than it was before the budget. A chunk over it still reveals alone.
+ */
+export const REVEAL_MIN_STROKES = REVEAL_START_STROKES;
+/**
+ * The most strokes a frame's quota reaches: 8 frames of the old fixed quota. The upload and the
+ * one forced draw of each revealed chunk land partly off the main thread, where `renderMs` cannot
+ * see them, so the quota is capped whatever the main thread reports.
+ */
+export const REVEAL_MAX_STROKES = 65_536;
+/** The render time a reveal frame may add on the main thread, ms. */
+export const REVEAL_BUDGET_MS = 4;
+/** The most the quota grows from one frame to the next. */
+export const REVEAL_GROWTH = 2;
+/**
+ * A reveal frame followed by an interval over this many times the recent median halves the
+ * quota. The upload runs mostly in the GPU process, so it can show there and not in `renderMs`.
+ */
+export const REVEAL_SLOW_INTERVAL = 1.5;
 
 /**
  * The chunk index one frame's reveal ends at, starting from `start` (below `chunks.length`): the
- * whole chunks that fit REVEAL_STROKES_PER_FRAME, and at least one.
+ * whole chunks that fit `quota` strokes, and at least one.
  */
-export function revealEnd(chunks: readonly { readonly count: number }[], start: number): number {
+export function revealEnd(
+  chunks: readonly { readonly count: number }[],
+  start: number,
+  quota: number = REVEAL_START_STROKES,
+): number {
   let end = start;
   let strokes = 0;
   do {
     strokes += chunks[end].count;
     end++;
-  } while (end < chunks.length && strokes + chunks[end].count <= REVEAL_STROKES_PER_FRAME);
+  } while (end < chunks.length && strokes + chunks[end].count <= quota);
   return end;
 }
+
+/**
+ * What a reveal frame's `strokes` new strokes cost to render, ms (`revealCost`).
+ *
+ * - Against the frame before, which drew every chunk revealed before it, the difference prices
+ *   only the new strokes when the cost is in drawing what is revealed.
+ * - The difference misses a cost that is all in the new strokes (their upload and forced draw),
+ *   which recurs every frame. So it is never less than `perStrokeMs`: the lowest price per stroke
+ *   any reveal frame so far has shown against the frame before the first reveal. A later frame's
+ *   price also carries the draw of what was revealed before it, so it only overstates, and a
+ *   one-off slow frame stops counting once a cheaper one follows.
+ */
+export function revealCost(
+  strokes: number,
+  renderMs: number,
+  priorRenderMs: number,
+  perStrokeMs: number,
+): number {
+  return Math.max(renderMs - priorRenderMs, perStrokeMs * strokes);
+}
+
+/**
+ * The next frame's stroke quota after a reveal frame that showed `strokes` under `quota` at
+ * `costMs` (`revealCost`): the strokes that spend REVEAL_BUDGET_MS at that price, at most
+ * REVEAL_GROWTH times the quota and at least half of it, within [REVEAL_MIN_STROKES, `ceiling`].
+ */
+export function nextRevealQuota(
+  quota: number,
+  strokes: number,
+  costMs: number,
+  ceiling: number = REVEAL_MAX_STROKES,
+): number {
+  const fits = costMs > 0 ? (Math.max(strokes, 1) * REVEAL_BUDGET_MS) / costMs : Infinity;
+  const next = Math.min(quota * REVEAL_GROWTH, Math.max(quota * 0.5, fits), ceiling);
+  return Math.max(REVEAL_MIN_STROKES, Math.round(next));
+}
+
+/** Frame intervals kept for the median a reveal frame's follower is judged against. */
+const RECENT_INTERVALS = 15;
+/**
+ * The slicer's budget during `out`, ms, while the next world builds behind the old one and the
+ * old one still draws. The same as the slicer's own 6 ms, which holds the desktop at 16.8 ms
+ * frames. The P5.8 headset check may lower it.
+ */
+export const OUT_BUILD_BUDGET_MS = 6;
 /** A stroke leaving the frame: its quad, metres. */
 const FRAME_STROKE: readonly [number, number] = [0.035, 0.014];
 /**
@@ -237,6 +308,8 @@ export interface Switcher {
   detect(input: PortalFrame): void;
   /** Starts a transition to world `id`; false while one runs or `id` is already active. */
   go(id: string, cause: NonNullable<PortalDiag['lastTrigger']>['cause']): boolean;
+  /** The slicer's budget for this frame: OUT_BUILD_BUDGET_MS during `out`, else undefined. */
+  slicerBudgetMs(): number | undefined;
   diag(): PortalDiag;
 }
 
@@ -265,6 +338,44 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
   let leaving: StrokeBatch | null = null;
   let arriving: LiveWorld | null = null;
   let revealed = 0;
+  /** This frame's stroke quota for the reveal (`nextRevealQuota`). */
+  let revealQuota = REVEAL_START_STROKES;
+  /** The strokes this frame revealed and the quota it used, until `endFrame` reads them. */
+  let revealing: { strokes: number; quota: number } | null = null;
+  /** The quota the last reveal frame used, until the next frame's interval is judged. */
+  let revealedUnder: number | null = null;
+  /**
+   * The quota's ceiling: REVEAL_MAX_STROKES, lowered for good by a long interval after a reveal,
+   * never below REVEAL_MIN_STROKES.
+   */
+  let revealCeiling = REVEAL_MAX_STROKES;
+  /** The last frame's render, ms, or null before the transition's first. */
+  let lastRenderMs: number | null = null;
+  /**
+   * The render of the frame before the first reveal, ms, which draws the shown world but none of
+   * its strokes, and the lowest price per stroke a reveal frame has shown against it (`revealCost`).
+   */
+  let revealBaseMs: number | null = null;
+  let perStrokeMs = Number.POSITIVE_INFINITY;
+  /** The rig's inverse at the trigger: the first leg samples the frame against it. */
+  const triggerInverse = new Matrix4();
+  /** The spawn's turn of the waiting strokes on the desktop, for a first leg that lands after it. */
+  let carried: { before: Vec3; after: Vec3; turn: Quaternion } | null = null;
+  const recentIntervals: number[] = [];
+  /**
+   * The old world is disposed when `out` ends (`outOver`, `outDone`). The next world builds from
+   * the trigger, so until then it lands behind the old one and stays out of the draw and the rig.
+   */
+  let outOver = true;
+  let outDone: Promise<void> = Promise.resolve();
+  let endOut: () => void = () => {};
+  /**
+   * World modules swap `scene.background` in `build` and back in `dispose`. A world that lands
+   * before the old one is disposed has set its own: it waits here and the old one's stays shown
+   * until `out` ends. `base` is the background under every world, read at the first dispose.
+   */
+  let incoming: { value: Scene['background'] } | null = null;
+  let base: { value: Scene['background'] } | null = null;
   let uploads: Texture[] = [];
   /** The arriving world's top-level objects and their own visibility, kept out of the draw. */
   let hidden: [Object3D, boolean][] = [];
@@ -373,11 +484,13 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     pos: Float32Array,
     color: Uint8Array,
     size: Float32Array,
+    rigInverse: Matrix4 | null = null,
   ): void {
     const h = hangingOf(id);
     if (!h) return;
     const crop = coverCrop(raster.width, raster.height, h.width, h.height, CROP_BIAS[id] ?? 0);
-    updateInverse();
+    if (rigInverse) inverse.copy(rigInverse);
+    else updateInverse();
     for (let i = 0; i < FLY_COUNT; i++) {
       const fx = random();
       const fy = random();
@@ -495,7 +608,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
         if (outWait === wait) outWait = null;
       }
       if (gen !== generation || transition.target !== to) return;
-      sampleFrame(to, raster, leg.from, leg.fromColor, leg.fromSize);
+      // Against the rig at the trigger: by now it may stand in the next world.
+      sampleFrame(to, raster, leg.from, leg.fromColor, leg.fromSize, triggerInverse);
     } else {
       sampleWorld(from.handle.batch, leg.from, leg.fromColor, leg.fromSize);
     }
@@ -503,6 +617,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     settle(leg);
     outLeg = leg;
     outAt = clock;
+    // Landed after a desktop spawn turned the look: turned with it, as earlier strokes were.
+    if (carried) carry(carried.before, carried.after, carried.turn);
   }
 
   /** A wait nothing watches yet. */
@@ -591,13 +707,20 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     }
   }
 
+  /** Puts the background under every world back, once it is known. */
+  function restoreBase(): void {
+    if (base) deps.scene.background = base.value;
+  }
+
   /**
-   * Builds world `id` out of the draw, compiles its programs and queues its textures. On a throw
-   * or a stall the half-built world is disposed and the scene left as it was.
+   * Builds world `id` out of the draw, compiles its programs and queues its textures, then, once
+   * `out` has ended (`done`), stands the rig in it. It may start before the old world is disposed.
+   * On a throw or a stall the half-built world is disposed and the scene left as it was.
    */
-  async function prepareWorld(id: string, previous: string): Promise<void> {
+  async function prepareWorld(id: string, previous: string, done: Promise<void>): Promise<void> {
     if (abandoned.has(id)) throw new Error(`a stalled build of ${id} has not landed`);
     const before = new Set(deps.scene.children);
+    const shown = deps.scene.background;
     let world: LiveWorld | null = null;
     let landed = false;
     const wait = startWait();
@@ -615,6 +738,11 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
         },
       );
       world = await within(wait, building);
+      if (!outOver) {
+        // Landed behind the old world: the old background shows until its dispose.
+        incoming = { value: deps.scene.background };
+        deps.scene.background = shown;
+      }
       // Nothing the world added draws until its programs and textures are on the GPU.
       hidden = deps.scene.children
         .filter((object) => !before.has(object))
@@ -624,8 +752,14 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       // The parts a world adds after its build (the gallery's plaques) compile with the rest.
       await within(wait, Promise.resolve(world.handle.ready));
       // Programs link in parallel (KHR_parallel_shader_compile), off the frame. `compile` takes
-      // hidden objects too.
-      await within(wait, deps.renderer.compileAsync(deps.scene, deps.camera));
+      // hidden objects too. Only what this world added, lit by the scene, since the old world
+      // may still be in it.
+      await within(
+        wait,
+        Promise.all(
+          hidden.map(([object]) => deps.renderer.compileAsync(object, deps.camera, deps.scene)),
+        ),
+      );
       uploads = [];
       for (const [object] of hidden) {
         object.traverse((child) => {
@@ -637,12 +771,15 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     } catch (error) {
       showHidden();
       uploads = [];
+      incoming = null;
       if (world) {
         try {
           world.module.dispose();
         } catch (disposeError) {
           console.warn(`portal: world ${id} failed to dispose`, disposeError);
         }
+        // Its dispose put back the background it found, the old world's if it landed early.
+        if (outOver) restoreBase();
       } else if (wait.stale && !landed) {
         abandoned.add(id);
       }
@@ -650,6 +787,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     } finally {
       endWait(wait);
     }
+    // The rig moves only once the old world is gone.
+    await done;
     arriving = world;
     arrivingFrom = previous;
     revealed = 0;
@@ -662,16 +801,20 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     // next render, so the reset never shows there and the strokes stay put.
     turn.premultiply(deps.camera.quaternion);
     const presenting = deps.renderer.xr?.isPresenting === true;
-    if (!presenting && Math.abs(turn.w) < 1 - 1e-9) carry(eyeBefore, eye());
+    if (!presenting && Math.abs(turn.w) < 1 - 1e-9) {
+      const eyeAfter = eye();
+      carry(eyeBefore, eyeAfter);
+      carried = { before: eyeBefore, after: eyeAfter, turn: turn.clone() };
+    }
   }
 
-  /** Turns every waiting stroke by `turn` about the eye, from `before` to `after`, rig-local. */
-  function carry(before: Vec3, after: Vec3): void {
+  /** Turns every waiting stroke by `by` about the eye, from `before` to `after`, rig-local. */
+  function carry(before: Vec3, after: Vec3, by: Quaternion = turn): void {
     const point = (array: Float32Array): void => {
       for (let i = 0; i + 2 < array.length; i += 3) {
         scratch
           .set(array[i] - before[0], array[i + 1] - before[1], array[i + 2] - before[2])
-          .applyQuaternion(turn);
+          .applyQuaternion(by);
         array[i] = after[0] + scratch.x;
         array[i + 1] = after[1] + scratch.y;
         array[i + 2] = after[2] + scratch.z;
@@ -679,7 +822,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     };
     const vector = (array: Float32Array): void => {
       for (let i = 0; i + 2 < array.length; i += 3) {
-        scratch.set(array[i], array[i + 1], array[i + 2]).applyQuaternion(turn);
+        scratch.set(array[i], array[i + 1], array[i + 2]).applyQuaternion(by);
         array[i] = scratch.x;
         array[i + 1] = scratch.y;
         array[i + 2] = scratch.z;
@@ -697,19 +840,21 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
   }
 
   /**
-   * Builds `target`; if that throws, rebuilds the gallery in front of `target`'s frame; if that
-   * throws too, ends the transition on the bare scene with input restored.
+   * Builds `target` from the trigger; if that throws, rebuilds the gallery in front of `target`'s
+   * frame once `out` has ended (`done`), since the old world may be the gallery; if that throws
+   * too, ends the transition on the bare scene with input restored.
    */
-  async function buildNext(target: string, previous: string): Promise<void> {
+  async function buildNext(target: string, previous: string, done: Promise<void>): Promise<void> {
     try {
-      await prepareWorld(target, previous);
+      await prepareWorld(target, previous, done);
       return;
     } catch (error) {
       console.warn(`portal: world ${target} failed to build`, error);
     }
+    await done;
     if (target !== GALLERY_ID) {
       try {
-        await prepareWorld(GALLERY_ID, target);
+        await prepareWorld(GALLERY_ID, target, done);
         diagState.fallback = 'gallery';
         return;
       } catch (error) {
@@ -747,7 +892,11 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     const { chunks } = world.handle.batch;
     if (revealed < chunks.length) {
       note('reveal');
-      revealed = revealEnd(chunks, revealed);
+      const start = revealed;
+      revealed = revealEnd(chunks, start, revealQuota);
+      let strokes = 0;
+      for (let i = start; i < revealed; i++) strokes += chunks[i].count;
+      revealing = { strokes, quota: revealQuota };
       world.handle.batch.reveal(revealed);
       return;
     }
@@ -826,7 +975,6 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     diagState.stepsMs = { ...deps.slicer.stats.longestStepByLabel };
   }
 
-  let previousId = '';
   let frames = 0;
 
   const switcher: Switcher = {
@@ -847,6 +995,19 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       if (frames > 0) longest = Math.max(longest, dtMs);
       frames += 1;
       const style = transition.style ?? 'fade';
+      // A reveal frame followed by a long interval halves the quota it used, and caps it there
+      // for the rest of the transition, so the quota that stalled never comes back.
+      if (revealedUnder !== null) {
+        const sorted = [...recentIntervals].sort((a, b) => a - b);
+        const median = sorted.length > 0 ? sorted[sorted.length >> 1] : dtMs;
+        if (dtMs > REVEAL_SLOW_INTERVAL * median) {
+          revealCeiling = Math.max(REVEAL_MIN_STROKES, Math.round(revealedUnder * 0.5));
+          revealQuota = Math.min(revealQuota, revealCeiling);
+        }
+        revealedUnder = null;
+      }
+      recentIntervals.push(dtMs);
+      if (recentIntervals.length > RECENT_INTERVALS) recentIntervals.shift();
       const step = transition.advance(dtMs / 1000);
       if (!step) return;
       clock += Math.max(0, dtMs) / 1000;
@@ -889,12 +1050,28 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
           const from = active;
           active = null;
           leaving = null;
-          if (from) {
-            deps.unbind();
-            from.module.dispose();
+          try {
+            if (from) {
+              deps.unbind();
+              try {
+                from.module.dispose();
+              } catch (error) {
+                console.warn(`portal: world ${from.id} failed to dispose`, error);
+              }
+              // Its dispose put back the background it found, which is not the base when it
+              // landed behind the world before it.
+              if (base) restoreBase();
+              else base = { value: deps.scene.background };
+            }
+            if (incoming) {
+              deps.scene.background = incoming.value;
+              incoming = null;
+            }
+          } finally {
+            // The next world waits on this, whatever the old world's teardown did.
+            outOver = true;
+            endOut();
           }
-          const target = transition.target;
-          if (target) void buildNext(target, previousId);
         }
       } else if (step.phase === 'wait') {
         if (fly && outLeg) fly.draw(outLeg, 1, at, lateFade(), offsets, 'arrive');
@@ -935,6 +1112,18 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       current = null;
       record.workMs = workMs;
       record.renderMs = renderMs;
+      if (revealing) {
+        const { strokes, quota } = revealing;
+        const prior = lastRenderMs ?? renderMs;
+        revealBaseMs ??= prior;
+        const price = Math.max(0, renderMs - revealBaseMs) / Math.max(strokes, 1);
+        perStrokeMs = Math.min(perStrokeMs, price);
+        const cost = revealCost(strokes, renderMs, prior, perStrokeMs);
+        revealQuota = nextRevealQuota(quota, strokes, cost, revealCeiling);
+        revealedUnder = quota;
+        revealing = null;
+      }
+      lastRenderMs = renderMs;
       const index = diagState.frames.length;
       if (index < MAX_FRAME_RECORDS) diagState.frames.push(record);
       if (diagState.longestWorkMs === null || workMs > diagState.longestWorkMs) {
@@ -958,7 +1147,6 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       if (!transition.request(id === GALLERY_ID ? 'returning' : 'entering', id, style)) {
         return false;
       }
-      previousId = from.id;
       startedAt = deps.now();
       longest = 0;
       frames = 0;
@@ -992,7 +1180,29 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
         cue = createFlyStrokes(deps.rig, deps.atlas(), CUE_COUNT, 'portal-cue');
         cueField = createCueField(eye(), heading());
       }
+      revealQuota = REVEAL_START_STROKES;
+      revealing = null;
+      revealedUnder = null;
+      revealCeiling = REVEAL_MAX_STROKES;
+      lastRenderMs = null;
+      revealBaseMs = null;
+      perStrokeMs = Number.POSITIVE_INFINITY;
+      recentIntervals.length = 0;
+      carried = null;
+      updateInverse();
+      triggerInverse.copy(inverse);
+      incoming = null;
+      outOver = false;
+      outDone = new Promise<void>((resolve) => {
+        endOut = resolve;
+      });
+      // The build runs on the slicer through `out`, behind the old world, under
+      // OUT_BUILD_BUDGET_MS a frame (`slicerBudgetMs`).
+      void buildNext(id, from.id, outDone);
       return true;
+    },
+    slicerBudgetMs() {
+      return transition.phase === 'out' ? OUT_BUILD_BUDGET_MS : undefined;
     },
     diag() {
       diagState.state = transition.state;

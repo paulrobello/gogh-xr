@@ -9,7 +9,7 @@ import {
 import { createAudioHost } from './audio/audio';
 import { BUTTON_X, leftButtonPressed } from './bench/stick';
 import { bootWorld, GALLERY_WORLD, resolveBootMode } from './boot-mode';
-import { installDesktopControls } from './desktop/controls';
+import { installDesktopControls, releaseLock } from './desktop/controls';
 import { applyPainterCamera } from './desktop/painter-camera';
 import {
   type AbController,
@@ -558,6 +558,7 @@ settingsStore.subscribe((effective, key) => {
   }
 });
 renderer.xr.addEventListener('sessionstart', () => {
+  releaseLock(document);
   sessionQuality = settingsStore.effective.quality;
   panel?.sessionStart();
   const xrSession = renderer.xr.getSession();
@@ -607,7 +608,8 @@ function renderFrame(time: number, frame?: XRFrame): void {
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
   const dtMs = lastTime === 0 ? 0 : time - lastTime;
   lastTime = time;
-  slicer.frame();
+  // The portal's `out` phase runs the next world's build under its own budget.
+  slicer.frame(runLocomotion ? switcher.slicerBudgetMs() : undefined);
   const sources = renderer.xr.isPresenting ? renderer.xr.getSession()?.inputSources : null;
   actions = input.read(sources, keyboard, dt);
   if (panel) {

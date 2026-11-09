@@ -11,6 +11,11 @@ export function requestLock(canvas: HTMLCanvasElement): void {
   }
 }
 
+/** Frees the mouse when an XR session starts: a held lock would keep the desktop cursor hidden. */
+export function releaseLock(doc: Pick<Document, 'pointerLockElement' | 'exitPointerLock'>): void {
+  if (doc.pointerLockElement) doc.exitPointerLock();
+}
+
 /**
  * Desktop mouse look. The camera sits in the locomotion rig (src/locomotion/), which carries the
  * position and the rig yaw, so these controls only write the camera's local transform: the eye
