@@ -2089,3 +2089,47 @@ Not verified: whether a real Quest exposes its left menu button at index 6 (see 
   - A right trigger on Reload ended the session first: session `end` at 60105 ms, `pagehide` at 60109 ms, in page time.
   - The page came back 131 ms later running B, not presenting, with no notice. Its document request kept the start query and added `_reload`, and the address bar was then the start URL with `#xr`.
   - Load was 60.3 before and 73.9 after.
+
+## Reactive hand velocity on `predictedDisplayTime` (2026-11-08, card 01a1bb2274e5)
+
+`trackDisturbers` now hands the reactive tracker `frame.predictedDisplayTime` when the frame has one, and the XR callback time otherwise (`src/motion/tracker-time.ts`, unit test `tests/tracker-time.test.ts`). IWER makes the two times equal, so the emulator cannot show a difference. The headset check is Paul's and has not been run.
+
+To measure, on the Quest 3, run the build before this change and the build after it with `?diag&painting=starry-night&slow=20`, which forces frame drops. Wave the right controller at a steady pace for about 10 s each time and sample `__goghDiag().reactive.disturbers` for that controller slot. Record the spread of the `velocity` magnitude (minimum, median, p95, maximum) and the range of `wakePeak`. The expected result is a narrower spread and a steadier `wakePeak` after the change.
+
+## Portal wait: continuous motion through the world build (2026-11-08)
+
+Paul, Quest 3, on 486bb47: about 5 s of black between entering the painting and the world showing. The cause was in the draw order, not only the frozen strokes. The fly strokes were opaque and the veil is transparent, and three draws every opaque object before the transparent list whatever its render order, so the veil covered the strokes for the whole wait. Desktop captures of the new swirl, taken before this sort fix, were pure black for the same reason. The fly and cue meshes are now transparent with no blending, which sorts them after the veil and keeps the alpha-to-coverage pixels. The program does not change. While the world builds, the fly strokes swirl about axes through the eye, round 16 irregular vortices laid out in mirrored fours (fix round 1, below), and the fade style shows a dim, fixed field of night-coloured strokes that breathes in brightness (`src/portal/wait-motion.ts`).
+
+Measurements: `tests/e2e/portal.spec.ts`, desktop round trip, M4 Max, headless Chromium on ANGLE Metal at 60 Hz, E2E_PORT=4310, e2e build (scatter cache bypassed). The wait figures sum the `wait` frames of `__goghDiag().portal.frames`. Before is 3fcc225, two runs (load 14.24 before and 20.26 after, then 14.94 and 20.29). After is the change, one run (load 14.02 before and 30.99 after). The post-run load rose above 15 in every run, the runs' own Chromium and build included, so the timings are indicative.
+
+| Transition | Wait ms (frames) | Longest wait interval ms | Wait work ms, mean / max | Whole transition ms |
+| --- | --- | --- | --- | --- |
+| Enter, before | 3616 (217), 3666 (220), 3483 (209) | 16.8 | 4.65 / 7.9, 4.66 / 9.5, 4.49 / 9.5 | 5644, 5682, 5515 |
+| Enter, after | 3617 (217), 3500 (210) | 16.8 | 4.70 / 8.2, 4.57 / 8.6 | 5615, 5505 |
+| Return, before | 983 (59), 1000 (60), 1000 (60) | 16.8 | 2.49 / 6.9, 2.53 / 7.0, 2.46 / 6.9 | 2979, 3027, 3026 |
+| Return, after | 1000 (60), 1000 (60) | 16.8 | 2.60 / 7.2, 2.62 / 7.0 | 3011, 3009 |
+| Enter, fix round 1 | 3700 (222), 3483 (209) | 16.8 | 4.74 / 8.3, 4.63 / 10.0 | 5713, 5492 |
+| Return, fix round 1 | 1017 (61), 1000 (60) | 16.8 | 2.64 / 7.7, 2.54 / 7.2 | 3013, 3028 |
+
+The fix round 1 rows are one run at 6e91757 (load 13.87 before and 166 after). The wait length and the frame intervals are unchanged within run-to-run spread, and no wait frame missed a vsync. Under IWER at fix round 1 the waits read 3683, 3533 ms (enter) and 1000, 1000 ms (return), the longest frames 17.2 to 22.6 ms. Under IWER after the change the waits read 3617, 3483 ms (enter) and 999, 984 ms (return), the longest frames 17.6 to 20.5 ms against the 27.8 ms bar. The swirl's own CPU, measured in bun on the same machine at load 21.8: `swirlOffsets` 0.027 ms per frame for 3000 strokes, the first design's `createSwirl` 0.26 ms once per transition (fix round 1's `planSwirl`: 0.40 ms, and `swirlOffsets` 0.046 ms, at load 25), the pulse field's colours 0.006 ms per frame. The slicer budget is 6 ms per frame (`createSlicer(6)` in main.ts) and does not shrink with the frame's other work, so the build's pace is unaffected. The fly and cue each stay one draw per view.
+
+Fix round 1 (review of the change). The first swirl was a checkerboard lattice of vortex cells, which read as a grid. Its net rotation, 1.2 to 1.6% of the strokes' own, cancelled only on average. `planSwirl` replaces it with 4 groups of 4 vortices, each group with a random tilt, centre, radius (0.35 to 0.7 of the strokes' half-extent, which is at least 0.3 rad) and rate (±30%, scaled down by the half-extent over 0.3 so a wide cloud does not swirl faster), the 4 mirrored about the strokes' mean direction with the mirrors' spins flipped. The strokes hover in slots of eights: one stroke's place, the place opposite it on its circle, and the images of both. Each slot is filled by the stroke whose own view direction is nearest (grid buckets, greedy), so a stroke leaves its own line by 0.12 to 0.17 rad on average for the walked-in and return clouds. Filling the slots in stroke order instead scrambled the painting's colours (0.73 rad walked in, against the frame's 0.82 rad half-angle). A mirror image of a motion has angular velocity −Mω, so each four's net angular velocity is (I + R − M₁ − M₂)ω = 0, and two strokes opposite on one circle have opposite velocities. The field's net rotation and mean velocity are therefore 0 at every instant by construction, and the measured residue is float rounding.
+
+Comfort (`tests/portal-wait-motion.test.ts`, 3000 strokes, 80 samples over 20 s): the mean over strokes of each stroke's angular velocity about the eye, against the strokes' own mean.
+
+| Cloud | Net ω mean / worst, rad/s | Per-stroke ω, rad/s (central 30°) | Net / per-stroke | Mean velocity |
+| --- | --- | --- | --- | --- |
+| Frame from 4 m | 4.9e-9 / 1.5e-8 | 0.103 (0.103) | 4.7e-8 | 0 |
+| Walked in | 3.4e-8 / 8.8e-8 | 0.109 (0.124) | 3.1e-7 | 0 |
+| Walked in at a slant | 2.1e-8 / 4.7e-8 | 0.106 (0.108) | 2.0e-7 | 0 |
+| Return from a world | 1.8e-8 / 5.1e-8 | 0.110 (0.113) | 1.7e-7 | 0 |
+
+The test holds the worst at 1e-4 rad/s, the mean under 0.5% of the strokes' own, and the strokes' mean and the central strokes' mean above 0.05 rad/s (each cloud is about twice that floor, where the lattice gave the frame from 4 m 0.063 and the others 0.12 to 0.13), and each stroke keeps its distance from the eye to 10 µm. The first design's figures, for the record: net 0.00096 to 0.0020 rad/s mean, 0.0023 to 0.0039 worst, 1.2 to 1.6% of the strokes' own.
+
+The other review findings: a second leg that fails now keeps the strokes swirling and shrinks them away over the first 0.6 of the in phase, rather than freezing them over the new world. A desktop spawn, which resets the mouse look during the wait, turns the waiting strokes, their swirl and the pulse field with the camera, so the field holds still in view. In XR the spawn's look reset is overwritten by the head pose at the next render, so the strokes are not turned there. The pulse field faces the level heading, the camera's pitch dropped. The gallery starts loading every live scan when it binds, and strokes whose scan still lands after the trigger grow in over 0.3 s. `diag().cue` reads `swirl` only once the strokes have a first leg. The strokes upload only the attributes that change each frame: never the brush meta and tangent, and the pulse field's positions only when they move.
+
+Captures (`PORTAL_SHOTS=1`, `tests/e2e/portal-shots.spec.ts`, 1280 × 720, from 1.2 m before the frame, retaken after fix round 1 at load 14.48 before and 14.26 after): `docs/shots/p55-wait-fly-a.jpg` and `p55-wait-fly-b.jpg`, 1.0 s into the wait and 0.5 s later, and `docs/shots/p55-wait-fade.jpg` at calm 0.2, 2.5 s into the wait.
+
+In the fix round 1 shots the grid is gone and the strokes circle irregular vortices, but the mirror symmetry shows: the cloud reads as a four-lobed rosette about the view centre with a gap on the mean direction, because each group's four vortices sit symmetrically about it. More groups, or groups whose mirror axes are not shared, would hide it.
+
+Not verified: the headset. Whether the swirl reads as calm and painterly at Quest scale is Paul's call.

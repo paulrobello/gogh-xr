@@ -95,6 +95,7 @@ test('round trip: a saved settings object loads back equal', () => {
     standingHeight: 1.8,
     calm: 0.4,
     quality: 'beauty-72',
+    qualityLevel: 7,
     hud: true,
     musicVolume: 0.3,
     sfxVolume: 0.9,

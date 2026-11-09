@@ -5,7 +5,14 @@
  * Panel-local metres at scale 1: the origin is the panel's centre, +X right, +Y up, and the panel
  * faces +Z. Every hit target is at least `MIN_TARGET` in both directions.
  */
-import type { QualityMode, Settings } from '../settings/schema';
+import { type GovernorMode, type LadderStep, qualityLadder } from '../render/governor';
+import {
+  governorModeOf,
+  MAX_QUALITY_LEVEL,
+  type QualityLevel,
+  type QualityMode,
+  type Settings,
+} from '../settings/schema';
 
 export type ControlKind = 'slider' | 'segmented' | 'toggle' | 'button';
 export type PanelAction = 'recenter' | 'gallery';
@@ -56,6 +63,9 @@ const BUTTON_H = 0.048;
 export const MIN_TARGET = 0.025;
 export const TITLE_Y = PANEL_H / 2 - MARGIN - 0.012;
 export const HEADER_Y = PANEL_H / 2 - 0.072;
+
+/** The quality level slider's position for Auto, left of level 0. */
+export const AUTO_SLIDER = -1;
 
 /** Short labels: three segments share one column, about 9 cm each; the help text spells them out. */
 const QUALITY_OPTIONS: readonly SegmentOption[] = [
@@ -157,6 +167,19 @@ export const CONTROLS: readonly ControlDef[] = [
     help: '72 or 90 Hz with the adaptive governor, or beauty: 72 Hz at the highest stroke count',
     column: 1,
     row: 1,
+  },
+  {
+    id: 'qualityLevel',
+    kind: 'slider',
+    label: 'Quality level',
+    field: 'qualityLevel',
+    // -1 is Auto; the max follows the session's quality (`liveSliderDef`).
+    min: AUTO_SLIDER,
+    max: MAX_QUALITY_LEVEL,
+    step: 1,
+    help: 'Auto adapts. Level N fixes the first N governor steps, and each level keeps every step below it: fov 0.5, fb 0.85, fov 1, then far, mid, near density',
+    column: 1,
+    row: 5,
   },
   {
     id: 'hud',
@@ -352,10 +375,110 @@ export function sliderPosition(def: ControlDef, value: number): number {
   return max > min ? Math.min(1, Math.max(0, (value - min) / (max - min))) : 0;
 }
 
-export function formatValue(def: ControlDef, settings: Settings): string {
+/**
+ * The governor mode whose ladder the quality level row shows: the bound governor's own, so the row
+ * and the governor never disagree, or with none bound the mode the next one starts in.
+ */
+export function ladderMode(bound: GovernorMode | null, quality: QualityMode): GovernorMode {
+  return bound ?? governorModeOf(quality);
+}
+
+let ladders: Record<GovernorMode, readonly LadderStep[]> | null = null;
+/** Built on first use, so loading the layout builds no governor machine. */
+function ladderOf(mode: GovernorMode): readonly LadderStep[] {
+  ladders ??= { default: qualityLadder('default'), beauty: qualityLadder('beauty') };
+  return ladders[mode];
+}
+
+/** The highest fixed level `mode` has: its ladder's length. */
+export function qualityLevelMax(mode: GovernorMode): number {
+  return ladderOf(mode).length;
+}
+
+/** The level a governor in `mode` applies for `level`: it clamps it to the ladder. */
+export function appliedLevel(level: number, mode: GovernorMode): number {
+  return Math.min(level, qualityLevelMax(mode));
+}
+
+function ladderStepLabel(step: LadderStep): string {
+  if (step.step === 'foveation' || step.step === 'foveation-max') return `fov ${step.to}`;
+  if (step.step === 'fb-scale') return `fb ${step.to}`;
+  return `${step.step.slice(0, -'-density'.length)} ${step.to.toFixed(2)}`;
+}
+
+/**
+ * The quality level's value text: "Auto", "0 · full", or the level and the step it adds, as in
+ * "3 · fov 1" or "7 · far 0.10". Each level also keeps every step below it
+ * (`qualityLevelSummary` lists them all).
+ */
+export function qualityLevelLabel(level: QualityLevel, mode: GovernorMode): string {
+  if (level === 'auto') return 'Auto';
+  const n = appliedLevel(level, mode);
+  const step = ladderOf(mode)[n - 1];
+  return step ? `${n} · ${ladderStepLabel(step)}` : `${n} · full`;
+}
+
+const LEVERS = ['foveation', 'fb-scale', 'far-density', 'mid-density', 'near-density'] as const;
+
+/**
+ * Everything `level` sets, for the hover help: "Auto adapts", "full quality", or each lever it
+ * moves at its value, as in "fov 1, fb 0.85, far 0.10, mid 0.63".
+ */
+export function qualityLevelSummary(level: QualityLevel, mode: GovernorMode): string {
+  if (level === 'auto') return 'Auto adapts';
+  const applied = ladderOf(mode).slice(0, appliedLevel(level, mode));
+  if (applied.length === 0) return 'full quality';
+  const last = new Map<string, LadderStep>();
+  for (const step of applied)
+    last.set(step.step === 'foveation-max' ? 'foveation' : step.step, step);
+  return LEVERS.flatMap((lever) => {
+    const step = last.get(lever);
+    return step ? [ladderStepLabel(step)] : [];
+  }).join(', ');
+}
+
+/** A slider's definition for this governor mode: the quality level's max follows its ladder. */
+export function liveSliderDef(def: ControlDef, mode: GovernorMode): ControlDef {
+  return def.field === 'qualityLevel' ? { ...def, max: qualityLevelMax(mode) } : def;
+}
+
+/** Where a slider's setting sits on its track, in the slider's units (Auto is `AUTO_SLIDER`). */
+export function sliderSetting(def: ControlDef, settings: Settings, mode: GovernorMode): number {
+  if (def.field !== 'qualityLevel') return settings[def.field as keyof Settings] as number;
+  const level = settings.qualityLevel;
+  return level === 'auto' ? AUTO_SLIDER : appliedLevel(level, mode);
+}
+
+/**
+ * The setting a slider value stores: below 0 on the quality level is Auto. A value at the place
+ * the stored level already shows keeps the stored level, so a beauty 18 shown at an adaptive 16
+ * is not overwritten by a press that moves nothing.
+ */
+export function settingFromSlider(
+  def: ControlDef,
+  value: number,
+  settings?: Settings,
+  mode?: GovernorMode,
+): number | QualityLevel {
+  if (def.field !== 'qualityLevel') return value;
+  if (value < 0) return 'auto';
+  if (settings && mode && sliderSetting(def, settings, mode) === value) {
+    return settings.qualityLevel;
+  }
+  return value;
+}
+
+/** `mode` picks the quality level's ladder (`ladderMode`); it defaults to the setting's. */
+export function formatValue(
+  def: ControlDef,
+  settings: Settings,
+  mode: GovernorMode = governorModeOf(settings.quality),
+): string {
   if (!def.field) return '';
   const value = settings[def.field];
   switch (def.field) {
+    case 'qualityLevel':
+      return qualityLevelLabel(settings.qualityLevel, mode);
     case 'moveSpeed':
       return `${(value as number).toFixed(1)} m/s`;
     case 'standingHeight':

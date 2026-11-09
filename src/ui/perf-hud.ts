@@ -140,7 +140,7 @@ export function startPerfHud(deps: PerfHudDeps): PerfHud {
         foveation: gov.foveation,
         fbScale: gov.fbScale,
         fbScaleApplied: gov.fbScaleApplied,
-        notice: gov.notice,
+        fixedLevel: gov.fixedLevel,
       },
     };
   }

@@ -27,6 +27,7 @@ import { MOTION_TIME_WRAP_S, motionClock } from './motion/clock';
 import { MOTION_LAYER_MASK } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { SKY_WAVE_PER_TURN } from './motion/sky-swirl';
+import { trackerTime } from './motion/tracker-time';
 import { motionVariants } from './motion/variant-uniforms';
 import { DEFAULT_SKY_WRAP } from './motion/variants';
 import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
@@ -38,13 +39,18 @@ import { createBrushAtlas } from './render/strokes/brush-atlas';
 import { pinMotionPhase } from './render/strokes/material';
 import { createZdiag } from './render/zdiag';
 import { applySettingsChange, type HudLive } from './settings/apply';
-import { loadSettings, type QualityMode, toLocomotionSettings } from './settings/schema';
+import {
+  governorModeOf,
+  loadSettings,
+  type QualityMode,
+  toLocomotionSettings,
+} from './settings/schema';
 import { createSettingsStore } from './settings/store';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
 import { isNoticeKind, RELOAD_LABEL, settingsRecoveredText } from './ui/notice-queue';
-import { createNotices } from './ui/notices';
+import { createNotices, raiseRateFallback } from './ui/notices';
 import { clearPanelPose } from './ui/panel-pose';
 import {
   createPanelToggle,
@@ -251,7 +257,7 @@ function disturberAt(object: Object3D, slot: number): [number, number, number] {
   out[2] = disturberScratch.z;
   return out;
 }
-function trackDisturbers(time: number, presenting: boolean): void {
+function trackDisturbers(time: number, presenting: boolean, frame?: XRFrame): void {
   disturberPositions[0] = disturberAt(camera, 0);
   for (let i = 0; i < CONTROLLER_SLOTS; i += 1) {
     const space = controllerSpaces[i];
@@ -259,7 +265,7 @@ function trackDisturbers(time: number, presenting: boolean): void {
   }
   locomotion.rig.updateWorldMatrix(true, false);
   reactiveTracker.frame(
-    time,
+    trackerTime(time, frame),
     disturberPositions,
     locomotion.discontinuities(),
     locomotion.rig.matrixWorld.elements,
@@ -309,7 +315,6 @@ let painterView: PainterCamera | null = null;
 // session start read it then (P5.3).
 const benchless = (quality: QualityMode): QualityMode | null =>
   flags.bench === null ? quality : null;
-const isBeauty = (quality: QualityMode): boolean => benchless(quality) === 'beauty-72';
 const targetFrameRateFor = (quality: QualityMode): number =>
   resolveTargetFrameRate(flags.hz, benchless(quality));
 /** The rate the next XR entry requests. */
@@ -452,18 +457,16 @@ const strokes = createStrokeBinding({
               scene,
               batch,
               get mode() {
-                return isBeauty(settingsStore.effective.quality) ? 'beauty' : 'default';
+                return governorModeOf(settingsStore.effective.quality);
               },
               get targetHz() {
                 return nextTargetFrameRate();
               },
-              // The notice shows on the HUD's notice stack in XR. It also shows the HUD, hidden or
-              // not, whose text carries it too (R16).
-              notify: (message) => {
-                if (notices) notices.raise('rate-fallback', message);
-                else showNotice(message);
-                hud?.setVisible(true);
+              get fixedLevel() {
+                const level = settingsStore.effective.qualityLevel;
+                return level === 'auto' ? null : level;
               },
+              notify: (message) => raiseRateFallback(notices, message),
             });
         },
 });
@@ -518,6 +521,7 @@ const panel = runLocomotion
           recenter,
           gallery: galleryReturnCallback,
           sessionQuality: () => sessionQuality,
+          governorMode: () => strokes.governorMode(),
           hud: hudLive,
         });
       },
@@ -529,6 +533,7 @@ const panel = runLocomotion
           gallery: galleryReturnCallback,
           onGalleryChange: onGalleryReturnChange,
           sessionQuality: () => sessionQuality,
+          governorMode: () => strokes.governorMode(),
           hud: hudLive,
           onClose: () => input.suppressHeld(),
         });
@@ -597,7 +602,7 @@ function detectPortals(): void {
     jumped,
   });
 }
-function renderFrame(time: number): void {
+function renderFrame(time: number, frame?: XRFrame): void {
   const workStart = performance.now();
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
   const dtMs = lastTime === 0 ? 0 : time - lastTime;
@@ -646,7 +651,7 @@ function renderFrame(time: number): void {
     if (transitionEnded) updates?.settle();
     locomotion.frame(busy ? frozenActions(actions) : actions, renderer.xr.isPresenting);
     if (!busy) detectPortals();
-    trackDisturbers(time, renderer.xr.isPresenting);
+    trackDisturbers(time, renderer.xr.isPresenting, frame);
   }
   zdiag.beforeRender(camera);
   const renderStart = performance.now();

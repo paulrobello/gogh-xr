@@ -17,6 +17,12 @@
  * picks up the rate once session settings apply) and on `frameratechange`. The requested rate is
  * the fallback while the session reports none. Frames are not judged while the session is not
  * 'visible'.
+ *
+ * A fixed quality level (`deps.fixedLevel`, the `qualityLevel` setting) is read every frame, in XR
+ * and on the desktop, and a change rebuilds the machine at once, so the next frame draws it: a
+ * fixed machine at that level, or for Auto an adaptive one from the mode's start levels, as at a
+ * new session. The rebuild keeps the session's mode and the rate asked of it. A session start or
+ * end rebuilds at the current level too.
  */
 import type { Scene } from 'three';
 import { GpuTimer, type TimerGl } from '../bench/gpu-timer';
@@ -83,6 +89,8 @@ export interface GovernorRuntimeDeps {
   notify?: (message: string) => void;
   /** The density shed's size law; defaults to `?densitylaw`, else `area` (governor.ts). */
   densityLaw?: DensityLaw;
+  /** A fixed quality level, or null for the adaptive machine (Auto). Read every frame. */
+  readonly fixedLevel?: number | null;
 }
 
 /** The `governor` diag key. `fbScale` reads 'unavailable' when the adapter cannot apply it. */
@@ -101,6 +109,8 @@ export interface GovernorDiag extends Omit<GovernorSnapshot, 'fbScale'> {
 }
 
 export interface GovernorRuntime {
+  /** The mode the running machine was built in: `deps.mode` as read at the last reset. */
+  readonly mode: GovernorMode;
   /** Call once per animation frame with the frame timestamp, before rendering. */
   frame(time: number): void;
   diag(): GovernorDiag;
@@ -114,6 +124,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     mode: deps.mode,
     targetHz: deps.targetHz,
     densityLaw: deps.densityLaw ?? flags.densityLaw ?? 'area',
+    fixedLevel: deps.fixedLevel ?? null,
   };
   let governor: Governor = createGovernor(config);
   let scaler: ViewportScaler | null = null;
@@ -153,10 +164,16 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     }
     target.updateTargetFrameRate(event.to).then(
       () => {
-        if (disposed || owner !== governor) return;
+        if (disposed) return;
         requestedHz = event.to;
-        owner.rateApplied(event.to);
-        owner.setFrameRate(target.frameRate ?? event.to);
+        if (owner === governor) {
+          owner.rateApplied(event.to);
+          owner.setFrameRate(target.frameRate ?? event.to);
+        } else {
+          // A level change replaced the machine while the request was in flight: rebuild the one
+          // running now on the rate the session runs at, so it neither budgets 90 nor asks again.
+          setFixedLevel(config.fixedLevel);
+        }
         console.info(`[governor] ${RATE_NOTICE} (${event.from} Hz overran at minimum quality)`);
         deps.notify?.(RATE_NOTICE);
       },
@@ -196,6 +213,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     scaler = xr.isPresenting ? installViewportScale(xr) : null;
     config.mode = deps.mode;
     config.targetHz = deps.targetHz;
+    config.fixedLevel = deps.fixedLevel ?? null;
     governor = createGovernor(config);
     requestedHz = deps.targetHz;
     lastTime = null;
@@ -213,6 +231,15 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     if (xr.isPresenting) timer.begin();
   });
   const removeAfter = addAfterRender(scene, () => timer.end());
+
+  /** A new fixed level, or Auto: a fresh machine on the session's mode and requested rate. */
+  function setFixedLevel(level: number | null): void {
+    config.fixedLevel = level;
+    config.targetHz = requestedHz;
+    governor = createGovernor(config);
+    lastTime = null;
+    applyLevels();
+  }
 
   function judging(): boolean {
     return xr.isPresenting && (!session || session.visibilityState === 'visible');
@@ -232,7 +259,12 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   registerDiag('governor', diag);
 
   return {
+    get mode() {
+      return config.mode;
+    },
     frame(time: number) {
+      const level = deps.fixedLevel ?? null;
+      if (level !== config.fixedLevel) setFixedLevel(level);
       if (!judging()) {
         lastTime = null;
         return;

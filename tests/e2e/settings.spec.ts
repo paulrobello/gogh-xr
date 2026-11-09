@@ -103,3 +103,59 @@ test('corrupt stored settings fall back to the defaults and report the reason', 
   expect(settings.recovered).toBe('corrupt-json');
   expect(diag.rig).toMatchObject({ turnMode: 'snap' });
 });
+
+interface FixedGovernorDiag {
+  fixedLevel: number | null;
+  level: number;
+  foveation: number;
+  fbScale: number | 'unavailable';
+  history: unknown[];
+}
+
+async function governorOf(page: Page): Promise<FixedGovernorDiag> {
+  const handle = await page.waitForFunction(
+    () => (window.__goghDiag?.() as unknown as { governor?: unknown } | undefined)?.governor,
+    undefined,
+    { timeout: 30_000 },
+  );
+  return (await handle.jsonValue()) as FixedGovernorDiag;
+}
+
+test('a fixed quality level set in the DOM panel applies, survives a reload and shows in the governor diag', async ({
+  page,
+}) => {
+  await page.goto('/?diag&noanim&strokesTest');
+  expect(await governorOf(page)).toMatchObject({ fixedLevel: null, level: 0, foveation: 0 });
+  await page.keyboard.press('m');
+  const row = page.locator('#gogh-settings [data-control="qualityLevel"]');
+  const slider = row.locator('input[type=range]');
+  await expect(slider).toHaveValue('-1');
+  await expect(row.locator('.value')).toHaveText('Auto');
+  // Keyboard on the range input: Home is Auto, then four steps right is level 3.
+  await slider.focus();
+  await page.keyboard.press('Home');
+  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
+  await expect(row.locator('.value')).toHaveText('3 · fov 1');
+  await expect
+    .poll(async () => governorOf(page))
+    .toMatchObject({ fixedLevel: 3, level: 3, foveation: 1, fbScale: 0.85, history: [] });
+  await expect
+    .poll(() => page.evaluate((k) => localStorage.getItem(k), KEY))
+    .toContain('"qualityLevel":3');
+
+  await page.reload();
+  expect(await governorOf(page)).toMatchObject({ fixedLevel: 3, level: 3, foveation: 1 });
+  const diag = await page.evaluate(
+    () => window.__goghDiag?.() as unknown as Record<string, unknown>,
+  );
+  expect((diag.settings as SettingsDiag).stored).toMatchObject({ qualityLevel: 3 });
+
+  // Back to Auto: the adaptive machine from the start levels.
+  await page.keyboard.press('m');
+  await slider.focus();
+  await page.keyboard.press('Home');
+  await expect(row.locator('.value')).toHaveText('Auto');
+  await expect
+    .poll(async () => governorOf(page))
+    .toMatchObject({ fixedLevel: null, level: 0, foveation: 0, fbScale: 1 });
+});

@@ -1,5 +1,7 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RATE_NOTICE } from '../src/render/governor';
+import { createHudToggle } from '../src/ui/hud-toggle';
 import { clearNotices, syncNotices } from '../src/ui/notice';
 import {
   BASE_ELEVATION,
@@ -14,7 +16,7 @@ import {
 } from '../src/ui/notice-geometry';
 import type { NoticeHudFrame } from '../src/ui/notice-hud';
 import type { NoticeHit, NoticeKind } from '../src/ui/notice-queue';
-import { createNotices, type NoticeView } from '../src/ui/notices';
+import { createNotices, type NoticeView, raiseRateFallback } from '../src/ui/notices';
 import { createPanelPose } from '../src/ui/panel-core';
 import { PANEL_H, PANEL_W } from '../src/ui/panel-layout';
 import { DEFAULT_OFFSET, defaultStored, facing, fromStored } from '../src/ui/panel-pose';
@@ -283,6 +285,34 @@ function fakeView(targets: Record<Hand, NoticeHit | null> = { left: null, right:
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('notices host', () => {
+  it('shows the 72 Hz notice on the XR stack while the perf HUD stays hidden and unbuilt (2026-11-08)', async () => {
+    const fake = fakeView();
+    const notices = createNotices({ build: async () => fake.view, syncDom: () => {} });
+    const hudBuild = vi.fn(async () => ({ frame: vi.fn(), setVisible: vi.fn(), diag: () => ({}) }));
+    const hud = createHudToggle({ visible: false, build: hudBuild });
+    // The governor's notify in main.ts: it raises the notice and leaves the HUD alone.
+    const dom = vi.fn();
+    raiseRateFallback(notices, RATE_NOTICE, dom);
+    expect(dom).not.toHaveBeenCalled();
+    notices.frame(true, actions(), hold());
+    await settle();
+    notices.frame(true, actions(), hold());
+    hud.frame(0, false);
+    expect(fake.frames.at(-1)).toMatchObject({
+      presenting: true,
+      shown: [{ kind: 'rate-fallback', text: RATE_NOTICE }],
+    });
+    expect(notices.diag().view).toMatchObject({ visible: true });
+    expect(hud.diag()).toEqual({ visible: false, built: false });
+    expect(hudBuild).not.toHaveBeenCalled();
+  });
+
+  it('the 72 Hz notice falls back to a DOM notice before the notices host exists', () => {
+    const dom = vi.fn();
+    raiseRateFallback(null, RATE_NOTICE, dom);
+    expect(dom).toHaveBeenCalledWith(RATE_NOTICE);
+  });
+
   it('builds nothing until a presenting frame has a notice queued', async () => {
     const fake = fakeView();
     const build = vi.fn(async () => fake.view);

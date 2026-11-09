@@ -5,19 +5,24 @@
  */
 import {
   DataTexture,
+  Euler,
   Group,
   Mesh,
   MeshBasicMaterial,
+  NoBlending,
   PerspectiveCamera,
   PlaneGeometry,
+  Quaternion,
   Scene,
   type Texture,
+  Vector3,
   type WebGLRenderer,
 } from 'three';
 import { describe, expect, test, vi } from 'vitest';
 import type { Raster } from '../src/demo/canvas/field.ts';
 import { HANGINGS } from '../src/paintings/gallery/layout.ts';
 import type { WorldModule, WorldPose } from '../src/paintings/world-module.ts';
+import { createFlyStrokes } from '../src/portal/fly-strokes.ts';
 import { insidePortal, livePortals, PORTAL_DEPTH, portalOf } from '../src/portal/portal.ts';
 import {
   createSwitcher,
@@ -27,6 +32,7 @@ import {
   revealEnd,
 } from '../src/portal/switcher.ts';
 import type { StrokeBatch } from '../src/render/strokes/batch.ts';
+import { VIGNETTE_RENDER_ORDER } from '../src/ui/vignette.ts';
 import { createSlicer } from '../src/util/slicer.ts';
 
 const FRAME_MS = 1000 / 60;
@@ -95,6 +101,7 @@ function raster(): Raster {
 
 interface Rig {
   readonly switcher: ReturnType<typeof createSwitcher>;
+  readonly camera: PerspectiveCamera;
   readonly scene: Scene;
   readonly rig: Group;
   readonly log: string[];
@@ -107,11 +114,21 @@ interface Rig {
   readonly failing: Set<string>;
   /** Per id, the stroke counts of the built world's batch chunks. */
   readonly chunkCounts: Map<string, readonly number[]>;
+  /** Per id, a promise the build waits on before it builds. */
+  readonly gates: Map<string, Promise<void>>;
   loadRaster: (url: string) => Promise<Raster>;
   calm: number;
 }
 
-function setup(): Rig {
+function setup(
+  options: {
+    loadRaster?: (url: string) => Promise<Raster>;
+    /** Runs inside `spawn`, as a desktop spawn resets the look. */
+    onSpawn?: (camera: PerspectiveCamera) => void;
+    /** The renderer reports an XR session presenting. */
+    presenting?: boolean;
+  } = {},
+): Rig {
   const scene = new Scene();
   const rig = new Group();
   scene.add(rig);
@@ -125,14 +142,16 @@ function setup(): Rig {
   const calls = { suppress: 0, bare: 0, compile: 0 };
   const failing = new Set<string>();
   const chunkCounts = new Map<string, readonly number[]>();
+  const gates = new Map<string, Promise<void>>();
   const renderer = {
     compileAsync: async () => {
       calls.compile += 1;
     },
     initTexture: (texture: Texture) => uploads.push(texture),
+    xr: { isPresenting: options.presenting === true },
   } as unknown as WebGLRenderer;
   const state: { loadRaster: (url: string) => Promise<Raster>; calm: number } = {
-    loadRaster: vi.fn(async (_url: string) => raster()),
+    loadRaster: options.loadRaster ?? vi.fn(async (_url: string) => raster()),
     calm: 1,
   };
   const switcher = createSwitcher({
@@ -145,6 +164,8 @@ function setup(): Rig {
     build: async (id) => {
       log.push(`build ${id}`);
       await Promise.resolve();
+      const gate = gates.get(id);
+      if (gate) await gate;
       if (failing.has(id)) throw new Error(`no world for ${id}`);
       const world = fakeWorld(id, scene, log, chunkCounts.get(id));
       worlds.set(id, world);
@@ -152,7 +173,10 @@ function setup(): Rig {
     },
     bind: (world) => log.push(`bind ${world.id}`),
     unbind: () => log.push('unbind'),
-    spawn: (pose) => spawns.push(pose),
+    spawn: (pose) => {
+      spawns.push(pose);
+      options.onSpawn?.(camera);
+    },
     bare: () => {
       calls.bare += 1;
     },
@@ -166,6 +190,7 @@ function setup(): Rig {
   });
   const r: Rig = {
     switcher,
+    camera,
     scene,
     rig,
     log,
@@ -176,6 +201,7 @@ function setup(): Rig {
     calls,
     failing,
     chunkCounts,
+    gates,
     get loadRaster() {
       return state.loadRaster;
     },
@@ -215,6 +241,20 @@ const standing = (pose: WorldPose): [number, number, number] => [
 ];
 
 describe('createSwitcher', () => {
+  test('the gallery starts loading every live scan when it binds, before any trigger', async () => {
+    const r = setup();
+    expect(r.loadRaster).toHaveBeenCalledTimes(1);
+    const h = must(HANGINGS.find((x) => x.painting.id === 'starry-night'));
+    expect(r.loadRaster).toHaveBeenCalledWith(expect.stringContaining(h.painting.frameImage));
+    // The trigger finds it ready: the strokes leave the frame on the first frame.
+    r.switcher.go('starry-night', 'api');
+    await Promise.resolve();
+    await Promise.resolve();
+    r.switcher.frame(FRAME_MS);
+    expect(r.switcher.diag().cue).toBe('swirl');
+    expect(r.loadRaster).toHaveBeenCalledTimes(1);
+  });
+
   test('fly: disposes the old world before building the new one, which stays hidden until ready', async () => {
     const r = setup();
     const gallery = must(r.worlds.get(GALLERY_ID));
@@ -293,7 +333,8 @@ describe('createSwitcher', () => {
     // 0.3 s out and 0.3 s in, plus the wait's few frames for the build, upload and show.
     expect(frames * FRAME_MS).toBeGreaterThan(600);
     expect(frames * FRAME_MS).toBeLessThan(800);
-    expect(r.loadRaster).not.toHaveBeenCalled();
+    // The gallery's prefetch is the only load: the fade needs no scan.
+    expect(r.loadRaster).toHaveBeenCalledTimes(1);
     expect(r.rig.children.some((c) => c.name === 'portal-fly')).toBe(false);
   });
 
@@ -351,17 +392,37 @@ describe('createSwitcher', () => {
     expect(r.rig.children.length).toBe(children);
     expect(r.rig.children.some((c) => c.name === 'portal-fly')).toBe(false);
     expect(r.switcher.diag().state).toBe('idle');
+    expect(r.switcher.diag().cue).toBe(null);
+  });
+
+  test('idle after a fade: the pulse field is gone too', async () => {
+    const r = setup();
+    r.calm = 0.2;
+    r.switcher.go('starry-night', 'api');
+    await run(r);
+    for (let i = 0; i < 10; i++) r.switcher.frame(FRAME_MS);
+    expect(r.rig.children.some((c) => c.name === 'portal-cue')).toBe(false);
+    expect(r.rig.children.some((c) => c.name === 'portal-fly')).toBe(false);
+    expect(r.switcher.diag().cue).toBe(null);
   });
 
   test('a failed scan load ends the transition, and is fetched again next time (F2)', async () => {
-    const r = setup();
     const offline = vi.fn(async (): Promise<Raster> => {
       throw new Error('offline');
     });
-    r.loadRaster = offline;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The gallery's prefetch fails, and is not kept.
+    const r = setup({ loadRaster: offline });
+    expect(offline).toHaveBeenCalledTimes(1);
     // Out of the gallery the strokes leave the frame: the first leg needs the scan.
     r.switcher.go('starry-night', 'api');
+    for (let i = 0; i < 3; i++) {
+      r.switcher.frame(FRAME_MS);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    // With no first leg nothing swirls.
+    expect(r.switcher.diag().flying).toBe(true);
+    expect(r.switcher.diag().cue).toBe(null);
     await run(r);
     expect(r.switcher.active?.id).toBe('starry-night');
     expect(r.veils.at(-1)).toBe(0);
@@ -371,8 +432,10 @@ describe('createSwitcher', () => {
     expect(r.switcher.active?.id).toBe(GALLERY_ID);
     expect(r.switcher.busy).toBe(false);
     expect(r.veils.at(-1)).toBe(0);
+    // The out leg shared the prefetch's load, and the second leg shared the gallery's prefetch at
+    // the bind back: two loads, both failed.
     expect(offline).toHaveBeenCalledTimes(2);
-    // Neither failure was kept: once the network is back, the next transition fetches it.
+    // No failure was kept: once the network is back, the next transition fetches it.
     const online = vi.fn(async () => raster());
     r.loadRaster = online;
     r.switcher.go('starry-night', 'api');
@@ -430,6 +493,421 @@ describe('createSwitcher', () => {
 
   test('the live portals are the frames with a world', () => {
     expect(livePortals().map((p) => p.id)).toEqual(['starry-night']);
+  });
+});
+
+/** One drawn frame of a mesh of strokes: its phase and copies of its instance data. */
+interface Shot {
+  phase: string;
+  position: Float32Array;
+  color: Uint8Array;
+  size: Float32Array;
+  visible: boolean;
+}
+
+function meshOf(r: Rig, name: string): Mesh | undefined {
+  return r.rig.children.find((c) => c.name === name) as Mesh | undefined;
+}
+
+/**
+ * Runs the transition to its end at `dtMs` a frame, opening `gate` (if any) after `holdFrames`, and
+ * records `name`'s instances after every frame that drew it.
+ */
+async function record(
+  r: Rig,
+  name: string,
+  dtMs: number,
+  opts: { open?: () => void; holdFrames?: number } = {},
+): Promise<Shot[]> {
+  const shots: Shot[] = [];
+  const mesh = meshOf(r, name);
+  for (let i = 0; i < 2000 && r.switcher.busy; i++) {
+    if (opts.open && i === opts.holdFrames) opts.open();
+    const before = r.switcher.diag().frames.length;
+    r.switcher.frame(dtMs);
+    r.switcher.endFrame(1, 0.5);
+    const frame = r.switcher.diag().frames[before];
+    const m = mesh ?? meshOf(r, name);
+    // The `done` frame disposes the strokes rather than drawing them.
+    if (frame && m && frame.phase !== 'done') {
+      const g = m.geometry;
+      shots.push({
+        phase: frame.phase,
+        position: (g.getAttribute('iPosition').array as Float32Array).slice(),
+        color: (g.getAttribute('iColor').array as Uint8Array).slice(),
+        size: (g.getAttribute('iSize').array as Float32Array).slice(),
+        visible: m.visible,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(r.switcher.busy).toBe(false);
+  return shots;
+}
+
+/** The largest per-stroke change between shots `a` and `b`, by position, colour and size. */
+function step(a: Shot, b: Shot): { position: number; color: number; size: number } {
+  let position = 0;
+  let color = 0;
+  let size = 0;
+  for (let i = 0; i < a.position.length / 3; i++) {
+    const i3 = i * 3;
+    position = Math.max(
+      position,
+      Math.hypot(
+        b.position[i3] - a.position[i3],
+        b.position[i3 + 1] - a.position[i3 + 1],
+        b.position[i3 + 2] - a.position[i3 + 2],
+      ),
+    );
+    for (let c = 0; c < 3; c++) {
+      color = Math.max(color, Math.abs(b.color[i * 4 + c] - a.color[i * 4 + c]));
+    }
+    size = Math.max(
+      size,
+      Math.abs(b.size[i * 2] - a.size[i * 2]),
+      Math.abs(b.size[i * 2 + 1] - a.size[i * 2 + 1]),
+    );
+  }
+  return { position, color, size };
+}
+
+/** Stroke `i`'s move from shot `a` to shot `b`, metres. */
+function moved(a: Shot, b: Shot, i: number): number {
+  const i3 = i * 3;
+  return Math.hypot(
+    b.position[i3] - a.position[i3],
+    b.position[i3 + 1] - a.position[i3 + 1],
+    b.position[i3 + 2] - a.position[i3 + 2],
+  );
+}
+
+/**
+ * The step across the boundary from phase `from` to `to` is no larger than the motion's own. Per
+ * stroke, its move across the boundary is at most 1.5 times the larger of its moves into the frame
+ * before and out of the frame after, plus 0.2 mm: a stroke the `in` leg has not started yet moves
+ * only with the swirl on both sides, so a pop of its position shows at once. Colours and sizes
+ * step by at most 1.5 times their largest step among the `window` frames on either side, plus a
+ * byte and 0.1 mm.
+ */
+function expectSmooth(shots: Shot[], from: string, to: string, window = 8): void {
+  const at = shots.findIndex((s, i) => i > 0 && shots[i - 1].phase === from && s.phase === to);
+  expect(at, `${from} → ${to}`).toBeGreaterThan(1);
+  expect(at + 1, `${from} → ${to}`).toBeLessThan(shots.length);
+  const [before, last, first, after] = [shots[at - 2], shots[at - 1], shots[at], shots[at + 1]];
+  let worst = 0;
+  for (let i = 0; i < last.position.length / 3; i++) {
+    const own = Math.max(moved(before, last, i), moved(first, after, i));
+    worst = Math.max(worst, moved(last, first, i) - (1.5 * own + 2e-4));
+  }
+  expect(worst, `${from} → ${to} position`).toBeLessThanOrEqual(0);
+  const across = step(last, first);
+  let color = 0;
+  let size = 0;
+  const lo = Math.max(1, at - window);
+  const hi = Math.min(shots.length - 1, at + window);
+  for (let i = lo; i <= hi; i++) {
+    if (i === at) continue;
+    const s = step(shots[i - 1], shots[i]);
+    color = Math.max(color, s.color);
+    size = Math.max(size, s.size);
+  }
+  expect(across.color, `${from} → ${to} colour`).toBeLessThanOrEqual(1.5 * color + 1);
+  expect(across.size, `${from} → ${to} size`).toBeLessThanOrEqual(1.5 * size + 1e-4);
+}
+
+describe('the wait keeps the view moving', () => {
+  test('the strokes draw over the veil: transparent, so three sorts them after it', () => {
+    const parent = new Group();
+    const fly = createFlyStrokes(parent, new DataTexture(new Uint8Array(4), 1, 1));
+    // three draws the opaque list before the transparent one, where the veil is, whatever the
+    // render order: an opaque mesh would sit under the veil all through the wait.
+    expect(fly.mesh.material.transparent).toBe(true);
+    expect(fly.mesh.material.blending).toBe(NoBlending);
+    expect(fly.mesh.material.alphaToCoverage).toBe(true);
+    expect(fly.mesh.renderOrder).toBeGreaterThan(VIGNETTE_RENDER_ORDER);
+    fly.dispose();
+  });
+
+  test('a frame uploads only what moves: never the brushes, the positions only when they move', () => {
+    const parent = new Group();
+    const fly = createFlyStrokes(parent, new DataTexture(new Uint8Array(4), 1, 1), 64, 'n2');
+    const g = fly.mesh.geometry;
+    const versions = () =>
+      Object.fromEntries(
+        ['iPosition', 'iNormal', 'iTangent', 'iColor', 'iSize', 'iMeta'].map((name) => [
+          name,
+          (g.getAttribute(name) as { version: number }).version,
+        ]),
+      );
+    const at = new Float32Array(64 * 3).map((_, i) => (i % 3 === 2 ? -2 : 0.01 * i));
+    const rgb = new Uint8Array(64 * 3).fill(90);
+    const size = new Float32Array(64 * 2).fill(0.03);
+    fly.place(at, rgb, size, [0, 0, 0]);
+    const first = versions();
+    fly.place(at, rgb, size, [0, 0.1, 0]);
+    const second = versions();
+    expect(second.iPosition).toBe(first.iPosition);
+    expect(second.iTangent).toBe(first.iTangent);
+    expect(second.iMeta).toBe(first.iMeta);
+    expect(second.iNormal).toBe(first.iNormal + 1);
+    expect(second.iColor).toBe(first.iColor + 1);
+    expect(second.iSize).toBe(first.iSize + 1);
+    at[0] += 0.1;
+    fly.place(at, rgb, size, [0, 0.1, 0]);
+    expect(versions().iPosition).toBe(second.iPosition + 1);
+    fly.dispose();
+  });
+
+  test.each([
+    ['short (the build at once)', FRAME_MS, 0],
+    ['about 1 s', FRAME_MS, 96],
+    ['over 10 s', 50, 220],
+  ] as const)(
+    'fly, %s: the strokes swirl through the wait, with no pop at either end',
+    async (_label, dtMs, holdFrames) => {
+      const r = setup();
+      let open = (): void => {};
+      if (holdFrames > 0)
+        r.gates.set('starry-night', new Promise<void>((resolve) => (open = resolve)));
+      expect(r.switcher.go('starry-night', 'api')).toBe(true);
+      const shots = await record(r, 'portal-fly', dtMs, { open: () => open(), holdFrames });
+      const wait = shots.filter((s) => s.phase === 'wait');
+      // The out leg takes its frames (36 at 60 Hz, 12 at 20 Hz) before the wait starts.
+      expect(wait.length).toBeGreaterThan(holdFrames > 0 ? holdFrames - 40 : 1);
+      expect(r.switcher.diag().waitMs).toBeCloseTo(wait.length * dtMs, 6);
+      // Never still: every wait frame moves the strokes.
+      for (let i = 1; i < wait.length; i++) {
+        expect(step(wait[i - 1], wait[i]).position).toBeGreaterThan(1e-5);
+      }
+      // And the swirl stays near: each stroke circles a vortex, so none strays more than 0.8 m
+      // from where the out leg left it, about the widest circle 1.6 m from the eye.
+      const hover = must(shots.filter((s) => s.phase === 'out').at(-1));
+      for (const s of wait) {
+        for (let i = 0; i < s.position.length; i++) {
+          expect(Math.abs(s.position[i] - hover.position[i])).toBeLessThan(0.8);
+        }
+      }
+      expectSmooth(shots, 'out', 'wait');
+      expectSmooth(shots, 'wait', 'in');
+    },
+  );
+
+  test('a return whose scan lands frames after the world binds still hands off without a pop', async () => {
+    const r = setup();
+    r.switcher.go('starry-night', 'api');
+    await run(r);
+    // Back to the gallery the second leg waits on the scan: hold it for 30 frames.
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    r.loadRaster = vi.fn(async () => {
+      await held;
+      return raster();
+    });
+    expect(r.switcher.go(GALLERY_ID, 'return')).toBe(true);
+    let frames = 0;
+    const shots: Shot[] = [];
+    const mesh = must(meshOf(r, 'portal-fly'));
+    for (let i = 0; i < 1000 && r.switcher.busy; i++) {
+      // The scan resolves 30 frames after the bind.
+      if (r.log.at(-1) === 'bind gallery' && ++frames === 30) release();
+      const before = r.switcher.diag().frames.length;
+      r.switcher.frame(FRAME_MS);
+      r.switcher.endFrame(1, 0.5);
+      const frame = r.switcher.diag().frames[before];
+      if (frame && frame.phase !== 'done') {
+        const g = mesh.geometry;
+        shots.push({
+          phase: frame.phase,
+          position: (g.getAttribute('iPosition').array as Float32Array).slice(),
+          color: (g.getAttribute('iColor').array as Uint8Array).slice(),
+          size: (g.getAttribute('iSize').array as Float32Array).slice(),
+          visible: mesh.visible,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(r.switcher.busy).toBe(false);
+    expect(frames).toBeGreaterThanOrEqual(30);
+    expectSmooth(shots, 'out', 'wait');
+    expectSmooth(shots, 'wait', 'in');
+    expect(r.switcher.active?.id).toBe(GALLERY_ID);
+  });
+
+  test('fade, over 10 s: a fixed field breathes under the veil, grows in and shrinks away', async () => {
+    const r = setup();
+    r.calm = 0.2;
+    let open = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (open = resolve)));
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    expect(r.switcher.diag().cue).toBe('pulse');
+    expect(meshOf(r, 'portal-fly')).toBeUndefined();
+    const shots = await record(r, 'portal-cue', 50, { open: () => open(), holdFrames: 220 });
+    const wait = shots.filter((s) => s.phase === 'wait');
+    expect(wait.length * 50).toBeGreaterThan(10_000);
+    // No translation, ever: every drawn frame has the same positions.
+    for (const s of shots) expect(s.position).toEqual(shots[0].position);
+    // It breathes: the brightness of the wait's frames changes over the wait.
+    const reds = new Set(wait.map((s) => s.color[0]));
+    expect(reds.size).toBeGreaterThan(5);
+    // It grows in with the veil from nothing, is full size while waiting and shrinks to nothing.
+    expect(Math.max(...shots[0].size)).toBeLessThan(Math.max(...wait[0].size));
+    const last = must(shots.at(-1));
+    expect(last.phase).toBe('in');
+    expect(Math.max(...last.size)).toBeLessThan(0.25 * Math.max(...wait[0].size));
+    expectSmooth(shots, 'out', 'wait');
+    expectSmooth(shots, 'wait', 'in');
+    // It is gone at the end, and the transition ended where it should.
+    expect(meshOf(r, 'portal-cue')).toBeUndefined();
+    expect(r.switcher.active?.id).toBe('starry-night');
+    expect(r.veils.at(-1)).toBe(0);
+  });
+
+  test('a second leg that fails keeps the strokes swirling and shrinks them away (M-1)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Offline throughout: back in the gallery the second leg cannot find the frame's scan.
+    const r = setup({
+      loadRaster: vi.fn(async (): Promise<Raster> => {
+        throw new Error('offline');
+      }),
+    });
+    r.switcher.go('starry-night', 'api');
+    await run(r);
+    r.switcher.go(GALLERY_ID, 'return');
+    const shots = await record(r, 'portal-fly', FRAME_MS);
+    const into = shots.filter((s) => s.phase === 'in');
+    expect(into.length).toBeGreaterThan(10);
+    const largest = (s: Shot) => Math.max(...s.size);
+    // They keep moving while they shrink, and are gone well before the veil is.
+    for (let i = 1; i < into.length && largest(into[i]) > 0; i++) {
+      expect(step(into[i - 1], into[i]).position).toBeGreaterThan(1e-5);
+      expect(largest(into[i])).toBeLessThanOrEqual(largest(into[i - 1]));
+    }
+    expect(largest(must(into.at(-1)))).toBe(0);
+    expect(largest(into[0])).toBeGreaterThan(0);
+    expectSmooth(shots, 'wait', 'in');
+    warn.mockRestore();
+  });
+
+  test.each([
+    ['desktop', false],
+    ['XR', true],
+  ])('%s: a spawn that resets the look leaves the field still in view (M-2)', async (_l, xr) => {
+    // In XR the head pose comes back at the next render, as three's XR camera writes it.
+    let head: Quaternion | null = null;
+    const r = setup({
+      presenting: xr,
+      onSpawn: (camera) => {
+        if (xr) head = camera.quaternion.clone();
+        camera.quaternion.identity();
+      },
+    });
+    // Looking left and down when the trigger fires.
+    r.camera.quaternion.setFromEuler(new Euler(-0.4, 0.6, 0, 'YXZ'));
+    r.camera.position.set(0, 1.6, 0);
+    r.gates.set('starry-night', new Promise<void>((resolve) => setTimeout(resolve, 200)));
+    r.switcher.go('starry-night', 'api');
+    const mesh = () => meshOf(r, 'portal-fly');
+    const view: { phase: string; at: Float32Array }[] = [];
+    const inverse = new Quaternion();
+    const p = new Vector3();
+    for (let i = 0; i < 2000 && r.switcher.busy; i++) {
+      const before = r.switcher.diag().frames.length;
+      if (head) {
+        r.camera.quaternion.copy(head);
+        head = null;
+      }
+      r.switcher.frame(FRAME_MS);
+      r.switcher.endFrame(1, 0.5);
+      const frame = r.switcher.diag().frames[before];
+      const m = mesh();
+      if (frame && m && frame.phase === 'wait') {
+        const positions = m.geometry.getAttribute('iPosition').array as Float32Array;
+        inverse.copy(r.camera.quaternion).invert();
+        const at = new Float32Array(positions.length);
+        for (let k = 0; k < positions.length; k += 3) {
+          p.set(positions[k], positions[k + 1] - 1.6, positions[k + 2]).applyQuaternion(inverse);
+          at.set([p.x, p.y, p.z], k);
+        }
+        view.push({ phase: frame.phase, at });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(r.spawns.length).toBe(1);
+    expect(view.length).toBeGreaterThan(10);
+    // In the camera's own frame no wait frame moves a stroke more than the swirl does: a few
+    // centimetres. Uncarried, the look's reset would jump the field by about 0.7 m.
+    let worst = 0;
+    for (let i = 1; i < view.length; i++) {
+      for (let k = 0; k < view[i].at.length; k++) {
+        worst = Math.max(worst, Math.abs(view[i].at[k] - view[i - 1].at[k]));
+      }
+    }
+    expect(worst).toBeLessThan(0.05);
+  });
+
+  test.each([
+    ['pitched up', 0.9, 1.2],
+    ['looking straight down', -2.1, -Math.PI / 2],
+  ])('fade, %s: the field faces the level heading (M-3)', async (_label, yaw, pitch) => {
+    const r = setup();
+    r.calm = 0.2;
+    r.camera.quaternion.setFromEuler(new Euler(pitch, yaw, 0, 'YXZ'));
+    r.switcher.go('starry-night', 'api');
+    r.switcher.frame(FRAME_MS);
+    const cue = must(meshOf(r, 'portal-cue'));
+    const positions = cue.geometry.getAttribute('iPosition').array as Float32Array;
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    for (let k = 0; k < positions.length; k += 3) {
+      const l = Math.hypot(positions[k], positions[k + 1], positions[k + 2]);
+      x += positions[k] / l;
+      y += positions[k + 1] / l;
+      z += positions[k + 2] / l;
+    }
+    const l = Math.hypot(x, y, z);
+    // Centred on the horizon, along the yaw: −Z turned by `yaw`.
+    expect(Math.abs(y / l)).toBeLessThan(0.05);
+    expect(x / l).toBeCloseTo(-Math.sin(yaw), 1);
+    expect(z / l).toBeCloseTo(-Math.cos(yaw), 1);
+    await run(r);
+  });
+
+  test('a scan that lands after the trigger grows its strokes in, with no pop (M-5)', async () => {
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const r = setup({
+      loadRaster: vi.fn(async () => {
+        await held;
+        return raster();
+      }),
+    });
+    r.switcher.go('starry-night', 'api');
+    const shots = await record(r, 'portal-fly', FRAME_MS, { open: () => release(), holdFrames: 8 });
+    const largest = (s: Shot) => Math.max(...s.size);
+    const first = shots.findIndex((s) => s.visible);
+    expect(first).toBeGreaterThan(5);
+    const full = largest(shots[first + 30]);
+    // The first frame shows them at a frame's share of 0.3 s, then they grow steadily.
+    expect(largest(shots[first])).toBeLessThan(0.1 * full);
+    for (let i = first + 1; i < first + 18; i++) {
+      expect(largest(shots[i]) - largest(shots[i - 1])).toBeLessThan(0.1 * full);
+    }
+  });
+
+  test('a failed build still recovers, and leaves no cue behind', async () => {
+    const r = setup();
+    r.calm = 0.2;
+    r.failing.add('starry-night');
+    r.failing.add(GALLERY_ID);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.switcher.go('starry-night', 'api');
+    await run(r);
+    expect(r.switcher.diag().fallback).toBe('bare');
+    expect(r.scene.children).toEqual([r.rig]);
+    expect(r.rig.children.some((c) => c.name === 'portal-cue')).toBe(false);
+    warn.mockRestore();
   });
 });
 

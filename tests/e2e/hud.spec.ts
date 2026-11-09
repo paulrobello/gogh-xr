@@ -26,6 +26,7 @@ interface GovernorDiag {
   fbScaleApplied: number | null;
   gpuMs: number | null;
   notice: string | null;
+  fixedLevel: number | null;
   history: unknown[];
 }
 
@@ -102,11 +103,13 @@ function expectHudMatches(sample: Sample): void {
     expect(hud.text).not.toMatch(/gov level|foveation/);
     return;
   }
-  // On desktop the governor does not judge frames, so the HUD shows "gov idle" for the level.
-  const [, level, near, mid, far] = line(
-    /^gov (?:level (\d+)|idle) {3}near (\d\.\d\d) {3}mid (\d\.\d\d) {3}far (\d\.\d\d)$/,
+  // On desktop the governor does not judge frames, so the HUD shows "gov idle" for the level. A
+  // fixed level reads "gov fixed L3" either way.
+  const [, level, fixed, near, mid, far] = line(
+    /^gov (?:level (\d+)|idle|fixed L(\d+)) {3}near (\d\.\d\d) {3}mid (\d\.\d\d) {3}far (\d\.\d\d)$/,
   );
-  if (governor.judging) expect(Number(level), 'governor level').toBe(governor.level);
+  if (governor.fixedLevel !== null) expect(Number(fixed), 'fixed level').toBe(governor.fixedLevel);
+  else if (governor.judging) expect(Number(level), 'governor level').toBe(governor.level);
   else expect(level, 'governor idle').toBeUndefined();
   expect(near, 'near density').toBe(governor.densities.near.toFixed(2));
   expect(mid, 'mid density').toBe(governor.densities.mid.toFixed(2));
@@ -123,8 +126,9 @@ function expectHudMatches(sample: Sample): void {
     fbScaleApplied !== null &&
     Math.abs(fbScaleApplied - fbScale) > 0.01;
   expect(applied, 'applied fb scale').toBe(differs ? fbScaleApplied?.toFixed(2) : undefined);
-  if (governor.notice) expect(lines.at(-1), 'notice').toBe(governor.notice);
-  else expect(lines).toHaveLength(5);
+  // The 72 Hz notice shows on the notice stack, not on the HUD (2026-11-08).
+  if (governor.notice) expect(hud.text).not.toContain(governor.notice);
+  expect(lines).toHaveLength(5);
 }
 
 async function bootHud(page: Page, xr: Xr, extra: string): Promise<void> {
@@ -142,7 +146,7 @@ async function bootHud(page: Page, xr: Xr, extra: string): Promise<void> {
   expect(await glErrors(page)).toEqual([]);
 }
 
-test('the HUD matches diag within one update while the governor sheds, notice included', async ({
+test('the HUD matches diag within one update while the governor sheds, and leaves out the notice', async ({
   page,
   xr,
 }) => {
@@ -171,9 +175,10 @@ test('the HUD matches diag within one update while the governor sheds, notice in
   expect(gap).toBeLessThan(500);
   expectHudMatches(next);
 
-  // At the bottom of the shed order the governor drops to 72 Hz and the HUD shows its notice. The
-  // 72 Hz target and the notice commit in the updateTargetFrameRate callback, outside any frame,
-  // so the sample must come from an update after the read that first saw the notice.
+  // At the bottom of the shed order the governor drops to 72 Hz. The notice goes to the notice
+  // stack, and the HUD shows the 72 Hz target. The target and the notice commit in the
+  // updateTargetFrameRate callback, outside any frame, so the sample must come from an update
+  // after the read that first saw the notice.
   let seenAt: number | null = null;
   await expect
     .poll(
@@ -187,7 +192,7 @@ test('the HUD matches diag within one update while the governor sheds, notice in
     .toMatch(/72 Hz/);
   const noticed = await alignedSample(page, seenAt);
   expectHudMatches(noticed);
-  expect(noticed.hud.text).toContain(noticed.governor?.notice ?? 'missing notice');
+  expect(noticed.hud.text).not.toContain(noticed.governor?.notice ?? 'missing notice');
   expect(noticed.hud.text).toMatch(/target 72 Hz/);
 
   // The font comes from the app, never from troika's CDN.

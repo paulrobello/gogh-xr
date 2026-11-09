@@ -124,7 +124,7 @@ describe('createHudToggle', () => {
   });
 });
 
-describe('setVisible, as the 72 Hz notice calls it (R16, I3)', () => {
+describe('setVisible, as the A/B switch and the settings panel call it', () => {
   it('builds and shows a hidden, unbuilt HUD, which stays toggleable afterwards', async () => {
     const { toggle, build, hud } = setup(false);
     expect(toggle.diag()).toEqual({ visible: false, built: false });

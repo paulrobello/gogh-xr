@@ -23,7 +23,7 @@ const GOVERNED: PerfHudValues = {
     foveation: 0.5,
     fbScale: 0.85,
     fbScaleApplied: null,
-    notice: null,
+    fixedLevel: null,
   },
 };
 
@@ -87,7 +87,7 @@ describe('formatPerfHud', () => {
     ]);
   });
 
-  it('carries the active A/B line last, after the governor notice', () => {
+  it('carries the active A/B line last, after the governor lines', () => {
     expect(formatPerfHud({ ...UNGOVERNED, ab: 'A/B shimmer: noa2c (3/6)' }).split('\n')).toEqual([
       'fps 60   mean 16.67 ms   p99 17.10 ms',
       'gpu n/a   target 90 Hz',
@@ -95,21 +95,32 @@ describe('formatPerfHud', () => {
       'governor off',
       'A/B shimmer: noa2c (3/6)',
     ]);
-    const governor = { ...(GOVERNED.governor as NonNullable<PerfHudValues['governor']>) };
-    const text = formatPerfHud({
-      ...GOVERNED,
-      governor: { ...governor, notice: RATE_NOTICE },
-      ab: 'A/B halo: off (2/2)',
-    });
-    expect(text.split('\n').slice(-2)).toEqual([RATE_NOTICE, 'A/B halo: off (2/2)']);
+    const text = formatPerfHud({ ...GOVERNED, ab: 'A/B halo: off (2/2)' });
+    expect(text.split('\n').slice(-2)).toEqual([
+      'foveation 0.50   fb scale 0.85',
+      'A/B halo: off (2/2)',
+    ]);
     expect(formatPerfHud({ ...UNGOVERNED, ab: null })).toBe(formatPerfHud(UNGOVERNED));
   });
 
-  it('adds the governor notice as the last line, in plain ASCII for the local font', () => {
-    const governor = { ...(GOVERNED.governor as NonNullable<PerfHudValues['governor']>) };
-    const text = formatPerfHud({ ...GOVERNED, governor: { ...governor, notice: RATE_NOTICE } });
-    expect(text.split('\n').at(-1)).toBe(RATE_NOTICE);
+  it('carries no governor notice line: the notice stack shows the 72 Hz notice (2026-11-08)', () => {
+    const text = formatPerfHud(GOVERNED);
+    expect(text).not.toContain(RATE_NOTICE);
+    expect(text).not.toMatch(/72 Hz to keep/);
+    expect(text.split('\n')).toHaveLength(5);
     expect(text).toMatch(/^[\x20-\x7e\n]*$/);
+  });
+
+  it('shows "gov fixed L3" in place of the level at a fixed level, judging or idle', () => {
+    const governor = GOVERNED.governor as NonNullable<PerfHudValues['governor']>;
+    for (const judging of [true, false]) {
+      const lines = formatPerfHud({
+        ...GOVERNED,
+        governor: { ...governor, judging, fixedLevel: 3 },
+      }).split('\n');
+      expect(lines[3]).toBe('gov fixed L3   near 0.49   mid 1.00   far 0.70');
+      expect(lines).toHaveLength(5);
+    }
   });
 
   it('appends the applied fb scale when the runtime did not honour the request', () => {

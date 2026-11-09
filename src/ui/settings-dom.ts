@@ -4,6 +4,7 @@
  * Return to gallery). Each setting has this one control on the desktop. `panel-toggle.ts` imports it
  * lazily on the first M press. Opening releases pointer lock; taking pointer lock again closes it.
  */
+import type { GovernorMode } from '../render/governor';
 import type { HudLive } from '../settings/apply';
 import type { Settings } from '../settings/schema';
 import type { SettingsStore } from '../settings/store';
@@ -13,8 +14,13 @@ import {
   type ControlDef,
   formatValue,
   GALLERY_HELP_DISABLED,
+  ladderMode,
+  liveSliderDef,
   lockedHelp,
+  qualityLevelSummary,
   qualityNote,
+  settingFromSlider,
+  sliderSetting,
 } from './panel-layout';
 import { PANEL_COLORS } from './settings-panel-colors';
 
@@ -25,6 +31,8 @@ export interface SettingsDomDeps {
   /** Calls its listener when `gallery()` changes; returns the unsubscribe. */
   onGalleryChange?(listener: () => void): () => void;
   sessionQuality(): Settings['quality'];
+  /** The running governor's mode, or null with none: the quality level row shows its ladder. */
+  governorMode?(): GovernorMode | null;
   /** The perf HUD's live visibility: the HUD toggle shows it and sets it with the setting. */
   hud: HudLive;
   /** Called when the panel closes itself (its Close button, or pointer lock taken). */
@@ -98,6 +106,10 @@ export function createSettingsDom(deps: SettingsDomDeps): SettingsDom {
 
   const updaters: (() => void)[] = [];
 
+  function levelMode(): GovernorMode {
+    return ladderMode(deps.governorMode?.() ?? null, store.effective.quality);
+  }
+
   function helpFor(def: ControlDef): string {
     const flag = def.field ? store.locks[def.field] : undefined;
     if (flag) return lockedHelp(flag);
@@ -124,7 +136,7 @@ export function createSettingsDom(deps: SettingsDomDeps): SettingsDom {
     if (off) el.classList.add('off');
     const setValue = (): void => {
       value.className = 'value';
-      value.textContent = formatValue(def, store.effective);
+      value.textContent = formatValue(def, store.effective, levelMode());
       if (locked) {
         value.textContent = `set by ${locked.split('=')[0]}`;
         value.classList.add('muted');
@@ -147,12 +159,23 @@ export function createSettingsDom(deps: SettingsDomDeps): SettingsDom {
       input.step = String(def.step ?? 0.01);
       input.disabled = off;
       input.setAttribute('aria-label', def.label);
-      input.addEventListener('input', () => store.set(field, Number(input.value) as never));
+      input.addEventListener('input', () =>
+        store.set(
+          field,
+          settingFromSlider(def, Number(input.value), store.effective, levelMode()) as never,
+        ),
+      );
       input.addEventListener('change', () => store.commit());
       el.appendChild(input);
       updaters.push(() => {
-        input.value = String(store.effective[field]);
+        const mode = levelMode();
+        input.max = String(liveSliderDef(def, mode).max ?? 1);
+        input.value = String(sliderSetting(def, store.effective, mode));
         setValue();
+        input.setAttribute('aria-valuetext', value.textContent ?? '');
+        if (field === 'qualityLevel' && !off) {
+          el.title = `${helpFor(def)}. Now: ${qualityLevelSummary(store.effective.qualityLevel, mode)}`;
+        }
       });
     } else {
       const seg = doc.createElement('div');

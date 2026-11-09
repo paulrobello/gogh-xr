@@ -7,6 +7,7 @@
  * The governor module loads lazily. A bind made while an earlier one is still loading wins, and
  * the earlier one starts nothing.
  */
+import type { GovernorMode } from './governor';
 import type { GovernedBatch, GovernorDiag, GovernorRuntime } from './governor-runtime';
 import type { StrokeBatch } from './strokes/batch';
 
@@ -30,6 +31,8 @@ export interface StrokeBinding {
   /** Drives the governor, if one runs; call once per animation frame before rendering. */
   frame(time: number): void;
   governorDiag(): GovernorDiag | null;
+  /** The running governor's mode, or null with none running. */
+  governorMode(): GovernorMode | null;
   /** The bound batch's drawn strokes, or null with no batch bound. */
   visibleCount(): number | null;
   /** The bound batch's chunks that passed the last cull, or null with no batch bound. */
@@ -64,6 +67,9 @@ export function createStrokeBinding(deps: StrokeBindingDeps): StrokeBinding {
     },
     governorDiag() {
       return governor?.diag() ?? null;
+    },
+    governorMode() {
+      return governor?.mode ?? null;
     },
     visibleCount() {
       return current?.visibleCount() ?? null;

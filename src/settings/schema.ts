@@ -10,6 +10,7 @@ import {
   type TurnMode,
 } from '../locomotion/settings';
 import { clampCalm } from '../motion/clock';
+import type { GovernorMode } from '../render/governor';
 
 export const SETTINGS_KEY = 'gogh-xr.settings.v1';
 export const SETTINGS_VERSION = 2;
@@ -21,6 +22,24 @@ export const SETTINGS_VERSION = 2;
 export type QualityMode = 'adaptive-72' | 'adaptive-90' | 'beauty-72';
 
 const QUALITY_MODES: readonly QualityMode[] = ['adaptive-72', 'adaptive-90', 'beauty-72'];
+
+/**
+ * The governor's quality level: 'auto' adapts, a number N pins the first N steps of its shed order
+ * (`qualityLadder` in `render/governor.ts`), 0 to `MAX_QUALITY_LEVEL`.
+ */
+export type QualityLevel = 'auto' | number;
+
+/**
+ * The highest fixed level of any mode, beauty's ladder length (`qualityLadder` in
+ * `render/governor.ts`). A constant, so the boot chunk builds no governor machine to know it.
+ * `tests/governor-fixed.test.ts` checks it against the ladders.
+ */
+export const MAX_QUALITY_LEVEL = 18;
+
+/** The governor mode a quality runs: max beauty, or the default budget. */
+export function governorModeOf(quality: QualityMode): GovernorMode {
+  return quality === 'beauty-72' ? 'beauty' : 'default';
+}
 
 export interface Settings {
   /** Smooth movement speed, m/s. */
@@ -36,6 +55,8 @@ export interface Settings {
   /** Motion calm, 0-1 (1 is full motion). */
   readonly calm: number;
   readonly quality: QualityMode;
+  /** Auto, or a fixed governor level. `?nogov` keeps the governor off whatever this says. */
+  readonly qualityLevel: QualityLevel;
   /** The perf HUD's starting visibility. */
   readonly hud: boolean;
   /** 0-1. Stored for P6; nothing consumes it yet. */
@@ -53,6 +74,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   standingHeight: DEFAULT_LOCOMOTION_SETTINGS.standingHeight,
   calm: 1,
   quality: 'adaptive-72',
+  qualityLevel: 'auto',
   hud: false,
   musicVolume: 0.7,
   sfxVolume: 0.7,
@@ -102,6 +124,13 @@ function unit(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
 }
 
+/** 'auto', or a finite number rounded and clamped to 0..`MAX_QUALITY_LEVEL`; else the fallback. */
+function qualityLevel(value: unknown, fallback: QualityLevel): QualityLevel {
+  if (value === 'auto') return 'auto';
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(MAX_QUALITY_LEVEL, Math.max(0, Math.round(value)));
+}
+
 /**
  * Fills defaults for missing or wrong-typed fields and clamps every range. Unknown fields are
  * dropped, so a field that is removed in a later version does not linger.
@@ -129,6 +158,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     quality: QUALITY_MODES.includes(r.quality as QualityMode)
       ? (r.quality as QualityMode)
       : d.quality,
+    qualityLevel: qualityLevel(r.qualityLevel, d.qualityLevel),
     hud: bool(r.hud, d.hud),
     musicVolume: unit(r.musicVolume, d.musicVolume),
     sfxVolume: unit(r.sfxVolume, d.sfxVolume),
@@ -218,6 +248,8 @@ export interface SettingsFlags {
   /** null when absent; false (`?hud=0`) turns a stored true off. */
   readonly hud: boolean | null;
   readonly calm: number | null;
+  /** `?nogov`: the governor stays off, so the quality level is locked. Absent means false. */
+  readonly nogov?: boolean;
 }
 
 /**
@@ -260,6 +292,7 @@ export function lockedSettings(f: SettingsFlags): SettingsLocks {
   if (f.turn !== null) locks.turnMode = `?turn=${f.turn}`;
   if (f.hud !== null) locks.hud = f.hud ? '?hud' : '?hud=0';
   if (f.calm !== null) locks.calm = `?calm=${f.calm}`;
+  if (f.nogov) locks.qualityLevel = '?nogov';
   return Object.freeze(locks);
 }
 

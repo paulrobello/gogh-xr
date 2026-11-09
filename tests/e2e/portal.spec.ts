@@ -25,7 +25,14 @@ const summary = (p: PortalDiag) => {
     (best, f, i, all) => (f.intervalMs > all[best].intervalMs ? i : best),
     0,
   );
+  const wait = p.frames.filter((f) => f.phase === 'wait');
   return {
+    // The wait, from the frames: its length, its frame count and its worst frame.
+    waitMs: wait.reduce((sum, f) => sum + f.intervalMs, 0),
+    waitFrames: wait.length,
+    waitLongestIntervalMs: Math.max(0, ...wait.map((f) => f.intervalMs)),
+    waitLongestWorkMs: Math.max(0, ...wait.map((f) => f.workMs)),
+    waitMeanWorkMs: wait.reduce((sum, f) => sum + f.workMs, 0) / Math.max(1, wait.length),
     longestFrameMs: p.longestFrameMs,
     longestWorkMs: p.longestWorkMs,
     longestWorkPhase: p.longestWorkPhase,

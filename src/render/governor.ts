@@ -68,6 +68,13 @@
  * The budget follows the frame rate the session reports (`setFrameRate`), not the one requested.
  * A stall over 100 ms or a hidden session (`interrupt`) restarts the window and both timers, so a
  * pause never counts as overrun or as clean time. A stall keeps a pending no-gain check.
+ *
+ * Fixed level (the `qualityLevel` setting). With `GovernorConfig.fixedLevel` set, the machine sheds
+ * that many steps at creation through the same `nextShed` it judges with, but with no drawn counts:
+ * the drawn floor and `MIN_SHED_YIELD` depend on the view, so a fixed level skips only a step that
+ * cannot apply (a band already at its minimum). It then never judges a frame: `sample()` returns
+ * null, so there is no shed, restore, no-gain, recover or rate event. `qualityLadder` lists the
+ * steps a fixed level takes.
  */
 import type { DensityLaw } from '../diag/flags';
 import {
@@ -206,6 +213,11 @@ export interface GovernorConfig {
    * the 'density' hold; under `count` each band holds apart (`holdOf`).
    */
   readonly densityLaw?: DensityLaw;
+  /**
+   * A fixed quality level: the first N steps of the shed order (`qualityLadder`), clamped to the
+   * ladder, and no judging. null or absent runs the adaptive machine.
+   */
+  readonly fixedLevel?: number | null;
 }
 
 export interface FrameSample {
@@ -257,6 +269,19 @@ export interface GovernorSnapshot {
   /** Overrunning with nothing left to shed and no lower rate to request. */
   exhausted: boolean;
   history: GovernorEvent[];
+  /** The fixed level applied (clamped to the ladder), or null when the machine adapts. */
+  fixedLevel: number | null;
+}
+
+/** One step of the shed order, as `qualityLadder` lists it: values before and after. */
+export interface LadderStep {
+  readonly step: GovernorStep;
+  /** Density, framebuffer scale or foveation. */
+  readonly from: number;
+  readonly to: number;
+  /** Size multipliers for density steps, 0 otherwise. */
+  readonly fromSize: number;
+  readonly toSize: number;
 }
 
 export interface Governor {
@@ -271,16 +296,11 @@ export interface Governor {
   /** The request was refused or cannot be made: returns the 'rate-failed' history event. */
   rateFailed(t: number): GovernorEvent | null;
   snapshot(): GovernorSnapshot;
+  /** The steps shed now, first shed first. */
+  shedSteps(): LadderStep[];
 }
 
-interface ShedEntry {
-  readonly step: GovernorStep;
-  readonly from: number;
-  readonly to: number;
-  /** Size multipliers for density steps. */
-  readonly fromSize: number;
-  readonly toSize: number;
-}
+type ShedEntry = LadderStep;
 
 /** A shed awaiting its no-gain check, with the mean of the window that triggered it. */
 interface PendingCheck {
@@ -434,19 +454,24 @@ export function createGovernor(config: GovernorConfig): Governor {
 
   /**
    * A density shed of `band` toward `target`, clamped to the band minimum and to the drawn floor
-   * for the current view, or null when that leaves less than `MIN_DENSITY_STEP` to shed.
+   * for the current view, or null when that leaves less than `MIN_DENSITY_STEP` to shed. With no
+   * drawn counts (a fixed level) only the band minimum clamps.
    */
   function densityShed(
     band: StrokeBand,
     target: number,
-    drawn: Readonly<Record<StrokeBand, number>>,
+    drawn: Readonly<Record<StrokeBand, number>> | null,
   ): ShedEntry | null {
-    const total = drawn.near + drawn.mid + drawn.far;
-    const visible = drawn[band];
     const d = density[band];
-    if (total <= budget.min || visible <= 0 || d <= 0) return null;
-    // Drawn scales with density, so this is the lowest density that keeps the total at the floor.
-    const floor = d * (1 - (total - budget.min) / visible);
+    if (d <= 0) return null;
+    let floor = 0;
+    if (drawn) {
+      const total = drawn.near + drawn.mid + drawn.far;
+      const visible = drawn[band];
+      if (total <= budget.min || visible <= 0) return null;
+      // Drawn scales with density, so this is the lowest density that keeps the total at the floor.
+      floor = d * (1 - (total - budget.min) / visible);
+    }
     const to = Math.max(MIN_BAND_DENSITY[band], target, floor);
     if (d - to < MIN_DENSITY_STEP) return null;
     return {
@@ -461,14 +486,18 @@ export function createGovernor(config: GovernorConfig): Governor {
   /**
    * The next density step, or null when every band is at its minimum, the floor binds, or what is
    * left would save under `MIN_SHED_YIELD` of the drawn total. A failed probe's shed-back skips
-   * this yield check (`shedBack`), so it always returns the step it restored.
+   * this yield check (`shedBack`), so it always returns the step it restored. With no drawn counts
+   * (a fixed level) there is no yield check either.
    */
-  function nextDensityShed(drawn: Readonly<Record<StrokeBand, number>>): ShedEntry | null {
-    const total = drawn.near + drawn.mid + drawn.far;
+  function nextDensityShed(drawn: Readonly<Record<StrokeBand, number>> | null): ShedEntry | null {
+    const total = drawn ? drawn.near + drawn.mid + drawn.far : 0;
     for (const band of DENSITY_ORDER) {
       if (heldUntil.has(holdKey(`${band}-density`))) continue;
       const entry = densityShed(band, density[band] * DENSITY_STEP, drawn);
-      if (entry && drawn[band] * (1 - entry.to / entry.from) >= MIN_SHED_YIELD * total) {
+      if (
+        entry &&
+        (!drawn || drawn[band] * (1 - entry.to / entry.from) >= MIN_SHED_YIELD * total)
+      ) {
         return entry;
       }
     }
@@ -491,9 +520,10 @@ export function createGovernor(config: GovernorConfig): Governor {
 
   /**
    * Foveation 0.5, fb scale and foveation 1 first, then density far, mid, near. With 'foveation'
-   * held after a no-gain, 'foveation-max' sheds straight from 0 to 1.
+   * held after a no-gain, 'foveation-max' sheds straight from 0 to 1. A fixed level passes null
+   * for `drawn` (see `nextDensityShed`).
    */
-  function nextShed(drawn: Readonly<Record<StrokeBand, number>>): ShedEntry | null {
+  function nextShed(drawn: Readonly<Record<StrokeBand, number>> | null): ShedEntry | null {
     const first = foveationShed('foveation', SHED_FOVEATION);
     if (first) return first;
     if (levels.fbScale > SHED_FB_SCALE && !heldUntil.has('fb-scale')) {
@@ -609,9 +639,21 @@ export function createGovernor(config: GovernorConfig): Governor {
     return record({ t, action: 'restore', step: top.step, from: top.to, to: top.from });
   }
 
+  const fixed = config.fixedLevel ?? null;
+  if (fixed !== null) {
+    // Nothing is held yet, so this is the plain shed order from the mode's start levels.
+    while (stack.length < fixed) {
+      const entry = nextShed(null);
+      if (!entry) break;
+      stack.push(entry);
+      apply(entry, false);
+    }
+  }
+
   return {
     levels,
     sample(s: FrameSample): GovernorEvent | null {
+      if (fixed !== null) return null;
       if (ignoreUntil === null) ignoreUntil = s.t + WARMUP_MS;
       if (s.t < ignoreUntil) return null;
       if (!(s.intervalMs > 0) || s.intervalMs > MAX_INTERVAL_MS) {
@@ -696,7 +738,22 @@ export function createGovernor(config: GovernorConfig): Governor {
         probeWaitMs,
         exhausted,
         history: [...history],
+        fixedLevel: fixed === null ? null : stack.length,
       };
     },
+    shedSteps: () => [...stack],
   };
+}
+
+/**
+ * The fixed-level ladder for `mode`: entry N - 1 is the step level N adds, so level N applies the
+ * first N. It is the machine's own shed order from the mode's start levels, with no drawn counts.
+ */
+export function qualityLadder(mode: GovernorMode, densityLaw?: DensityLaw): LadderStep[] {
+  return createGovernor({
+    mode,
+    targetHz: FALLBACK_HZ,
+    densityLaw,
+    fixedLevel: Number.POSITIVE_INFINITY,
+  }).shedSteps();
 }

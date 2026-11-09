@@ -141,7 +141,7 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
   - **Governor behaviour on the device:** `?demo=canvas&hud&slow=N`.
     - Raise N until the frame overruns the budget.
     - The HUD shows the shed order as it happens: foveation 0.5, fb scale, foveation 1, then band density.
-    - The HUD shows the 72 Hz notice once the rate drops. The notice also shows the HUD if it was hidden.
+    - ~~The HUD shows the 72 Hz notice once the rate drops. The notice also shows the HUD if it was hidden.~~ Superseded by Paul, 2026-11-08 (R16): the 72 Hz notice shows on the P5.6 notice stack, and the perf HUD neither shows it nor is shown by it.
     - Record the sequence and the time it took.
   - **Checklist from the Phase 1 review:**
     - [ ] Record one OVR run with the HUD shown and one with it hidden (left X), because troika re-typesets every 250 ms.

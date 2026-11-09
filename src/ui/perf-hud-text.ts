@@ -21,7 +21,8 @@ export interface PerfHudGovernor {
   fbScale: number | 'unavailable';
   /** The scale the runtime applied; null until measured. */
   fbScaleApplied: number | null;
-  notice: string | null;
+  /** A fixed quality level, shown as "gov fixed L3" in place of the level; null under Auto. */
+  fixedLevel: number | null;
 }
 
 /** An applied fb scale this close to the requested one is not shown. */
@@ -72,11 +73,16 @@ export function formatPerfHud(values: PerfHudValues): string {
     lines.push('governor off');
   } else {
     const { near, mid, far } = gov.densities;
+    const level =
+      gov.fixedLevel !== null
+        ? `gov fixed L${gov.fixedLevel}`
+        : gov.judging
+          ? `gov level ${gov.level}`
+          : 'gov idle';
     lines.push(
-      `${gov.judging ? `gov level ${gov.level}` : 'gov idle'}   near ${near.toFixed(2)}   mid ${mid.toFixed(2)}   far ${far.toFixed(2)}`,
+      `${level}   near ${near.toFixed(2)}   mid ${mid.toFixed(2)}   far ${far.toFixed(2)}`,
       `foveation ${gov.foveation.toFixed(2)}   fb scale ${fbScaleText(gov)}`,
     );
-    if (gov.notice) lines.push(gov.notice);
   }
   if (values.ab) lines.push(values.ab);
   return lines.join('\n');

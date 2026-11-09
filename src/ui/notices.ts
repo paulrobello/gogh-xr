@@ -9,7 +9,7 @@
  * troika: `main.ts` passes the lazy import as `build`.
  */
 import type { Actions, Hand } from '../xr/input';
-import { type NoticeActionButton, syncNotices } from './notice';
+import { type NoticeActionButton, showNotice, syncNotices } from './notice';
 import type { NoticeHudDiag, NoticeHudFrame } from './notice-hud';
 import {
   arbitrateNoticeTrigger,
@@ -77,6 +77,20 @@ export interface Notices {
 }
 
 const NONE: Readonly<Record<Hand, boolean>> = Object.freeze({ left: false, right: false });
+
+/**
+ * The governor's 72 Hz notice (its `notify`): on the notices host once it exists, which in XR shows
+ * it on the notice stack whether the perf HUD shows or not, else as a DOM notice. It never touches
+ * the perf HUD.
+ */
+export function raiseRateFallback(
+  notices: Pick<Notices, 'raise'> | null,
+  message: string,
+  dom: (message: string) => void = showNotice,
+): void {
+  if (notices) notices.raise('rate-fallback', message);
+  else dom(message);
+}
 
 export function createNotices(deps: NoticesDeps): Notices {
   const queue = deps.queue ?? createNoticeQueue();

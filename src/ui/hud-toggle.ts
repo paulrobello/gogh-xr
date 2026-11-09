@@ -36,7 +36,7 @@ export interface HudToggle {
    */
   frame(time: number, leftXDown: boolean): void;
   toggle(): void;
-  /** Shows or hides the HUD, building it on the first show. The 72 Hz notice shows it (R16). */
+  /** Shows or hides the HUD, building it on the first show. */
   setVisible(visible: boolean): void;
   readonly visible: boolean;
   diag(): HudToggleDiag;

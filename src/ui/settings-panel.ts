@@ -37,6 +37,7 @@ import {
 } from 'three';
 import { BatchedText, Text } from 'troika-three-text';
 import { strokeShade } from '../demo/canvas/placement';
+import type { GovernorMode } from '../render/governor';
 import { BRUSHES } from '../render/strokes/brush-atlas-data';
 import { surfaceBasis, type Vec3 } from '../render/strokes/frame';
 import {
@@ -70,13 +71,17 @@ import {
   GALLERY_HELP_DISABLED,
   HEADER_Y,
   LAYOUT,
+  ladderMode,
+  liveSliderDef,
   lockedHelp,
   PANEL_H,
   PANEL_W,
   qualityNote,
   setControlHidden,
+  settingFromSlider,
   sliderFraction,
   sliderPosition,
+  sliderSetting,
   sliderValue,
   TITLE_Y,
 } from './panel-layout';
@@ -127,6 +132,8 @@ export interface SettingsPanelDeps {
   gallery(): (() => void) | null;
   /** The quality mode the current or last XR session started with. */
   sessionQuality(): QualityMode;
+  /** The running governor's mode, or null with none: the quality level row shows its ladder. */
+  governorMode?(): GovernorMode | null;
   /** The perf HUD's live visibility: the HUD toggle shows it and sets it with the setting. */
   hud: HudLive;
 }
@@ -550,13 +557,20 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         }
       } else {
         dragging.set(def.id, hand);
-        store.set(def.field, sliderValue(def, hit.fraction) as never);
+        const mode = levelMode();
+        const value = sliderValue(liveSliderDef(def, mode), hit.fraction);
+        store.set(def.field, settingFromSlider(def, value, store.effective, mode) as never);
       }
     },
     drag(id, x) {
       const layout = LAYOUT.find((c) => c.def.id === id);
       if (!layout?.def.field || !dragging.has(id)) return;
-      store.set(layout.def.field, sliderValue(layout.def, sliderFraction(layout, x)) as never);
+      const mode = levelMode();
+      const value = sliderValue(liveSliderDef(layout.def, mode), sliderFraction(layout, x));
+      store.set(
+        layout.def.field,
+        settingFromSlider(layout.def, value, store.effective, mode) as never,
+      );
     },
     release(id) {
       if (!dragging.delete(id)) return;
@@ -568,6 +582,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       saveRelative();
     },
   });
+
+  function levelMode(): GovernorMode {
+    return ladderMode(deps.governorMode?.() ?? null, store.effective.quality);
+  }
 
   /** The last XR head pose, rig-local: the pose saves against it on XR exit. */
   const head = { position: new Vector3(0, 1.6, 0), yaw: 0 };
@@ -593,6 +611,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     left: null as string | null,
     right: null as string | null,
     quality: '' as QualityMode | '',
+    mode: '' as GovernorMode | '',
     gallery: false,
     hud: false,
   };
@@ -605,6 +624,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function paint(settings: Settings, hover: Record<Hand, string | null>, force = false): void {
     const locks = store.locks;
     const quality = deps.sessionQuality();
+    const mode = levelMode();
     const gallery = deps.gallery() !== null;
     const hudOn = deps.hud.visible();
     if (
@@ -613,6 +633,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       hover.left === painted.left &&
       hover.right === painted.right &&
       quality === painted.quality &&
+      mode === painted.mode &&
       gallery === painted.gallery &&
       hudOn === painted.hud
     ) {
@@ -622,6 +643,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     painted.left = hover.left;
     painted.right = hover.right;
     painted.quality = quality;
+    painted.mode = mode;
     painted.gallery = gallery;
     painted.hud = hudOn;
     count = 0;
@@ -666,9 +688,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       }
       const value = ct.value as Text;
       value.color = PANEL_COLORS.value;
-      setText(value, formatValue(def, settings));
+      setText(value, formatValue(def, settings, mode));
       if (def.kind === 'slider') {
-        const f = sliderPosition(def, settings[def.field as keyof Settings] as number);
+        const f = sliderPosition(liveSliderDef(def, mode), sliderSetting(def, settings, mode));
         const left = rect.x - rect.w / 2;
         line(
           left,

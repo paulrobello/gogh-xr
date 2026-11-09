@@ -8,6 +8,10 @@
  * under the veil whether or not it is in view, so its buffers upload before the `in` phase shows
  * it. A world that fails to build falls back to the gallery, then to the bare scene.
  *
+ * The view is never still while the world builds (wait-motion.ts): in the fly style the strokes
+ * swirl where they hover, from liftoff into the `in` leg, and in the fade style a dim, fixed field
+ * of night-coloured strokes (`portal-cue`) breathes under the veil.
+ *
  * main.ts owns every binding to a world (governor, zdiag, A/B, reactive batch, HUD, diag keys,
  * locomotion) and hands them in as `bind` and `unbind`.
  */
@@ -16,6 +20,7 @@ import {
   Matrix4,
   type Object3D,
   type PerspectiveCamera,
+  Quaternion,
   type Scene,
   type Texture,
   Vector3,
@@ -58,6 +63,16 @@ import {
   transitionStyle,
   veilAt,
 } from './transition';
+import {
+  CUE_COUNT,
+  type CueField,
+  createCueField,
+  cueBrightness,
+  cueFrame,
+  planSwirl,
+  type Swirl,
+  swirlOffsets,
+} from './wait-motion';
 
 export const GALLERY_ID = 'gallery';
 /**
@@ -145,6 +160,15 @@ export interface PortalDiag {
   /** True while the fly strokes exist: from a fly transition's trigger to its end. */
   flying: boolean;
   /**
+   * What keeps the view moving while the world builds: the fly strokes' `swirl`, the fade style's
+   * `pulse` field, or null while idle.
+   */
+  cue: 'swirl' | 'pulse' | null;
+  /**
+   * The running or last transition's wait, its frame intervals summed, ms; null before the first.
+   */
+  waitMs: number | null;
+  /**
    * The last transition's frames, in order and capped at `MAX_FRAME_RECORDS`: the phase each ran,
    * its frame interval and the main thread's work in it (`renderFrame` start to end), ms. At 60 Hz
    * vsync the interval reads 16.7 or 33.3 ms whatever the work; the work tells them apart.
@@ -198,6 +222,19 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
   let fly: FlyStrokes | null = null;
   let outLeg: FlightLeg | null = null;
   let inLeg: FlightLeg | null = null;
+  /** The out leg's swirl about where its strokes hover, and this frame's offsets from it. */
+  let swirl: Swirl | null = null;
+  const drift = new Float32Array(FLY_COUNT * 3);
+  /** The fade style's pulse field, its mesh and this frame's colours and sizes. */
+  let cue: FlyStrokes | null = null;
+  let cueField: CueField | null = null;
+  const cueColors = new Uint8Array(CUE_COUNT * 3);
+  const cueSizes = new Float32Array(CUE_COUNT * 2);
+  /** Seconds since the trigger, and seconds spent waiting, by the frames' intervals. */
+  let clock = 0;
+  /** The clock when the out leg was ready: strokes that land late grow in from it. */
+  let outAt = 0;
+  let waitClock = 0;
   let leaving: StrokeBatch | null = null;
   let arriving: LiveWorld | null = null;
   let revealed = 0;
@@ -223,6 +260,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     durationMs: null,
     fallback: null,
     flying: false,
+    cue: null,
+    waitMs: null,
     frames: [],
     longestWorkMs: null,
     longestWorkPhase: null,
@@ -236,6 +275,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     if (current) current.task = current.task ? `${current.task}+${task}` : task;
   };
   const inverse = new Matrix4();
+  const turn = new Quaternion();
   const scratch = new Vector3();
   const frustum = new Frustum();
   const viewProjection = new Matrix4();
@@ -262,6 +302,12 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       load = loading;
     }
     return load;
+  }
+
+  /** In the gallery, starts loading every live painting's scan, so a trigger finds it ready. */
+  function prefetch(world: LiveWorld): void {
+    if (world.id !== GALLERY_ID) return;
+    for (const portal of livePortals()) scanRaster(portal.id)?.catch(() => {});
   }
 
   /** World point → rig-local, into `out` at `i`. */
@@ -371,18 +417,10 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     }
   }
 
-  /** Each stroke from where it is to `distance` metres from the eye along its own line. */
-  function towardEye(leg: FlightLeg, eye: Vec3, near: number, far: number): void {
+  /** Each stroke's end where its swirl hovers it, at the frame's stroke size and its own colour. */
+  function settle(leg: FlightLeg): void {
     for (let i = 0; i < FLY_COUNT; i++) {
       const i3 = i * 3;
-      const dx = leg.from[i3] - eye[0];
-      const dy = leg.from[i3 + 1] - eye[1];
-      const dz = leg.from[i3 + 2] - eye[2];
-      const length = Math.hypot(dx, dy, dz) || 1;
-      const d = Math.min(length, near + (far - near) * random());
-      leg.to[i3] = eye[0] + (dx / length) * d;
-      leg.to[i3 + 1] = eye[1] + (dy / length) * d;
-      leg.to[i3 + 2] = eye[2] + (dz / length) * d;
       leg.toSize[i * 2] = FRAME_STROKE[0];
       leg.toSize[i * 2 + 1] = FRAME_STROKE[1];
       leg.toColor.set(leg.fromColor.subarray(i3, i3 + 3), i3);
@@ -407,8 +445,10 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     } else {
       sampleWorld(from.handle.batch, leg.from, leg.fromColor, leg.fromSize);
     }
-    towardEye(leg, eye(), 0.9, 1.6);
+    swirl = planSwirl(leg.from, eye(), 0.9, 1.6, random, leg.to);
+    settle(leg);
     outLeg = leg;
+    outAt = clock;
   }
 
   /** The second leg: from where the strokes hover to the new world's strokes or the frame. */
@@ -483,7 +523,46 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     arrivingFrom = previous;
     revealed = 0;
     // The rig stands in the new world before the strokes' targets are sampled from its view.
+    const eyeBefore = eye();
+    turn.copy(deps.camera.quaternion).invert();
     deps.spawn(arrivalPose(world, previous));
+    // A desktop spawn also resets the look, which turns the camera in the rig: the strokes turn
+    // with it, so the field holds still in view. In XR the head pose overwrites the camera at the
+    // next render, so the reset never shows there and the strokes stay put.
+    turn.premultiply(deps.camera.quaternion);
+    const presenting = deps.renderer.xr?.isPresenting === true;
+    if (!presenting && Math.abs(turn.w) < 1 - 1e-9) carry(eyeBefore, eye());
+  }
+
+  /** Turns every waiting stroke by `turn` about the eye, from `before` to `after`, rig-local. */
+  function carry(before: Vec3, after: Vec3): void {
+    const point = (array: Float32Array): void => {
+      for (let i = 0; i + 2 < array.length; i += 3) {
+        scratch
+          .set(array[i] - before[0], array[i + 1] - before[1], array[i + 2] - before[2])
+          .applyQuaternion(turn);
+        array[i] = after[0] + scratch.x;
+        array[i + 1] = after[1] + scratch.y;
+        array[i + 2] = after[2] + scratch.z;
+      }
+    };
+    const vector = (array: Float32Array): void => {
+      for (let i = 0; i + 2 < array.length; i += 3) {
+        scratch.set(array[i], array[i + 1], array[i + 2]).applyQuaternion(turn);
+        array[i] = scratch.x;
+        array[i + 1] = scratch.y;
+        array[i + 2] = scratch.z;
+      }
+    };
+    if (outLeg) {
+      point(outLeg.from);
+      point(outLeg.to);
+    }
+    if (swirl) {
+      vector(swirl.b);
+      vector(swirl.c);
+    }
+    if (cueField) point(cueField.positions);
   }
 
   /**
@@ -510,6 +589,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     fly?.dispose();
     fly = null;
     outLeg = null;
+    swirl = null;
+    disposeCue();
     deps.bare();
     transition.ready();
   }
@@ -544,6 +625,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     arriving = null;
     active = world;
     deps.bind(world);
+    prefetch(world);
     const style = transition.style;
     if (style === 'fly') {
       void prepareIn(world, arrivingFrom)
@@ -558,11 +640,49 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     }
   }
 
+  /** Shrinks strokes whose out leg was ready after the trigger, so they grow in over 0.3 s. */
+  function lateFade(): number {
+    return outAt > 0 ? Math.max(0, 1 - (clock - outAt) / 0.3) : 0;
+  }
+
+  function disposeCue(): void {
+    cue?.dispose();
+    cue = null;
+    cueField = null;
+  }
+
+  /**
+   * The camera's heading, rig-local and level: its forward with the pitch dropped. Straight up or
+   * down the forward has no level part, so its up vector, which then points along the heading,
+   * stands in: `forward − sign(forward.y) · up` is level-ahead at every pitch.
+   */
+  function heading(): Vec3 {
+    const forward = scratch.set(0, 0, -1).applyQuaternion(deps.camera.quaternion);
+    const fy = forward.y;
+    const x = forward.x;
+    const z = forward.z;
+    const up = scratch.set(0, 1, 0).applyQuaternion(deps.camera.quaternion);
+    const sign = fy < 0 ? -1 : 1;
+    const hx = x - sign * up.x;
+    const hz = z - sign * up.z;
+    const length = Math.hypot(hx, hz);
+    return length > 1e-9 ? [hx / length, 0, hz / length] : [0, 0, -1];
+  }
+
+  /** The pulse field at `grow` (0-1) and the wait's breath so far, facing `at`. */
+  function drawCue(grow: number, at: Vec3): void {
+    if (!cue || !cueField) return;
+    cueFrame(cueField, cueBrightness(waitClock), grow, cueColors, cueSizes);
+    cue.place(cueField.positions, cueColors, cueSizes, at);
+  }
+
   function finish(): void {
     fly?.dispose();
     fly = null;
     outLeg = null;
     inLeg = null;
+    swirl = null;
+    disposeCue();
     leaving = null;
     deps.setVeil(0);
     deps.suppressInput();
@@ -587,6 +707,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     adopt(world) {
       active = world;
       deps.bind(world);
+      prefetch(world);
     },
     frame(dtMs) {
       if (transition.state === 'idle') return;
@@ -596,6 +717,11 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       const style = transition.style ?? 'fade';
       const step = transition.advance(dtMs / 1000);
       if (!step) return;
+      clock += Math.max(0, dtMs) / 1000;
+      if (step.phase === 'wait') {
+        waitClock += Math.max(0, dtMs) / 1000;
+        diagState.waitMs = (diagState.waitMs ?? 0) + Math.max(0, dtMs);
+      }
       current = {
         phase: step.phase,
         intervalMs: dtMs,
@@ -604,13 +730,19 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
         renderMs: 0,
         task: null,
       };
-      deps.setVeil(veilAt(step, style));
+      const veil = veilAt(step, style);
+      deps.setVeil(veil);
       const at = eye();
+      // The swirl runs on the transition's own clock from the trigger: each leg weighs it by its
+      // strokes' progress, so it is continuous across both phase ends whatever the wait.
+      const offsets = fly && outLeg && swirl ? drift : null;
+      if (offsets && swirl) swirlOffsets(swirl, clock, offsets);
       if (step.phase === 'out') {
         if (leaving) {
           for (const band of STROKE_BANDS) leaving.setDensity(band, 1 - ease(step.t));
         }
-        if (fly && outLeg) fly.draw(outLeg, step.t, at, 0);
+        if (fly && outLeg) fly.draw(outLeg, step.t, at, lateFade(), offsets, 'arrive');
+        drawCue(veil, at);
         if (step.outEnded) {
           note('dispose');
           const from = active;
@@ -624,10 +756,19 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
           if (target) void buildNext(target, previousId);
         }
       } else if (step.phase === 'wait') {
-        if (fly && outLeg) fly.draw(outLeg, 1, at, 0);
+        if (fly && outLeg) fly.draw(outLeg, 1, at, lateFade(), offsets, 'arrive');
+        drawCue(veil, at);
         upload();
       } else if (step.phase === 'in') {
-        if (fly && inLeg) fly.draw(inLeg, step.t, at, Math.max(0, (step.t - 0.8) / 0.2));
+        if (fly && inLeg) {
+          fly.draw(inLeg, step.t, at, Math.max(0, (step.t - 0.8) / 0.2), offsets, 'leave');
+        } else if (fly && outLeg) {
+          // No second leg: the strokes keep swirling where they hover and shrink away as the
+          // veil lifts, rather than freeze over the new world.
+          fly.draw(outLeg, 1, at, Math.min(1, step.t / 0.6), offsets, 'arrive');
+        }
+        // The field shrinks away as the veil lifts, so it is gone when the world is clear.
+        drawCue(veil, at);
       } else if (step.phase === 'done') {
         finish();
       }
@@ -665,6 +806,10 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       startedAt = deps.now();
       longest = 0;
       frames = 0;
+      clock = 0;
+      outAt = 0;
+      waitClock = 0;
+      diagState.waitMs = 0;
       diagState.frames = [];
       diagState.fallback = null;
       diagState.longestWorkMs = null;
@@ -680,8 +825,13 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
         void prepareOut(from, id).catch((error: unknown) => {
           // No first leg: the strokes stay hidden until the second.
           outLeg = null;
+          swirl = null;
           console.warn('portal: the strokes could not leave the frame', error);
         });
+      } else {
+        // Hidden until its first frame; it grows in with the veil.
+        cue = createFlyStrokes(deps.rig, deps.atlas(), CUE_COUNT, 'portal-cue');
+        cueField = createCueField(eye(), heading());
       }
       return true;
     },
@@ -693,6 +843,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       diagState.target = transition.target;
       diagState.armed = detector.armed();
       diagState.flying = fly !== null;
+      diagState.cue = swirl !== null ? 'swirl' : cue !== null ? 'pulse' : null;
       return diagState;
     },
   };

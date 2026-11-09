@@ -60,6 +60,7 @@ const lastSamples = (count: number, amount: number) => (ch: Float32Array) => {
 
 /** The review's seam cases that the boundary-sample check passed. Each must fail for [wrap]. */
 export const SEAM_MUTATIONS: readonly SeamMutation[] = [
+  { name: 'seam-click-0.15', cue: 'crickets', apply: lastSamples(3, 0.15) },
   { name: 'seam-click-0.2', cue: 'crickets', apply: lastSamples(3, 0.2) },
   { name: 'seam-click-0.3', cue: 'crickets', apply: lastSamples(3, 0.3) },
   {

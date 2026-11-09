@@ -39,6 +39,8 @@ interface GovernorDiag {
   meanMs: number | null;
   overrun: boolean;
   notice: string | null;
+  fixedLevel: number | null;
+  judging: boolean;
   rateRequest: string;
   frameRate: number;
   exhausted: boolean;
@@ -65,7 +67,7 @@ test('hz=90 at slow=40: sheds only foveation, fb scale and near density, undoes 
   // every check before the rate request reads as a gain.
   await xr.boot('demo=canvas&count=325000&slow=40&hz=90');
   await governor(xr);
-  // No ?hud: the HUD starts hidden and unbuilt, so only the notice can show it.
+  // No ?hud: the HUD starts hidden and unbuilt, and the 72 Hz notice leaves it so.
   expect((await xr.diag()).hud).toEqual({ visible: false, built: false });
   await xr.enterXR();
   expect(await governor(xr)).toMatchObject({ targetHz: 90 });
@@ -117,15 +119,9 @@ test('hz=90 at slow=40: sheds only foveation, fb scale and near density, undoes 
   expect(gov.frameRate).toBe(72);
   expect(gov.budgetMs).toBeCloseTo(1000 / 72, 3);
   expect(gov.notice).toMatch(/72 Hz/);
-  // The DOM notice is invisible in immersive mode, so the notice shows the hidden HUD that carries
-  // it (R16). The HUD builds asynchronously on that first show.
-  await expect
-    .poll(async () => {
-      const hud = (await xr.diag()).hud as { visible: boolean; built: boolean; text?: string };
-      return hud.visible && hud.built && (hud.text ?? '').includes(gov.notice ?? 'missing');
-    })
-    .toBe(true);
-  // The same notice reaches the notice queue and shows on the XR notice stack (P5.6).
+  // The DOM notice is invisible in immersive mode. The notice reaches the notice queue and shows
+  // on the XR notice stack (P5.6), with the perf HUD still hidden and unbuilt: the stack does not
+  // need the HUD, and the notice no longer shows it (R16 superseded, 2026-11-08).
   await expect
     .poll(async () => {
       const notices = (await xr.diag()).notices as {
@@ -136,6 +132,7 @@ test('hz=90 at slow=40: sheds only foveation, fb scale and near density, undoes 
       return queued && notices.view?.visible === true;
     })
     .toBe(true);
+  expect((await xr.diag()).hud).toEqual({ visible: false, built: false });
   // The busy-wait shows in the XR frame intervals.
   expect(gov.meanMs ?? 0).toBeGreaterThan(14);
   // IWER implements updateTargetFrameRate and reports the new nominal rate.
@@ -228,5 +225,39 @@ test('the default boot runs adaptive-72: a 72 Hz budget from the start and no ra
   expect(gov).toMatchObject({ targetHz: 72, frameRate: 72, rateRequest: 'none', notice: null });
   expect(gov.budgetMs).toBeCloseTo(1000 / 72, 3);
   expect((await xr.diag()).hud).toEqual({ visible: false, built: false });
+  expect(await glErrors(page)).toEqual([]);
+});
+
+test('a stored fixed quality level holds in XR at hz=90 slow=40: no events and no rate request', async ({
+  page,
+  xr,
+}) => {
+  await page.addInitScript(([key, value]) => localStorage.setItem(key, value), [
+    'gogh-xr.settings.v1',
+    JSON.stringify({ version: 2, settings: { qualityLevel: 3 } }),
+  ] as const);
+  await xr.boot('demo=canvas&count=325000&slow=40&hz=90');
+  expect(await governor(xr)).toMatchObject({ fixedLevel: 3, level: 3, judging: false });
+  await xr.enterXR();
+  await expect.poll(async () => (await governor(xr)).judging).toBe(true);
+  // Well past the adaptive machine's first shed (1.5 s) and its 72 Hz request (about 7 s here).
+  await page.waitForTimeout(9000);
+  const gov = await governor(xr);
+  console.log(`[e2e] fixed level 3 governor ${JSON.stringify(gov)}`);
+  expect(gov.history).toEqual([]);
+  expect(gov).toMatchObject({
+    fixedLevel: 3,
+    level: 3,
+    step: 'foveation-max',
+    foveation: 1,
+    fbScale: 0.85,
+    targetHz: 90,
+    rateRequest: 'none',
+    notice: null,
+    judging: true,
+  });
+  // No rate was asked, so the session stays at 90 Hz.
+  expect(gov.frameRate).toBe(90);
+  expect((await xr.diag()).xr).toMatchObject({ frameRate: 90 });
   expect(await glErrors(page)).toEqual([]);
 });
