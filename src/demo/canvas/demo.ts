@@ -18,11 +18,25 @@ import {
 const PAINTING_DIR = `${import.meta.env.BASE_URL}paintings/starry-night/`;
 
 /**
- * Fetches and decodes an image to RGBA8 at its natural size. Data images skip colour-space
- * conversion so the encoded angles and region ids arrive as written.
+ * A fetch that has not finished its body in this long is aborted, so a world build that waits on
+ * it always settles. Twice the portal's stall timeout (`STALL_TIMEOUT_S`, 15 s), so while frames
+ * run the portal gives up on a stalled build first. The abort runs on wall time and the stall count
+ * on frames, so after a paused frame loop the abort can land first, and the build then fails.
  */
-export async function loadRaster(url: string, data: boolean): Promise<Raster> {
-  const response = await fetch(url);
+export const RASTER_TIMEOUT_MS = 30_000;
+
+/**
+ * Fetches and decodes an image to RGBA8 at its natural size. Data images skip colour-space
+ * conversion so the encoded angles and region ids arrive as written. Rejects once `timeoutMs`
+ * passes without the whole response.
+ */
+export async function loadRaster(
+  url: string,
+  data: boolean,
+  timeoutMs = RASTER_TIMEOUT_MS,
+): Promise<Raster> {
+  // The signal aborts the body read too, so `blob()` rejects rather than hangs.
+  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   const bitmap = await createImageBitmap(await response.blob(), {
     colorSpaceConversion: data ? 'none' : 'default',

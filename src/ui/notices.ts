@@ -138,7 +138,13 @@ export function createNotices(deps: NoticesDeps): Notices {
       if (presenting && shown.length > 0 && !view && !building) build();
       let targets: Record<Hand, NoticeHit | null> | null = null;
       if (view) {
-        targets = view.frame({ presenting, shown, panelPose: panel.pose, actions: actionLabels });
+        targets = view.frame({
+          presenting,
+          shown,
+          panelPose: panel.pose,
+          actions: actionLabels,
+          dt: actions.dt,
+        });
         viewShown = presenting && shown.length > 0;
       }
       const result = arbitrateNoticeTrigger(

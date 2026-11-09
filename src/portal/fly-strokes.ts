@@ -5,9 +5,9 @@
  * strokes' colours and sizes, then hide as the world shows; a return runs the other way.
  *
  * While the next world builds the strokes swirl about where they hover (wait-motion.ts). The
- * swirl's offset is weighed in with each stroke's own progress: in by its progress on the way out, so it
- * starts from rest at liftoff, whole while waiting, and out by its progress on the way in, so the
- * `in` leg starts exactly where the stroke is, however long the wait was.
+ * swirl's offset is weighed in with each stroke's own progress: in by its progress on the way out,
+ * so it starts from rest at liftoff, whole while waiting, and out by its progress on the way in, so
+ * the `in` leg starts exactly where the stroke is, however long the wait was.
  *
  * The fade style's pulse field uses the same mesh with its own count and name (`portal-cue`).
  *

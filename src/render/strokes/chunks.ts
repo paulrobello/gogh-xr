@@ -33,13 +33,12 @@ export interface StrokeChunkData {
 export function computeBounds(buffers: StrokeBuffers, indices?: ArrayLike<number>): StrokeBounds {
   const n = indices ? indices.length : buffers.count;
   if (n === 0) return { center: [0, 0, 0], radius: 0, reach: 0, halfDiagonal: 0 };
-  const at = indices ? (k: number) => indices[k] : (k: number) => k;
   const p = buffers.position;
-  const first = at(0) * 3;
+  const first = (indices ? indices[0] : 0) * 3;
   const min = [p[first], p[first + 1], p[first + 2]];
   const max = [p[first], p[first + 1], p[first + 2]];
   for (let j = 0; j < n; j++) {
-    const i = at(j);
+    const i = indices ? indices[j] : j;
     for (let k = 0; k < 3; k++) {
       const value = p[i * 3 + k];
       if (value < min[k]) min[k] = value;
@@ -50,7 +49,7 @@ export function computeBounds(buffers: StrokeBuffers, indices?: ArrayLike<number
   let reach = 0;
   let halfDiagonal = 0;
   for (let j = 0; j < n; j++) {
-    const i = at(j);
+    const i = indices ? indices[j] : j;
     const d = Math.hypot(p[i * 3] - center[0], p[i * 3 + 1] - center[1], p[i * 3 + 2] - center[2]);
     if (d > reach) reach = d;
     const h = Math.hypot(buffers.size[i * 2], buffers.size[i * 2 + 1]) / 2;
@@ -87,7 +86,7 @@ export function partitionIndices(
 }
 
 /** Strokes keyed or placed between two yields of `partitionIndicesSteps`. */
-const PARTITION_SLICE = 65_536;
+const PARTITION_SLICE = 16_384;
 
 /**
  * `partitionIndices` as steps (P5.5): the same partition, yielding every PARTITION_SLICE strokes

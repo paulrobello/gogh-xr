@@ -18,7 +18,11 @@ import {
   worldBatchOptions,
   worldSeeds,
 } from '../src/paintings/starry-night/world.ts';
-import { createStrokeBatchSteps, type StrokeBatch } from '../src/render/strokes/batch.ts';
+import {
+  createStrokeBatchSteps,
+  type StrokeBatch,
+  splitByClass,
+} from '../src/render/strokes/batch.ts';
 import { STROKE_ATTRIBUTES, type StrokeBuffers } from '../src/render/strokes/instance.ts';
 import { createSlicer, type Steps } from '../src/util/slicer.ts';
 
@@ -160,3 +164,12 @@ test('the split builders give the unsplit builds byte for byte', async () => {
   galleryBatch.dispose();
   expect(hashes).toEqual(UNSPLIT);
 }, 120_000);
+
+test('splitByClass equals one filter per class, in input order', () => {
+  const classIndex = Uint8Array.from([0, 2, 1, 2, 0, 4, 2, 1, 0, 3, 2]);
+  const indices = Uint32Array.from([10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 3, 5, 5]);
+  const split = splitByClass(indices, classIndex, 5);
+  for (let d = 0; d < 5; d++) {
+    expect(Array.from(split[d])).toEqual(Array.from(indices.filter((i) => classIndex[i] === d)));
+  }
+});

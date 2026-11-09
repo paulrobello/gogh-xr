@@ -228,7 +228,7 @@ describe('the fly swirl', () => {
       expect(positive + negative).toBe(COUNT);
       // Each stroke takes the free slot nearest its own view direction, so the hovering cloud keeps
       // the painting's colours where they were: a stroke leaves its own line by under 0.2 rad on
-      // average (0.12 to 0.17 here, against 0.73 walked in when each slot took the next stroke).
+      // average (0.13 to 0.17 here, against 0.73 walked in when each slot took the next stroke).
       // The frame from 4 m is spread to the least half-extent first, so its strokes move out by that.
       if (label === 'from 4 m') return;
       let off = 0;
@@ -240,7 +240,69 @@ describe('the fly swirl', () => {
           (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (Math.hypot(...a) * Math.hypot(...b));
         off += Math.acos(Math.min(1, cos));
       }
+      if (process.env.SWIRL_REPORT) console.log(label, 'off its line', off / COUNT);
       expect(off / COUNT).toBeLessThan(0.2);
+    },
+  );
+
+  /** Unit directions from the eye to each stroke, `time` seconds into the swirl, and their mean. */
+  function directions(swirl: Swirl, anchors: Float32Array, time: number) {
+    const out = new Float32Array(COUNT * 3);
+    swirlOffsets(swirl, time, out);
+    const dirs: Vec3[] = [];
+    const mean = [0, 0, 0];
+    for (let i = 0; i < COUNT; i++) {
+      const i3 = i * 3;
+      const x = anchors[i3] + out[i3] - EYE[0];
+      const y = anchors[i3 + 1] + out[i3 + 1] - EYE[1];
+      const z = anchors[i3 + 2] + out[i3 + 2] - EYE[2];
+      const l = Math.hypot(x, y, z);
+      dirs.push([x / l, y / l, z / l]);
+      mean[0] += x / l;
+      mean[1] += y / l;
+      mean[2] += z / l;
+    }
+    const l = Math.hypot(...mean);
+    return { dirs, mean: [mean[0] / l, mean[1] / l, mean[2] / l] as Vec3 };
+  }
+
+  const angle = (p: Vec3, q: Vec3): number =>
+    Math.acos(Math.min(1, p[0] * q[0] + p[1] * q[1] + p[2] * q[2]));
+
+  test.each(CLOUDS)(
+    '%s: no rosette, the cloud has no centre of symmetry and no hole on its mean direction',
+    (label, from) => {
+      const { swirl, anchors } = plan(from);
+      // Turned by π about the mean direction, a stroke lands no nearer another stroke than
+      // strokes lie to each other. Groups sharing one centre made the cloud map onto itself
+      // there exactly (ratio 0), the four-lobed rosette.
+      const still = directions(swirl, anchors, 0);
+      const f = still.mean;
+      let turned = 0;
+      let neighbour = 0;
+      for (let i = 0; i < COUNT; i += 10) {
+        const d = still.dirs[i];
+        const s = 2 * (d[0] * f[0] + d[1] * f[1] + d[2] * f[2]);
+        const t: Vec3 = [s * f[0] - d[0], s * f[1] - d[1], s * f[2] - d[2]];
+        let nearestTurned = Math.PI;
+        let nearest = Math.PI;
+        for (let j = 0; j < COUNT; j++) {
+          nearestTurned = Math.min(nearestTurned, angle(t, still.dirs[j]));
+          if (j !== i) nearest = Math.min(nearest, angle(d, still.dirs[j]));
+        }
+        turned += nearestTurned;
+        neighbour += nearest;
+      }
+      // Mid-wait (1 s into it, 1.6 s from the trigger), the middle of the view is as full as
+      // the rest: the share within a quarter of the half-extent of the mean direction, about
+      // 1/16 for an even disc. A shared centre emptied it (0 to 0.05).
+      const moving = directions(swirl, anchors, 1.6);
+      const middle = moving.dirs.filter((d) => angle(d, moving.mean) < 0.25 * swirl.half).length;
+      if (process.env.SWIRL_REPORT) {
+        console.log(label, 'turned / neighbour', turned / neighbour, 'middle', middle / COUNT);
+      }
+      expect(turned / neighbour).toBeGreaterThan(0.5);
+      expect(middle / COUNT).toBeGreaterThan(0.05);
     },
   );
 });

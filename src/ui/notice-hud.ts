@@ -26,8 +26,10 @@ import {
 import { Text } from 'troika-three-text';
 import type { Hand } from '../xr/input';
 import {
+  appliedElevation,
   NOTICE_DISTANCE,
   NOTICE_W,
+  type NoticePlacementState,
   noticeAnchor,
   noticeElevation,
   rayRectDistance,
@@ -76,6 +78,8 @@ export interface NoticeHudFrame {
   panelPose: Readonly<PanelPose> | null;
   /** Action button labels by kind; a kind without one has only Dismiss. */
   actions?: Readonly<Partial<Record<NoticeKind, string>>>;
+  /** Seconds since the last frame, for the elevation easing. Absent: the elevation snaps. */
+  dt?: number;
 }
 
 export interface NoticeTargetDiag {
@@ -245,6 +249,10 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
   let lastShown: readonly Notice[] | null = null;
   let lastActions: NoticeHudFrame['actions'] | null = null;
   let elevation = noticeElevation(null, 0);
+  const placementState: NoticePlacementState = { placement: 'base' };
+  /** The stack drew last frame, so this frame eases rather than snaps. */
+  let wasVisible = false;
+  let hadPanel = false;
   let lasersWanted = false;
   const hover: Record<Hand, NoticeHit | null> = { left: null, right: null };
   const hits: Record<Hand, number | null> = { left: null, right: null };
@@ -356,12 +364,14 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
   }
 
   return {
-    frame({ presenting, shown, panelPose, actions }) {
+    frame({ presenting, shown, panelPose, actions, dt }) {
       const targets: Record<Hand, NoticeHit | null> = { left: null, right: null };
       const visible = presenting && shown.length > 0;
       root.visible = visible;
       lasersWanted = visible && panelPose === null;
       if (!visible) {
+        wasVisible = false;
+        placementState.placement = 'base';
         for (const hand of HANDS) rays[hand].tracked = false;
         return targets;
       }
@@ -372,7 +382,22 @@ export function startNoticeHud(deps: NoticeHudDeps): NoticeHud {
       }
       camera.updateWorldMatrix(true, false);
       const angle = Math.atan2(stackHeight(), NOTICE_DISTANCE);
-      elevation = noticeElevation(panelCorners(panelPose), angle);
+      const previous = placementState.placement;
+      const target = noticeElevation(panelCorners(panelPose), angle, placementState);
+      // Snaps when the stack first appears or the panel has just opened, so it never slides in
+      // from the base across a panel that is already there. Everything else eases (see
+      // appliedElevation for the lift and drop rules).
+      const snap = !wasVisible || (panelPose !== null && !hadPanel) || dt === undefined;
+      elevation = appliedElevation(
+        elevation,
+        target,
+        placementState.placement,
+        previous,
+        snap,
+        dt ?? 0,
+      );
+      wasVisible = true;
+      hadPanel = panelPose !== null;
       noticeAnchor(elevation, root.position);
       root.rotation.set(elevation, 0, 0);
       root.updateWorldMatrix(false, true);

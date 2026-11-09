@@ -9,19 +9,22 @@
  * inner strokes circle fast and the outer ones trail.
  *
  * The vortices are irregular, as the painting's are: `SWIRL_GROUPS` groups, each with its own
- * random tilt, centre, radius and rate. Each group is four vortices mirrored about the strokes'
- * mean view direction f in its tilted frame (a, b): at (a, b) and (−a, −b) turning one way, and
- * at (−a, b) and (a, −b) turning the other. The strokes hover in slots of eights to match:
- * `planSwirl` takes every eighth stroke's place, the place opposite it on its circle about its
- * vortex, and the images of those two under the same group, each orbiting the image vortex. Each
- * stroke then takes the free slot nearest its own view direction, so the cloud keeps the
- * painting's colours roughly where they were. Strokes left over hover still on their own lines.
+ * random centre k (an axis through the eye near the strokes' mean view direction f), tilt, radius
+ * and rate. Each group is four vortices mirrored about its own k in its tilted frame (a, b, k): at
+ * (a, b) and (−a, −b) turning one way, and at (−a, b) and (a, −b) turning the other. The strokes
+ * hover in slots of eights to match: `planSwirl` takes every eighth stroke's place, the place
+ * opposite it on its circle about its vortex, and the images of those two under the same group,
+ * each orbiting the image vortex. Each stroke then takes the free slot nearest its own view
+ * direction, so the cloud keeps the painting's colours roughly where they were. Strokes left over
+ * hover still on their own lines.
  *
- * A turn by π about f and the two mirrors through f, with the mirrors' spins flipped, carry each
+ * A turn by π about k and the two mirrors through k, with the mirrors' spins flipped, carry each
  * four onto itself. A mirror image of a motion has angular velocity −Mω about the eye, so each
  * four's net angular velocity is (I + R − M₁ − M₂) ω = 0 at every instant: the field never turns
  * or rolls as a whole, exactly, whatever the layout. Two strokes opposite on one circle move in
  * opposite directions, so the eight's mean velocity is 0 too: the field never slides either.
+ * Groups that shared one centre made the whole cloud symmetric about it, a rosette with a hole on
+ * f; a centre per group leaves no symmetry the eye can find.
  *
  * A small cloud of anchors (a frame seen from 4 m) is spread to at least `SWIRL_MIN_HALF` of view
  * angle about f, so the swirl fills the middle of the view. The offset is 0 at time 0, and the
@@ -34,14 +37,23 @@
 import type { Vec3 } from '../render/strokes/frame';
 
 /** Vortex groups of four. */
-export const SWIRL_GROUPS = 4;
-/** The anchors' least half-extent about the mean direction, radians of view angle (about 17°). */
-export const SWIRL_MIN_HALF = 0.3;
+export const SWIRL_GROUPS = 8;
+/** The anchors' least half-extent about the mean direction, radians of view angle (about 26°). */
+export const SWIRL_MIN_HALF = 0.45;
+/**
+ * The half-extent the base rate is set for: a wider cloud turns slower by this over its own, so a
+ * stroke's speed across the view does not grow with it.
+ */
+export const SWIRL_RATE_HALF = 0.3;
+/** A group's centre lies within this share of the half-extent of the mean direction. */
+export const SWIRL_CENTRE_SHARE = 0.6;
+/** A group's vortices lie this share of the half-extent off its centre along each of a and b. */
+export const SWIRL_OFFSET_SHARE: readonly [number, number] = [0.15, 0.6];
 /** A vortex's radius, as a share of the anchors' half-extent: from this to twice it. */
-export const SWIRL_RADIUS_SHARE = 0.35;
+export const SWIRL_RADIUS_SHARE = 0.3;
 /** A vortex's solid-body core radius, as a share of its radius. */
 export const SWIRL_CORE_SHARE = 0.4;
-/** A core turns once in this many seconds at the base rate, for the least half-extent. */
+/** A core turns once in this many seconds at the base rate, for `SWIRL_RATE_HALF`. */
 export const SWIRL_PERIOD_S = 2.5;
 /** A group's rate is the base rate times 1 ± this. */
 export const SWIRL_RATE_SPREAD = 0.3;
@@ -67,14 +79,43 @@ export function swirlRate(rho: number, core: number, omega: number): number {
   return omega * Math.min(1, (core * core) / Math.max(1e-12, rho * rho));
 }
 
-/** A vortex: its group, its Klein element (bit 1 flips a, bit 0 flips b) and its centre. */
+/** A group's frame: its centre k and the tilted axes a and b across it, all unit, eye-relative. */
+interface Group {
+  readonly k: Vec3;
+  readonly a: Vec3;
+  readonly b: Vec3;
+  /** Core rate, rad/s. */
+  readonly rate: number;
+}
+
+/** A vortex: its group, its Klein element (bit 1 flips a, bit 0 flips b) and its axis. */
 interface Vortex {
   readonly group: number;
   readonly element: number;
-  /** Centre on the tangent plane, in the base frame. */
-  readonly x: number;
-  readonly y: number;
+  /** The unit axis through the eye. */
+  readonly axis: Vec3;
+  /** Radians of view angle. */
   readonly radius: number;
+}
+
+const dot = (p: Vec3, q: Vec3): number => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+
+const unit = (x: number, y: number, z: number): Vec3 => {
+  const l = Math.hypot(x, y, z) || 1;
+  return [x / l, y / l, z / l];
+};
+
+/** Direction `p` under element `element` of `group`: bit 1 flips its a part, bit 0 its b part. */
+function image(p: Vec3, group: Group, element: number): Vec3 {
+  const pa = dot(p, group.a);
+  const pb = dot(p, group.b);
+  const da = element & 2 ? -2 * pa : 0;
+  const db = element & 1 ? -2 * pb : 0;
+  return [
+    p[0] + da * group.a[0] + db * group.b[0],
+    p[1] + da * group.a[1] + db * group.b[1],
+    p[2] + da * group.a[2] + db * group.b[2],
+  ];
 }
 
 /**
@@ -132,6 +173,19 @@ export function planSwirl(
   const ux = -rz * fy;
   const uy = rz * fx - rx * fz;
   const uz = rx * fy;
+  const f: Vec3 = [fx, fy, fz];
+  const right: Vec3 = [rx, 0, rz];
+  const up: Vec3 = [ux, uy, uz];
+  /** The unit direction through tangent point (x, y) on the plane one unit along f. */
+  const direction = (x: number, y: number): Vec3 =>
+    unit(fx + x * rx + y * ux, fy + y * uy, fz + x * rz + y * uz);
+  /** Direction `p`'s tangent point, or null when it is too far off f to place. */
+  const tangent = (p: Vec3): [number, number] | null => {
+    const ahead = dot(p, f);
+    if (ahead < MIN_FORWARD * Math.hypot(p[0], p[1], p[2])) return null;
+    return [dot(p, right) / ahead, dot(p, up) / ahead];
+  };
+
   // Each stroke's place on the plane one unit ahead, and the cloud's spread there.
   const sx = new Float32Array(count);
   const sy = new Float32Array(count);
@@ -157,32 +211,56 @@ export function planSwirl(
   const half = Math.max(SWIRL_MIN_HALF, measured);
   const stretch = measured > 0 ? half / measured : 1;
 
-  // The groups: a tilt, a base vortex in the tilted frame's first quadrant, a radius and a rate.
+  // The groups: a centre, a tilt, a base vortex off the centre, a radius and a rate.
   const omega = (2 * Math.PI) / SWIRL_PERIOD_S;
-  const tilts: number[] = [];
-  const rates: number[] = [];
+  const groups: Group[] = [];
   const vortices: Vortex[] = [];
   for (let g = 0; g < SWIRL_GROUPS; g++) {
+    // Uniform over a disc about f.
+    const reach = half * SWIRL_CENTRE_SHARE * Math.sqrt(random());
+    const bearing = 2 * Math.PI * random();
+    const k = direction(reach * Math.cos(bearing), reach * Math.sin(bearing));
+    // Right made square to k, then up across both, turned by the tilt.
+    const across = dot(right, k);
+    const a0 = unit(right[0] - across * k[0], right[1] - across * k[1], right[2] - across * k[2]);
+    const b0: Vec3 = [
+      k[1] * a0[2] - k[2] * a0[1],
+      k[2] * a0[0] - k[0] * a0[2],
+      k[0] * a0[1] - k[1] * a0[0],
+    ];
     const tilt = (Math.PI / 2) * random();
-    const a = half * (0.2 + 0.7 * random());
-    const bb = half * (0.2 + 0.7 * random());
-    const radius = half * SWIRL_RADIUS_SHARE * (1 + random());
-    tilts.push(tilt);
-    // Wider vortices turn slower, so a stroke's speed across the view does not grow with them.
-    const scale = SWIRL_MIN_HALF / half;
-    rates.push(scale * omega * (1 - SWIRL_RATE_SPREAD + 2 * SWIRL_RATE_SPREAD * random()));
     const cos = Math.cos(tilt);
     const sin = Math.sin(tilt);
+    const a: Vec3 = [
+      cos * a0[0] + sin * b0[0],
+      cos * a0[1] + sin * b0[1],
+      cos * a0[2] + sin * b0[2],
+    ];
+    const bAxis: Vec3 = [
+      cos * b0[0] - sin * a0[0],
+      cos * b0[1] - sin * a0[1],
+      cos * b0[2] - sin * a0[2],
+    ];
+    const [lo, hi] = SWIRL_OFFSET_SHARE;
+    const offA = half * (lo + (hi - lo) * random());
+    const offB = half * (lo + (hi - lo) * random());
+    const radius = half * SWIRL_RADIUS_SHARE * (1 + random());
+    // Wider clouds turn slower, so a stroke's speed across the view does not grow with them.
+    const scale = SWIRL_RATE_HALF / half;
+    const group: Group = {
+      k,
+      a,
+      b: bAxis,
+      rate: scale * omega * (1 - SWIRL_RATE_SPREAD + 2 * SWIRL_RATE_SPREAD * random()),
+    };
+    groups.push(group);
+    const base = unit(
+      k[0] + offA * a[0] + offB * bAxis[0],
+      k[1] + offA * a[1] + offB * bAxis[1],
+      k[2] + offA * a[2] + offB * bAxis[2],
+    );
     for (let element = 0; element < 4; element++) {
-      const ea = element & 2 ? -a : a;
-      const eb = element & 1 ? -bb : bb;
-      vortices.push({
-        group: g,
-        element,
-        x: ea * cos - eb * sin,
-        y: ea * sin + eb * cos,
-        radius,
-      });
+      vortices.push({ group: g, element, axis: image(base, group, element), radius });
     }
   }
   const vortexOf = (group: number, element: number): Vortex => vortices[group * 4 + element];
@@ -190,24 +268,12 @@ export function planSwirl(
   /** Stroke `i` hovering at tangent point (x, y), `d` from the eye, about vortex `v`. */
   const place = (i: number, x: number, y: number, d: number, v: Vortex | null): void => {
     const i3 = i * 3;
-    let dx = fx + x * rx + y * ux;
-    let dy = fy + y * uy;
-    let dz = fz + x * rz + y * uz;
-    const dl = Math.hypot(dx, dy, dz);
-    dx /= dl;
-    dy /= dl;
-    dz /= dl;
+    const [dx, dy, dz] = direction(x, y);
     anchors[i3] = eye[0] + dx * d;
     anchors[i3 + 1] = eye[1] + dy * d;
     anchors[i3 + 2] = eye[2] + dz * d;
     if (!v) return;
-    let kx = fx + v.x * rx + v.y * ux;
-    let ky = fy + v.y * uy;
-    let kz = fz + v.x * rz + v.y * uz;
-    const kl = Math.hypot(kx, ky, kz);
-    kx /= kl;
-    ky /= kl;
-    kz /= kl;
+    const [kx, ky, kz] = v.axis;
     const px = dx * d;
     const py = dy * d;
     const pz = dz * d;
@@ -219,9 +285,9 @@ export function planSwirl(
     c[i3 + 1] = kz * px - kx * pz;
     c[i3 + 2] = kx * py - ky * px;
     const rho = Math.acos(Math.min(1, Math.max(-1, along / d)));
-    // Rotations about f keep the spin, the mirrors flip it.
+    // Rotations about k keep the spin, the mirrors flip it.
     const spin = v.element === 0 || v.element === 3 ? 1 : -1;
-    rate[i] = spin * swirlRate(rho, SWIRL_CORE_SHARE * v.radius, rates[v.group]);
+    rate[i] = spin * swirlRate(rho, SWIRL_CORE_SHARE * v.radius, groups[v.group].rate);
   };
 
   /** Where stroke `i` hovers when it does not swirl: on its own line toward the eye. */
@@ -237,19 +303,6 @@ export function planSwirl(
     anchors[i3 + 2] = eye[2] + (pz / length) * at;
   };
 
-  /** The point opposite tangent point (x, y) on its circle about vortex `v`, or null. */
-  const opposite = (x: number, y: number, v: Vortex): [number, number] | null => {
-    // In the frame (r, u, f): the stroke's direction D, the axis K, then D turned by π about K.
-    const dl = Math.hypot(x, y, 1);
-    const kl = Math.hypot(v.x, v.y, 1);
-    const dot = (x * v.x + y * v.y + 1) / (dl * kl);
-    const ox = (2 * dot * v.x) / kl - x / dl;
-    const oy = (2 * dot * v.y) / kl - y / dl;
-    const of = (2 * dot) / kl - 1 / dl;
-    if (of < MIN_FORWARD) return null;
-    return [ox / of, oy / of];
-  };
-
   // The slots, in eights: every eighth stroke's place, the place opposite it on its circle, and
   // the four images of each. The symmetry needs only the slots, so any stroke can fill one.
   const order: number[] = [];
@@ -258,42 +311,47 @@ export function planSwirl(
   const slotY: number[] = [];
   const slotD: number[] = [];
   const slotV: Vortex[] = [];
+  const eight: [number, number][] = [];
   for (let q = 0; q + 8 <= order.length; q += 8) {
     const lead = order[q];
     const i3 = lead * 3;
     const length = Math.hypot(from[i3] - eye[0], from[i3 + 1] - eye[1], from[i3 + 2] - eye[2]);
     const d = Math.min(length, near + (far - near) * random());
     if (d < MIN_DISTANCE) continue;
-    const x = sx[lead] * stretch;
-    const y = sy[lead] * stretch;
+    const at = direction(sx[lead] * stretch, sy[lead] * stretch);
     // The vortex nearest in units of its own radius.
     let best = vortices[0];
     let bestScore = Number.POSITIVE_INFINITY;
     for (const v of vortices) {
-      const score = Math.hypot(x - v.x, y - v.y) / v.radius;
+      const score = Math.acos(Math.min(1, Math.max(-1, dot(at, v.axis)))) / v.radius;
       if (score < bestScore) {
         bestScore = score;
         best = v;
       }
     }
-    const across = opposite(x, y, best);
-    if (!across) continue;
-    // Each point's place in its group's tilted frame, and its three images there.
-    const tilt = tilts[best.group];
-    const cos = Math.cos(tilt);
-    const sin = Math.sin(tilt);
-    const points: readonly [number, number][] = [[x, y], across];
-    for (const [px, py] of points) {
-      const a = px * cos + py * sin;
-      const bb = -px * sin + py * cos;
+    // Turned by π about the vortex's axis.
+    const s = 2 * dot(at, best.axis);
+    const opposite: Vec3 = [
+      s * best.axis[0] - at[0],
+      s * best.axis[1] - at[1],
+      s * best.axis[2] - at[2],
+    ];
+    // Each point's three images under its group, all of which must lie ahead to keep the eight.
+    const group = groups[best.group];
+    eight.length = 0;
+    for (const point of [at, opposite]) {
       for (let element = 0; element < 4; element++) {
-        const ea = element & 2 ? -a : a;
-        const eb = element & 1 ? -bb : bb;
-        slotX.push(ea * cos - eb * sin);
-        slotY.push(ea * sin + eb * cos);
-        slotD.push(d);
-        slotV.push(vortexOf(best.group, best.element ^ element));
+        const placed = tangent(image(point, group, element));
+        if (!placed) break;
+        eight.push(placed);
       }
+    }
+    if (eight.length < 8) continue;
+    for (let k = 0; k < 8; k++) {
+      slotX.push(eight[k][0]);
+      slotY.push(eight[k][1]);
+      slotD.push(d);
+      slotV.push(vortexOf(best.group, best.element ^ (k & 3)));
     }
   }
 

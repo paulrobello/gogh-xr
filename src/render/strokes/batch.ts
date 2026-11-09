@@ -351,11 +351,35 @@ const BATCH_SLICE = 16_384;
 /** Strokes partitioned between two yields of `createStrokeBatchSteps`' cell loop. */
 const CELL_SLICE = 4096;
 /** Strokes classified between two yields of `createStrokeBatchSteps`' draw class pass. */
-const CLASS_SLICE = 65_536;
+const CLASS_SLICE = 16_384;
 /** Each draw class's index in STROKE_DRAW_CLASSES. */
 const DRAW_CLASS_INDEX: Readonly<Record<StrokeDrawClass, number>> = Object.freeze(
   Object.fromEntries(STROKE_DRAW_CLASSES.map((c, i) => [c, i])) as Record<StrokeDrawClass, number>,
 );
+
+/**
+ * `indices` split by `classIndex`, one array per class, each in input order: what one
+ * `indices.filter((i) => classIndex[i] === d)` per class gives, in a single pass over `indices`.
+ */
+export function splitByClass(
+  indices: Uint32Array,
+  classIndex: Uint8Array,
+  classes: number,
+): Uint32Array[] {
+  const counts = new Uint32Array(classes);
+  for (let k = 0; k < indices.length; k++) counts[classIndex[indices[k]]]++;
+  const empty = new Uint32Array(0);
+  const out = Array.from({ length: classes }, (_, d) =>
+    counts[d] === 0 ? empty : new Uint32Array(counts[d]),
+  );
+  const at = new Uint32Array(classes);
+  for (let k = 0; k < indices.length; k++) {
+    const i = indices[k];
+    const d = classIndex[i];
+    out[d][at[d]++] = i;
+  }
+  return out;
+}
 
 /** Unit quad corners in [-0.5, 0.5]², counter-clockwise seen from +z (the instance normal). */
 function createQuadAttributes(): { position: BufferAttribute; index: BufferAttribute } {
@@ -428,6 +452,17 @@ export function motionReachesOf(
   buffers: StrokeBuffers,
   indices?: ArrayLike<number>,
 ): MotionReaches {
+  return drain(motionReachesOfSteps(buffers, indices));
+}
+
+/** Strokes whose motion reach is measured between two yields of `motionReachesOfSteps`. */
+const MOTION_SLICE = 8192;
+
+/** `motionReachesOf` as steps: the same maxima, yielding every MOTION_SLICE strokes. */
+export function* motionReachesOfSteps(
+  buffers: StrokeBuffers,
+  indices?: ArrayLike<number>,
+): Steps<MotionReaches> {
   let sky = 0;
   let star = 0;
   let moon = 0;
@@ -435,6 +470,7 @@ export function motionReachesOf(
   const p = buffers.position;
   const n = indices ? indices.length : buffers.count;
   for (let k = 0; k < n; k++) {
+    if (k > 0 && k % MOTION_SLICE === 0) yield;
     const i = indices ? indices[k] : k;
     const layer = buffers.meta[i * 4 + 1];
     const x = p[i * 3];
@@ -835,9 +871,10 @@ export function* createStrokeBatchSteps(
     }
     const indices = order.subarray(offsets[c], offsets[c + 1]);
     sinceYield += indices.length;
+    const byClass = splitByClass(indices, classIndex, STROKE_DRAW_CLASSES.length);
     for (let d = 0; d < STROKE_DRAW_CLASSES.length; d++) {
       const drawClass = STROKE_DRAW_CLASSES[d];
-      const picked = indices.filter((i) => classIndex[i] === d);
+      const picked = byClass[d];
       if (picked.length === 0) continue;
       if (!cypressMask || drawClass !== 'world' || !picked.some((i) => cypressMask[i] === 1)) {
         parts.push({ cell: c, drawClass, indices: picked });
@@ -853,8 +890,10 @@ export function* createStrokeBatchSteps(
       ofCypress.forEach((stroke, r) => {
         cypress.push({ stroke, key: (r + 0.5) / ofCypress.length, cell: c });
       });
+      yield;
       const rest = cellOrder.filter((i) => cypressMask[i] === 0);
       if (rest.length > 0) {
+        yield;
         parts.push({ cell: c, drawClass, indices: rest.slice().sort(), order: rest });
       }
     }
@@ -862,7 +901,9 @@ export function* createStrokeBatchSteps(
   if (cypress.length > 0) {
     yield;
     cypress.sort((a, b) => a.key - b.key || a.cell - b.cell);
+    yield;
     const merged = Uint32Array.from(cypress, (s) => s.stroke);
+    yield;
     parts.push({
       cell: cypressCell,
       drawClass: 'cypress',
@@ -894,7 +935,7 @@ export function* createStrokeBatchSteps(
         : yield* chunkOrderSteps(buffers, indices, chunkSeed(seed, cells, c));
       ordered.push(part);
       if (!merged) continue;
-      partReaches.push(motionReachesOf(buffers, part.order));
+      partReaches.push(yield* motionReachesOfSteps(buffers, part.order));
       haze ||= holdsHaze(buffers, part.order);
       const b = centreBox(buffers, part.order);
       for (let k = 0; k < 3; k++) {
@@ -909,8 +950,19 @@ export function* createStrokeBatchSteps(
     const box = computeBounds(data);
     for (const part of partBounds) probes.push(...part.center, part.radius);
     probeStart[chunks.length + 1] = probes.length / 4;
+    yield;
     const geometry = createChunkGeometry(data, quad);
     yield;
+    // A lone part's scans run here, so the pushes below are one synchronous block.
+    let ownReaches: MotionReaches | undefined;
+    if (!merged) {
+      ownReaches = yield* motionReachesOfSteps(data);
+      yield;
+      haze = holdsHaze(data);
+      yield;
+      centres.splice(0, 6, ...centreBox(data));
+      yield;
+    }
     const bounds = new Sphere(new Vector3(...box.center), box.radius);
     geometry.boundingSphere = bounds.clone();
     const mesh = new Mesh(geometry, materials.near);
@@ -932,9 +984,7 @@ export function* createStrokeBatchSteps(
     if (merged) {
       motionReaches.push(maxReaches(partReaches));
     } else {
-      motionReaches.push(motionReachesOf(data));
-      haze = holdsHaze(data);
-      centres.splice(0, 6, ...centreBox(data));
+      motionReaches.push(ownReaches as MotionReaches);
     }
     halfDiagonals.push(box.halfDiagonal * (haze ? 1 + HAZE_GROWTH : 1));
     centreBoxes.push(...centres);

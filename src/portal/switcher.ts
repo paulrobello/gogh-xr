@@ -6,7 +6,8 @@
  * slicer. The new world stays out of the draw until its programs are compiled and its textures
  * uploaded, one texture per frame. Then its chunks are revealed a few per frame, each drawn once
  * under the veil whether or not it is in view, so its buffers upload before the `in` phase shows
- * it. A world that fails to build falls back to the gallery, then to the bare scene.
+ * it. A world that fails to build, or stalls on a fetch (`STALL_TIMEOUT_S`), falls back to the
+ * gallery, then to the bare scene.
  *
  * The view is never still while the world builds (wait-motion.ts): in the fly style the strokes
  * swirl where they hover, from liftoff into the `in` leg, and in the fade style a dim, fixed field
@@ -99,6 +100,32 @@ export function revealEnd(chunks: readonly { readonly count: number }[], start: 
 }
 /** A stroke leaving the frame: its quad, metres. */
 const FRAME_STROKE: readonly [number, number] = [0.035, 0.014];
+/**
+ * A wait on something off the frame loop (a world's build or its `ready`, a scan for the second
+ * leg) is given up after this many seconds of wait frames in which the slicer had nothing queued:
+ * no progress the switcher can see. The build's own sliced work never counts, so a slow Quest
+ * build is never cut short, and a slow Wi-Fi fetch of a warm build has this long to land. A world
+ * given up on fails as a throw would (F3: the gallery, then the bare scene); a second leg given up
+ * on is skipped, as a failed one is.
+ */
+export const STALL_TIMEOUT_S = 15;
+/**
+ * The most one frame adds to a stall count, ms. The first frame after a paused loop (the Meta
+ * button, a doff, a hidden tab) carries the whole pause, which is no evidence of a stall.
+ */
+export const STALL_FRAME_MAX_MS = 250;
+
+/** One frame's share of a stall count, seconds. */
+const stallShare = (dtMs: number): number => Math.min(Math.max(0, dtMs), STALL_FRAME_MAX_MS) / 1000;
+
+/** One wait on something off the frame loop, which the stall watchdog can give up on. */
+interface Wait {
+  /** True once given up on: whatever lands for it later is discarded. */
+  stale: boolean;
+  /** Rejects when given up on. */
+  readonly expired: Promise<never>;
+  expire(): void;
+}
 
 export interface LiveWorld {
   readonly id: string;
@@ -246,6 +273,22 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
   let startedAt = 0;
   let longest = 0;
   const rasters = new Map<string, Promise<Raster>>();
+  /** The wait the watchdog watches, and its wait frames so far with the slicer idle, seconds. */
+  let waiting: Wait | null = null;
+  let stalledS = 0;
+  /**
+   * The first leg's wait on its scan, counted over every frame of the transition, since the build
+   * does not wait on it. Given up on, a stalled scan leaves the cache.
+   */
+  let outWait: Wait | null = null;
+  let outStalledS = 0;
+  /** Counts transitions, so a first leg that settles after its own has ended touches nothing. */
+  let generation = 0;
+  /**
+   * Ids whose build was given up on and has not landed. Worlds are module singletons, so another
+   * build of one would interleave with it: none starts until it lands and is disposed.
+   */
+  const abandoned = new Set<string>();
   const diagState: PortalDiag = {
     state: 'idle',
     progress: 0,
@@ -434,13 +477,24 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
   }
 
   /** The first leg: the painting off its frame, or the world's strokes in toward the eye. */
-  async function prepareOut(from: LiveWorld, to: string): Promise<void> {
+  async function prepareOut(from: LiveWorld, to: string, gen: number): Promise<void> {
     const leg = createLeg();
     if (from.id === GALLERY_ID) {
       const load = scanRaster(to);
       if (!load) return;
-      const raster = await load;
-      if (transition.target !== to) return;
+      const wait = makeWait();
+      outWait = wait;
+      outStalledS = 0;
+      let raster: Raster;
+      try {
+        raster = await within(wait, load);
+      } catch (error) {
+        if (wait.stale && rasters.get(to) === load) rasters.delete(to);
+        throw error;
+      } finally {
+        if (outWait === wait) outWait = null;
+      }
+      if (gen !== generation || transition.target !== to) return;
       sampleFrame(to, raster, leg.from, leg.fromColor, leg.fromSize);
     } else {
       sampleWorld(from.handle.batch, leg.from, leg.fromColor, leg.fromSize);
@@ -449,6 +503,42 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     settle(leg);
     outLeg = leg;
     outAt = clock;
+  }
+
+  /** A wait nothing watches yet. */
+  function makeWait(): Wait {
+    let reject: (error: Error) => void = () => {};
+    const expired = new Promise<never>((_, fail) => {
+      reject = fail;
+    });
+    // Only the race in `within` reads it; a wait that ends in time never rejects.
+    expired.catch(() => {});
+    const wait: Wait = {
+      stale: false,
+      expired,
+      expire() {
+        wait.stale = true;
+        reject(new Error(`stalled for ${STALL_TIMEOUT_S} s`));
+      },
+    };
+    return wait;
+  }
+
+  /** Starts a wait for the watchdog to watch, in place of any before it. */
+  function startWait(): Wait {
+    const wait = makeWait();
+    waiting = wait;
+    stalledS = 0;
+    return wait;
+  }
+
+  function endWait(wait: Wait): void {
+    if (waiting === wait) waiting = null;
+  }
+
+  /** `promise`, or a rejection once the watchdog gives up on `wait`. */
+  function within<T>(wait: Wait, promise: Promise<T>): Promise<T> {
+    return Promise.race([promise, wait.expired]);
   }
 
   /** The second leg: from where the strokes hover to the new world's strokes or the frame. */
@@ -460,8 +550,20 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       leg.fromSize.set(outLeg.toSize);
     }
     const load = world.id === GALLERY_ID ? scanRaster(previous) : null;
-    if (load) sampleFrame(previous, await load, leg.to, leg.toColor, leg.toSize);
-    else sampleWorld(world.handle.batch, leg.to, leg.toColor, leg.toSize);
+    if (load) {
+      const wait = startWait();
+      try {
+        sampleFrame(previous, await within(wait, load), leg.to, leg.toColor, leg.toSize);
+      } catch (error) {
+        // A stalled load is not kept either, so the next transition fetches it again.
+        if (wait.stale && rasters.get(previous) === load) rasters.delete(previous);
+        throw error;
+      } finally {
+        endWait(wait);
+      }
+    } else {
+      sampleWorld(world.handle.batch, leg.to, leg.toColor, leg.toSize);
+    }
     for (let i = 0; i < FLY_COUNT; i++) leg.arc[i] = 0.3 * random();
     inLeg = leg;
   }
@@ -479,15 +581,40 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     hidden = [];
   }
 
+  /** Disposes a world whose build landed after it was given up on. */
+  function disposeLate(id: string, world: LiveWorld): void {
+    abandoned.delete(id);
+    try {
+      world.module.dispose();
+    } catch (error) {
+      console.warn(`portal: world ${id} failed to dispose`, error);
+    }
+  }
+
   /**
    * Builds world `id` out of the draw, compiles its programs and queues its textures. On a throw
-   * the half-built world is disposed and the scene left as it was.
+   * or a stall the half-built world is disposed and the scene left as it was.
    */
   async function prepareWorld(id: string, previous: string): Promise<void> {
+    if (abandoned.has(id)) throw new Error(`a stalled build of ${id} has not landed`);
     const before = new Set(deps.scene.children);
     let world: LiveWorld | null = null;
+    let landed = false;
+    const wait = startWait();
     try {
-      world = await deps.build(id);
+      const building = deps.build(id);
+      // A build given up on is disposed when it lands, and no other build of it starts before.
+      building.then(
+        (late) => {
+          landed = true;
+          if (wait.stale) disposeLate(id, late);
+        },
+        () => {
+          landed = true;
+          abandoned.delete(id);
+        },
+      );
+      world = await within(wait, building);
       // Nothing the world added draws until its programs and textures are on the GPU.
       hidden = deps.scene.children
         .filter((object) => !before.has(object))
@@ -495,10 +622,10 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       for (const [object] of hidden) object.visible = false;
       world.handle.batch.reveal(0);
       // The parts a world adds after its build (the gallery's plaques) compile with the rest.
-      await world.handle.ready;
+      await within(wait, Promise.resolve(world.handle.ready));
       // Programs link in parallel (KHR_parallel_shader_compile), off the frame. `compile` takes
       // hidden objects too.
-      await deps.renderer.compileAsync(deps.scene, deps.camera);
+      await within(wait, deps.renderer.compileAsync(deps.scene, deps.camera));
       uploads = [];
       for (const [object] of hidden) {
         object.traverse((child) => {
@@ -516,8 +643,12 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
         } catch (disposeError) {
           console.warn(`portal: world ${id} failed to dispose`, disposeError);
         }
+      } else if (wait.stale && !landed) {
+        abandoned.add(id);
       }
       throw error;
+    } finally {
+      endWait(wait);
     }
     arriving = world;
     arrivingFrom = previous;
@@ -682,6 +813,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     outLeg = null;
     inLeg = null;
     swirl = null;
+    outWait = null;
     disposeCue();
     leaving = null;
     deps.setVeil(0);
@@ -730,6 +862,15 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
         renderMs: 0,
         task: null,
       };
+      if (outWait) {
+        outStalledS += stallShare(dtMs);
+        if (outStalledS >= STALL_TIMEOUT_S) {
+          note('stall-out');
+          const wait = outWait;
+          outWait = null;
+          wait.expire();
+        }
+      }
       const veil = veilAt(step, style);
       deps.setVeil(veil);
       const at = eye();
@@ -759,13 +900,28 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
         if (fly && outLeg) fly.draw(outLeg, 1, at, lateFade(), offsets, 'arrive');
         drawCue(veil, at);
         upload();
+        // The watchdog: wait frames with nothing on the slicer are a wait off the frame loop.
+        if (waiting && deps.slicer.pending === 0) {
+          stalledS += stallShare(dtMs);
+          if (stalledS >= STALL_TIMEOUT_S) {
+            note('stall');
+            const wait = waiting;
+            waiting = null;
+            wait.expire();
+          }
+        } else {
+          stalledS = 0;
+        }
       } else if (step.phase === 'in') {
+        // Strokes whose out leg was ready just before keep growing in.
+        const late = lateFade();
         if (fly && inLeg) {
-          fly.draw(inLeg, step.t, at, Math.max(0, (step.t - 0.8) / 0.2), offsets, 'leave');
+          const fade = Math.max(late, (step.t - 0.8) / 0.2);
+          fly.draw(inLeg, step.t, at, fade, offsets, 'leave');
         } else if (fly && outLeg) {
           // No second leg: the strokes keep swirling where they hover and shrink away as the
           // veil lifts, rather than freeze over the new world.
-          fly.draw(outLeg, 1, at, Math.min(1, step.t / 0.6), offsets, 'arrive');
+          fly.draw(outLeg, 1, at, Math.max(late, Math.min(1, step.t / 0.6)), offsets, 'arrive');
         }
         // The field shrinks away as the veil lifts, so it is gone when the world is clear.
         drawCue(veil, at);
@@ -797,7 +953,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     },
     go(id, cause) {
       const from = active;
-      if (!from || from.id === id) return false;
+      if (!from || from.id === id || abandoned.has(id)) return false;
       const style = transitionStyle(deps.calm());
       if (!transition.request(id === GALLERY_ID ? 'returning' : 'entering', id, style)) {
         return false;
@@ -820,9 +976,12 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       deps.suppressInput();
       leaving = from.handle.batch;
       deps.unbind();
+      generation += 1;
       if (style === 'fly') {
         fly = createFlyStrokes(deps.rig, deps.atlas());
-        void prepareOut(from, id).catch((error: unknown) => {
+        const gen = generation;
+        void prepareOut(from, id, gen).catch((error: unknown) => {
+          if (gen !== generation) return;
           // No first leg: the strokes stay hidden until the second.
           outLeg = null;
           swirl = null;

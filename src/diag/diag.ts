@@ -62,15 +62,38 @@ declare global {
 }
 
 const BUILTIN_KEYS: ReadonlySet<string> = new Set(['build', 'renderer', 'xr', 'camera']);
-const providers = new Map<string, DiagProvider>();
-
-export function registerDiag(key: string, provider: DiagProvider): void {
-  if (BUILTIN_KEYS.has(key)) throw new Error(`diag key "${key}" is reserved`);
-  providers.set(key, provider);
+/** One registration of a key, as `registerDiag` returns it, for `unregisterDiag` to name. */
+export interface DiagToken {
+  readonly provider: DiagProvider;
 }
 
-export function unregisterDiag(key: string): void {
-  providers.delete(key);
+/** Each key's registrations, oldest first: the newest one answers. */
+const providers = new Map<string, DiagToken[]>();
+
+/** Registers `provider` under `key`, over any earlier registration, until it is unregistered. */
+export function registerDiag(key: string, provider: DiagProvider): DiagToken {
+  if (BUILTIN_KEYS.has(key)) throw new Error(`diag key "${key}" is reserved`);
+  const token: DiagToken = { provider };
+  const stack = providers.get(key);
+  if (stack) stack.push(token);
+  else providers.set(key, [token]);
+  return token;
+}
+
+/**
+ * With `token`, removes only that registration, so the one under it answers again: a world built
+ * late and disposed at once cannot take the live world's key with it. Without, removes the key.
+ */
+export function unregisterDiag(key: string, token?: DiagToken): void {
+  if (!token) {
+    providers.delete(key);
+    return;
+  }
+  const stack = providers.get(key);
+  const at = stack ? stack.indexOf(token) : -1;
+  if (!stack || at < 0) return;
+  stack.splice(at, 1);
+  if (stack.length === 0) providers.delete(key);
 }
 
 function unmaskedRenderer(renderer: DiagRenderer): string | null {
@@ -83,7 +106,8 @@ function unmaskedRenderer(renderer: DiagRenderer): string | null {
 
 function collectRegistered(): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [key, provider] of providers) {
+  for (const [key, stack] of providers) {
+    const provider = stack[stack.length - 1].provider;
     try {
       out[key] = provider();
     } catch (error) {

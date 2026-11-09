@@ -6,7 +6,7 @@
  */
 import { Color, type Group, type Scene, SRGBColorSpace } from 'three';
 import { buildFlowFieldSteps } from '../../demo/canvas/field';
-import { registerDiag, unregisterDiag } from '../../diag/diag';
+import { type DiagToken, registerDiag, unregisterDiag } from '../../diag/diag';
 import { createSkyHalo, type SkyHalo } from '../../render/sky-halo';
 import { createStrokeBatchSteps, type StrokeBatch } from '../../render/strokes/batch';
 import {
@@ -76,6 +76,8 @@ interface Built {
 }
 
 let built: Built | null = null;
+/** This world's own `world` diag registration, so its dispose removes only that one. */
+let worldDiag: DiagToken | null = null;
 
 export async function build(deps: WorldDeps): Promise<WorldHandle> {
   if (built) throw new Error('the Starry Night world is already built; dispose it first');
@@ -168,7 +170,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   const cache = bypass ? 'bypass' : load.hit ? 'hit' : 'miss';
   // Read out here so the closure does not hold the stroke buffers (about 19 MB) past the upload.
   const total = buffers.count;
-  registerDiag('world', () => ({
+  worldDiag = registerDiag('world', () => ({
     painting: PAINTING_ID,
     seed,
     debug,
@@ -206,7 +208,8 @@ export function update(_time: number, _dt: number): void {}
 
 export function dispose(): void {
   if (!built) return;
-  unregisterDiag('world');
+  if (worldDiag) unregisterDiag('world', worldDiag);
+  worldDiag = null;
   unregisterDiag('halo');
   built.halo.dispose();
   built.batch.dispose();

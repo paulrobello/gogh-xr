@@ -27,6 +27,19 @@ export const MAX_ELEVATION = (40 * Math.PI) / 180;
 /** A stack dropped below a panel keeps its bottom edge above this, clear of the perf HUD (-11.3°). */
 export const MIN_ELEVATION = (-8 * Math.PI) / 180;
 
+/** A placed stack stays moved until the panel clears it by this much, and the same at each switch. */
+export const PLACEMENT_BAND = (2 * Math.PI) / 180;
+/** Time constant of the applied elevation easing toward its placement, seconds. */
+export const ELEVATION_TAU = 0.15;
+
+/** Where the stack sits relative to an open panel. */
+export type NoticePlacement = 'base' | 'lift' | 'drop' | 'cap';
+
+/** The last placement, passed back in so the next one can show hysteresis. */
+export interface NoticePlacementState {
+  placement: NoticePlacement;
+}
+
 /**
  * The stack's half width as an azimuth, for a stack whose top edge is at `top`. Its nearest
  * points in depth are on the top edge, at least `NOTICE_DISTANCE * cos(top)` ahead, so this bounds
@@ -34,6 +47,15 @@ export const MIN_ELEVATION = (-8 * Math.PI) / 180;
  */
 export function noticeHalfAzimuth(top: number): number {
   return Math.atan2(NOTICE_W / 2, NOTICE_DISTANCE * Math.cos(Math.min(top, Math.PI / 2 - 1e-3)));
+}
+
+function settle(
+  state: NoticePlacementState | undefined,
+  placement: NoticePlacement,
+  elevation: number,
+): number {
+  if (state) state.placement = placement;
+  return elevation;
 }
 
 /**
@@ -46,9 +68,20 @@ export function noticeHalfAzimuth(top: number): number {
  * so its top edge is `LIFT_MARGIN` below the panel's bottom edge if that keeps it above
  * `MIN_ELEVATION`. When neither fits, it stays at `MAX_ELEVATION` and may cover the panel, which
  * still owns the trigger there.
+ *
+ * With a `state`, the previous placement adds hysteresis of `PLACEMENT_BAND`: a moved stack stays
+ * moved until the overlap clears by the band, a lifted stack stays lifted until the lift passes
+ * `MAX_ELEVATION` by the band (held at the cap meanwhile), and a dropped one stays dropped until
+ * the lift is within the cap by the band. `state` is updated in place. Without one, the result
+ * has no memory.
  */
-export function noticeElevation(corners: readonly Vector3[] | null, stackAngle: number): number {
-  if (!corners) return BASE_ELEVATION;
+export function noticeElevation(
+  corners: readonly Vector3[] | null,
+  stackAngle: number,
+  state?: NoticePlacementState,
+): number {
+  const prev = state?.placement ?? 'base';
+  if (!corners) return settle(state, 'base', BASE_ELEVATION);
   let minAz = Number.POSITIVE_INFINITY;
   let maxAz = Number.NEGATIVE_INFINITY;
   let minEl = Number.POSITIVE_INFINITY;
@@ -65,16 +98,63 @@ export function noticeElevation(corners: readonly Vector3[] | null, stackAngle: 
     minEl = Math.min(minEl, el);
     maxEl = Math.max(maxEl, el);
   }
-  if (ahead === 0) return BASE_ELEVATION;
+  if (ahead === 0) return settle(state, 'base', BASE_ELEVATION);
   const half = noticeHalfAzimuth(BASE_ELEVATION + stackAngle);
-  const overlapsAz = maxAz > -half && minAz < half;
-  const overlapsEl = maxEl > BASE_ELEVATION && minEl < BASE_ELEVATION + stackAngle;
-  if (!overlapsAz || !overlapsEl) return BASE_ELEVATION;
+  const grow = prev === 'base' ? 0 : PLACEMENT_BAND;
+  const overlapsAz = maxAz > -half - grow && minAz < half + grow;
+  const overlapsEl = maxEl > BASE_ELEVATION - grow && minEl < BASE_ELEVATION + stackAngle + grow;
+  if (!overlapsAz || !overlapsEl) return settle(state, 'base', BASE_ELEVATION);
   const above = maxEl + LIFT_MARGIN;
-  if (above <= MAX_ELEVATION) return above;
+  const liftLimit =
+    MAX_ELEVATION + (prev === 'lift' ? PLACEMENT_BAND : prev === 'drop' ? -PLACEMENT_BAND : 0);
+  if (above <= liftLimit) return settle(state, 'lift', Math.min(above, MAX_ELEVATION));
   const below = minEl - LIFT_MARGIN - stackAngle;
-  if (below >= MIN_ELEVATION) return below;
-  return MAX_ELEVATION;
+  const dropLimit = MIN_ELEVATION - (prev === 'drop' ? PLACEMENT_BAND : 0);
+  if (below >= dropLimit) return settle(state, 'drop', Math.max(below, MIN_ELEVATION));
+  return settle(state, 'cap', MAX_ELEVATION);
+}
+
+/**
+ * `current` moved toward `target` by an exponential approach of time constant `tau`, frame-rate
+ * independent in `dt` seconds. A non-positive `dt` leaves it; a non-finite one snaps.
+ */
+export function easeElevation(
+  current: number,
+  target: number,
+  dt: number,
+  tau: number = ELEVATION_TAU,
+): number {
+  if (!Number.isFinite(dt)) return target;
+  if (dt <= 0) return current;
+  return target + (current - target) * Math.exp(-dt / tau);
+}
+
+/**
+ * The elevation to apply this frame, given the placement's `target`. It snaps to the target when
+ * `snap` is set (first frame shown, panel just opened, or no `dt`), and when the placement
+ * switches between lift and drop, or into the cap from a drop or the base, since an ease there would carry the stack across the open
+ * panel. Otherwise it eases, but never sits on the panel's side of the target: a lifted stack is
+ * at least the target and a dropped one at most the target, so the ease only moves it away from
+ * the panel and the stack clears the panel at once when the target moves toward it.
+ */
+export function appliedElevation(
+  current: number,
+  target: number,
+  placement: NoticePlacement,
+  previousPlacement: NoticePlacement,
+  snap: boolean,
+  dt: number,
+): number {
+  const crosses =
+    (placement === 'lift' && previousPlacement === 'drop') ||
+    (placement === 'drop' && previousPlacement === 'lift');
+  const intoCap =
+    placement === 'cap' && (previousPlacement === 'drop' || previousPlacement === 'base');
+  if (snap || crosses || intoCap) return target;
+  const eased = easeElevation(current, target, dt);
+  if (placement === 'lift') return Math.max(eased, target);
+  if (placement === 'drop') return Math.min(eased, target);
+  return eased;
 }
 
 /** The stack root's camera-local position for a bottom-edge `elevation`, written into `out`. */

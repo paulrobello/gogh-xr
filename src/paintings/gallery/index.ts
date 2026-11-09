@@ -19,7 +19,7 @@ import {
   SRGBColorSpace,
   Texture,
 } from 'three';
-import { registerDiag, unregisterDiag } from '../../diag/diag';
+import { type DiagToken, registerDiag, unregisterDiag } from '../../diag/diag';
 import { createStrokeBatchSteps, type StrokeBatch } from '../../render/strokes/batch';
 import type { Vec3 } from '../../render/strokes/frame';
 import {
@@ -112,6 +112,8 @@ interface Built {
 }
 
 let built: Built | null = null;
+/** This world's own `world` diag registration, so its dispose removes only that one. */
+let worldDiag: DiagToken | null = null;
 
 /** A plane at the painting's true size showing `crop` of its texture. */
 function scanGeometry(h: Hanging, crop: UvCrop): PlaneGeometry {
@@ -152,8 +154,44 @@ async function loadScan(url: string, anisotropy: number): Promise<Texture | null
   }
 }
 
+/** What a build has made so far that only `dispose` would release. */
+interface Owned {
+  loads: readonly Promise<Texture | null>[];
+  batch: StrokeBatch | null;
+}
+
+/** Releases each scan in `loads` as it lands, texture and bitmap, whatever the others do. */
+function closeScans(loads: readonly Promise<Texture | null>[]): void {
+  for (const load of loads) {
+    void load.then((texture) => {
+      if (!texture) return;
+      texture.dispose();
+      (texture.image as ImageBitmap).close();
+    });
+  }
+}
+
 export async function build(deps: WorldDeps): Promise<WorldHandle> {
   if (built) throw new Error('the gallery is already built; dispose it first');
+  // Bitmaps hold their decoded pixels until closed, and only `dispose` closes them: a build that
+  // throws before it hands them to `built` closes them itself, as they land.
+  const owned: Owned = { loads: [], batch: null };
+  try {
+    return await assemble(deps, owned);
+  } catch (error) {
+    // `assemble` sets `built` near its end: once it has, `dispose` releases everything.
+    const handed = built as Built | null;
+    if (handed !== null && handed.batch === owned.batch) {
+      dispose();
+    } else {
+      owned.batch?.dispose();
+      closeScans(owned.loads);
+    }
+    throw error;
+  }
+}
+
+async function assemble(deps: WorldDeps, owned: Owned): Promise<WorldHandle> {
   const seed = deps.seed ?? DEFAULT_GALLERY_SEED;
   const debug = deps.debug ?? null;
   const anisotropy = Math.max(1, Math.min(SCAN_ANISOTROPY, deps.maxAnisotropy ?? 1));
@@ -162,6 +200,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   const loads = HANGINGS.map((h) =>
     loadScan(`${import.meta.env.BASE_URL}${h.painting.frameImage}`, anisotropy),
   );
+  owned.loads = loads;
 
   const surfaces = gallerySurfaces();
   const generated = performance.now();
@@ -171,6 +210,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     createStrokeBatchSteps(buffers, { cellSize: GALLERY_CELL_SIZE, atlas: deps.atlas }),
     'gallery-batch',
   );
+  owned.batch = batch;
   const batched = performance.now();
   const atlasMs = batch.stats().atlasMs;
   const textures = await Promise.all(loads);
@@ -293,7 +333,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   }
 
   const total = buffers.count;
-  registerDiag('world', () => ({
+  worldDiag = registerDiag('world', () => ({
     painting: PAINTING_ID,
     seed,
     debug,
@@ -333,7 +373,8 @@ export function update(_time: number, _dt: number): void {}
 
 export function dispose(): void {
   if (!built) return;
-  unregisterDiag('world');
+  if (worldDiag) unregisterDiag('world', worldDiag);
+  worldDiag = null;
   built.disposed = true;
   built.plaques?.dispose();
   built.batch.dispose();

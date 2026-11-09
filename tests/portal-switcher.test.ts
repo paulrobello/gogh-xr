@@ -30,6 +30,7 @@ import {
   type LiveWorld,
   REVEAL_STROKES_PER_FRAME,
   revealEnd,
+  STALL_TIMEOUT_S,
 } from '../src/portal/switcher.ts';
 import type { StrokeBatch } from '../src/render/strokes/batch.ts';
 import { VIGNETTE_RENDER_ORDER } from '../src/ui/vignette.ts';
@@ -116,6 +117,9 @@ interface Rig {
   readonly chunkCounts: Map<string, readonly number[]>;
   /** Per id, a promise the build waits on before it builds. */
   readonly gates: Map<string, Promise<void>>;
+  /** Per id, the built world's `ready`. */
+  readonly readies: Map<string, Promise<void>>;
+  readonly slicer: ReturnType<typeof createSlicer>;
   loadRaster: (url: string) => Promise<Raster>;
   calm: number;
 }
@@ -143,6 +147,8 @@ function setup(
   const failing = new Set<string>();
   const chunkCounts = new Map<string, readonly number[]>();
   const gates = new Map<string, Promise<void>>();
+  const readies = new Map<string, Promise<void>>();
+  const slicer = createSlicer(6);
   const renderer = {
     compileAsync: async () => {
       calls.compile += 1;
@@ -159,7 +165,7 @@ function setup(
     scene,
     camera,
     rig,
-    slicer: createSlicer(6),
+    slicer,
     atlas: () => new DataTexture(new Uint8Array(4), 1, 1),
     build: async (id) => {
       log.push(`build ${id}`);
@@ -168,6 +174,8 @@ function setup(
       if (gate) await gate;
       if (failing.has(id)) throw new Error(`no world for ${id}`);
       const world = fakeWorld(id, scene, log, chunkCounts.get(id));
+      const ready = readies.get(id);
+      if (ready) Object.assign(world.handle, { ready });
       worlds.set(id, world);
       return world;
     },
@@ -202,6 +210,8 @@ function setup(
     failing,
     chunkCounts,
     gates,
+    readies,
+    slicer,
     get loadRaster() {
       return state.loadRaster;
     },
@@ -680,12 +690,13 @@ describe('the wait keeps the view moving', () => {
       for (let i = 1; i < wait.length; i++) {
         expect(step(wait[i - 1], wait[i]).position).toBeGreaterThan(1e-5);
       }
-      // And the swirl stays near: each stroke circles a vortex, so none strays more than 0.8 m
-      // from where the out leg left it, about the widest circle 1.6 m from the eye.
+      // And the swirl stays near: each stroke circles a vortex, so none strays more than 1 m from
+      // where the out leg left it, about the widest circle 1.6 m from the eye. Half the strokes
+      // stray under 0.22 m; the outermost circles grew with the 0.45 rad least half-extent.
       const hover = must(shots.filter((s) => s.phase === 'out').at(-1));
       for (const s of wait) {
         for (let i = 0; i < s.position.length; i++) {
-          expect(Math.abs(s.position[i] - hover.position[i])).toBeLessThan(0.8);
+          expect(Math.abs(s.position[i] - hover.position[i])).toBeLessThan(1);
         }
       }
       expectSmooth(shots, 'out', 'wait');
@@ -874,6 +885,39 @@ describe('the wait keeps the view moving', () => {
     await run(r);
   });
 
+  test('a scan that lands just before the in phase keeps growing in through it (F2)', async () => {
+    let releaseScan = (): void => {};
+    const held = new Promise<void>((resolve) => (releaseScan = resolve));
+    const r = setup({
+      loadRaster: vi.fn(async () => {
+        await held;
+        return raster();
+      }),
+    });
+    let land = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (land = resolve)));
+    r.switcher.go('starry-night', 'api');
+    // The scan and the world land together, 50 frames in: the in phase starts a few frames
+    // after the strokes first show, well inside their 0.3 s grow-in.
+    const shots = await record(r, 'portal-fly', FRAME_MS, {
+      open: () => {
+        releaseScan();
+        land();
+      },
+      holdFrames: 50,
+    });
+    const first = shots.findIndex((s) => s.visible);
+    const into = shots.findIndex((s) => s.phase === 'in');
+    expect(into - first).toBeLessThan(10);
+    const largest = (s: Shot) => Math.max(...s.size);
+    const full = largest(shots[first + 30]);
+    // Still growing at the start of the in phase, with no jump to full size there.
+    expect(largest(shots[into])).toBeLessThan(0.6 * full);
+    for (let i = first + 1; i < first + 18; i++) {
+      expect(largest(shots[i]) - largest(shots[i - 1])).toBeLessThan(0.1 * full);
+    }
+  });
+
   test('a scan that lands after the trigger grows its strokes in, with no pop (M-5)', async () => {
     let release = (): void => {};
     const held = new Promise<void>((resolve) => (release = resolve));
@@ -907,6 +951,272 @@ describe('the wait keeps the view moving', () => {
     expect(r.switcher.diag().fallback).toBe('bare');
     expect(r.scene.children).toEqual([r.rig]);
     expect(r.rig.children.some((c) => c.name === 'portal-cue')).toBe(false);
+    warn.mockRestore();
+  });
+});
+
+describe('a fetch that never lands (N1)', () => {
+  /** A promise that never settles: a fetch the network never answers. */
+  const never = <T>(): Promise<T> => new Promise<T>(() => {});
+  /** 100 ms frames, so the watchdog's 15 s take 150 of them. */
+  const SLOW_MS = 100;
+
+  async function runSlow(r: Rig, maxFrames = 600): Promise<number> {
+    for (let i = 0; i < maxFrames; i++) {
+      r.switcher.frame(SLOW_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (!r.switcher.busy) return i + 1;
+    }
+    throw new Error('the transition never ended');
+  }
+
+  /** The wait's frames, seconds. */
+  const waitS = (r: Rig): number => (r.switcher.diag().waitMs ?? 0) / 1000;
+
+  test('a build stalled past the timeout falls back to the gallery with input back (F3)', async () => {
+    const r = setup();
+    let land = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (land = resolve)));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.switcher.go('starry-night', 'api');
+    await runSlow(r);
+    expect(r.switcher.busy).toBe(false);
+    expect(r.switcher.diag().fallback).toBe('gallery');
+    expect(r.switcher.active?.id).toBe(GALLERY_ID);
+    expect(r.veils.at(-1)).toBe(0);
+    expect(r.calls.suppress).toBe(2);
+    // Given up after the timeout, not before: the wait ran it and a few frames of the fallback.
+    expect(waitS(r)).toBeGreaterThanOrEqual(STALL_TIMEOUT_S);
+    expect(waitS(r)).toBeLessThan(STALL_TIMEOUT_S + 1);
+    expect(r.switcher.diag().frames.some((f) => f.task === 'stall')).toBe(true);
+    // While the stalled build has not landed, the world is not entered again.
+    expect(r.switcher.go('starry-night', 'api')).toBe(false);
+    // When it lands it is disposed at once: never bound, spawned into or left in the scene.
+    const spawns = r.spawns.length;
+    land();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(r.log.filter((l) => l === 'bind starry-night')).toEqual([]);
+    expect(r.log.at(-1)).toBe('dispose starry-night');
+    expect(must(r.worlds.get('starry-night')).disposed).toBe(true);
+    expect(r.spawns.length).toBe(spawns);
+    const gallery = must(r.worlds.get(GALLERY_ID));
+    expect(r.scene.children).toEqual([r.rig, gallery.root]);
+    // And the portal works again.
+    r.gates.delete('starry-night');
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    await run(r);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    expect(r.switcher.diag().fallback).toBe(null);
+    warn.mockRestore();
+  });
+
+  test('a world whose `ready` never lands is disposed, and the transition still ends (F3)', async () => {
+    const r = setup();
+    r.readies.set('starry-night', never());
+    r.readies.set(GALLERY_ID, never());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.switcher.go('starry-night', 'api');
+    await runSlow(r);
+    // Each attempt gets its own timeout: the target, then the gallery, then the bare scene.
+    expect(r.switcher.diag().fallback).toBe('bare');
+    expect(waitS(r)).toBeGreaterThanOrEqual(2 * STALL_TIMEOUT_S);
+    expect(r.switcher.active).toBe(null);
+    expect(r.calls.bare).toBe(1);
+    expect(r.veils.at(-1)).toBe(0);
+    expect(r.calls.suppress).toBe(2);
+    expect(must(r.worlds.get('starry-night')).disposed).toBe(true);
+    expect(must(r.worlds.get(GALLERY_ID)).disposed).toBe(true);
+    expect(r.log.filter((l) => l.startsWith('bind'))).toEqual([]);
+    expect(r.scene.children).toEqual([r.rig]);
+    warn.mockRestore();
+  });
+
+  test('a slow build that keeps the slicer busy is never cut short', async () => {
+    const r = setup();
+    let land = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (land = resolve)));
+    // Work queued on the slicer: the build is progressing, however long it takes.
+    let working = true;
+    void r.slicer.run(
+      (function* () {
+        while (working) yield;
+      })(),
+    );
+    r.switcher.go('starry-night', 'api');
+    for (let i = 0; i < 2.5 * STALL_TIMEOUT_S * (1000 / SLOW_MS); i++) {
+      r.switcher.frame(SLOW_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(waitS(r)).toBeGreaterThan(2 * STALL_TIMEOUT_S);
+    working = false;
+    r.slicer.frame();
+    land();
+    await runSlow(r);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    expect(r.switcher.diag().fallback).toBe(null);
+  });
+
+  test('a return whose scan never lands skips the second leg, ends, and fetches it again', async () => {
+    // The gallery's prefetch never lands: the strokes cannot leave the frame (no first leg), and
+    // back in the gallery the second leg waits on the same load.
+    const stalled = vi.fn(() => never<Raster>());
+    const r = setup({ loadRaster: stalled });
+    r.switcher.go('starry-night', 'api');
+    await run(r);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(r.switcher.go(GALLERY_ID, 'return')).toBe(true);
+    await runSlow(r);
+    // The world is fine, so this is no fallback: the strokes skip their way in, as when the
+    // second leg fails.
+    expect(r.switcher.active?.id).toBe(GALLERY_ID);
+    expect(r.switcher.diag().fallback).toBe(null);
+    expect(r.veils.at(-1)).toBe(0);
+    expect(r.calls.suppress).toBe(4);
+    expect(waitS(r)).toBeGreaterThanOrEqual(STALL_TIMEOUT_S);
+    expect(warn).toHaveBeenCalledWith(
+      'portal: the strokes could not find their way in',
+      expect.any(Error),
+    );
+    // The stalled load is not kept: the next trigger fetches the scan again.
+    const online = vi.fn(async () => raster());
+    r.loadRaster = online;
+    r.switcher.go('starry-night', 'api');
+    await run(r);
+    expect(stalled).toHaveBeenCalledTimes(1);
+    expect(online).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+  test('one long frame after a paused loop does not give up a healthy build (F1)', async () => {
+    const r = setup();
+    let land = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (land = resolve)));
+    r.switcher.go('starry-night', 'api');
+    for (let i = 0; i < 60; i++) {
+      r.switcher.frame(FRAME_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    // The loop was paused (the Meta button, a doff, a hidden tab): the next frame carries 20 s.
+    r.switcher.frame(20_000);
+    r.switcher.endFrame(1, 0.5);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    land();
+    await run(r);
+    expect(r.switcher.diag().fallback).toBe(null);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    expect(r.switcher.diag().frames.some((f) => f.task === 'stall')).toBe(false);
+  });
+
+  test('a world given up on can be entered again once its late build fails (F2)', async () => {
+    const r = setup();
+    let settle = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (settle = resolve)));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.switcher.go('starry-night', 'api');
+    await runSlow(r);
+    expect(r.switcher.diag().fallback).toBe('gallery');
+    expect(r.switcher.go('starry-night', 'api')).toBe(false);
+    // The bounded raster fetch gives up, so the late build rejects rather than hangs.
+    r.failing.add('starry-night');
+    settle();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    // Nothing was built, so nothing is disposed, and the gallery stays bound.
+    expect(r.worlds.has('starry-night')).toBe(false);
+    expect(r.switcher.active?.id).toBe(GALLERY_ID);
+    // One build of it at a time again: the portal enters it.
+    r.failing.delete('starry-night');
+    r.gates.delete('starry-night');
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    await run(r);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    expect(r.switcher.diag().fallback).toBe(null);
+    warn.mockRestore();
+  });
+
+  test('a stalled scan is evicted when the first leg gives up on it (F5)', async () => {
+    // The gallery's prefetch never lands.
+    const stalled = vi.fn(() => never<Raster>());
+    const r = setup({ loadRaster: stalled });
+    let land = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (land = resolve)));
+    // A long build that keeps the slicer busy, so only the first leg's wait is given up.
+    let working = true;
+    void r.slicer.run(
+      (function* () {
+        while (working) yield;
+      })(),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    r.switcher.go('starry-night', 'api');
+    for (let i = 0; i < 1.2 * STALL_TIMEOUT_S * (1000 / SLOW_MS); i++) {
+      r.switcher.frame(SLOW_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(r.switcher.diag().frames.some((f) => f.task === 'stall-out')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      'portal: the strokes could not leave the frame',
+      expect.any(Error),
+    );
+    working = false;
+    r.slicer.frame();
+    land();
+    await runSlow(r);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    expect(r.switcher.diag().fallback).toBe(null);
+    // Not cached: back in the gallery the second leg fetches the scan afresh, and finds it.
+    const online = vi.fn(async () => raster());
+    r.loadRaster = online;
+    r.switcher.go(GALLERY_ID, 'return');
+    await run(r);
+    expect(online).toHaveBeenCalled();
+    expect(waitS(r)).toBeLessThan(STALL_TIMEOUT_S);
+    expect(stalled).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+  test("a stalled prefetch's late settle leaves the next transition alone (fix round 2)", async () => {
+    // The gallery's prefetch of the Starry Night scan stalls, then the raster bound aborts it.
+    let abort = (_error: Error): void => {};
+    const stalled = vi.fn(() => new Promise<Raster>((_resolve, reject) => (abort = reject)));
+    const r = setup({ loadRaster: stalled });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // An entry whose build takes 10 s, under the timeout: it ends with its first leg still waiting.
+    let land = (): void => {};
+    r.gates.set('starry-night', new Promise<void>((resolve) => (land = resolve)));
+    r.switcher.go('starry-night', 'api');
+    for (let i = 0; i < 10 * (1000 / SLOW_MS); i++) {
+      r.switcher.frame(SLOW_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    land();
+    await runSlow(r);
+    expect(r.switcher.active?.id).toBe('starry-night');
+    // A return whose gallery build takes 10 s too: the old wait would pass 15 s, then the abort lands.
+    let back = (): void => {};
+    r.gates.set(GALLERY_ID, new Promise<void>((resolve) => (back = resolve)));
+    r.switcher.go(GALLERY_ID, 'return');
+    const cues: (string | null)[] = [];
+    for (let i = 0; i < 10 * (1000 / SLOW_MS); i++) {
+      if (i === 70) abort(new Error('the raster fetch timed out'));
+      r.switcher.frame(SLOW_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      cues.push(r.switcher.diag().cue);
+    }
+    // The return's swirl is its own: neither the old wait's expiry nor the abort touches it.
+    expect(cues.slice(1).every((cue) => cue === 'swirl')).toBe(true);
+    expect(r.switcher.diag().frames.some((f) => f.task === 'stall-out')).toBe(false);
+    expect(warn).not.toHaveBeenCalledWith(
+      'portal: the strokes could not leave the frame',
+      expect.anything(),
+    );
+    back();
+    await runSlow(r);
+    expect(r.switcher.active?.id).toBe(GALLERY_ID);
     warn.mockRestore();
   });
 });

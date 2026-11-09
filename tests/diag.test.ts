@@ -101,3 +101,28 @@ test('registered sections are merged; throwing providers are contained', () => {
 test('built-in keys cannot be registered', () => {
   expect(() => registerDiag('xr', () => 1)).toThrow(/reserved/);
 });
+
+test('a token unregisters only its own registration, and the one under it answers again', () => {
+  const payload = () =>
+    buildDiagPayload({ build: 'x', renderer: fakeRenderer(), camera, getXrState: createXrState });
+  // The live world registers, then a world built late over it, which is disposed at once.
+  const live = registerDiag('strokes', () => 'live');
+  const late = registerDiag('strokes', () => 'late');
+  expect(payload().strokes).toBe('late');
+  unregisterDiag('strokes', late);
+  expect(payload().strokes).toBe('live');
+  // Removing a token twice, or one already gone, leaves the rest alone.
+  unregisterDiag('strokes', late);
+  expect(payload().strokes).toBe('live');
+  // The live one disposed while a later one answers: the later one keeps answering.
+  const again = registerDiag('strokes', () => 'again');
+  unregisterDiag('strokes', live);
+  expect(payload().strokes).toBe('again');
+  unregisterDiag('strokes', again);
+  expect('strokes' in payload()).toBe(false);
+  // Without a token the key goes, whatever is registered under it, as before.
+  registerDiag('strokes', () => 1);
+  registerDiag('strokes', () => 2);
+  unregisterDiag('strokes');
+  expect('strokes' in payload()).toBe(false);
+});
