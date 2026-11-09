@@ -68,14 +68,12 @@ export interface WorldDeps {
   readonly plaqueFrame?: () => Promise<void>;
 }
 
-/** `deps.slicer`'s `step` and `run`, or the same work at once without one. */
+/** `deps.slicer`'s `run` and `nextFrame`, or the same work at once without one. */
 export function buildSteps(slicer: Slicer | undefined): {
-  step<T>(work: () => T, label?: string): Promise<T>;
   run<T>(steps: Steps<T>, label?: string): Promise<T>;
   nextFrame(): Promise<void>;
 } {
   return {
-    step: (work, label) => (slicer ? slicer.step(work, label) : Promise.resolve(work())),
     run: (steps, label) => (slicer ? slicer.run(steps, label) : Promise.resolve(drain(steps))),
     nextFrame: () => (slicer ? slicer.nextFrame() : Promise.resolve()),
   };

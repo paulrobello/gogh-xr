@@ -10,6 +10,7 @@
 import { BufferAttribute, BufferGeometry } from 'three';
 import { PAINTER_SPOT, type WorldLayer } from '../paintings/starry-night/canvas-camera';
 import type { Vec3 } from '../render/strokes/frame';
+import { drain, type Steps } from '../util/slicer';
 import { createValueNoise2D, fbm2 } from './noise';
 
 /** Vertices per side of the ground grid. */
@@ -91,15 +92,19 @@ function makeField(seed: number): (x: number, z: number) => number {
   };
 }
 
-function buildGround(field: (x: number, z: number) => number): {
+/** Grid rows of the ground's height and normal passes between two yields of `createTerrainSteps`. */
+const TERRAIN_SLICE_ROWS = 16;
+
+function* buildGroundSteps(field: (x: number, z: number) => number): Steps<{
   geometry: BufferGeometry;
   heights: Float64Array;
-} {
+}> {
   const n = TERRAIN_GRID;
   const half = TERRAIN_SIZE / 2;
   const heights = new Float64Array(n * n);
   const positions = new Float32Array(n * n * 3);
   for (let j = 0; j < n; j++) {
+    if (j > 0 && j % TERRAIN_SLICE_ROWS === 0) yield;
     for (let i = 0; i < n; i++) {
       const x = -half + i * TERRAIN_CELL;
       const z = -half + j * TERRAIN_CELL;
@@ -111,9 +116,11 @@ function buildGround(field: (x: number, z: number) => number): {
       positions[k * 3 + 2] = z;
     }
   }
+  yield;
   const indices = new Uint32Array((n - 1) * (n - 1) * 6);
   let w = 0;
   for (let j = 0; j < n - 1; j++) {
+    if (j > 0 && j % TERRAIN_SLICE_ROWS === 0) yield;
     for (let i = 0; i < n - 1; i++) {
       const a = j * n + i;
       const b = a + 1;
@@ -173,7 +180,15 @@ function buildRidge(seed: number): BufferGeometry {
 
 /** Builds the seeded ground mesh, the ridge backdrop, and the `heightAt` / `normalAt` queries. */
 export function createTerrain(seed: number): Terrain {
-  const { geometry, heights } = buildGround(makeField(seed));
+  return drain(createTerrainSteps(seed));
+}
+
+/**
+ * `createTerrain` as steps (P5.5): the same arithmetic in the same order, yielding every
+ * TERRAIN_SLICE_ROWS grid rows of the height, index and normal passes, and before the ridge.
+ */
+export function* createTerrainSteps(seed: number): Steps<Terrain> {
+  const { geometry, heights } = yield* buildGroundSteps(makeField(seed));
   const n = TERRAIN_GRID;
   const half = TERRAIN_SIZE / 2;
 
@@ -218,8 +233,10 @@ export function createTerrain(seed: number): Terrain {
     return [-gx / len, 1 / len, -gz / len];
   };
 
+  yield;
   const normals = new Float32Array(n * n * 3);
   for (let j = 0; j < n; j++) {
+    if (j > 0 && j % TERRAIN_SLICE_ROWS === 0) yield;
     for (let i = 0; i < n; i++) {
       normals.set(
         smoothNormalAt(-half + i * TERRAIN_CELL, -half + j * TERRAIN_CELL),
@@ -229,6 +246,7 @@ export function createTerrain(seed: number): Terrain {
   }
   geometry.setAttribute('normal', new BufferAttribute(normals, 3));
   geometry.userData.layer = TERRAIN_LAYER;
+  yield;
 
   return { seed, geometry, ridge: buildRidge(seed), heightAt, normalAt };
 }

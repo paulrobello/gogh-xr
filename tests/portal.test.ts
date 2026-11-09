@@ -189,6 +189,9 @@ test('the slicer spends at most its budget per frame, in queue order', async () 
   await expect(after).resolves.toBe('next');
   expect(slicer.pending).toBe(0);
   expect(slicer.stats.longestStepMs).toBe(1);
+  expect(slicer.stats.longestStepByLabel).toEqual({ '-': 1 });
+  slicer.resetStats();
+  expect(slicer.stats.longestStepByLabel).toEqual({});
 });
 
 test('nextFrame resolves at the next frame call', async () => {

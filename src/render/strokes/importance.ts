@@ -1,4 +1,5 @@
 import { mulberry32 } from '../../util/prng';
+import { drain, type Steps } from '../../util/slicer';
 
 /** Target strokes per sub-cell when sizing the stratification grid. */
 const STROKES_PER_BUCKET = 16;
@@ -24,14 +25,31 @@ export function importanceOrder(
   indices: ArrayLike<number>,
   seed: number,
 ): Uint32Array {
+  return drain(importanceOrderSteps(position, indices, seed));
+}
+
+/** Strokes of one pass handled between two yields of `importanceOrderSteps`. */
+const IMPORTANCE_SLICE = 16_384;
+
+/**
+ * `importanceOrder` as steps (P5.5): the same draws in the same order, yielding every
+ * IMPORTANCE_SLICE strokes of each pass, so a large chunk's order spans slicer steps.
+ */
+export function* importanceOrderSteps(
+  position: Float32Array,
+  indices: ArrayLike<number>,
+  seed: number,
+): Steps<Uint32Array> {
   const n = indices.length;
   const out = new Uint32Array(n);
   if (n === 0) return out;
   const rand = mulberry32(seed);
+  const slice = IMPORTANCE_SLICE;
 
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < n; i++) {
+    if (i > 0 && i % slice === 0) yield;
     const p = indices[i] * 3;
     for (let k = 0; k < 3; k++) {
       const v = position[p + k];
@@ -48,7 +66,9 @@ export function importanceOrder(
   // Counting sort of strokes by bucket.
   const bucketOf = new Uint32Array(n);
   const sizes = new Uint32Array(s * s * s);
+  yield;
   for (let i = 0; i < n; i++) {
+    if (i > 0 && i % slice === 0) yield;
     const p = indices[i] * 3;
     let b = 0;
     for (let k = 0; k < 3; k++) {
@@ -61,7 +81,10 @@ export function importanceOrder(
   for (let b = 0; b < sizes.length; b++) starts[b + 1] = starts[b] + sizes[b];
   const grouped = new Uint32Array(n);
   const cursor = starts.slice(0, sizes.length);
-  for (let i = 0; i < n; i++) grouped[cursor[bucketOf[i]]++] = indices[i];
+  for (let i = 0; i < n; i++) {
+    if (i > 0 && i % slice === 0) yield;
+    grouped[cursor[bucketOf[i]]++] = indices[i];
+  }
 
   // Shuffle each bucket (Fisher-Yates) and key its strokes by (j + u_b) / n_b. Buckets are visited
   // in a shuffled order, which only breaks ties between equal key slots.
@@ -76,9 +99,15 @@ export function importanceOrder(
   const slotSizes = new Uint32Array(n + 1);
   const keyed = new Uint32Array(n);
   let next = 0;
+  let keyedSinceYield = 0;
   for (const b of occupied) {
+    if (keyedSinceYield >= slice) {
+      keyedSinceYield = 0;
+      yield;
+    }
     const start = starts[b];
     const size = sizes[b];
+    keyedSinceYield += size;
     for (let i = size - 1; i > 0; i--) {
       const j = Math.floor(rand() * (i + 1));
       const t = grouped[start + i];
@@ -93,7 +122,11 @@ export function importanceOrder(
       slotSizes[slot + 1]++;
     }
   }
+  yield;
   for (let k = 0; k < n; k++) slotSizes[k + 1] += slotSizes[k];
-  for (let i = 0; i < n; i++) out[slotSizes[slotOf[i]]++] = keyed[i];
+  for (let i = 0; i < n; i++) {
+    if (i > 0 && i % slice === 0) yield;
+    out[slotSizes[slotOf[i]]++] = keyed[i];
+  }
   return out;
 }

@@ -41,7 +41,10 @@ async function capture(page: Page, origin: string, query: string, wait: string):
   await page.waitForFunction(
     (key) => {
       const diag = window.__goghDiag?.();
-      return Boolean(window.__goghShot && diag && diag[key] !== undefined);
+      if (!window.__goghShot || !diag || diag[key] === undefined) return false;
+      // The gallery's plaques typeset over frames after `world` registers.
+      const plaques = (diag[key] as { plaques?: { state: string } }).plaques;
+      return plaques?.state !== 'pending';
     },
     wait,
     { timeout: 120_000 },

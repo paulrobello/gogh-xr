@@ -34,6 +34,7 @@ import {
 } from '../paintings/starry-night/canvas-camera';
 import type { Vec3 } from '../render/strokes/frame';
 import { mulberry32 } from '../util/prng';
+import { drain, type Steps } from '../util/slicer';
 import { TERRAIN_CELL, type Terrain } from './terrain';
 
 /**
@@ -519,6 +520,14 @@ function buildMass(spec: MassSpec, rand: () => number, heightAt: Terrain['height
 
 /** Builds the seeded cypress, main tree and lower mass, seated on `terrain`. */
 export function createCypress(seed: number, terrain: Pick<Terrain, 'heightAt'>): Cypress {
+  return drain(createCypressSteps(seed, terrain));
+}
+
+/** `createCypress` as steps (P5.5): the same draws, yielding after each mass. */
+export function* createCypressSteps(
+  seed: number,
+  terrain: Pick<Terrain, 'heightAt'>,
+): Steps<Cypress> {
   const rand = mulberry32(seed ^ 0xc1b7e55);
   const main = buildMass(
     {
@@ -535,6 +544,7 @@ export function createCypress(seed: number, terrain: Pick<Terrain, 'heightAt'>):
     rand,
     terrain.heightAt,
   );
+  yield;
   const lower = buildMass(
     {
       tipUV: CYPRESS_LOWER_TIP_UV,
@@ -550,6 +560,7 @@ export function createCypress(seed: number, terrain: Pick<Terrain, 'heightAt'>):
     rand,
     terrain.heightAt,
   );
+  yield;
 
   const geometry = new BufferGeometry();
   geometry.setAttribute(

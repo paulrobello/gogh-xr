@@ -133,6 +133,8 @@ export interface PortalDiag {
   /** The slicer's longest single build step during the last transition, ms, and its stage. */
   longestStepMs: number | null;
   longestStep: string | null;
+  /** The slicer's longest step of each stage during the last transition, ms; `-` is unlabelled. */
+  stepsMs: Record<string, number>;
   /** The last transition's wall time, trigger to done, ms. */
   durationMs: number | null;
   /**
@@ -217,6 +219,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     longestFrameMs: null,
     longestStepMs: null,
     longestStep: null,
+    stepsMs: {},
     durationMs: null,
     fallback: null,
     flying: false,
@@ -568,6 +571,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     diagState.longestFrameMs = longest;
     diagState.longestStepMs = deps.slicer.stats.longestStepMs;
     diagState.longestStep = deps.slicer.stats.longestStepLabel;
+    diagState.stepsMs = { ...deps.slicer.stats.longestStepByLabel };
   }
 
   let previousId = '';

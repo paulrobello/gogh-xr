@@ -344,7 +344,7 @@ export function createSkyLights(
 }
 
 /** Strokes ranked between two yields of `createSkyLightsSteps`' final pass. */
-const SKY_LIGHT_SLICE = 256;
+const SKY_LIGHT_SLICE = 64;
 
 /**
  * `createSkyLights` as steps (P5.5): the same draws in the same order, yielding after every grid

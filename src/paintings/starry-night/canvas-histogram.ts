@@ -139,7 +139,9 @@ export function buildCanvasHistogram(
 }
 
 /** Image rows binned between two yields of `buildCanvasHistogramSteps`. */
-const HISTOGRAM_SLICE_ROWS = 48;
+const HISTOGRAM_SLICE_ROWS = 16;
+/** Colour bins tested against a region's palette between two yields. */
+const HISTOGRAM_SLICE_BINS = 4096;
 
 /** `buildCanvasHistogram` as steps (P5.5): the same counts, yielding every few rows and regions. */
 export function* buildCanvasHistogramSteps(
@@ -173,6 +175,7 @@ export function* buildCanvasHistogramSteps(
 
   const centres: (Lab | null)[] = [];
   for (let r = 0; r < REGION_COUNT; r++) {
+    yield;
     if (counts[r] === 0) {
       centres.push(null);
       continue;
@@ -196,8 +199,17 @@ export function* buildCanvasHistogramSteps(
     yield;
     const base = r * COLOR_BIN_COUNT;
     const checked = REGION_PALETTE_RIVALS[r as RegionId] !== undefined;
-    const keep = (k: number): boolean =>
-      colors[base + k] > 0 && (!checked || inRegionPalette(partial, r as RegionId, binCentre(k)));
+    const kept = new Uint8Array(COLOR_BIN_COUNT);
+    for (let k = 0; k < COLOR_BIN_COUNT; k++) {
+      if (k > 0 && k % HISTOGRAM_SLICE_BINS === 0) yield;
+      if (
+        colors[base + k] > 0 &&
+        (!checked || inRegionPalette(partial, r as RegionId, binCentre(k)))
+      ) {
+        kept[k] = 1;
+      }
+    }
+    const keep = (k: number): boolean => kept[k] === 1;
     let used = 0;
     for (let k = 0; k < COLOR_BIN_COUNT; k++) if (keep(k)) used++;
     const colorBins = new Uint16Array(used);

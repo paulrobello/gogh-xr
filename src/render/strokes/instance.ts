@@ -19,6 +19,7 @@
  * 34 bytes per instance. Size stays float32: a half-float `Uint16Array` uploads as UNSIGNED_SHORT
  * in three r186 unless it is a `Float16BufferAttribute`, which has no instanced variant.
  */
+import { drain, type Steps } from '../../util/slicer';
 import { BRUSH_COUNT } from './brush-atlas-data';
 import type { Vec3 } from './frame';
 
@@ -225,8 +226,17 @@ export function unpackInstance(buffers: StrokeBuffers, index: number): StrokeIns
 
 /** Copies the instances at `indices`, in that order, into new buffers. */
 export function selectStrokes(source: StrokeBuffers, indices: ArrayLike<number>): StrokeBuffers {
+  return drain(selectStrokesSteps(source, indices));
+}
+
+/** `selectStrokes` as steps (P5.5), yielding after each attribute's gather. */
+export function* selectStrokesSteps(
+  source: StrokeBuffers,
+  indices: ArrayLike<number>,
+): Steps<StrokeBuffers> {
   const out = createStrokeBuffers(indices.length);
   for (const spec of STROKE_ATTRIBUTES) {
+    yield;
     const from = source[spec.key];
     const to = out[spec.key];
     const n = spec.itemSize;
@@ -243,8 +253,36 @@ export function appendStrokes(
   buffers: StrokeBuffers,
   extra: readonly StrokeInstance[],
 ): StrokeBuffers {
+  return drain(appendStrokesSteps(buffers, extra));
+}
+
+/** Extra instances packed between two yields of `appendStrokesSteps`. */
+const APPEND_SLICE = 8192;
+/** Strokes of one attribute copied between two yields of `appendStrokesSteps`. */
+const COPY_SLICE = 131_072;
+
+/**
+ * `appendStrokes` as steps (P5.5): yielding after the allocation, every COPY_SLICE strokes of each
+ * attribute's copy and every APPEND_SLICE packs.
+ */
+export function* appendStrokesSteps(
+  buffers: StrokeBuffers,
+  extra: readonly StrokeInstance[],
+): Steps<StrokeBuffers> {
   const out = createStrokeBuffers(buffers.count + extra.length);
-  for (const spec of STROKE_ATTRIBUTES) out[spec.key].set(buffers[spec.key]);
-  for (let i = 0; i < extra.length; i++) packInstance(out, buffers.count + i, extra[i]);
+  for (const spec of STROKE_ATTRIBUTES) {
+    const from = buffers[spec.key];
+    const to = out[spec.key];
+    const n = spec.itemSize;
+    for (let start = 0; start < buffers.count; start += COPY_SLICE) {
+      yield;
+      const end = Math.min(buffers.count, start + COPY_SLICE);
+      to.set(from.subarray(start * n, end * n), start * n);
+    }
+  }
+  for (let i = 0; i < extra.length; i++) {
+    if (i % APPEND_SLICE === 0) yield;
+    packInstance(out, buffers.count + i, extra[i]);
+  }
   return out;
 }

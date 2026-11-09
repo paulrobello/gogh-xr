@@ -25,7 +25,12 @@ import {
   type WorldHandle,
   type WorldPose,
 } from '../world-module';
-import { BARE_COLOR, createBaseMeshes, disposeBaseMeshes, underpaintColor } from './base-meshes';
+import {
+  BARE_COLOR,
+  createBaseMeshesSteps,
+  disposeBaseMeshes,
+  underpaintColor,
+} from './base-meshes';
 import {
   CANVAS_ASPECT,
   CANVAS_FOV_Y_DEG,
@@ -76,7 +81,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   if (built) throw new Error('the Starry Night world is already built; dispose it first');
   const seed = deps.seed ?? DEFAULT_WORLD_SEED;
   const debug = deps.debug ?? null;
-  const { step, run } = buildSteps(deps.slicer);
+  const { run } = buildSteps(deps.slicer);
   const start = performance.now();
   const [image, flowRaster, regions, scan] = await Promise.all([
     deps.loadRaster(`${PAINTING_DIR}frame.webp`, false),
@@ -134,14 +139,13 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
   };
 
   const { scene } = deps;
-  const base = await step(
-    () =>
-      createBaseMeshes(
-        world.surfaces,
-        source.histogram,
-        debug ? 'magenta' : 'underpaint',
-        seeds.scatter,
-      ),
+  const base = await run(
+    createBaseMeshesSteps(
+      world.surfaces,
+      source.histogram,
+      debug ? 'magenta' : 'underpaint',
+      seeds.scatter,
+    ),
     'base',
   );
   const background = scene.background;

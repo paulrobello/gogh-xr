@@ -36,19 +36,19 @@ import {
   computeBounds,
   cullAndSortInto,
   DEFAULT_CELL_SIZE,
-  partitionIndices,
+  partitionIndicesSteps,
   type StrokeBounds,
 } from './chunks';
 import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
 import { FIT_SCALE_MASK, FIT_SCALE_SHIFT, FIT_SCALE_STEP } from './face-clamp';
 import type { Vec3 } from './frame';
-import { importanceOrder } from './importance';
+import { importanceOrderSteps } from './importance';
 import {
   octDecode,
   STROKE_ATTRIBUTES,
   STROKE_LAYER,
   type StrokeBuffers,
-  selectStrokes,
+  selectStrokesSteps,
 } from './instance';
 import { createStrokeMaterial, HAZE_GROWTH, type StrokeMaterial } from './material';
 import { SKY_LIGHT_CULL_FLAG } from './sky-light-cull';
@@ -346,8 +346,16 @@ export type StrokePartMerge = (
   radius: number,
 ) => string | null;
 
-/** Strokes partitioned between two yields of `createStrokeBatchSteps`' cell loop. */
+/** Strokes bounded between two yields of `groupPartsSteps`. */
 const BATCH_SLICE = 16_384;
+/** Strokes partitioned between two yields of `createStrokeBatchSteps`' cell loop. */
+const CELL_SLICE = 4096;
+/** Strokes classified between two yields of `createStrokeBatchSteps`' draw class pass. */
+const CLASS_SLICE = 65_536;
+/** Each draw class's index in STROKE_DRAW_CLASSES. */
+const DRAW_CLASS_INDEX: Readonly<Record<StrokeDrawClass, number>> = Object.freeze(
+  Object.fromEntries(STROKE_DRAW_CLASSES.map((c, i) => [c, i])) as Record<StrokeDrawClass, number>,
+);
 
 /** Unit quad corners in [-0.5, 0.5]², counter-clockwise seen from +z (the instance normal). */
 function createQuadAttributes(): { position: BufferAttribute; index: BufferAttribute } {
@@ -519,16 +527,19 @@ const PINNED_SEED_SALT = 0x5bd1e995;
 
 /**
  * A chunk's instance order: its pinned strokes in importance order, then the rest in importance
- * order. With none pinned this is `importanceOrder(position, indices, seed)` itself.
+ * order. With none pinned this is `importanceOrder(position, indices, seed)` itself. It yields
+ * through each importance order (`importanceOrderSteps`), so a large chunk spans slicer steps.
  */
-function chunkOrder(
+function* chunkOrderSteps(
   buffers: StrokeBuffers,
   indices: Uint32Array,
   seed: number,
-): { order: Uint32Array; pinned: number } {
+): Steps<{ order: Uint32Array; pinned: number }> {
   let pinned = 0;
   for (let k = 0; k < indices.length; k++) if (isPinnedStroke(buffers, indices[k])) pinned++;
-  if (pinned === 0) return { order: importanceOrder(buffers.position, indices, seed), pinned };
+  if (pinned === 0) {
+    return { order: yield* importanceOrderSteps(buffers.position, indices, seed), pinned };
+  }
   const lights = new Uint32Array(pinned);
   const rest = new Uint32Array(indices.length - pinned);
   let a = 0;
@@ -538,8 +549,8 @@ function chunkOrder(
     else rest[b++] = indices[k];
   }
   const order = new Uint32Array(indices.length);
-  order.set(importanceOrder(buffers.position, lights, (seed ^ PINNED_SEED_SALT) >>> 0));
-  order.set(importanceOrder(buffers.position, rest, seed), pinned);
+  order.set(yield* importanceOrderSteps(buffers.position, lights, (seed ^ PINNED_SEED_SALT) >>> 0));
+  order.set(yield* importanceOrderSteps(buffers.position, rest, seed), pinned);
   return { order, pinned };
 }
 
@@ -714,8 +725,8 @@ export function createStrokeBatch(
 
 /**
  * `createStrokeBatch` as steps (P5.5): the same work in the same order, yielding after the atlas,
- * after the partition, every few cells and after each chunk, so a slicer can spread it over
- * frames.
+ * through the partition and the draw class pass, every few cells, through each importance order,
+ * and between each chunk's order, gather and geometry, so a slicer can spread it over frames.
  */
 export function* createStrokeBatchSteps(
   buffers: StrokeBuffers,
@@ -746,7 +757,8 @@ export function* createStrokeBatchSteps(
 
   const seed = options.seed ?? STROKE_ORDER_SEED;
   const cellSize = options.cellSize ?? DEFAULT_CELL_SIZE;
-  const { cells, offsets, order } = partitionIndices(buffers, cellSize);
+  yield;
+  const { cells, offsets, order } = yield* partitionIndicesSteps(buffers, cellSize);
   yield;
   const chunks: StrokeChunk[] = [];
   const bandOf: (StrokeBand | null)[] = [];
@@ -805,38 +817,50 @@ export function* createStrokeBatchSteps(
   const parts: ChunkPart[] = [];
   const cypress: { stroke: number; key: number; cell: number }[] = [];
   let cypressCell = -1;
-  let sliceStart = 0;
+  // Each stroke's draw class (its STROKE_DRAW_CLASSES index) and, with `cypressChunk`, whether it is
+  // a cypress stroke, read once, so the cell loop below filters on typed lookups.
+  const classIndex = new Uint8Array(buffers.count);
+  const cypressMask = options.cypressChunk ? new Uint8Array(buffers.count) : null;
+  for (let i = 0; i < buffers.count; i++) {
+    if (i > 0 && i % CLASS_SLICE === 0) yield;
+    classIndex[i] = DRAW_CLASS_INDEX[drawClassOf(buffers, i)];
+    if (cypressMask && isCypressStroke(buffers, i)) cypressMask[i] = 1;
+  }
+  yield;
+  let sinceYield = 0;
   for (let c = 0; c + 1 < offsets.length; c++) {
-    if (offsets[c] - sliceStart >= BATCH_SLICE) {
-      sliceStart = offsets[c];
+    if (sinceYield >= CELL_SLICE) {
+      sinceYield = 0;
       yield;
     }
     const indices = order.subarray(offsets[c], offsets[c + 1]);
-    const classOf = Array.from(indices, (i) => drawClassOf(buffers, i));
-    for (const drawClass of STROKE_DRAW_CLASSES) {
-      const picked = indices.filter((_, k) => classOf[k] === drawClass);
+    sinceYield += indices.length;
+    for (let d = 0; d < STROKE_DRAW_CLASSES.length; d++) {
+      const drawClass = STROKE_DRAW_CLASSES[d];
+      const picked = indices.filter((i) => classIndex[i] === d);
       if (picked.length === 0) continue;
-      if (
-        !options.cypressChunk ||
-        drawClass !== 'world' ||
-        !picked.some((i) => isCypressStroke(buffers, i))
-      ) {
+      if (!cypressMask || drawClass !== 'world' || !picked.some((i) => cypressMask[i] === 1)) {
         parts.push({ cell: c, drawClass, indices: picked });
         continue;
       }
+      // A cypress cell orders its whole world part in steps of its own, then splits it in another.
+      yield;
       if (cypressCell < 0) cypressCell = c;
-      const cellOrder = chunkOrder(buffers, picked, chunkSeed(seed, cells, c)).order;
-      const ofCypress = cellOrder.filter((i) => isCypressStroke(buffers, i));
+      const cellOrder = (yield* chunkOrderSteps(buffers, picked, chunkSeed(seed, cells, c))).order;
+      yield;
+      sinceYield = 0;
+      const ofCypress = cellOrder.filter((i) => cypressMask[i] === 1);
       ofCypress.forEach((stroke, r) => {
         cypress.push({ stroke, key: (r + 0.5) / ofCypress.length, cell: c });
       });
-      const rest = cellOrder.filter((i) => !isCypressStroke(buffers, i));
+      const rest = cellOrder.filter((i) => cypressMask[i] === 0);
       if (rest.length > 0) {
         parts.push({ cell: c, drawClass, indices: rest.slice().sort(), order: rest });
       }
     }
   }
   if (cypress.length > 0) {
+    yield;
     cypress.sort((a, b) => a.key - b.key || a.cell - b.cell);
     const merged = Uint32Array.from(cypress, (s) => s.stroke);
     parts.push({
@@ -867,7 +891,7 @@ export function* createStrokeBatchSteps(
       yield;
       const part = preset
         ? { order: preset, pinned: 0 }
-        : chunkOrder(buffers, indices, chunkSeed(seed, cells, c));
+        : yield* chunkOrderSteps(buffers, indices, chunkSeed(seed, cells, c));
       ordered.push(part);
       if (!merged) continue;
       partReaches.push(motionReachesOf(buffers, part.order));
@@ -878,14 +902,15 @@ export function* createStrokeBatchSteps(
         centres[k + 3] = Math.max(centres[k + 3], b[k + 3]);
       }
     }
-    if (merged) yield;
+    yield;
     const { order: chunkIndices, pinned } = merged ? interleaveOrders(ordered) : ordered[0];
-    const data = selectStrokes(buffers, chunkIndices);
-    if (merged) yield;
+    const data = yield* selectStrokesSteps(buffers, chunkIndices);
+    yield;
     const box = computeBounds(data);
     for (const part of partBounds) probes.push(...part.center, part.radius);
     probeStart[chunks.length + 1] = probes.length / 4;
     const geometry = createChunkGeometry(data, quad);
+    yield;
     const bounds = new Sphere(new Vector3(...box.center), box.radius);
     geometry.boundingSphere = bounds.clone();
     const mesh = new Mesh(geometry, materials.near);

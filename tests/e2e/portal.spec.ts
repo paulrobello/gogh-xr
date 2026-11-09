@@ -15,6 +15,7 @@ interface PortalDiag {
   longestFrameMs: number | null;
   longestStepMs: number | null;
   longestStep: string | null;
+  stepsMs: Record<string, number>;
   durationMs: number | null;
   longestWorkMs: number | null;
   longestWorkPhase: string | null;
@@ -53,6 +54,7 @@ const summary = (p: PortalDiag) => {
     longestWorkPhase: p.longestWorkPhase,
     longestStep: p.longestStep,
     longestStepMs: p.longestStepMs,
+    stepsMs: p.stepsMs,
     durationMs: p.durationMs,
     // The longest interval ends at frame `at`, so the frame before it did the work that delayed it.
     longestInterval: p.frames.slice(Math.max(0, at - 1), at + 1),

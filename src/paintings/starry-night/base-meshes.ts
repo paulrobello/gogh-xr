@@ -17,6 +17,7 @@ import {
 } from 'three';
 import type { Vec3 } from '../../render/strokes/frame';
 import { WORLD_LAYERS } from '../../render/strokes/scatter';
+import { drain, type Steps } from '../../util/slicer';
 import { LAYER_REGION, type WorldLayer } from './canvas-camera';
 import { type CanvasHistogram, COLOR_BITS } from './canvas-histogram';
 import {
@@ -165,11 +166,22 @@ export function createBaseMeshes(
   paint: BaseMeshPaint,
   seed?: number,
 ): Group {
+  return drain(createBaseMeshesSteps(surfaces, histogram, paint, seed));
+}
+
+/** `createBaseMeshes` as steps (P5.5), yielding before each surface's mesh. */
+export function* createBaseMeshesSteps(
+  surfaces: readonly BufferGeometry[],
+  histogram: CanvasHistogram,
+  paint: BaseMeshPaint,
+  seed?: number,
+): Steps<Group> {
   const group = new Group();
   group.name = 'base-meshes';
   let bands: TintBands | null = null;
   for (const surface of surfaces) {
     if (surface.userData.backdrop === true) continue;
+    yield;
     const geometry = withSoffit(surface);
     let tinted: BufferGeometry | null = null;
     if (paint === 'underpaint' && seed !== undefined && geometry.userData.tint) {

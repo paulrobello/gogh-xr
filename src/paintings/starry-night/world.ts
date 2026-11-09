@@ -15,7 +15,7 @@ import type {
 } from '../../render/strokes/batch';
 import type { Vec3 } from '../../render/strokes/frame';
 import {
-  appendStrokes,
+  appendStrokesSteps,
   STROKE_LAYER,
   type StrokeBuffers,
   type StrokeInstance,
@@ -34,11 +34,11 @@ import type { ScatterKeyInputs } from '../../render/strokes/scatter-cache';
 import { SKY_LIGHT_CULL_FLAG, type SkyLightCone } from '../../render/strokes/sky-light-cull';
 import { drain, type Steps } from '../../util/slicer';
 import { createBoundaryHazeSteps, HAZE_STROKE_DEFAULT } from '../../world/boundary';
-import { type Cypress, createCypress } from '../../world/cypress';
+import { type Cypress, createCypressSteps } from '../../world/cypress';
 import { createSkyDome } from '../../world/sky';
 import { createSkyLightsSteps, skyLightCones } from '../../world/sky-lights';
-import { createTerrain, type Terrain } from '../../world/terrain';
-import { createVillage, type Village } from '../../world/village';
+import { createTerrainSteps, type Terrain } from '../../world/terrain';
+import { createVillageSteps, type Village } from '../../world/village';
 import { PAINTER_EYE, type WorldLayer } from './canvas-camera';
 import type { CanvasSource } from './canvas-histogram';
 import { eaveUndersidesSteps } from './eave-undersides';
@@ -263,13 +263,13 @@ export function createWorldGeometry(seeds: WorldSeeds): WorldGeometry {
   return drain(createWorldGeometrySteps(seeds));
 }
 
-/** `createWorldGeometry` as steps (P5.5): one generator per step. */
+/** `createWorldGeometry` as steps (P5.5): each generator's own steps, one after the other. */
 export function* createWorldGeometrySteps(seeds: WorldSeeds): Steps<WorldGeometry> {
-  const terrain = createTerrain(seeds.terrain);
+  const terrain = yield* createTerrainSteps(seeds.terrain);
   yield;
-  const village = createVillage(seeds.village, terrain);
+  const village = yield* createVillageSteps(seeds.village, terrain);
   yield;
-  const cypress = createCypress(seeds.cypress, terrain);
+  const cypress = yield* createCypressSteps(seeds.cypress, terrain);
   yield;
   const dome = createSkyDome();
   terrain.ridge.userData.scatter = RIDGE_SCATTER;
@@ -437,11 +437,11 @@ export function* assembleWorldStrokesSteps(
   yield;
   const eaves = yield* eaveUndersidesSteps(scattered, world.village.roofs);
   yield;
-  const buffers = appendStrokes(scattered, [...lights, ...haze, ...eaves.strokes]);
+  const buffers = yield* appendStrokesSteps(scattered, [...lights, ...haze, ...eaves.strokes]);
   yield;
   const hazeStart = scattered.count + lights.length;
   const counts = {
-    ...strokeLayerCounts(buffers),
+    ...(yield* strokeLayerCountsSteps(buffers)),
     haze: haze.length,
     eaves: eaves.strokes.length,
   };
@@ -465,6 +465,14 @@ const LAYER_NAMES = Object.keys(STROKE_LAYER) as StrokeLayerName[];
 
 /** Strokes per stroke layer (sky, star, moon, cypress, ground, building), from the meta bytes. */
 export function strokeLayerCounts(buffers: StrokeBuffers): Record<StrokeLayerName, number> {
+  return drain(strokeLayerCountsSteps(buffers));
+}
+
+/** Strokes counted between two yields of `strokeLayerCountsSteps`. */
+const COUNT_SLICE = 32_768;
+
+/** `strokeLayerCounts` as steps (P5.5), yielding every COUNT_SLICE strokes. */
+function* strokeLayerCountsSteps(buffers: StrokeBuffers): Steps<Record<StrokeLayerName, number>> {
   const counts = Object.fromEntries(LAYER_NAMES.map((n) => [n, 0])) as Record<
     StrokeLayerName,
     number
@@ -472,6 +480,7 @@ export function strokeLayerCounts(buffers: StrokeBuffers): Record<StrokeLayerNam
   const byValue = LAYER_NAMES.map((n) => [STROKE_LAYER[n], n] as const);
   const lookup = new Map<number, StrokeLayerName>(byValue);
   for (let i = 0; i < buffers.count; i++) {
+    if (i > 0 && i % COUNT_SLICE === 0) yield;
     const name = lookup.get(buffers.meta[i * 4 + 1]);
     if (name) counts[name]++;
   }

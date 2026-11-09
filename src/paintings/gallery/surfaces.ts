@@ -541,7 +541,9 @@ export function scatterGallery(surfaces: readonly Surface[], seed: number): Gall
 }
 
 /** Strokes placed between two yields of `scatterGallerySteps`. */
-const GALLERY_SLICE = 4096;
+const GALLERY_SLICE = 1024;
+/** Placements tested against the hangings and the bench between two yields. */
+const GALLERY_FILTER_SLICE = 8192;
 
 /** `scatterGallery` as steps (P5.5): the same draws in the same order, yielding as it goes. */
 export function* scatterGallerySteps(
@@ -555,12 +557,15 @@ export function* scatterGallerySteps(
     yield;
   }
   const kept: Placement[] = [];
-  for (const p of placements) {
+  for (let i = 0; i < placements.length; i++) {
+    if (i > 0 && i % GALLERY_FILTER_SLICE === 0) yield;
+    const p = placements[i];
     const point = pointOf(p.surface, p.a, p.b);
     if (p.surface.wall && underHanging(p.surface.wall, point)) continue;
     if (p.surface.role === 'floor' && underBench(point[0], point[2])) continue;
     kept.push(p);
   }
+  yield;
   const buffers = createStrokeBuffers(kept.length);
   const counts: Record<SurfaceRole, number> = {
     wall: 0,

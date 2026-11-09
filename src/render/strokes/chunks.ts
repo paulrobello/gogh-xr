@@ -1,4 +1,5 @@
 import type { Frustum, Sphere, Vector3 } from 'three';
+import { drain, type Steps } from '../../util/slicer';
 import type { Vec3 } from './frame';
 import { type StrokeBuffers, selectStrokes } from './instance';
 
@@ -82,6 +83,20 @@ export function partitionIndices(
   buffers: StrokeBuffers,
   cellSize: number = DEFAULT_CELL_SIZE,
 ): StrokePartition {
+  return drain(partitionIndicesSteps(buffers, cellSize));
+}
+
+/** Strokes keyed or placed between two yields of `partitionIndicesSteps`. */
+const PARTITION_SLICE = 65_536;
+
+/**
+ * `partitionIndices` as steps (P5.5): the same partition, yielding every PARTITION_SLICE strokes
+ * of the key and fill passes.
+ */
+export function* partitionIndicesSteps(
+  buffers: StrokeBuffers,
+  cellSize: number = DEFAULT_CELL_SIZE,
+): Steps<StrokePartition> {
   if (!(cellSize > 0) || !Number.isFinite(cellSize)) {
     throw new RangeError(`cell size ${cellSize} must be a positive number`);
   }
@@ -94,6 +109,7 @@ export function partitionIndices(
   let lastKey = Number.NaN;
   let lastSlot = 0;
   for (let i = 0; i < n; i++) {
+    if (i > 0 && i % PARTITION_SLICE === 0) yield;
     let key = 0;
     for (let k = 0; k < 3; k++) {
       const cell = Math.floor(p[i * 3 + k] / cellSize);
@@ -132,9 +148,13 @@ export function partitionIndices(
     }
     offsets[c + 1] = offsets[c] + counts[slot];
   });
+  yield;
   const cursor = offsets.slice(0, keys.length);
   const order = new Uint32Array(n);
-  for (let i = 0; i < n; i++) order[cursor[chunkOfSlot[slotOf[i]]]++] = i;
+  for (let i = 0; i < n; i++) {
+    if (i > 0 && i % PARTITION_SLICE === 0) yield;
+    order[cursor[chunkOfSlot[slotOf[i]]]++] = i;
+  }
   return { cells, offsets, order };
 }
 

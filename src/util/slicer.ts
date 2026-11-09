@@ -28,6 +28,8 @@ export interface SlicerStats {
   longestFrameWorkMs: number;
   /** The label of the job whose step was the longest, or null. */
   longestStepLabel: string | null;
+  /** The longest single step of each job label since the last `resetStats`, ms; `-` is unlabelled. */
+  longestStepByLabel: Record<string, number>;
   /** The step time spent in the last `frame()`, ms. */
   lastFrameWorkMs: number;
 }
@@ -66,6 +68,7 @@ export function createSlicer(
     longestStepMs: 0,
     longestFrameWorkMs: 0,
     longestStepLabel: null,
+    longestStepByLabel: {},
     lastFrameWorkMs: 0,
   };
 
@@ -114,6 +117,9 @@ export function createSlicer(
           stats.longestStepMs = took;
           stats.longestStepLabel = job.label;
         }
+        const key = job.label ?? '-';
+        const longest = stats.longestStepByLabel[key];
+        if (longest === undefined || took > longest) stats.longestStepByLabel[key] = took;
         if (next.done) {
           queue.shift();
           job.resolve(next.value);
@@ -131,6 +137,7 @@ export function createSlicer(
       stats.longestStepMs = 0;
       stats.longestFrameWorkMs = 0;
       stats.longestStepLabel = null;
+      stats.longestStepByLabel = {};
     },
   };
 }

@@ -90,7 +90,7 @@ export const FLOW_SMOOTH_RADIUS = 12;
 
 /** Separable box blur with an edge-normalised window, in place via `scratch`. */
 /** Texels of work between two yields of the flow field's steps. */
-const FLOW_SLICE = 1 << 17;
+const FLOW_SLICE = 1 << 15;
 
 function* boxBlurSteps(
   values: Float32Array,

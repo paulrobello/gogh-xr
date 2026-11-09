@@ -165,10 +165,11 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
 
   const surfaces = gallerySurfaces();
   const generated = performance.now();
-  const { buffers, counts } = await run(scatterGallerySteps(surfaces, seed));
+  const { buffers, counts } = await run(scatterGallerySteps(surfaces, seed), 'gallery-scatter');
   const scattered = performance.now();
   const batch = await run(
     createStrokeBatchSteps(buffers, { cellSize: GALLERY_CELL_SIZE, atlas: deps.atlas }),
+    'gallery-batch',
   );
   const batched = performance.now();
   const atlasMs = batch.stats().atlasMs;

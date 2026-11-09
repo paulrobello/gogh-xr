@@ -21,6 +21,7 @@ import {
 import { TINT_ROLE, type TintRole, type TintTags } from '../paintings/starry-night/tint-tags';
 import type { Vec3 } from '../render/strokes/frame';
 import { mulberry32 } from '../util/prng';
+import { drain, type Steps } from '../util/slicer';
 import {
   createMeshBuilder,
   type GableBox,
@@ -469,12 +470,31 @@ function tintTags(owner: readonly number[], role: (triangle: number) => TintRole
   return { owner: Uint16Array.from(owner), role: Uint8Array.from(owner, (_, t) => role(t)) };
 }
 
+/** House placements tested between two yields of `createVillageSteps`. */
+const PLACE_SLICE = 256;
+/** Houses built into the meshes between two yields of `createVillageSteps`. */
+const HOUSE_SLICE = 4;
+
 /** Lays out the seeded village and church on `terrain` and builds their per-layer geometry. */
 export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>): Village {
+  return drain(createVillageSteps(seed, terrain));
+}
+
+/**
+ * `createVillage` as steps (P5.5): the same draws in the same order, yielding after the church
+ * plan, every PLACE_SLICE house placements tested, every HOUSE_SLICE houses built and before the
+ * geometry is assembled.
+ */
+export function* createVillageSteps(
+  seed: number,
+  terrain: Pick<Terrain, 'heightAt'>,
+): Steps<Village> {
   const rand = mulberry32(seed ^ 0x51ed270b);
   const { heightAt } = terrain;
   const church = placeChurch(heightAt);
   const taken: (readonly Vec2[])[] = [church.record.outline];
+  yield;
+  let placed = 0;
 
   const houses: HouseRecord[] = [];
   const boxes: { frame: LocalFrame; box: GableBox; groundTop: number }[] = [];
@@ -482,7 +502,7 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
    * One seeded try at a house targeting canvas u: fixed size, pitch and yaw, then a scan along the
    * painter's ray over the band's distances, from a seeded start, for the first spot that fits.
    */
-  const tryHouse = (u: number): boolean => {
+  const tryHouse = function* (u: number): Steps<boolean> {
     const below = u > 0.85 ? V_BELOW_FAR_RIGHT : V_BELOW;
     const v = rooflineV(u) - below + rand() * (below + V_ABOVE);
     const width = 3.4 + rand() * 2;
@@ -493,6 +513,8 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
     for (let step = 0; step < DISTANCE_STEPS; step++) {
       const t = (start + step / DISTANCE_STEPS) % 1;
       const dist = VILLAGE_BAND.min + t * (VILLAGE_BAND.max - VILLAGE_BAND.min);
+      if (placed > 0 && placed % PLACE_SLICE === 0) yield;
+      placed++;
       if (placeAt(u, v, dist, width, depth, pitch, turn)) return true;
     }
     return false;
@@ -543,10 +565,13 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
   };
   for (let slot = 0; slot < HOUSE_COUNT; slot++) {
     for (let k = 0; k < TRIES_PER_SLOT; k++) {
-      if (tryHouse(houseU((slot + rand()) / HOUSE_COUNT))) break;
+      if (yield* tryHouse(houseU((slot + rand()) / HOUSE_COUNT))) break;
     }
   }
-  for (let k = 0; k < FILL_TRIES && houses.length < HOUSE_COUNT; k++) tryHouse(houseU(rand()));
+  for (let k = 0; k < FILL_TRIES && houses.length < HOUSE_COUNT; k++) {
+    yield* tryHouse(houseU(rand()));
+  }
+  yield;
 
   const building = createMeshBuilder();
   const roof = createMeshBuilder();
@@ -558,7 +583,9 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
   const wallOwner: number[] = [];
   const roofOwner: number[] = [];
   const soffitOwner: number[] = [];
-  boxes.forEach(({ frame, box, groundTop }, house) => {
+  for (let house = 0; house < boxes.length; house++) {
+    if (house > 0 && house % HOUSE_SLICE === 0) yield;
+    const { frame, box, groundTop } = boxes[house];
     pushGableWalls(building, frame, box);
     pushGableRoof(roof, frame, box);
     pushGableSoffit(roofSoffit, frame, box);
@@ -600,7 +627,8 @@ export function createVillage(seed: number, terrain: Pick<Terrain, 'heightAt'>):
         });
       }
     });
-  });
+  }
+  yield;
   const nave = buildChurch(churchMesh, church);
   pushGableSoffit(churchSoffit, nave.frame, nave.box);
 

@@ -294,11 +294,22 @@ const eyeDistance = (p: Vec3): number =>
 
 /** Area of every triangle in m², and its centroid's distance from PAINTER_EYE. */
 function triangleTable(geometry: BufferGeometry): { areas: Float64Array; distances: Float64Array } {
+  return drain(triangleTableSteps(geometry));
+}
+
+/** Triangles of one pass of `scatterSurfacesSteps` handled between two yields. */
+const TRIANGLE_SLICE = 8192;
+
+/** `triangleTable` as steps (P5.5), yielding every TRIANGLE_SLICE triangles. */
+function* triangleTableSteps(
+  geometry: BufferGeometry,
+): Steps<{ areas: Float64Array; distances: Float64Array }> {
   const position = geometry.getAttribute('position');
   const n = triangleCount(geometry);
   const areas = new Float64Array(n);
   const distances = new Float64Array(n);
   for (let t = 0; t < n; t++) {
+    if (t > 0 && t % TRIANGLE_SLICE === 0) yield;
     const a = read(position, vertexIndex(geometry, t, 0));
     const b = read(position, vertexIndex(geometry, t, 1));
     const c = read(position, vertexIndex(geometry, t, 2));
@@ -444,10 +455,23 @@ export function tintLookup(
   layerIndex: number,
   source: CanvasSource,
 ): (triangle: number) => VillagePaint {
+  return drain(tintLookupSteps(tags, bands, seed, layer, layerIndex, source));
+}
+
+/** `tintLookup` as steps (P5.5), yielding between its two scans of the histogram. */
+function* tintLookupSteps(
+  tags: TintTags,
+  bands: TintBands,
+  seed: number,
+  layer: WorldLayer,
+  layerIndex: number,
+  source: CanvasSource,
+): Steps<(triangle: number) => VillagePaint> {
   const picked = new Map<number, VillagePaint>();
   const lift = SEEN_LIGHTNESS_LIFT[layer] ?? 0;
   const region = LAYER_REGION[layer];
   const pivot = lightnessQuantile(source.histogram, region, LIFT_PIVOT_QUANTILE);
+  yield;
   const trim = { band: trimBand(source.histogram, region), pivot };
   return (triangle) => {
     const owner = tags.owner[triangle];
@@ -607,7 +631,7 @@ function planOutlines(surfaces: readonly Surface[], budget: number): void {
  * On FACE_CLAMPED_LAYERS the quad's painted footprint (BRUSH_FOOTPRINT) is then fitted into its
  * host face (`fitStrokeToFace`): clamped, and turned to run along a side it reaches past. The quad
  * and tangent follow it, and the fit scale is stored in the flags. After its own strokes, each
- * OUTLINED_LAYERS mesh gets its outline strokes (`placeOutlines`), budgeted over all of them by
+ * OUTLINED_LAYERS mesh gets its outline strokes (`placeOutlinesSteps`), budgeted over all of them by
  * `planOutlines` to at most OUTLINE_SHARE of the FACE_CLAMPED_LAYERS strokes.
  */
 export function scatterSurfaces(
@@ -619,7 +643,7 @@ export function scatterSurfaces(
 }
 
 /** Strokes placed between two yields of `scatterSurfacesSteps`: a few ms of work. */
-export const SCATTER_SLICE = 1024;
+export const SCATTER_SLICE = 512;
 
 /**
  * `scatterSurfaces` as steps (P5.5): the same work in the same order, yielding after each mesh's
@@ -644,14 +668,16 @@ export function* scatterSurfacesSteps(
     }
     checkSize(size, layer);
     const rng = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 0));
-    const { areas, distances } = triangleTable(geometry);
+    const { areas, distances } = yield* triangleTableSteps(geometry);
     const counts = new Uint32Array(areas.length);
     for (let t = 0; t < areas.length; t++) {
+      if (t > 0 && t % TRIANGLE_SLICE === 0) yield;
       const expected = areas[t] * scatterDensityAt(density, size, distances[t]);
       const whole = Math.floor(expected);
       counts[t] = whole + (rng() < expected - whole ? 1 : 0);
       total += counts[t];
     }
+    yield;
     const faces = FACE_CLAMPED_LAYERS.includes(layer) ? facePolygons(geometry) : null;
     const sides = faces?.faces.reduce((sum, f) => sum + f.vertices.length, 0) ?? 0;
     const outline = faces && OUTLINED_LAYERS.includes(layer) ? new Uint32Array(sides) : null;
@@ -664,12 +690,14 @@ export function* scatterSurfacesSteps(
   }
   planOutlines(surfaces, Math.floor(OUTLINE_SHARE * clamped));
   for (const { outline } of surfaces) total += outline?.reduce((sum, c) => sum + c, 0) ?? 0;
+  yield;
 
   // Pass 2: placement, from each mesh's placement stream. Village tints draw from their own
   // streams, so the placement streams, and every stroke's position, size and brush, are unchanged.
   const bands = surfaces.some((s) => tintTagsOf(s.geometry))
     ? splitTintBands(source.histogram)
     : null;
+  yield;
   const buffers = createStrokeBuffers(total);
   let index = 0;
   let sliceStart = 0;
@@ -677,8 +705,11 @@ export function* scatterSurfacesSteps(
     const { geometry, layer, layerIndex, meshIndex, size, counts, faces } = surface;
     const rand = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 1));
     const tags = tintTagsOf(geometry);
+    yield;
     const tintOf =
-      tags && bands ? tintLookup(tags, bands, options.seed, layer, layerIndex, source) : null;
+      tags && bands
+        ? yield* tintLookupSteps(tags, bands, options.seed, layer, layerIndex, source)
+        : null;
     const tintRand = mulberry32(streamSeed(options.seed, layerIndex, meshIndex, 3));
     const style = REGION_STYLES[LAYER_REGION[layer]];
     const emissive = emissiveColor(geometry);
@@ -688,6 +719,8 @@ export function* scatterSurfacesSteps(
     const heightAttr = geometry.getAttribute(CYPRESS_HEIGHT_ATTRIBUTE) as Attribute | undefined;
     const lobeAttr = geometry.getAttribute(CYPRESS_LOBE_ATTRIBUTE) as Attribute | undefined;
     const flame = heightAttr && lobeAttr ? { height: heightAttr, lobe: lobeAttr } : null;
+    yield;
+    sliceStart = index;
     for (let t = 0; t < counts.length; t++) {
       if (counts[t] === 0) continue;
       if (index - sliceStart >= SCATTER_SLICE) {
@@ -810,7 +843,17 @@ export function* scatterSurfacesSteps(
       }
     }
     if (faces && surface.outline) {
-      index = placeOutlines(buffers, index, surface, faces, source, options.seed, tintOf);
+      yield;
+      index = yield* placeOutlinesSteps(
+        buffers,
+        index,
+        surface,
+        faces,
+        source,
+        options.seed,
+        tintOf,
+      );
+      sliceStart = index;
     }
   }
   return buffers;
@@ -821,9 +864,9 @@ export function* scatterSurfacesSteps(
  * jitter, the long axis along the side, fitted flush inside it (`fitStrokeToFace`), coloured from
  * the canvas at the edge darkened by OUTLINE_DARKEN (on a tagged mesh, `outlinePaint`'s trim), and
  * lifted by the share of its quad size (`sizeShare`) like every other ranked stroke. Returns the
- * next free index.
+ * next free index. It yields before a face once SCATTER_SLICE strokes are placed since the last.
  */
-function placeOutlines(
+function* placeOutlinesSteps(
   buffers: StrokeBuffers,
   start: number,
   surface: Surface,
@@ -831,7 +874,7 @@ function placeOutlines(
   source: CanvasSource,
   seed: number,
   tintOf: ((triangle: number) => VillagePaint) | null,
-): number {
+): Steps<number> {
   const { layer, layerIndex, meshIndex, size } = surface;
   const outline = surface.outline;
   if (!outline) return start;
@@ -846,8 +889,13 @@ function placeOutlines(
   const straight = style.brushes.filter((b) => OUTLINE_KINDS.includes(BRUSHES[b].kind));
   const brushes = straight.length > 0 ? straight : style.brushes;
   let index = start;
+  let sliceStart = start;
   let k = 0;
   for (const [f, face] of faces.faces.entries()) {
+    if (index - sliceStart >= SCATTER_SLICE) {
+      sliceStart = index;
+      yield;
+    }
     const tint = tintOf ? tintOf(faceTriangle[f]) : null;
     const decoded = decodedNormal(face.normal);
     const { b1, b2 } = surfaceBasis(decoded);
