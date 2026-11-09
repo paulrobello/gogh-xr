@@ -125,12 +125,12 @@ test('a fixed quality level set in the DOM panel applies, survives a reload and 
   page,
 }) => {
   await page.goto('/?diag&noanim&strokesTest');
-  expect(await governorOf(page)).toMatchObject({ fixedLevel: null, level: 0, foveation: 0 });
+  expect(await governorOf(page)).toMatchObject({ fixedLevel: 5, level: 5, foveation: 1 });
   await page.keyboard.press('m');
   const row = page.locator('#gogh-settings [data-control="qualityLevel"]');
   const slider = row.locator('input[type=range]');
-  await expect(slider).toHaveValue('-1');
-  await expect(row.locator('.value')).toHaveText('Auto');
+  await expect(slider).toHaveValue('5');
+  await expect(row.locator('.value')).toHaveText('5 · far 0.20');
   // Keyboard on the range input: Home is Auto, then four steps right is level 3.
   await slider.focus();
   await page.keyboard.press('Home');

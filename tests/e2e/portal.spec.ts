@@ -21,9 +21,11 @@ const FRAME_BAR_MS = 27.8;
 
 /** What docs/verification.md reads from each transition. */
 const summary = (p: PortalDiag) => {
+  // From frame 1: `longestFrameMs` excludes the trigger frame's interval, which predates the
+  // transition, so this finds the frame it judged.
   const at = p.frames.reduce(
-    (best, f, i, all) => (f.intervalMs > all[best].intervalMs ? i : best),
-    0,
+    (best, f, i, all) => (i > 1 && f.intervalMs > all[best].intervalMs ? i : best),
+    1,
   );
   const wait = p.frames.filter((f) => f.phase === 'wait');
   return {
@@ -41,7 +43,7 @@ const summary = (p: PortalDiag) => {
     stepsMs: p.stepsMs,
     durationMs: p.durationMs,
     // The longest interval ends at frame `at`, so the frame before it did the work that delayed it.
-    longestInterval: p.frames.slice(Math.max(0, at - 1), at + 1),
+    longestInterval: p.frames.length > 1 ? p.frames.slice(at - 1, at + 1) : [],
   };
 };
 
@@ -192,6 +194,8 @@ test('a round trip returns the GPU geometry and texture counts to the baseline (
   await warmVeil(page, xr);
   const baseline = await xrMemory(page, xr);
   const trips: { enter: PortalDiag; back: PortalDiag }[] = [];
+  // Linked programs after each return: the switcher's pins must not grow them trip by trip.
+  const programs: number[] = [];
   for (let trip = 0; trip < 2; trip++) {
     expect(await page.evaluate(() => window.__goghPortal?.('starry-night'))).toBe(true);
     await settled(xr, 'starry-night');
@@ -203,7 +207,9 @@ test('a round trip returns the GPU geometry and texture counts to the baseline (
     console.log(`portal iwer return ${trip}`, JSON.stringify(summary(back)));
     trips.push({ enter, back });
     expect(await xrMemory(page, xr)).toEqual(baseline);
+    programs.push((await xr.diag()).renderer.programs);
   }
+  expect(programs[1], 'programs after each return').toBe(programs[0]);
   console.log('portal iwer memory', JSON.stringify(baseline));
   for (const [trip, { enter, back }] of trips.entries()) {
     expectWithinBar(enter, `iwer enter ${trip}`);

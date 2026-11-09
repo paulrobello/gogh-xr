@@ -665,6 +665,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       const { def, segments } = ct.layout;
       const hidden = controlHidden(def.id);
       ct.label.visible = !hidden;
+      // BatchedText draws a member whatever its `visible` says, so a hidden label is emptied.
+      if (def.kind === 'button') setText(ct.label, hidden ? '' : def.label);
       if (hidden) continue;
       const rect = controlRect(ct.layout);
       if (def.kind === 'button') ct.label.position.x = rect.x;

@@ -20,6 +20,7 @@
  */
 import {
   Frustum,
+  type Material,
   Matrix4,
   type Object3D,
   type PerspectiveCamera,
@@ -337,6 +338,11 @@ export interface Switcher {
 
 const hangingOf = (id: string): Hanging | undefined => HANGINGS.find((h) => h.painting.id === id);
 
+/** three's WebGLProgram: deleted once `usedTimes` falls to 0. */
+interface Pinnable {
+  usedTimes: number;
+}
+
 export function createSwitcher(deps: SwitcherDeps): Switcher {
   const transition: Transition = createTransition();
   const detector: PortalDetector = createPortalDetector(livePortals());
@@ -406,6 +412,11 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
   let startedAt = 0;
   let longest = 0;
   const rasters = new Map<string, Promise<Raster>>();
+  /**
+   * Programs `pinPrograms` holds linked: one extra use each, never released. A context loss leaves
+   * dead programs here; the restored cache's programs are new objects and are pinned afresh.
+   */
+  const pinned = new Set<Pinnable>();
   /** The wait the watchdog watches, and its wait frames so far with the slicer idle, seconds. */
   let waiting: Wait | null = null;
   let stalledS = 0;
@@ -711,6 +722,30 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     if (world.id !== GALLERY_ID) return world.module.spawnPose();
     const h = hangingOf(previous);
     return h ? returnPose(portalOf(h)) : world.module.spawnPose();
+  }
+
+  /**
+   * Holds every program the scene's built-in materials draw with linked for the session, so a world
+   * entered again links nothing. Must run before the old world's dispose releases them.
+   *
+   * Only built-in materials: three's shader cache gives a shader material's source a new id once
+   * its last material is disposed, so its next build keys a new program anyway, and a pin on the
+   * old one would hold it forever, one more each trip.
+   */
+  function pinPrograms(): void {
+    deps.scene.traverse((object) => {
+      const own = (object as { material?: Material | Material[] }).material;
+      if (!own) return;
+      for (const material of Array.isArray(own) ? own : [own]) {
+        if ((material as { isShaderMaterial?: boolean }).isShaderMaterial) continue;
+        const program = (deps.renderer.properties.get(material) as { currentProgram?: Pinnable })
+          .currentProgram;
+        if (program && !pinned.has(program)) {
+          pinned.add(program);
+          program.usedTimes += 1;
+        }
+      }
+    });
   }
 
   /** Puts the hidden objects back to their own visibility. */
@@ -1207,6 +1242,8 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
       deps.slicer.resetStats();
       diagState.lastTrigger = { id, cause, t: startedAt };
       deps.suppressInput();
+      // Before the old world's dispose releases its programs, and before the next world builds.
+      pinPrograms();
       leaving = from.handle.batch;
       deps.unbind();
       generation += 1;

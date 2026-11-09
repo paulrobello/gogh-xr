@@ -41,6 +41,40 @@ test('a live ?painting deep-links into its world over everything but the bench',
   expect(bootWorld(mode('?painting=starry-night'))?.world).toBe(starry.world);
 });
 
+test('every registry painting that is not live, and any unknown id, boots the gallery with one warning', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const comingSoon = PAINTINGS.filter((p) => p.status !== 'live').map((p) => p.id);
+    expect(comingSoon.length).toBeGreaterThan(0);
+    const ids = [...comingSoon, 'nope', 'starry-nigh', ''];
+    for (const id of ids) {
+      warn.mockClear();
+      const resolved = resolveBootMode(parseFlags(`?painting=${id}`), livePainting);
+      expect(resolved, id).toEqual({ kind: 'gallery' });
+      expect(bootWorld(resolved), id).toBe(GALLERY_WORLD);
+      expect(warn, id).toHaveBeenCalledTimes(id === '' ? 0 : 1);
+    }
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test('every live registry painting boots its own world, with no warning', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const live = PAINTINGS.filter((p) => p.status === 'live');
+    expect(live.length).toBeGreaterThan(0);
+    for (const entry of live) {
+      const resolved = resolveBootMode(parseFlags(`?painting=${entry.id}`), livePainting);
+      expect(resolved, entry.id).toEqual({ kind: 'painting', entry });
+      expect(bootWorld(resolved)?.id, entry.id).toBe(entry.id);
+    }
+    expect(warn).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
 test('an unknown or coming-soon ?painting warns and opens the gallery', () => {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   try {

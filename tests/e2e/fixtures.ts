@@ -52,6 +52,19 @@ export interface Xr {
 const GL_ERROR =
   /GL_INVALID_|WebGL: INVALID_|CONTEXT_LOST|THREE\.WebGL(Program|Shader)|Shader Error/;
 
+/**
+ * Stores the Auto quality level before the page loads. The default is a fixed level, which never
+ * judges frames, so a spec of the adaptive governor opts back in to Auto.
+ */
+export async function useAutoQuality(page: Page): Promise<void> {
+  await page.addInitScript(() =>
+    localStorage.setItem(
+      'gogh-xr.settings.v1',
+      JSON.stringify({ version: 3, settings: { qualityLevel: 'auto' } }),
+    ),
+  );
+}
+
 /** Drains the GL error queue; the pageErrors fixture separately fails on console GL errors. */
 export function glErrors(page: Page): Promise<number[]> {
   return page.evaluate(() => {

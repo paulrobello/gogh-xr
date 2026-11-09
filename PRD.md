@@ -29,7 +29,7 @@ The gallery has seven frames. *The Starry Night* is live. Six more hang as "comi
 
 ### Success criteria (v1)
 
-- **SC1.** Starry Night holds a median of 72 fps on Quest 3 in the default mode (`adaptive-72`, since 2026-11-07), measured with OVR Metrics Tool. In a 5-minute session that walks the whole diorama and flies the boundary, fewer than 1% of frames exceed the 13.9 ms budget. The `adaptive-90` option holds 90 fps against the 11.1 ms budget under the same rule.
+- **SC1.** (Paul, 2026-11-09: quality over frame rate. The default is a fixed quality level 5, not Auto, and the 72 fps bar below applies to Auto and to levels that fit the budget, not to the default.) Starry Night holds a median of 72 fps on Quest 3 in the default mode (`adaptive-72`, since 2026-11-07), measured with OVR Metrics Tool. In a 5-minute session that walks the whole diorama and flies the boundary, fewer than 1% of frames exceed the 13.9 ms budget. The `adaptive-90` option holds 90 fps against the 11.1 ms budget under the same rule.
 - **SC2.** A screenshot from the painter's spot matches the reference canvas closely enough that the owner accepts it side by side. The phase 2 plan sets the measured check.
 - **SC3.** The owner accepts all four locomotion modes and all four comfort options on the headset, with no comfort complaints in a 15-minute session.
 - **SC4.** The owner accepts the gallery-to-painting portal and the return path on the headset.
@@ -101,10 +101,11 @@ troika 0.53.1 is the latest release. 0.52.5 is pinned because it is proven on th
   - Reactive strokes are displaced away from up to three points (head and both controllers) with a falloff radius and a time-decayed wake. The points' recent positions are passed as uniforms.
   - There is no stored GPU simulation. A ping-pong wake texture is a later polish card, used only if the headset check finds the stateless wake flat.
 - **D8. Quality governor.**
+  - Paul, 2026-11-09: quality over frame rate. The default `qualityLevel` is a fixed 5 (the first five steps of the shed order, applied at session start and never adjusted), not Auto, because on Auto the governor keeps adjusting near level 5 and the strokes jump. Auto and every other level stay selectable in the settings panel.
   - At session start the app requests the quality's target rate (72 Hz for the default `adaptive-72` and for max beauty, 90 Hz for `adaptive-90`) via `XRSession.updateTargetFrameRate` and records `supportedFrameRates`. three r186 does not wrap these calls.
   - The governor reads the frame time and the GPU time where `EXT_disjoint_timer_query_webgl2` exists.
   - Under load it sheds in this order: visible stroke density, then framebuffer scale, then fixed foveation from the default 0 up to 0.5. P0.8 found 1.0 too blocky and measured no frame-time gain from foveation on the bench.
-  - After about 3 s of sustained overrun it drops to 72 Hz and shows a HUD notice.
+  - After about 3 s of sustained overrun it drops to 72 Hz and raises a notice on the notice stack. The perf HUD is neither shown by it nor carries it (Paul, 2026-11-08).
   - A "Max beauty" setting runs at 72 Hz with a higher stroke budget.
 - **D9. Locomotion.** Room-scale walking is native.
   - Left stick moves smoothly relative to the head.

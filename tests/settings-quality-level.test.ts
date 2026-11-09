@@ -6,6 +6,8 @@ import {
   loadSettings,
   lockedSettings,
   MAX_QUALITY_LEVEL,
+  MIGRATIONS,
+  parseSettings,
   SETTINGS_VERSION,
   type SettingsFlags,
   type SettingsStorage,
@@ -62,9 +64,9 @@ function store(flags: SettingsFlags = FLAGS) {
 }
 
 describe('the qualityLevel setting', () => {
-  test('defaults to auto', () => {
-    expect(DEFAULT_SETTINGS.qualityLevel).toBe('auto');
-    expect(sanitizeSettings({}).qualityLevel).toBe('auto');
+  test('defaults to a fixed level 5', () => {
+    expect(DEFAULT_SETTINGS.qualityLevel).toBe(5);
+    expect(sanitizeSettings({}).qualityLevel).toBe(5);
   });
 
   test.each([
@@ -76,29 +78,50 @@ describe('the qualityLevel setting', () => {
     [-2, 0],
     [MAX_QUALITY_LEVEL, MAX_QUALITY_LEVEL],
     [99, MAX_QUALITY_LEVEL],
-    [Number.NaN, 'auto'],
-    [Number.POSITIVE_INFINITY, 'auto'],
-    ['3', 'auto'],
-    ['fixed', 'auto'],
-    [null, 'auto'],
+    [Number.NaN, 5],
+    [Number.POSITIVE_INFINITY, 5],
+    ['3', 5],
+    ['fixed', 5],
+    [null, 5],
   ] as const)('sanitizes %s to %s', (value, expected) => {
     expect(sanitizeSettings({ qualityLevel: value }).qualityLevel).toBe(expected);
   });
 
   test('survives a save and load at the same settings version (no migration needed)', () => {
-    expect(SETTINGS_VERSION).toBe(2);
+    expect(SETTINGS_VERSION).toBe(3);
     for (const qualityLevel of ['auto', 0, 7, MAX_QUALITY_LEVEL] as const) {
       const storage = memoryStorage();
       expect(saveSettings({ ...DEFAULT_SETTINGS, qualityLevel }, storage)).toBe(true);
       expect(loadSettings(storage).settings.qualityLevel).toBe(qualityLevel);
     }
-    // A v2 blob saved before the field existed loads Auto, keeping the rest.
+    // A blob saved before the field existed loads the default level 5, keeping the rest.
     const storage = memoryStorage();
     storage.text = JSON.stringify({ version: 2, settings: { calm: 0.4 } });
     expect(loadSettings(storage)).toMatchObject({
-      settings: { calm: 0.4, qualityLevel: 'auto' },
+      settings: { calm: 0.4, qualityLevel: 5 },
       recovered: null,
     });
+  });
+
+  test('a stored v2 auto migrates to 5 once; an explicit auto or level at v3 is kept', () => {
+    const load = (version: number, qualityLevel: unknown) =>
+      parseSettings(JSON.stringify({ version, settings: { qualityLevel } })).settings.qualityLevel;
+    expect(load(2, 'auto')).toBe(5);
+    expect(load(1, 'auto')).toBe(5);
+    expect(load(2, 3)).toBe(3);
+    expect(load(2, 0)).toBe(0);
+    expect(load(3, 'auto')).toBe('auto');
+    expect(load(3, 9)).toBe(9);
+    expect(MIGRATIONS[2]?.({ qualityLevel: 'auto', calm: 1 })).toEqual({
+      qualityLevel: 5,
+      calm: 1,
+    });
+    expect(MIGRATIONS[2]?.({ qualityLevel: 4 })).toEqual({ qualityLevel: 4 });
+  });
+
+  test('a fresh install (nothing stored) boots at the fixed level 5', () => {
+    expect(loadSettings(memoryStorage())).toEqual({ settings: DEFAULT_SETTINGS, recovered: null });
+    expect(loadSettings(memoryStorage()).settings.qualityLevel).toBe(5);
   });
 
   test('?nogov wins: it locks the level, and the store refuses an edit', () => {
@@ -108,7 +131,7 @@ describe('the qualityLevel setting', () => {
     const locked = store({ ...FLAGS, nogov: true });
     expect(locked.isLocked('qualityLevel')).toBe(true);
     expect(locked.set('qualityLevel', 3)).toBe(false);
-    expect(locked.effective.qualityLevel).toBe('auto');
+    expect(locked.effective.qualityLevel).toBe(5);
     const open = store();
     expect(open.set('qualityLevel', 3)).toBe(true);
     expect(open.effective.qualityLevel).toBe(3);
@@ -224,8 +247,8 @@ describe('the quality level row', () => {
       const row = dom.element.querySelector('[data-control="qualityLevel"]');
       const input = row?.querySelector<HTMLInputElement>('input[type=range]');
       if (!row || !input) throw new Error('no quality level row');
-      expect(input).toMatchObject({ min: '-1', max: '16', step: '1', value: '-1' });
-      expect(row.querySelector('.value')?.textContent).toBe('Auto');
+      expect(input).toMatchObject({ min: '-1', max: '16', step: '1', value: '5' });
+      expect(row.querySelector('.value')?.textContent).toBe('5 · far 0.20');
       input.value = '3';
       input.dispatchEvent(new Event('input'));
       expect(settings.effective.qualityLevel).toBe(3);

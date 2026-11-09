@@ -13,7 +13,7 @@ import { clampCalm } from '../motion/clock';
 import type { GovernorMode } from '../render/governor';
 
 export const SETTINGS_KEY = 'gogh-xr.settings.v1';
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
 
 /**
  * 72 Hz (the default) or 90 Hz with the adaptive governor, or 72 Hz with the max-beauty budget
@@ -74,7 +74,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   standingHeight: DEFAULT_LOCOMOTION_SETTINGS.standingHeight,
   calm: 1,
   quality: 'adaptive-72',
-  qualityLevel: 'auto',
+  qualityLevel: 5,
   hud: false,
   musicVolume: 0.7,
   sfxVolume: 0.7,
@@ -103,6 +103,9 @@ export const MIGRATIONS: Migrations = Object.freeze({
   // adaptive-90 is almost always the old default rather than a choice.
   1: (settings) =>
     settings.quality === 'adaptive-90' ? { ...settings, quality: 'adaptive-72' } : settings,
+  // v3 makes a fixed level 5 the default. The store saves the whole object on any change, so a
+  // stored 'auto' is almost always the old default rather than a choice.
+  2: (settings) => (settings.qualityLevel === 'auto' ? { ...settings, qualityLevel: 5 } : settings),
 });
 
 export type SettingsStorage = Pick<Storage, 'getItem' | 'setItem'>;

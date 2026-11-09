@@ -17,6 +17,7 @@ import {
   PlaneGeometry,
   Quaternion,
   Scene,
+  ShaderMaterial,
   type Texture,
   Vector3,
   type WebGLRenderer,
@@ -69,15 +70,19 @@ interface FakeWorld extends LiveWorld {
   disposed: boolean;
 }
 
+/** A material's dispose as three does it: one use less of the program it draws with. */
+type ReleasePrograms = (root: Object3D) => void;
+
 /**
  * A world with one textured mesh and a batch of chunks of these stroke counts (none by default),
- * added to `scene` as a build would.
+ * added to `scene` as a build would. Its dispose releases its materials' programs.
  */
 function fakeWorld(
   id: string,
   scene: Scene,
   log: string[],
   counts: readonly number[] = [],
+  release: ReleasePrograms = () => {},
 ): FakeWorld {
   const root = new Group();
   const map = new DataTexture(new Uint8Array(4), 1, 1);
@@ -104,6 +109,7 @@ function fakeWorld(
       dispose: () => {
         log.push(`dispose ${id}`);
         world.disposed = true;
+        release(root);
         root.removeFromParent();
         scene.background = found;
       },
@@ -126,6 +132,8 @@ function raster(): Raster {
 
 interface Rig {
   readonly switcher: ReturnType<typeof createSwitcher>;
+  /** What `renderer.properties.get` returns for each material. */
+  readonly materialProps: Map<object, Record<string, unknown>>;
   readonly camera: PerspectiveCamera;
   readonly scene: Scene;
   readonly rig: Group;
@@ -188,7 +196,26 @@ function setup(
   const entered: string[] = [];
   const notices = createNoticeQueue();
   const slicer = createSlicer(6);
+  const materialProps = new Map<object, Record<string, unknown>>();
+  const release: ReleasePrograms = (root) =>
+    root.traverse((object) => {
+      const material = (object as { material?: object }).material;
+      const program = material
+        ? (materialProps.get(material)?.currentProgram as { usedTimes: number } | undefined)
+        : undefined;
+      if (program) program.usedTimes -= 1;
+    });
   const renderer = {
+    properties: {
+      get: (material: object) => {
+        let props = materialProps.get(material);
+        if (!props) {
+          props = {};
+          materialProps.set(material, props);
+        }
+        return props;
+      },
+    },
     compileAsync: async (object: Object3D) => {
       calls.compile += 1;
       compiled.push(object);
@@ -215,7 +242,7 @@ function setup(
       const gate = gates.get(id);
       if (gate) await gate;
       if (failing.has(id)) throw new Error(`no world for ${id}`);
-      const world = fakeWorld(id, scene, log, chunkCounts.get(id));
+      const world = fakeWorld(id, scene, log, chunkCounts.get(id), release);
       const ready = readies.get(id);
       if (ready) Object.assign(world.handle, { ready });
       worlds.set(id, world);
@@ -248,6 +275,7 @@ function setup(
   });
   const r: Rig = {
     switcher,
+    materialProps,
     camera,
     scene,
     rig,
@@ -280,7 +308,7 @@ function setup(
       state.calm = next;
     },
   };
-  const gallery = fakeWorld(GALLERY_ID, scene, log);
+  const gallery = fakeWorld(GALLERY_ID, scene, log, [], release);
   worlds.set(GALLERY_ID, gallery);
   switcher.adopt(gallery);
   log.length = 0;
@@ -312,6 +340,32 @@ const standing = (pose: WorldPose): [number, number, number] => [
 ];
 
 describe('createSwitcher', () => {
+  test('a trigger holds each program the old world draws with linked past its dispose, once for the session', async () => {
+    const r = setup();
+    const gallery = must(r.worlds.get(GALLERY_ID));
+    // Two of the gallery's materials share one program, which three counts as two uses.
+    const program = { usedTimes: 2 };
+    const a = new Mesh(new PlaneGeometry(), new MeshBasicMaterial());
+    const b = new Mesh(new PlaneGeometry(), new MeshBasicMaterial());
+    // A shader material's next build keys a new program, so its old one is never held.
+    const custom = { usedTimes: 1 };
+    const c = new Mesh(new PlaneGeometry(), new ShaderMaterial());
+    gallery.root.add(a, b, c);
+    r.materialProps.set(a.material, { currentProgram: program });
+    r.materialProps.set(b.material, { currentProgram: program });
+    r.materialProps.set(c.material, { currentProgram: custom });
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    expect(program.usedTimes).toBe(3);
+    await run(r);
+    // The gallery's dispose released its two uses; the pin, taken before it, keeps the program.
+    expect(gallery.disposed).toBe(true);
+    expect(program.usedTimes).toBe(1);
+    expect(custom.usedTimes).toBe(0);
+    expect(r.switcher.go(GALLERY_ID, 'return')).toBe(true);
+    await run(r);
+    expect(program.usedTimes).toBe(1);
+  });
+
   test('the gallery starts loading every live scan when it binds, before any trigger', async () => {
     const r = setup();
     expect(r.loadRaster).toHaveBeenCalledTimes(1);

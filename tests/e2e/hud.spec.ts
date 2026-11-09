@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { expect, glErrors, test, type Xr } from './fixtures';
+import { expect, glErrors, test, useAutoQuality, type Xr } from './fixtures';
 
 interface HudDiag {
   visible: boolean;
@@ -150,6 +150,7 @@ test('the HUD matches diag within one update while the governor sheds, and leave
   page,
   xr,
 }) => {
+  await useAutoQuality(page);
   const requests: string[] = [];
   page.on('request', (request) => requests.push(request.url()));
   // ?hz=90 selects adaptive-90, whose 72 Hz fallback brings the notice this test needs.
