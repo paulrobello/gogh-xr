@@ -42,6 +42,8 @@ import { createSettingsStore } from './settings/store';
 import { createEnterVrButton } from './ui/enter-vr';
 import { createHudToggle, type HudToggle, isHudToggleKey } from './ui/hud-toggle';
 import { clearNotices, showNotice } from './ui/notice';
+import { isNoticeKind, settingsRecoveredText } from './ui/notice-queue';
+import { createNotices } from './ui/notices';
 import { clearPanelPose } from './ui/panel-pose';
 import {
   createPanelToggle,
@@ -291,11 +293,37 @@ const targetFrameRateFor = (quality: QualityMode): number =>
 const nextTargetFrameRate = (): number => targetFrameRateFor(settingsStore.effective.quality);
 /** The quality the current or last XR session started with; the boot's until then. */
 let sessionQuality: QualityMode = settings.quality;
+/**
+ * The notices (P5.6): one queue, shown as DOM notices on the page and as the HUD's notice stack in
+ * XR, built on the first presenting frame with one queued. The bench builds none and keeps the
+ * plain DOM notice for its XR errors.
+ */
+const notices =
+  flags.bench === null
+    ? createNotices({
+        build: async () => {
+          const { startNoticeHud } = await import('./ui/notice-hud');
+          return startNoticeHud({
+            camera,
+            scene,
+            rig: locomotion.rig,
+            controller: (hand) => (hand === 'right' ? rightController : leftController)?.() ?? null,
+          });
+        },
+        onError: (error) => console.warn('notices failed to start', error),
+      })
+    : null;
+if (settingsRecovered)
+  notices?.raise('settings-recovered', settingsRecoveredText(settingsRecovered));
 const session = createSessionController({
   renderer,
   xr: navigator.xr,
-  notify: (message) => showNotice(message),
-  clearNotices: () => clearNotices(),
+  notify: (message) => (notices ? notices.raise('xr-error', message) : showNotice(message)),
+  // A successful entry clears only the entry error: a settings or rate notice stays for XR.
+  clearNotices: () => {
+    if (notices) notices.dismiss('xr-error');
+    else clearNotices();
+  },
   get targetFrameRate() {
     return nextTargetFrameRate();
   },
@@ -375,10 +403,11 @@ const strokes = createStrokeBinding({
               get targetHz() {
                 return nextTargetFrameRate();
               },
-              // The DOM notice is invisible in immersive mode, so the HUD carries it there, hidden
-              // or not.
+              // The notice shows on the HUD's notice stack in XR. It also shows the HUD, hidden or
+              // not, whose text carries it too (R16).
               notify: (message) => {
-                showNotice(message);
+                if (notices) notices.raise('rate-fallback', message);
+                else showNotice(message);
                 hud?.setVisible(true);
               },
             });
@@ -517,9 +546,11 @@ function renderFrame(time: number): void {
     // The desktop toggles on keydown below, so a press between two frames still counts.
     if (actions.menu && presenting) panel.toggle(true);
     const held = panel.frame(presenting, actions, time);
-    // A hand the panel holds selects and grips nothing else this frame, and a grabbing hand's stick
-    // turns, pitches, rolls or pushes the panel instead of moving the rig.
-    input.claim(held.left, held.right);
+    // After the panel's frame: a notice takes a trigger only off the panel (P5.6).
+    const took = notices?.frame(presenting, actions, held);
+    // A hand the panel or a notice holds selects and grips nothing else this frame, and a grabbing
+    // hand's stick turns, pitches, rolls or pushes the panel instead of moving the rig.
+    input.claim(held.left || Boolean(took?.left), held.right || Boolean(took?.right));
     input.holdSticks(held.sticks.left, held.sticks.right);
     // The guide's recovery: not while a grip holds anything.
     if (actions.recenter && !actions.grip.down && !held.left && !held.right) recenter();
@@ -616,6 +647,15 @@ if (flags.diag) {
     pending: settingsStore.pending,
   }));
   if (panel) registerDiag('panel', () => panel.diag());
+  if (notices) {
+    registerDiag('notices', () => notices.diag());
+    window.__goghNotice = (kind, text) => {
+      if (!isNoticeKind(kind)) return false;
+      if (kind === 'update-ready') notices.raiseUpdate(text);
+      else notices.raise(kind, text ?? kind);
+      return true;
+    };
+  }
   if (runLocomotion) {
     registerDiag('rig', () => locomotion.diag());
     registerDiag('reactive', () => ({

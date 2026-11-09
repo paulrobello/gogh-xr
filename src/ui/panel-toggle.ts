@@ -5,12 +5,17 @@
  * three and troika: `main.ts` passes the lazy imports as `buildXr` and `buildDom`.
  */
 import type { Actions, Hand } from '../xr/input';
+import type { PanelPose } from './panel-core';
 
 /** What the XR panel holds this frame: hands to claim, and the grabbing hands' sticks. */
 export interface PanelHold {
   readonly left: boolean;
   readonly right: boolean;
   readonly sticks: Readonly<Record<Hand, boolean>>;
+  /** Each hand's ray meets the panel this frame, so the panel owns its trigger (P5.6). */
+  readonly hits: Readonly<Record<Hand, boolean>>;
+  /** The open panel's pose, rig-local, read only; null while closed. */
+  readonly pose: Readonly<PanelPose> | null;
 }
 
 /** The built XR panel, as the toggle drives it (`settings-panel.ts`). */
@@ -72,6 +77,8 @@ const NONE: PanelHold = Object.freeze({
   left: false,
   right: false,
   sticks: Object.freeze({ left: false, right: false }),
+  hits: Object.freeze({ left: false, right: false }),
+  pose: null,
 });
 
 export function createPanelToggle(deps: PanelToggleDeps): PanelToggle {

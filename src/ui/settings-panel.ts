@@ -829,8 +829,20 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   });
   const handScratch: Record<Hand, ScratchHand> = { left: scratchHand(), right: scratchHand() };
   const hover: Record<Hand, string | null> = { left: null, right: null };
-  const none: PanelHold = { left: false, right: false, sticks: { left: false, right: false } };
-  const hold = { left: false, right: false, sticks: { left: false, right: false } };
+  const none: PanelHold = {
+    left: false,
+    right: false,
+    sticks: { left: false, right: false },
+    hits: { left: false, right: false },
+    pose: null,
+  };
+  const hold = {
+    left: false,
+    right: false,
+    sticks: { left: false, right: false },
+    hits: { left: false, right: false },
+    pose,
+  };
 
   function gather(actions: Actions): void {
     for (const hand of ['left', 'right'] as const) {
@@ -947,6 +959,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       hold.right = frame.claimed.right;
       hold.sticks.left = frame.hands.left.grabbing;
       hold.sticks.right = frame.hands.right.grabbing;
+      hold.hits.left = frame.hands.left.hit !== null;
+      hold.hits.right = frame.hands.right.hit !== null;
       return hold;
     },
     recenter() {

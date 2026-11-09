@@ -20,7 +20,18 @@ function container(doc: Document): HTMLElement {
   return el;
 }
 
-export function showNotice(message: string, doc: Document = document): HTMLElement {
+export interface NoticeOptions {
+  /** Marks the element, so `syncNotices` can find it again (`data-notice-kind`). */
+  kind?: string;
+  /** Called when the Dismiss button removes the notice. */
+  onDismiss?: () => void;
+}
+
+export function showNotice(
+  message: string,
+  doc: Document = document,
+  options: NoticeOptions = {},
+): HTMLElement {
   const notice = doc.createElement('div');
   notice.setAttribute('role', 'alert');
   Object.assign(notice.style, {
@@ -39,7 +50,11 @@ export function showNotice(message: string, doc: Document = document): HTMLEleme
   dismiss.type = 'button';
   dismiss.textContent = 'Dismiss';
   dismiss.setAttribute('aria-label', 'Dismiss notice');
-  dismiss.addEventListener('click', () => notice.remove());
+  if (options.kind) notice.dataset.noticeKind = options.kind;
+  dismiss.addEventListener('click', () => {
+    notice.remove();
+    options.onDismiss?.();
+  });
   notice.append(text, dismiss);
   container(doc).appendChild(notice);
   return notice;
@@ -47,4 +62,38 @@ export function showNotice(message: string, doc: Document = document): HTMLEleme
 
 export function clearNotices(doc: Document = document): void {
   doc.getElementById(CONTAINER_ID)?.replaceChildren();
+}
+
+/**
+ * Makes the page's notices match `notices` (newest first, the queue's `shown`): one element per
+ * kind, in that order, with its current text. Each Dismiss button calls `onDismiss` with its kind.
+ * Notices shown without a kind are left alone.
+ */
+export function syncNotices(
+  notices: readonly { kind: string; text: string }[],
+  onDismiss: (kind: string) => void,
+  doc: Document = document,
+): void {
+  // The container appears with the first notice, not on every boot.
+  if (notices.length === 0 && !doc.getElementById(CONTAINER_ID)) return;
+  const box = container(doc);
+  const existing = new Map<string, HTMLElement>();
+  for (const el of Array.from(box.children)) {
+    if (!(el instanceof HTMLElement)) continue;
+    const kind = el.dataset.noticeKind;
+    if (kind === undefined) continue;
+    if (notices.some((n) => n.kind === kind)) existing.set(kind, el);
+    else el.remove();
+  }
+  notices.forEach(({ kind, text }, index) => {
+    let el = existing.get(kind);
+    if (el) {
+      const span = el.firstElementChild;
+      if (span && span.textContent !== text) span.textContent = text;
+    } else {
+      el = showNotice(text, doc, { kind, onDismiss: () => onDismiss(kind) });
+    }
+    const at = box.children[index] ?? null;
+    if (at !== el) box.insertBefore(el, at);
+  });
 }

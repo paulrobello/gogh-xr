@@ -125,6 +125,17 @@ test('hz=90 at slow=40: sheds only foveation, fb scale and near density, undoes 
       return hud.visible && hud.built && (hud.text ?? '').includes(gov.notice ?? 'missing');
     })
     .toBe(true);
+  // The same notice reaches the notice queue and shows on the XR notice stack (P5.6).
+  await expect
+    .poll(async () => {
+      const notices = (await xr.diag()).notices as {
+        queue: { kind: string; text: string }[];
+        view: { visible: boolean } | null;
+      };
+      const queued = notices.queue.some((n) => n.kind === 'rate-fallback' && n.text === gov.notice);
+      return queued && notices.view?.visible === true;
+    })
+    .toBe(true);
   // The busy-wait shows in the XR frame intervals.
   expect(gov.meanMs ?? 0).toBeGreaterThan(14);
   // IWER implements updateTargetFrameRate and reports the new nominal rate.
