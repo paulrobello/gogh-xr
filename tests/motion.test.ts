@@ -41,11 +41,11 @@ describe('sky wrap boot default', () => {
   test('main.ts sets the wave wrap, DEFAULT_SKY_WRAP, unless ?wrap names another', () => {
     expect(DEFAULT_SKY_WRAP).toBe('wave');
     expect(mainTs).toContain('setSkyWrap(flags.wrap ?? DEFAULT_SKY_WRAP);');
-    // One setter, which also holds the sky gate open at calm 0 under wheel, and the A/B group's
-    // setWrap is that setter.
+    // One setter, which also holds the sky gate open at calm 0 under wheel and wheelflow, and the
+    // A/B group's setWrap is that setter.
     expect(mainTs.match(/motionVariants\.setWrap\(/g)).toHaveLength(1);
     expect(mainTs).toContain(
-      "motionClock.setHoldMask(wrap === 'wheel' ? 1 << STROKE_LAYER.sky : 0);",
+      "motionClock.setHoldMask(wrap === 'wheel' || wrap === 'wheelflow' ? 1 << STROKE_LAYER.sky : 0);",
     );
     expect(mainTs).toContain('setWrap: setSkyWrap,');
     expect(mainTs).not.toMatch(/setWrap\([^)]*'base'/);

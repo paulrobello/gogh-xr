@@ -20,7 +20,10 @@ import { expect, glErrors, test, type Xr } from './fixtures';
 test.use({ viewport: { width: CAPTURE_SIZE.width, height: CAPTURE_SIZE.height } });
 
 const WORLD = 'painting=starry-night&seed=1&shot&nogov';
-/** The most bare share the coverage sweep allows wheel and stream at any pose and time (P2-A3). */
+/**
+ * The most bare share the coverage sweep allows wheel, stream and wheelflow at any pose and time
+ * (P2-A3).
+ */
 const MAX_BARE = 0.005;
 
 /**
@@ -56,6 +59,7 @@ interface WrapDiag {
   small: number;
   returning: number;
   wheeled: number;
+  streaming: number;
 }
 
 async function bootWorld(xr: Xr, query: string): Promise<void> {
@@ -121,6 +125,7 @@ test('wheel and stream: selected by ?wrap and by the A/B button, the rest sky at
     'wrap=wheel&noanim&motiont=3.7',
     'wrap=stream&noanim',
     'wrap=stream&calm=0&motiont=3.7',
+    'wrap=wheelflow&noanim',
   ]) {
     await bootWorld(xr, `painter&${extra}`);
     await hideHud(page, xr);
@@ -149,12 +154,17 @@ test('wheel and stream: selected by ?wrap and by the A/B button, the rest sky at
     `[e2e] sky wheel calm 0 hold: ${differ} of ${width * height} pixels differ from calm 1 sky-only`,
   );
   expect(differ, 'calm 0 holds exactly the calm 1 pose at the pinned time').toBe(0);
+  // Wheelflow holds its discs at calm 0 too, the same setHoldMask.
+  await bootWorld(xr, 'painter&nohalo&wrap=wheelflow&calm=0&motiont=3.7');
+  await hideHud(page, xr);
+  expect((await rawPixels(page)).equals(rest), 'calm 0 under wheelflow holds its pose').toBe(false);
+  expect(((await xr.diag()).motion as { hold: number }).hold).toBeGreaterThan(0);
 
   await bootWorld(xr, 'painter&motiont=3.7');
   const wave = await rawPixels(page);
   const shots: Record<string, Buffer> = {};
   const reports: string[] = [];
-  for (const wrap of ['wheel', 'stream'] as const) {
+  for (const wrap of ['wheel', 'stream', 'wheelflow'] as const) {
     await bootWorld(xr, `painter&motiont=3.7&wrap=${wrap}`);
     await hideHud(page, xr);
     const diag = await xr.diag();
@@ -165,6 +175,12 @@ test('wheel and stream: selected by ?wrap and by the A/B button, the rest sky at
     // No arc loop: nothing shrinks and nothing turns back.
     expect([w.small, w.returning]).toEqual([0, 0]);
     expect(w.wheeled).toBeGreaterThan(0);
+    if (wrap === 'wheel') expect(w.streaming).toBe(0);
+    if (wrap === 'stream') expect(w.streaming).toBe(w.drawn);
+    if (wrap === 'wheelflow') {
+      expect(w.streaming).toBeGreaterThan(0);
+      expect(w.streaming + w.wheeled).toBeLessThanOrEqual(w.drawn);
+    }
     reports.push(`${wrap} ${JSON.stringify(w)}`);
     shots[wrap] = await rawPixels(page);
     expect(shots[wrap].equals(wave), `${wrap} moves the sky its own way`).toBe(false);
@@ -172,16 +188,19 @@ test('wheel and stream: selected by ?wrap and by the A/B button, the rest sky at
   }
   console.log(`[e2e] sky wheel/stream wrap diag: ${reports.join('; ')}`);
 
-  // By the A/B button: one press from wave reaches wheel and two reach stream, from one boot.
+  // By the A/B button: one press from wave reaches wheel, two reach stream and five wheelflow,
+  // from one boot.
   await bootWorld(xr, 'painter&motiont=3.7&ab=wrap');
   const ab = (await xr.diag()).ab as { variants: string[]; variant: string };
-  expect(ab.variants).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong']);
+  expect(ab.variants).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong', 'wheelflow']);
   expect(ab.variant).toBe('wave');
   const programs = (await xr.diag()).renderer.programs;
-  for (const [index, variant] of ['wheel', 'stream'].entries()) {
+  for (const [index, variant] of ab.variants.entries()) {
+    if (index === 0) continue;
     await pressV(page, xr);
+    if (!(variant in shots)) continue;
     const now = await xr.diag();
-    expect(now.ab, variant).toMatchObject({ index: index + 1, variant });
+    expect(now.ab, variant).toMatchObject({ index, variant });
     expect((now.variants as { wrap: string }).wrap).toBe(variant);
     expect((now.wrap as WrapDiag).wrap).toBe(variant);
     // A switch links no program.
@@ -373,6 +392,105 @@ test('stream: every stroke keeps its footprint while its paint streams', async (
   expect(await glErrors(page)).toEqual([]);
 });
 
+test('wheelflow: the discs turn as under wheel, and outside them every footprint holds while the paint streams', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(300_000);
+  const { width, height } = CAPTURE_SIZE;
+  // Deep inside the big central disc, out of reach of any streaming stroke, wheelflow draws wheel.
+  const left = WHEELS[0];
+  const core = (x: number, y: number): boolean =>
+    Math.hypot(x - left.centre[0] * width, y - left.centre[1] * height) / width < 0.5 * left.radius;
+  await bootWorld(xr, 'painter&nohalo&noanim');
+  await hideHud(page, xr);
+  const rest = await rawPixels(page);
+  await bootWorld(xr, 'painter&nohalo&wrap=wheel&motiont=3.7&motionlayers=sky');
+  await hideHud(page, xr);
+  const wheel = await rawPixels(page);
+  await bootWorld(xr, 'painter&nohalo&wrap=wheelflow&motiont=3.7&motionlayers=sky');
+  await hideHud(page, xr);
+  const flow = await rawPixels(page);
+  let same = 0;
+  let turned = 0;
+  let inside = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!core(x, y)) continue;
+      inside++;
+      const i = 4 * (y * width + x);
+      if (flow[i] === wheel[i] && flow[i + 1] === wheel[i + 1] && flow[i + 2] === wheel[i + 2]) {
+        same++;
+      }
+      if (flow[i] !== rest[i] || flow[i + 1] !== rest[i + 1] || flow[i + 2] !== rest[i + 2]) {
+        turned++;
+      }
+    }
+  }
+  console.log(
+    `[e2e] sky wheelflow disc: ${same} of ${inside} core pixels as wheel, ${turned} off the rest sky`,
+  );
+  expect(same, 'the disc core draws as under wheel').toBe(inside);
+  expect(turned, 'the disc has turned').toBeGreaterThan(0.2 * inside);
+
+  // Outside every disc and its seam the footprint is fixed and the paint moves. The turning paint
+  // reaches past each wheel's members' edge (9.30°, 2.86°, 3.87°, 4.73°): a member dome stroke to
+  // the cap, 1.52° out, and a member haze quad about 1.9° out. So each exclusion is the edge plus
+  // about 2.2°, as a multiple of the edge.
+  const reach = [1.25, 1.8, 1.6, 1.5];
+  const sky = await painterSkyMask(width, height);
+  const outside = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      outside[i] =
+        sky[i] &&
+        WHEELS.every(
+          (w, k) =>
+            Math.hypot(x - w.centre[0] * width, y - w.centre[1] * height) / width >
+            reach[k] * w.radius,
+        )
+          ? 1
+          : 0;
+    }
+  }
+  await bootWorld(xr, 'coverage&painter&wrap=wheelflow&motiont=0.3&motionlayers=sky');
+  await hideHud(page, xr);
+  let reference: Uint8Array | null = null;
+  let previous: Buffer | null = null;
+  const changes: string[] = [];
+  // Each frame's paint is compared with the previous frame's, so consecutive times must sit at
+  // different points of wheelflow's 3.2 s loop: their phases differ by at least a quarter loop
+  // (0.25, 0.28, 0.28, 0.25 here) and stay clear of a half loop, where the two taps swap and the
+  // tone repeats. 3597.3 s is near the uTime wrap at a phase of 0.156 (3599.7 s would repeat 2.9 s).
+  for (const time of [0.3, 1.1, 2.0, 2.9, 3597.3]) {
+    await motionT(page, xr, time);
+    const now = await bareMask(page);
+    reference ??= now.mask;
+    let differ = 0;
+    for (let i = 0; i < now.mask.length; i++) {
+      if (outside[i]) differ += now.mask[i] !== reference[i] ? 1 : 0;
+    }
+    expect(differ, `wheelflow footprint outside the discs at motiont ${time}`).toBe(0);
+    const pixels = await rawPixels(page);
+    if (previous) {
+      let moved = 0;
+      let count = 0;
+      for (let i = 0; i < outside.length; i++) {
+        if (!outside[i]) continue;
+        count++;
+        if (pixels[4 * i] !== previous[4 * i] || pixels[4 * i + 1] !== previous[4 * i + 1]) moved++;
+      }
+      changes.push(`${time}: ${((moved / count) * 100).toFixed(2)}% of outside sky pixels changed`);
+      // The paint outside the discs does move.
+      expect(moved).toBeGreaterThan(0.01 * count);
+    }
+    previous = pixels;
+  }
+  console.log(`[e2e] sky wheelflow footprint fixed outside the discs; ${changes.join(', ')}`);
+  expect(await glErrors(page)).toEqual([]);
+});
+
 /** regions.png ids of the sky, its stars and the moon (REGION in src/demo/canvas/field.ts). */
 const SKY_REGION_IDS = [0, 1, 2];
 
@@ -418,7 +536,7 @@ async function visit(page: Page, xr: Xr, { position, yaw, pitch }: CoveragePose)
   await xr.waitFrames(3);
 }
 
-test('coverage: the bare share at 8 motion times for wave, base, wheel and stream, at the painter view and two sky-heavy poses, and at the wheel seams', async ({
+test('coverage: the bare share at 8 motion times for wave, base, wheel, stream and wheelflow, at the painter view and two sky-heavy poses, and at the wheel seams', async ({
   page,
   xr,
 }) => {
@@ -429,9 +547,10 @@ test('coverage: the bare share at 8 motion times for wave, base, wheel and strea
     return pose;
   });
   // One loop per wrap at 8 evenly spaced times: wave and base 8 s, stream its 2 s loop, and wheel
-  // a whole turn of the big central wheel.
+  // and wheelflow a whole turn of the big central wheel.
   const loopTimes = (wrap: string): number[] => {
-    const period = wrap === 'stream' ? 2 : wrap === 'wheel' ? WHEELS[0].period : 8;
+    const period =
+      wrap === 'stream' ? 2 : wrap === 'wheel' || wrap === 'wheelflow' ? WHEELS[0].period : 8;
     return Array.from({ length: 8 }, (_, i) => ((i + 0.5) * period) / 8);
   };
   const rows: { wrap: string; view: string; shares: number[] }[] = [];
@@ -446,7 +565,7 @@ test('coverage: the bare share at 8 motion times for wave, base, wheel and strea
     }
     return bare / count;
   };
-  for (const wrap of ['wave', 'base', 'wheel', 'stream']) {
+  for (const wrap of ['wave', 'base', 'wheel', 'stream', 'wheelflow']) {
     const times = loopTimes(wrap);
     const before = load();
     await bootWorld(xr, `coverage&painter&motiont=${times[0]}&wrap=${wrap}`);
@@ -489,7 +608,7 @@ test('coverage: the bare share at 8 motion times for wave, base, wheel and strea
   }
   // The whole-frame rows carry the P2-A3 limit; the sky-only and seam rows are reported.
   for (const row of rows) {
-    if (row.wrap !== 'wheel' && row.wrap !== 'stream') continue;
+    if (row.wrap !== 'wheel' && row.wrap !== 'stream' && row.wrap !== 'wheelflow') continue;
     if (row.view.startsWith('painter,')) continue;
     const times = loopTimes(row.wrap);
     row.shares.forEach((s, i) => {

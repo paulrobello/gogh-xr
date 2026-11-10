@@ -30,7 +30,7 @@ describe('AB_GROUPS', () => {
     expect(AB_GROUPS.calm).toEqual(['1', '0.5', '0.25']);
     // Wave first: the default wrap since 2026-11-08. Wheel and stream next, so one press from wave
     // reaches wheel and two reach stream.
-    expect(AB_GROUPS.wrap).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong']);
+    expect(AB_GROUPS.wrap).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong', 'wheelflow']);
     expect(AB_GROUPS.vtx).toEqual(['base', 'fewer', 'smaller', 'sparse', 'hoist']);
     expect(Object.keys(AB_GROUPS)).toEqual(['shimmer', 'zdiag-all', 'halo', 'calm', 'wrap', 'vtx']);
   });

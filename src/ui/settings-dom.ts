@@ -6,7 +6,7 @@
  */
 import type { GovernorMode } from '../render/governor';
 import type { HudLive } from '../settings/apply';
-import type { Settings } from '../settings/schema';
+import { foveationPin, type Settings } from '../settings/schema';
 import type { SettingsStore } from '../settings/store';
 import {
   activeSegment,
@@ -174,7 +174,7 @@ export function createSettingsDom(deps: SettingsDomDeps): SettingsDom {
         setValue();
         input.setAttribute('aria-valuetext', value.textContent ?? '');
         if (field === 'qualityLevel' && !off) {
-          el.title = `${helpFor(def)}. Now: ${qualityLevelSummary(store.effective.qualityLevel, mode)}`;
+          el.title = `${helpFor(def)}. Now: ${qualityLevelSummary(store.effective.qualityLevel, mode, foveationPin(store.effective))}`;
         }
       });
     } else {

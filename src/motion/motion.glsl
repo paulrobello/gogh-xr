@@ -22,9 +22,10 @@ uniform vec4 uWake[REACTIVE_WAKE_SAMPLES];
 uniform vec3 uReactiveCentre;
 uniform vec3 uReactiveHalf;
 // The sky wrap A/B variant (src/motion/variants.ts): SKY_WRAP_WAVE (0, the default),
-// SKY_WRAP_WHEEL, SKY_WRAP_STREAM, SKY_WRAP_BASE or SKY_WRAP_PINGPONG. Read in skyMotion, so a moving sky vertex
-// under the default wave pays one compare, base two, pingpong three, wheel four and stream four, and
-// on haze vertices once in skyHazeWheel and, off wheel, once in motionReach.
+// SKY_WRAP_WHEEL, SKY_WRAP_STREAM, SKY_WRAP_BASE, SKY_WRAP_PINGPONG or SKY_WRAP_WHEELFLOW. Read in
+// skyMotion, so a moving sky vertex under the default wave pays one compare, base two, pingpong
+// three, wheel four, and stream and wheelflow five, and on haze vertices up to twice in
+// skyHazeWheel and, off wheel, up to twice in motionReach.
 uniform uint uSkyWrap;
 // The wave wrap's waves per turn (SKY_WAVE_TURNS in sky-swirl.ts, ?waveturns), read only on the
 // wave branch.
@@ -176,6 +177,8 @@ Motion skyWheelMotion(
 // back over SKY_WHEEL_HAZE_FEATHER of clear gap, judged at the full size like skyLightThin, so a
 // drawn quad never crosses. The dome behind is covered, so a thinned haze stroke leaves no bare sky.
 // Its own wheel is skipped: a turn about its axis keeps the stroke's angle to it.
+// Under wheelflow it does the same, but returns true only for a haze stroke in a wheel: a still one
+// streams like the dome behind it (skyMotion), its thin already applied here.
 bool skyHazeWheel(
   vec3 p,
   float halfExtent,
@@ -185,7 +188,7 @@ bool skyHazeWheel(
   inout vec3 rigid,
   inout float thin
 ) {
-  if (uSkyWrap != SKY_WRAP_WHEEL) return false;
+  if (uSkyWrap != SKY_WRAP_WHEEL && uSkyWrap != SKY_WRAP_WHEELFLOW) return false;
   vec3 d = p - SKY_EYE;
   float inv = inversesqrt(dot(d, d));
   vec3 dir = d * inv;
@@ -202,29 +205,102 @@ bool skyHazeWheel(
     float theta = acos(clamp(dot(SKY_VORTEX_AXIS[j].xyz, seen), -1.0, 1.0));
     thin *= smoothstep(0.0, SKY_WHEEL_HAZE_FEATHER, theta - h - edge);
   }
-  return true;
+  return member >= 0 || uSkyWrap == SKY_WRAP_WHEEL;
 }
 
-// Matches skyStreamPhase in sky-swirl.ts: the stream wrap's loop fraction from the stroke's phase
-// byte, and the sign of its long axis l along its flow v = omega × d, the way its paint streams
-// (+1 also where the flow is still), packed with the brush as sign × (1 + brush + f), which
-// stroke.frag.glsl decodes from vStream. 0 is no stream.
-float skyStream(vec3 v, vec3 l, uint brush, float phase, float t) {
-  float f = fract(t * SKY_STREAM_INV_PERIOD + phase);
-  return (dot(l, v) < 0.0 ? -1.0 : 1.0) * (1.0 + float(brush) + f);
+// Matches skyWheelFlowShift in sky-swirl.ts: under wheelflow, -1 for a stroke at unit direction
+// dir inside a wheel, which turns as under wheel (skyWheelMotion), else the share of the stream's
+// shift it draws, so the paint meets each turning disc without a seam. Per wheel, a smoothstep in
+// 1 - c·dir from the members' edge (SKY_WHEEL_CORE) out over SKY_WHEELFLOW_BAND
+// (SKY_WHEELFLOW_OUTER), and near the disc the alignment of its field velocity v (omega × dir, at
+// unit distance) with the disc's rim velocity (SKY_WHEELFLOW_SENSE c × dir): 0 opposed or
+// crossways, 1 from SKY_WHEELFLOW_ALIGN, with the speed floored at SKY_WHEELFLOW_MIN_SPEED2 so a
+// stagnation point fades to still, in full out to SKY_WHEELFLOW_ALIGN_INNER and eased back to 1 by
+// SKY_WHEELFLOW_ALIGN_OUTER. Only the nearest wheel's alignment counts, by chord margin past its
+// members' edge, blended with the next nearest's over SKY_WHEELFLOW_ALIGN_BLEND of margin difference:
+// the two central wheels turn the same way and oppose across their gap, and the blend keeps the
+// switch between them without a seam. Then, between the two central wheels' axes, the gap fade: 0
+// on the great circle through them, 1 at SKY_WHEELFLOW_GAP_SIN from it, where their fields cancel.
+// Per vertex: a dot, a compare, a square root and a smoothstep per wheel, the alignment's cross
+// product, dots and inverse square root for a stroke near a disc, and three dots and a smoothstep
+// for the gap.
+const float SKY_WHEELFLOW_OUTER[SKY_VORTEX_COUNT] = SKY_WHEELFLOW_OUTERS;
+const float SKY_WHEELFLOW_ALIGN_INNER[SKY_VORTEX_COUNT] = SKY_WHEELFLOW_ALIGN_INNERS;
+const float SKY_WHEELFLOW_ALIGN_OUTER[SKY_VORTEX_COUNT] = SKY_WHEELFLOW_ALIGN_OUTERS;
+const float SKY_WHEELFLOW_SENSE[SKY_VORTEX_COUNT] = SKY_WHEELFLOW_SENSES;
+float skyWheelFlowShift(vec3 dir, vec3 v) {
+  float shift = 1.0;
+  float near1 = 1e9;
+  float near2 = 1e9;
+  float align1 = 1.0;
+  float align2 = 1.0;
+  float speed2 = max(dot(v, v), SKY_WHEELFLOW_MIN_SPEED2);
+  for (int i = 0; i < SKY_VORTEX_COUNT; i++) {
+    vec3 c = SKY_VORTEX_AXIS[i].xyz;
+    float x = 1.0 - dot(c, dir);
+    if (x < SKY_WHEEL_CORE[i]) return -1.0;
+    shift *= smoothstep(SKY_WHEEL_CORE[i], SKY_WHEELFLOW_OUTER[i], x);
+    float margin = sqrt(2.0 * x) - sqrt(2.0 * SKY_WHEEL_CORE[i]);
+    if (margin < near2) {
+      float align = 1.0;
+      if (x < SKY_WHEELFLOW_ALIGN_OUTER[i]) {
+        vec3 rim = cross(c, dir);
+        float cosine = SKY_WHEELFLOW_SENSE[i] * dot(rim, v) *
+          inversesqrt(max(dot(rim, rim) * speed2, 1e-30));
+        align = mix(
+          smoothstep(0.0, SKY_WHEELFLOW_ALIGN, cosine),
+          1.0,
+          smoothstep(SKY_WHEELFLOW_ALIGN_INNER[i], SKY_WHEELFLOW_ALIGN_OUTER[i], x)
+        );
+      }
+      if (margin < near1) {
+        near2 = near1;
+        align2 = align1;
+        near1 = margin;
+        align1 = align;
+      } else {
+        near2 = margin;
+        align2 = align;
+      }
+    }
+  }
+  shift *= mix(
+    align2,
+    align1,
+    smoothstep(-SKY_WHEELFLOW_ALIGN_BLEND, SKY_WHEELFLOW_ALIGN_BLEND, near2 - near1)
+  );
+  if (dot(dir, SKY_WHEELFLOW_GAP_FROM_A) > 0.0 && dot(dir, SKY_WHEELFLOW_GAP_FROM_B) > 0.0) {
+    shift *= smoothstep(0.0, SKY_WHEELFLOW_GAP_SIN, abs(dot(dir, SKY_WHEELFLOW_GAP_NORMAL)));
+  }
+  return shift;
+}
+
+// Matches skyStreamPhase and skyStreamPack in sky-swirl.ts: the stream wrap's loop fraction from
+// the stroke's phase byte at invPeriod loops per second, and the sign of its long axis l along its
+// flow v = omega × d, the way its paint streams (+1 also where the flow is still), packed with the
+// brush and the fade level of shift, the share of the shift it draws (1 under stream), as
+// sign × (1 + brush + BRUSH_COUNT level + f), which stroke.frag.glsl decodes from vStream. 0 is no
+// stream.
+float skyStream(vec3 v, vec3 l, uint brush, float phase, float t, float invPeriod, float shift) {
+  float f = fract(t * invPeriod + phase);
+  float level = floor((1.0 - shift) * SKY_STREAM_FADE_LEVELS + 0.5);
+  return (dot(l, v) < 0.0 ? -1.0 : 1.0) *
+    (1.0 + float(brush) + float(BRUSH_COUNT) * level + f);
 }
 
 // Matches skySwirl in sky-swirl.ts. The field is one rotation vector about SKY_EYE: each vortex
 // turns at gamma / max(chord², core²) about its axis (Rankine, no square root), plus the drift about
 // the vertical. The stroke sweeps a short arc of it per SKY_SWIRL_PERIOD: forward and back in
 // bands under the default wave, and under base forward only, shrinking to nothing at the wrap.
-// Under wheel the cores turn rigidly and the rest holds still (skyWheelMotion), and under stream
-// every stroke holds still and hands its loop to the fragment shader (skyStream). l and s are the
+// Under wheel the cores turn rigidly and the rest holds still (skyWheelMotion), under stream
+// every stroke holds still and hands its loop to the fragment shader (skyStream), and under
+// wheelflow the cores turn as under wheel and the rest stream, faded at the wheels
+// (skyWheelFlowShift). l and s are the
 // stroke's normal and long and short axes, which only wheel turns, and brush its brush index
 // (iMeta.x). rigid is the wheel's calm-free offset, 0 unless the wheel branch
 // sets it, and stream is vStream, 0 unless the stream branch sets it.
-// The default wave is the first compare, so it pays one, base two, pingpong three, and wheel and
-// stream four. SKY_VORTEX_COUNT is a handful (4): each vortex costs a dot, a max, a divide and a
+// The default wave is the first compare, so it pays one, base two, pingpong three, wheel four,
+// and stream and wheelflow five. SKY_VORTEX_COUNT is a handful (4): each vortex costs a dot, a max, a divide and a
 // multiply-add per vertex.
 #ifdef VTX_HOIST
 // The `vtx` group's hoist arm (src/render/strokes/vertex-arms.ts): the same motion from the
@@ -255,11 +331,17 @@ Motion skyMotion(
       0.0
     );
   } else if (uSkyWrap != SKY_WRAP_PINGPONG) {
-    if (uSkyWrap == SKY_WRAP_WHEEL) {
-      vec3 d = p - SKY_EYE;
-      return skyWheelMotion(d, d * inversesqrt(dot(d, d)), n, l, s, t, rigid);
+    vec3 d = p - SKY_EYE;
+    float inverseDistance = inversesqrt(dot(d, d));
+    vec3 dir = d * inverseDistance;
+    if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion(d, dir, n, l, s, t, rigid);
+    if (uSkyWrap == SKY_WRAP_STREAM) {
+      stream = skyStream(iSkyField.xyz, l, brush, phase, t, SKY_STREAM_INV_PERIOD, 1.0);
+    } else {
+      float shift = skyWheelFlowShift(dir, iSkyField.xyz * inverseDistance);
+      if (shift < 0.0) return skyWheelMotion(d, dir, n, l, s, t, rigid);
+      stream = skyStream(iSkyField.xyz, l, brush, phase, t, SKY_WHEELFLOW_INV_PERIOD, shift);
     }
-    stream = skyStream(iSkyField.xyz, l, brush, phase, t);
     return Motion(vec3(0.0), 0.0, 0.0, 0.0);
   }
   float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
@@ -301,7 +383,14 @@ Motion skyMotion(
   }
   if (uSkyWrap == SKY_WRAP_PINGPONG) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);
   if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion(d, dir, n, l, s, t, rigid);
-  stream = skyStream(cross(omega, d), l, brush, phase, t);
+  if (uSkyWrap == SKY_WRAP_STREAM) {
+    stream = skyStream(cross(omega, d), l, brush, phase, t, SKY_STREAM_INV_PERIOD, 1.0);
+    return Motion(vec3(0.0), 0.0, 0.0, 0.0);
+  }
+  vec3 v = cross(omega, dir);
+  float shift = skyWheelFlowShift(dir, v);
+  if (shift < 0.0) return skyWheelMotion(d, dir, n, l, s, t, rigid);
+  stream = skyStream(v, l, brush, phase, t, SKY_WHEELFLOW_INV_PERIOD, shift);
   return Motion(vec3(0.0), 0.0, 0.0, 0.0);
 }
 #endif
@@ -519,10 +608,13 @@ Motion motionOffset(
 // from rest, calm included. Only called behind motionGate, for the haze's sky-light thin, so only
 // the sky layer's reach is here: no star or moon stroke carries SKY_LIGHT_CULL_FLAG, and their
 // rings stay inside the cones' rim (sky-rings.ts). The haze is the only sky stroke with that flag.
-// It holds still under stream, so its reach is 0 there. Never called under wheel, where the thin is
-// judged at the turned centre instead (skyHazeWheel).
+// It holds still under stream and wheelflow, so its reach is 0 there. Never called under wheel, or
+// for a haze stroke in a wheel under wheelflow, where the thin is judged at the turned centre
+// instead (skyHazeWheel).
 float motionReach(uint layer, vec3 p) {
-  if (layer != STROKE_LAYER_SKY || uSkyWrap == SKY_WRAP_STREAM) return 0.0;
+  if (layer != STROKE_LAYER_SKY || uSkyWrap == SKY_WRAP_STREAM || uSkyWrap == SKY_WRAP_WHEELFLOW) {
+    return 0.0;
+  }
   return uCalm * SKY_SWIRL_MAX_ANGLE * length(p - SKY_EYE);
 }
 

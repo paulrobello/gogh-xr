@@ -94,9 +94,9 @@ export interface Flags {
    */
   readonly densityLaw: DensityLaw | null;
   /**
-   * `?fov=0|0.5|1`: testing only, honoured in production like `?slow`. The fixed foveation an XR
-   * session starts at (src/xr/session.ts), in place of `FOVEATION`. null (absent or any other value)
-   * keeps the default. A running governor still sets its own foveation.
+   * `?fov=0|0.5|1`: honoured in production like `?slow`. Pins the `foveation` setting for the
+   * session (src/settings/schema.ts), which wins over the governor's foveation; the bench starts its
+   * session at it. null (absent or any other value) leaves the setting.
    */
   readonly fov: Fov | null;
   /** `?mute`: the audio mixer's master gain starts at 0 (src/audio/mixer.ts). The buses still run. */

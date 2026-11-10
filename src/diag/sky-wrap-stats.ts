@@ -12,11 +12,14 @@ import {
   skyCounterFlow,
 } from '../motion/sky-counter-flow';
 import {
+  SKY_STREAM_FADE_LEVELS,
   SKY_WAVE_JITTER,
+  skyStreamLevel,
   skyVelocity,
   skyWavePhase,
   skyWavePolesFor,
   skyWheelAt,
+  skyWheelFlowShift,
   skyWrapLoop,
 } from '../motion/sky-swirl';
 import type { SkyWaveTurns, SkyWrap } from '../motion/variants';
@@ -38,8 +41,16 @@ export interface SkyWrapStats {
   readonly small: number;
   /** Of those, the ones on their way back along the arc (pingpong and wave). */
   readonly returning: number;
-  /** Of those, the ones inside a wheel (skyWheelAt), which turn under wheel, the haze included. */
+  /**
+   * Of those, the ones inside a wheel (skyWheelAt), which turn under wheel and wheelflow, the haze
+   * included.
+   */
   readonly wheeled: number;
+  /**
+   * Of those, the ones whose paint streams: every one under stream, and under wheelflow the ones
+   * outside the wheels whose faded shift (skyWheelFlowShift) packs under the last fade level.
+   */
+  readonly streaming: number;
   /**
    * How the drawn sky strokes' long axes at rest lie against the swirl's flow, |cos| of the angle
    * between the long axis and omega × d: the share within 30° of it (|cos| ≥ cos 30°), the share
@@ -77,6 +88,8 @@ interface SkyStrokes {
   readonly along: Float32Array;
   /** Each stroke's wheel index (skyWheelAt), -1 outside every wheel. */
   readonly wheel: Int8Array;
+  /** Each stroke's wheelflow fade level (skyStreamLevel of skyWheelFlowShift), -1 in a wheel. */
+  readonly flow: Int8Array;
   readonly hash: SkyDirectionHash;
 }
 
@@ -104,6 +117,7 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
   const wave = new Float32Array(total);
   const along = new Float32Array(total);
   const wheel = new Int8Array(total);
+  const flow = new Int8Array(total);
   const directions = new Float32Array(3 * total);
   batch.chunks.forEach((chunk, c) => {
     const meta = chunk.geometry.getAttribute('iMeta').array;
@@ -132,9 +146,11 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
       const speed = Math.hypot(v[0], v[1], v[2]);
       along[s] = speed > 0 ? Math.abs(long[0] * v[0] + long[1] * v[1] + long[2] * v[2]) / speed : 0;
       wheel[s] = skyWheelAt([dx * inv, dy * inv, dz * inv]);
+      const shift = skyWheelFlowShift([dx * inv, dy * inv, dz * inv]);
+      flow[s] = shift < 0 ? -1 : skyStreamLevel(shift);
     });
   });
-  return { local, start, phase, wave, along, wheel, hash: hashSkyDirections(directions) };
+  return { local, start, phase, wave, along, wheel, flow, hash: hashSkyDirections(directions) };
 }
 
 /**
@@ -162,6 +178,7 @@ export function skyWrapStats(
   let small = 0;
   let back = 0;
   let wheeled = 0;
+  let streaming = 0;
   const along: number[] = [];
   batch.chunks.forEach((chunk, c) => {
     if (!chunk.mesh.visible) return;
@@ -176,6 +193,12 @@ export function skyWrapStats(
       if (1 + loop.gain < 0.8) small++;
       if (loop.returning) back++;
       if (strokes.wheel[s] >= 0) wheeled++;
+      if (
+        wrap === 'stream' ||
+        (wrap === 'wheelflow' && strokes.flow[s] >= 0 && strokes.flow[s] < SKY_STREAM_FADE_LEVELS)
+      ) {
+        streaming++;
+      }
       along.push(strokes.along[s]);
     }
   });
@@ -189,6 +212,7 @@ export function skyWrapStats(
     drawn,
     small,
     wheeled,
+    streaming,
     alignment: {
       within30: drawn > 0 ? along.filter((a) => a >= Math.cos(Math.PI / 6)).length / drawn : 0,
       beyond60: drawn > 0 ? along.filter((a) => a < 0.5).length / drawn : 0,

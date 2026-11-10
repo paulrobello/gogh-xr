@@ -218,6 +218,12 @@ export interface GovernorConfig {
    * ladder, and no judging. null or absent runs the adaptive machine.
    */
   readonly fixedLevel?: number | null;
+  /**
+   * A pinned foveation (the `foveation` setting), applied by the runtime over `levels.foveation`.
+   * The adaptive machine then treats its foveation steps as unable to apply. A fixed level still
+   * takes them, so level N keeps the same density and fb steps.
+   */
+  readonly foveationPin?: number | null;
 }
 
 export interface FrameSample {
@@ -340,6 +346,8 @@ export function createGovernor(config: GovernorConfig): Governor {
     ...(config.mode === 'beauty' ? BEAUTY_BAND_SIZE : DEFAULT_BAND_SIZE),
   };
   const levels = { density, size, fbScale: FULL_FB_SCALE, foveation: FULL_FOVEATION };
+  const foveationPinned =
+    (config.foveationPin ?? null) !== null && (config.fixedLevel ?? null) === null;
   let targetHz = config.targetHz;
   let frameRate = config.targetHz;
   let rateRequest: RateRequest = 'none';
@@ -514,7 +522,7 @@ export function createGovernor(config: GovernorConfig): Governor {
   }
 
   function foveationShed(step: 'foveation' | 'foveation-max', to: number): ShedEntry | null {
-    if (levels.foveation >= to || heldUntil.has(step)) return null;
+    if (foveationPinned || levels.foveation >= to || heldUntil.has(step)) return null;
     return { step, from: levels.foveation, to, fromSize: 0, toSize: 0 };
   }
 

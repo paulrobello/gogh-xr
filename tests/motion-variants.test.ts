@@ -116,8 +116,8 @@ function domeCounterFlow(
 }
 
 describe('sky wrap variants', () => {
-  test('the variants are wave, wheel, stream, base and pingpong, the default wave first: opacity and lift are retired and dive dropped', () => {
-    expect(SKY_WRAPS).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong']);
+  test('the variants are wave, wheel, stream, base, pingpong and wheelflow, the default wave first and wheelflow appended: opacity and lift are retired and dive dropped', () => {
+    expect(SKY_WRAPS).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong', 'wheelflow']);
     expect(DEFAULT_SKY_WRAP).toBe('wave');
   });
 
@@ -205,6 +205,9 @@ describe('sky wrap variants', () => {
     expect(variants.diag()).toEqual({ wrap: 'base' });
     variants.setWrap('pingpong');
     expect(variants.uniforms.uSkyWrap.value).toBe(4);
+    variants.setWrap('wheelflow');
+    expect(variants.uniforms.uSkyWrap.value).toBe(5);
+    expect(variants.diag()).toEqual({ wrap: 'wheelflow' });
     variants.setWrap('wave');
     expect(variants.uniforms.uSkyWrap.value).toBe(0);
     variants.setWrap('base');
@@ -500,7 +503,7 @@ describe('wave', () => {
 });
 
 describe('GLSL', () => {
-  test('uSkyWrap is read only in the sky motion and the haze thin: one compare under the default wave, two under base, three under pingpong, four under wheel and stream', () => {
+  test('uSkyWrap is read only in the sky motion and the haze thin: one compare under the default wave, two under base, three under pingpong, four under wheel, five under stream and wheelflow', () => {
     // The default program: the vtx hoist arm's skyMotion (VTX_HOIST) stripped.
     const hoist = /#ifdef VTX_HOIST\n([\s\S]*?)\n#else\n/.exec(motionGlsl)?.[1] ?? '';
     const base = motionGlsl.replace(/#ifdef VTX_HOIST\n[\s\S]*?\n#else\n/, '');
@@ -519,28 +522,45 @@ describe('GLSL', () => {
     expect(baseWrap).toBeGreaterThan(wave);
     expect(pingpong).toBeGreaterThan(baseWrap);
     expect(wheel).toBeGreaterThan(pingpong);
-    expect(sky.indexOf('stream = skyStream(cross(omega, d), l, brush, phase, t);')).toBeGreaterThan(
-      wheel,
+    const stream = sky.indexOf('if (uSkyWrap == SKY_WRAP_STREAM) {');
+    expect(stream).toBeGreaterThan(wheel);
+    expect(
+      sky.indexOf(
+        'stream = skyStream(cross(omega, d), l, brush, phase, t, SKY_STREAM_INV_PERIOD, 1.0);',
+      ),
+    ).toBeGreaterThan(stream);
+    // Wheelflow falls through after the fifth compare: a member turns as under wheel, the rest
+    // stream at wheelflow's period and faded shift.
+    const flow = sky.indexOf('float shift = skyWheelFlowShift(dir, v);');
+    expect(flow).toBeGreaterThan(stream);
+    expect(sky.slice(flow)).toContain(
+      'if (shift < 0.0) return skyWheelMotion(d, dir, n, l, s, t, rigid);',
+    );
+    expect(sky.slice(flow)).toContain(
+      'stream = skyStream(v, l, brush, phase, t, SKY_WHEELFLOW_INV_PERIOD, shift);',
     );
     expect(sky).toContain('float wavePhase = skyWavePhase(dir) + SKY_WAVE_JITTER * (phase - 0.5);');
     expect(sky).toContain(
       'return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir), t);',
     );
     expect(sky).toContain('float tau = (f - 0.5) * SKY_SWIRL_PERIOD;');
-    // The declaration, skyMotion's four compares, skyHazeWheel's one, the single wheel compare a
-    // haze vertex pays behind the open gate, and motionReach's one, off wheel, which zeroes the
-    // haze's thin reach under stream.
-    expect(base.replace(/\/\/.*$/gm, '').match(/uSkyWrap/g)).toHaveLength(7);
-    expect(base).toContain('if (uSkyWrap != SKY_WRAP_WHEEL) return false;');
+    // The declaration, skyMotion's five compares, skyHazeWheel's guard (wheel, then wheelflow)
+    // and its return (a still haze stroke streams under wheelflow), and motionReach's two, off
+    // wheel, which zero the haze's thin reach under stream and wheelflow.
+    expect(base.replace(/\/\/.*$/gm, '').match(/uSkyWrap/g)).toHaveLength(11);
     expect(base).toContain(
-      'if (layer != STROKE_LAYER_SKY || uSkyWrap == SKY_WRAP_STREAM) return 0.0;',
+      'if (uSkyWrap != SKY_WRAP_WHEEL && uSkyWrap != SKY_WRAP_WHEELFLOW) return false;',
+    );
+    expect(base).toContain('return member >= 0 || uSkyWrap == SKY_WRAP_WHEEL;');
+    expect(base).toContain(
+      'if (layer != STROKE_LAYER_SKY || uSkyWrap == SKY_WRAP_STREAM || uSkyWrap == SKY_WRAP_WHEELFLOW) {',
     );
     // uWaveTurns: the declaration and skyWavePhase's loop, which only the wave branch calls.
     expect(base.replace(/\/\/.*$/gm, '').match(/uWaveTurns/g)).toHaveLength(2);
     // The hoist arm reads the rest field from its attributes: wave first, base second and
-    // pingpong third, as before, then wheel.
+    // pingpong third, as before, then wheel and stream, and wheelflow falls through.
     expect(hoist).toContain('Motion skyMotion(');
-    expect(hoist.match(/uSkyWrap/g)).toHaveLength(4);
+    expect(hoist.match(/uSkyWrap/g)).toHaveLength(5);
     expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {')).toBeLessThan(
       hoist.indexOf('} else if (uSkyWrap == SKY_WRAP_BASE) {'),
     );
@@ -548,11 +568,22 @@ describe('GLSL', () => {
       hoist.indexOf('} else if (uSkyWrap != SKY_WRAP_PINGPONG) {'),
     );
     expect(hoist.indexOf('} else if (uSkyWrap != SKY_WRAP_PINGPONG) {')).toBeLessThan(
-      hoist.indexOf('if (uSkyWrap == SKY_WRAP_WHEEL) {'),
+      hoist.indexOf('if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion('),
+    );
+    expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion(')).toBeLessThan(
+      hoist.indexOf('if (uSkyWrap == SKY_WRAP_STREAM) {'),
+    );
+    expect(hoist).toContain(
+      'float shift = skyWheelFlowShift(dir, iSkyField.xyz * inverseDistance);',
+    );
+    expect(hoist).toContain(
+      'stream = skyStream(iSkyField.xyz, l, brush, phase, t, SKY_WHEELFLOW_INV_PERIOD, shift);',
     );
     expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {')).toBeGreaterThan(0);
     expect(hoist).toContain('float tau = (f - 0.5) * SKY_SWIRL_PERIOD;');
-    expect(hoist).toContain('stream = skyStream(iSkyField.xyz, l, brush, phase, t);');
+    expect(hoist).toContain(
+      'stream = skyStream(iSkyField.xyz, l, brush, phase, t, SKY_STREAM_INV_PERIOD, 1.0);',
+    );
     expect(hoist).toContain('return Motion(vec3(0.0), 0.0, 0.0, 0.0);\n  }\n  float f');
     expect(hoist).not.toMatch(/uWaveTurns|skyWavePhase|SKY_VORTEX/);
     const wrap = motionGlsl.slice(
@@ -606,6 +637,7 @@ describe('GLSL', () => {
       SKY_WRAP_STREAM: '2u',
       SKY_WRAP_BASE: '3u',
       SKY_WRAP_PINGPONG: '4u',
+      SKY_WRAP_WHEELFLOW: '5u',
     });
     expect(a.defines).not.toHaveProperty('SKY_DIVE_SINK');
     expect(a.defines).not.toHaveProperty('SKY_LIFT_INV_WINDOW');

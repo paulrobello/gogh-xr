@@ -1,9 +1,12 @@
 import { expect, test, vi } from 'vitest';
+import { DEFAULT_SETTINGS, foveationPin } from '../src/settings/schema.ts';
+import { createSettingsStore } from '../src/settings/store.ts';
 import { clearNotices, showNotice } from '../src/ui/notice.ts';
 import {
   applySessionSettings,
   createSessionController,
   createXrState,
+  FOVEATION,
   isVrSupported,
   resolveTargetFrameRate,
   SESSION_INIT,
@@ -105,6 +108,59 @@ test('controller requests immersive-vr with the optional features and sets state
   expect(notify).not.toHaveBeenCalled();
   session.dispatchEvent(new Event('end'));
   expect(controller.state.presenting).toBe(false);
+});
+
+test('an entry starts at deps.foveation: a stored pin reaches the session under ?nogov', async () => {
+  const store = createSettingsStore({
+    stored: { ...DEFAULT_SETTINGS, foveation: 0.5 },
+    flags: {
+      beauty: false,
+      hz: null,
+      seated: null,
+      turn: null,
+      hud: null,
+      calm: null,
+      nogov: true,
+    },
+    save: () => true,
+    schedule: () => 0,
+    cancel: () => {},
+  });
+  const { renderer, setFoveation } = fakeRenderer();
+  const controller = createSessionController({
+    renderer,
+    xr: { requestSession: async () => fakeSession() } as unknown as XRSystem,
+    notify: vi.fn(),
+    // As main.ts: the pin, else FOVEATION. Read at entry, so a change before it counts.
+    get foveation() {
+      return foveationPin(store.effective) ?? FOVEATION;
+    },
+  });
+  expect(await controller.enter()).toBe(true);
+  expect(setFoveation).toHaveBeenLastCalledWith(0.5);
+
+  // Auto under ?nogov is the session default, and an undefined getter keeps the default too.
+  store.set('foveation', 'auto');
+  const auto = fakeRenderer();
+  const second = createSessionController({
+    renderer: auto.renderer,
+    xr: { requestSession: async () => fakeSession() } as unknown as XRSystem,
+    notify: vi.fn(),
+    get foveation() {
+      return foveationPin(store.effective) ?? FOVEATION;
+    },
+  });
+  expect(await second.enter()).toBe(true);
+  expect(auto.setFoveation).toHaveBeenLastCalledWith(FOVEATION);
+  const bench = fakeRenderer();
+  const third = createSessionController({
+    renderer: bench.renderer,
+    xr: { requestSession: async () => fakeSession() } as unknown as XRSystem,
+    notify: vi.fn(),
+    foveation: undefined,
+  });
+  expect(await third.enter()).toBe(true);
+  expect(bench.setFoveation).toHaveBeenLastCalledWith(FOVEATION);
 });
 
 test('frameratechange refreshes frameRate and end clears the frame-rate state', async () => {

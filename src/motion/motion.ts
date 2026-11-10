@@ -211,7 +211,9 @@ export function motionReach(
   calm: number,
   wrap: SkyWrap = 'base',
 ): number {
-  if (layer !== STROKE_LAYER.sky || wrap === 'wheel' || wrap === 'stream') return 0;
+  if (layer !== STROKE_LAYER.sky || wrap === 'wheel' || wrap === 'stream' || wrap === 'wheelflow') {
+    return 0;
+  }
   const [x, y, z] = position;
   const [ex, ey, ez] = PAINTER_EYE;
   return calm * SKY_SWIRL_MAX_ANGLE * Math.hypot(x - ex, y - ey, z - ez);

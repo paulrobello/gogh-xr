@@ -4,10 +4,10 @@
  * through `XRView.requestViewportScale` (ruling R4), fixed foveation through three's
  * `WebXRManager.setFoveation` (which sets the projection layer's `fixedFoveation` live), and the
  * 72 Hz fallback through `XRSession.updateTargetFrameRate`. A 'no-gain' undo, a 'recover' and a
- * 'recover-back' go through the same adapters. `xr/session.ts` sets foveation 0 after an awaited
- * frame-rate request at session start, which can land after a governor shed, so every judged frame
- * re-asserts the governor's foveation when three reports another. Desktop frames are not judged:
- * the page's own refresh rate says nothing about the headset budget.
+ * 'recover-back' go through the same adapters. `xr/session.ts` sets its start foveation (the pin,
+ * else 0) after an awaited frame-rate request at session start, which can land after a governor
+ * shed, so every judged frame re-asserts the applied foveation when three reports another. Desktop
+ * frames are not judged: the page's own refresh rate says nothing about the headset budget.
  *
  * Quest Browser ignores `requestViewportScale` on the projection-layer path three 0.186 takes there
  * (`fbScaleApplied` reads 1 at a requested 0.85), so the fb-scale step buys nothing on the headset
@@ -23,6 +23,10 @@
  * fixed machine at that level, or for Auto an adaptive one from the mode's start levels, as at a
  * new session. The rebuild keeps the session's mode and the rate asked of it. A session start or
  * end rebuilds at the current level too.
+ *
+ * A pinned foveation (`deps.foveationPin`, the `foveation` setting) is read every frame the same
+ * way, a change rebuilds the machine, and the pin is what the runtime applies and re-asserts in
+ * place of the machine's foveation.
  */
 import type { Scene } from 'three';
 import { GpuTimer, type TimerGl } from '../bench/gpu-timer';
@@ -91,6 +95,8 @@ export interface GovernorRuntimeDeps {
   densityLaw?: DensityLaw;
   /** A fixed quality level, or null for the adaptive machine (Auto). Read every frame. */
   readonly fixedLevel?: number | null;
+  /** A pinned foveation, or null to let the machine decide. Read every frame. */
+  readonly foveationPin?: number | null;
 }
 
 /** The `governor` diag key. `fbScale` reads 'unavailable' when the adapter cannot apply it. */
@@ -106,6 +112,8 @@ export interface GovernorDiag extends Omit<GovernorSnapshot, 'fbScale'> {
   gpuTimer: 'available' | 'unavailable';
   /** Frames are judged: an XR session presents and is visible. Desktop frames never are. */
   judging: boolean;
+  /** The pinned foveation, or null. `foveation` is the applied value: the pin when set. */
+  foveationPin: number | null;
 }
 
 export interface GovernorRuntime {
@@ -125,6 +133,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     targetHz: deps.targetHz,
     densityLaw: deps.densityLaw ?? flags.densityLaw ?? 'area',
     fixedLevel: deps.fixedLevel ?? null,
+    foveationPin: deps.foveationPin ?? null,
   };
   let governor: Governor = createGovernor(config);
   let scaler: ViewportScaler | null = null;
@@ -136,6 +145,10 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   let disposed = false;
   const timer = new GpuTimer(renderer.getContext() as TimerGl);
 
+  function foveation(): number {
+    return config.foveationPin ?? governor.levels.foveation;
+  }
+
   function applyLevels(): void {
     const { density, size } = governor.levels;
     for (const band of STROKE_BANDS) {
@@ -143,7 +156,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       batch.setSizeMultiplier(band, size[band]);
     }
     if (scaler) scaler.scale = governor.levels.fbScale;
-    xr.setFoveation(governor.levels.foveation);
+    xr.setFoveation(foveation());
   }
 
   function readFrameRate(): void {
@@ -172,7 +185,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
         } else {
           // A level change replaced the machine while the request was in flight: rebuild the one
           // running now on the rate the session runs at, so it neither budgets 90 nor asks again.
-          setFixedLevel(config.fixedLevel);
+          rebuild();
         }
         console.info(`[governor] ${RATE_NOTICE} (${event.from} Hz overran at minimum quality)`);
         deps.notify?.(RATE_NOTICE);
@@ -190,7 +203,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     } else if (event.step === 'fb-scale') {
       if (scaler) scaler.scale = levels.fbScale;
     } else if (event.step === 'foveation' || event.step === 'foveation-max') {
-      xr.setFoveation(levels.foveation);
+      xr.setFoveation(foveation());
     } else if (event.action === 'rate') {
       requestRate(event);
     }
@@ -214,6 +227,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     config.mode = deps.mode;
     config.targetHz = deps.targetHz;
     config.fixedLevel = deps.fixedLevel ?? null;
+    config.foveationPin = deps.foveationPin ?? null;
     governor = createGovernor(config);
     requestedHz = deps.targetHz;
     lastTime = null;
@@ -232,9 +246,11 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   });
   const removeAfter = addAfterRender(scene, () => timer.end());
 
-  /** A new fixed level, or Auto: a fresh machine on the session's mode and requested rate. */
-  function setFixedLevel(level: number | null): void {
-    config.fixedLevel = level;
+  /**
+   * A new fixed level or foveation pin, or Auto: a fresh machine on the session's mode and
+   * requested rate.
+   */
+  function rebuild(): void {
     config.targetHz = requestedHz;
     governor = createGovernor(config);
     lastTime = null;
@@ -254,6 +270,8 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       fbScalePath: scaler?.path ?? null,
       gpuTimer: timer.available ? 'available' : 'unavailable',
       judging: judging(),
+      foveation: foveation(),
+      foveationPin: config.foveationPin,
     };
   }
   registerDiag('governor', diag);
@@ -264,7 +282,12 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     },
     frame(time: number) {
       const level = deps.fixedLevel ?? null;
-      if (level !== config.fixedLevel) setFixedLevel(level);
+      const pin = deps.foveationPin ?? null;
+      if (level !== config.fixedLevel || pin !== config.foveationPin) {
+        config.fixedLevel = level;
+        config.foveationPin = pin;
+        rebuild();
+      }
       if (!judging()) {
         lastTime = null;
         return;
@@ -276,8 +299,8 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
       const intervalMs = time - lastTime;
       lastTime = time;
       readFrameRate();
-      const foveation = governor.levels.foveation;
-      if (xr.getFoveation() !== foveation) xr.setFoveation(foveation);
+      const applied = foveation();
+      if (xr.getFoveation() !== applied) xr.setFoveation(applied);
       const event = governor.sample({
         t: time,
         intervalMs,

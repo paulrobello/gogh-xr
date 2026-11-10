@@ -441,6 +441,7 @@ test.describe('the painter view', () => {
       small: number;
       returning: number;
       wheeled: number;
+      streaming: number;
       forwardShare: number;
       returningShare: number;
       counterFlow: { pairs: number; opposed: number; share: number; radiusDeg: number };
@@ -471,7 +472,7 @@ test.describe('the painter view', () => {
 
     await bootWorld('&ab=wrap');
     const variants = ((await ab(xr)) as AbDiag).variants;
-    expect(variants).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong']);
+    expect(variants).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong', 'wheelflow']);
     await hideHud();
     expect((await rawPixels(page)).equals(fresh), 'wrap wave matches a fresh boot').toBe(true);
     const programs = (await diag()).programs;
@@ -505,11 +506,17 @@ test.describe('the painter view', () => {
         // Base shrinks its wrapping strokes and never turns back, so nothing counter-flows.
         expect(w.small).toBeGreaterThan(0);
         expect([w.returning, w.counterFlow.opposed]).toEqual([0, 0]);
-      } else if (variant === 'wheel' || variant === 'stream') {
+      } else if (variant === 'wheel' || variant === 'stream' || variant === 'wheelflow') {
         // No arc loop: nothing shrinks, nothing turns back, so nothing counter-flows. The wheel's
-        // cores turn rigidly and the stream streams inside still strokes.
+        // cores turn rigidly and the stream streams inside still strokes; wheelflow does both.
         expect([w.small, w.returning, w.counterFlow.opposed]).toEqual([0, 0, 0]);
-        if (variant === 'wheel') expect(w.wheeled).toBeGreaterThan(0);
+        if (variant !== 'stream') expect(w.wheeled).toBeGreaterThan(0);
+        if (variant === 'wheel') expect(w.streaming).toBe(0);
+        if (variant === 'stream') expect(w.streaming).toBe(w.drawn);
+        if (variant === 'wheelflow') {
+          expect(w.streaming).toBeGreaterThan(0);
+          expect(w.streaming + w.wheeled).toBeLessThanOrEqual(w.drawn);
+        }
       } else if (variant === 'pingpong') {
         // Full size, with about half the strokes on their way back, side by side with the rest.
         expect(w.small).toBe(0);
@@ -566,7 +573,8 @@ test.describe('the painter view', () => {
   // (tests/e2e/motion.spec.ts checks the wave's phase). ?motionphase=0 gives every stroke phase 0,
   // so f = t / 8, and ?motionlayers=sky stills every other motion, so two frames at different
   // pinned times differ only in the sky. At each pair the two variants compute the same tau and
-  // size exactly in float (`?wrap=base` starts the group at base, which steps to pingpong, then wave):
+  // size exactly in float (`?wrap=base` starts the group at base, which steps to pingpong, then
+  // wheelflow and wave):
   // - pingpong at f = 0.25 and base at f = 0.5: smoothstep(0, 1, 0.5) = 0.5, so tau 0.
   // - pingpong at f = 0.125 and base at f = 0.15625: smoothstep(0, 1, 0.25) = 0.15625, so both
   //   have tau −2.75 s on base's arc, and base is past its 0.06 wrap shrink, at full size.
@@ -637,6 +645,7 @@ test.describe('the painter view', () => {
     await hideHud();
     const restBare = bareShare(await at(4));
     await cycleTo('pingpong');
+    await cycleTo('wheelflow');
     await cycleTo('wave');
     // The diag follows the pinned phase, which under the wave only sets the jitter.
     const wave = await wrapDiag();

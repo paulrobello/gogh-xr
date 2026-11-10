@@ -2351,6 +2351,41 @@ The worst frames average 23.3 ms on both builds. Round 1 added one cost inside a
 - The level-4 levels are simulated from the 2026-11-06 frame times (foveation 0.5 ×0.84, foveation 1 ×0.955 more, 3.5% per density step), not read from a headset governor.
 - The `tieKeys` and `skyStatic` costs on the Quest's CPU, and the hitch of the `hoist` precompile on the first frame after each batch binds. A batch that binds later in a session (a portal swap to another world) prepares on a microtask after its own first frame, and draws its base program until then, even under `hoist`, so under `?ab=vtx` that frame pays the compile in XR.
 
+### Headset run (Paul, 2026-11-10, deployed aa9f030)
+
+Quest 3 over USB, the protocol above at the painter's spot, standing still facing the canvas, 72 Hz requested. Frame intervals come from `XRSession.requestAnimationFrame` timestamps recorded over CDP (`adb forward` to `chrome_devtools_remote`, a wrapper on `XRSession.prototype.requestAnimationFrame` that also counted left stick clicks to tell the arms apart), each arm held about 15-20 s, the first 3 s after each switch (10 s after entry) dropped. `__goghDiag()` was read only between runs. `xr.foveation` read 1 in the fov 1 run and 0 in the fov 0 run, so the pins took.
+
+Step 1, two full cycles per run, the saving against the cycle's mean `base`, averaged:
+
+| Arm | fov 1, cycle 1 / 2 | fov 1 mean | fov 0, cycle 1 / 2 | fov 0 mean |
+| --- | --- | --- | --- | --- |
+| `base` (mean frame) | 29.45 / 29.55 ms | 29.5 ms | 48.36 / 48.89 ms | 48.6 ms |
+| `fewer` | −7.47 / −7.71 | −7.6 ms | −13.49 / −13.83 | −13.7 ms |
+| `smaller` | −4.19 / −4.38 | −4.3 ms | −9.87 / −10.35 | −10.1 ms |
+| `sparse` | −3.30 / −3.49 | −3.4 ms | −4.11 / −4.74 | −4.4 ms |
+| `hoist` | −0.05 / −0.12 | −0.1 ms | −0.08 / −0.94 | −0.5 ms |
+
+The drift between a cycle's two `base` reads is 0.06-0.13 ms at fov 1. At fov 0 the last `base` read was cut short (10.9 s, p99 65 ms as the run ended), so cycle 2 there drifts by 1.35 ms and its savings read about 0.5 ms high. The fov 1 base drew 314,472 instances (2,515,776 vertex invocations over 2 views).
+
+Reading, by the table above:
+
+- `fewer` (7.6 ms) equals `smaller` + `sparse` (7.7 ms) within the drift, so the frame is additive in vertex and fill work and the arms can be read one at a time.
+- `smaller` gains 4.3 ms: fill binds. `sparse` gains 3.4 ms, past its fill share of 0.45 × 4.3 = 1.9 ms by 1.5 ms: the per-instance cost binds too. That is the "both" row: count sheds pay on both counts.
+- `hoist` is flat at fov 1. The vertex cost is not shader ALU: it is instance count, fetch, primitive setup or binning. Cut instances (deeper and earlier density sheds, fewer and larger strokes in the scatter), and keep the base program.
+- Against fov 0, `smaller` saves 2.3 times as much (10.1 against 4.3 ms) and `sparse` about the same (4.4 against 3.4 ms), so the arms read what they claim.
+- Full density at fov 1 runs at 29.5 ms, about 34 fps, against the 13.9 ms budget.
+
+Step 3, the shipped default (fixed quality level 5: foveation 1, near 1.0, mid 0.9, far 0.196) under each density law, about 60-70 s each:
+
+| Law | Mean frame | p50 | p99 | Visible strokes | Draw calls |
+| --- | --- | --- | --- | --- | --- |
+| `area` (default) | 23.74 ms | 23.46 ms | 29.77 ms | 279,836 | 186 |
+| `count` | 20.37 ms | 20.40 ms | 23.64 ms | 280,749 | 206 |
+
+`count` is 3.4 ms faster at the same level and the same stroke count: under `area` the far band's survivors grow by sqrt(1 / 0.196), 2.26 times on each axis, and that fill is the difference. Paul saw some holes in the sky under `count`, "but I had to really be looking for them". That is the protocol's "the sheds pay, but coverage fails" row: the coverage fix comes first (card 01a1c0f053dd), and `area` stays the default.
+
+Paul ruled the same day that quality wins over frame rate, with a frame-rate floor of 24 fps, which still reads as smooth (PRD SC1). The default level 5 at about 42 fps clears it with room, and full stroke density at foveation 1 (34 fps) would too.
+
 ## Sky wrap default: wave (2026-11-08, card 01a1bbc7)
 
 Paul compared the wrap variants in the headset on 2026-11-08 and chose `wave` at the default 2 waves per turn. Every boot now draws the wave: the shipped boot, `?painting=starry-night`, the gallery and the canvas demo all take `DEFAULT_SKY_WRAP` through the one `motionVariants.setWrap` call in main.ts, and the canvas demo's strokes stay static anyway because its motion layers are closed. `?wrap=base` restores the P4.2 wrap and `?wrap=pingpong` still selects pingpong. Base and pingpong are not retired.

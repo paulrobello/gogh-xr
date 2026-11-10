@@ -49,6 +49,8 @@ export interface SessionDeps {
   notify: (message: string) => void;
   clearNotices?: () => void;
   targetFrameRate?: number;
+  /** The foveation an entry sets; undefined keeps `applySessionSettings`'s default. */
+  foveation?: number;
 }
 
 export interface SessionController {
@@ -80,8 +82,8 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * Applies frame rate and foveation after the session is bound to the renderer. `foveation` is
- * `?fov` when set (testing only), else `FOVEATION`.
+ * Applies frame rate and foveation after the session is bound to the renderer. `foveation` defaults
+ * to `?fov` when set, else `FOVEATION`; main.ts passes the setting's pin, else `FOVEATION`, outside the bench.
  */
 export async function applySessionSettings(
   session: XRSession,
@@ -131,7 +133,13 @@ export function createSessionController(deps: SessionDeps): SessionController {
       session.addEventListener('frameratechange', () => {
         state.frameRate = endedSession.frameRate ?? null;
       });
-      await applySessionSettings(session, deps.renderer, state, deps.targetFrameRate);
+      await applySessionSettings(
+        session,
+        deps.renderer,
+        state,
+        deps.targetFrameRate,
+        deps.foveation,
+      );
       deps.clearNotices?.();
       return true;
     } catch (error) {

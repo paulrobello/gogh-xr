@@ -7,6 +7,7 @@
  */
 import { type GovernorMode, type LadderStep, qualityLadder } from '../render/governor';
 import {
+  foveationPin,
   governorModeOf,
   MAX_QUALITY_LEVEL,
   type QualityLevel,
@@ -189,6 +190,21 @@ export const CONTROLS: readonly ControlDef[] = [
     help: 'Auto adapts. Level N fixes the first N governor steps, and each level keeps every step below it: fov 0.5, fb 0.85, fov 1, then far, mid, near density',
     column: 1,
     row: 5,
+  },
+  {
+    id: 'foveation',
+    kind: 'segmented',
+    label: 'Foveation',
+    field: 'foveation',
+    options: [
+      { value: 'auto', label: 'Auto' },
+      { value: 0, label: 'Off' },
+      { value: 0.5, label: '0.5' },
+      { value: 1, label: '1' },
+    ],
+    help: 'Renders the edge of view at lower resolution: a shorter frame time for a softer periphery. Auto lets the quality level choose',
+    column: 1,
+    row: 6,
   },
   {
     id: 'hud',
@@ -418,32 +434,46 @@ function ladderStepLabel(step: LadderStep): string {
 /**
  * The quality level's value text: "Auto", "0 · full", or the level and the step it adds, as in
  * "3 · fov 1" or "7 · far 0.10". Each level also keeps every step below it
- * (`qualityLevelSummary` lists them all).
+ * (`qualityLevelSummary` lists them all). Under a foveation `pin` a foveation step reads
+ * "fov pinned", since the pin replaces it.
  */
-export function qualityLevelLabel(level: QualityLevel, mode: GovernorMode): string {
+export function qualityLevelLabel(
+  level: QualityLevel,
+  mode: GovernorMode,
+  pin: number | null = null,
+): string {
   if (level === 'auto') return 'Auto';
   const n = appliedLevel(level, mode);
   const step = ladderOf(mode)[n - 1];
-  return step ? `${n} · ${ladderStepLabel(step)}` : `${n} · full`;
+  if (!step) return `${n} · full`;
+  const fov = step.step === 'foveation' || step.step === 'foveation-max';
+  return `${n} · ${fov && pin !== null ? 'fov pinned' : ladderStepLabel(step)}`;
 }
 
 const LEVERS = ['foveation', 'fb-scale', 'far-density', 'mid-density', 'near-density'] as const;
 
 /**
  * Everything `level` sets, for the hover help: "Auto adapts", "full quality", or each lever it
- * moves at its value, as in "fov 1, fb 0.85, far 0.10, mid 0.63".
+ * moves at its value, as in "fov 1, fb 0.85, far 0.10, mid 0.63". A foveation `pin` replaces
+ * the level's own foveation: "fov 0 (pinned), fb 0.85".
  */
-export function qualityLevelSummary(level: QualityLevel, mode: GovernorMode): string {
-  if (level === 'auto') return 'Auto adapts';
+export function qualityLevelSummary(
+  level: QualityLevel,
+  mode: GovernorMode,
+  pin: number | null = null,
+): string {
+  const pinned = pin === null ? null : `fov ${pin} (pinned)`;
+  if (level === 'auto') return pinned ? `Auto adapts, ${pinned}` : 'Auto adapts';
   const applied = ladderOf(mode).slice(0, appliedLevel(level, mode));
-  if (applied.length === 0) return 'full quality';
   const last = new Map<string, LadderStep>();
   for (const step of applied)
     last.set(step.step === 'foveation-max' ? 'foveation' : step.step, step);
-  return LEVERS.flatMap((lever) => {
+  const levers = LEVERS.flatMap((lever) => {
+    if (lever === 'foveation' && pinned) return [pinned];
     const step = last.get(lever);
     return step ? [ladderStepLabel(step)] : [];
-  }).join(', ');
+  });
+  return levers.length > 0 ? levers.join(', ') : 'full quality';
 }
 
 /** A slider's definition for this governor mode: the quality level's max follows its ladder. */
@@ -487,7 +517,7 @@ export function formatValue(
   const value = settings[def.field];
   switch (def.field) {
     case 'qualityLevel':
-      return qualityLevelLabel(settings.qualityLevel, mode);
+      return qualityLevelLabel(settings.qualityLevel, mode, foveationPin(settings));
     case 'moveSpeed':
       return `${(value as number).toFixed(1)} m/s`;
     case 'standingHeight':

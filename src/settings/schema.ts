@@ -3,6 +3,7 @@
  * range comes from the code that enforces it (locomotion settings, the motion clock), so there is
  * one source of truth per range. The last position is never stored.
  */
+import type { Fov } from '../diag/flags';
 import {
   clampLocomotionSettings,
   DEFAULT_LOCOMOTION_SETTINGS,
@@ -36,6 +37,14 @@ export type QualityLevel = 'auto' | number;
  */
 export const MAX_QUALITY_LEVEL = 18;
 
+/** 'auto' lets the quality level decide foveation; a level pins it in every case. */
+export type FoveationSetting = 'auto' | Fov;
+
+/** The pinned foveation, or null for 'auto'. */
+export function foveationPin(settings: Pick<Settings, 'foveation'>): Fov | null {
+  return settings.foveation === 'auto' ? null : settings.foveation;
+}
+
 /** The governor mode a quality runs: max beauty, or the default budget. */
 export function governorModeOf(quality: QualityMode): GovernorMode {
   return quality === 'beauty-72' ? 'beauty' : 'default';
@@ -57,6 +66,8 @@ export interface Settings {
   readonly quality: QualityMode;
   /** Auto, or a fixed governor level. `?nogov` keeps the governor off whatever this says. */
   readonly qualityLevel: QualityLevel;
+  /** Fixed foveation in XR: 'auto' (the quality level decides) or a pinned 0, 0.5 or 1. */
+  readonly foveation: FoveationSetting;
   /** The perf HUD's starting visibility. */
   readonly hud: boolean;
   /** A small glowing orb at each tracked hand in XR. */
@@ -77,6 +88,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   calm: 1,
   quality: 'adaptive-72',
   qualityLevel: 5,
+  foveation: 'auto',
   hud: false,
   handOrbs: true,
   musicVolume: 0.7,
@@ -137,6 +149,12 @@ function qualityLevel(value: unknown, fallback: QualityLevel): QualityLevel {
   return Math.min(MAX_QUALITY_LEVEL, Math.max(0, Math.round(value)));
 }
 
+const FOVEATION_PINS: readonly Fov[] = [0, 0.5, 1];
+
+function foveation(value: unknown): FoveationSetting {
+  return FOVEATION_PINS.find((level) => level === value) ?? 'auto';
+}
+
 /**
  * Fills defaults for missing or wrong-typed fields and clamps every range. Unknown fields are
  * dropped, so a field that is removed in a later version does not linger.
@@ -165,6 +183,7 @@ export function sanitizeSettings(raw: unknown): Settings {
       ? (r.quality as QualityMode)
       : d.quality,
     qualityLevel: qualityLevel(r.qualityLevel, d.qualityLevel),
+    foveation: foveation(r.foveation),
     hud: bool(r.hud, d.hud),
     handOrbs: bool(r.handOrbs, d.handOrbs),
     musicVolume: unit(r.musicVolume, d.musicVolume),
@@ -257,6 +276,8 @@ export interface SettingsFlags {
   readonly calm: number | null;
   /** `?nogov`: the governor stays off, so the quality level is locked. Absent means false. */
   readonly nogov?: boolean;
+  /** `?fov=0|0.5|1`: pins the foveation setting. Absent means null. */
+  readonly fov?: Fov | null;
 }
 
 /**
@@ -264,7 +285,7 @@ export interface SettingsFlags {
  * Never written back. `?beauty` selects max beauty, `?hz=72` selects adaptive-72, and `?hz=90`
  * or `?hz=120` selects adaptive-90, which then requests that rate (a stored quality yields to an
  * explicit rate). `?seated` and `?hud` set their field either way: bare is on, `=0` is off, and
- * absent leaves the stored value.
+ * absent leaves the stored value. `?fov` pins the foveation.
  */
 export function applyUrlFlags(stored: Settings, f: SettingsFlags): Settings {
   const quality: QualityMode = f.beauty
@@ -281,6 +302,7 @@ export function applyUrlFlags(stored: Settings, f: SettingsFlags): Settings {
     turnMode: f.turn ?? stored.turnMode,
     hud: f.hud ?? stored.hud,
     calm: f.calm ?? stored.calm,
+    foveation: f.fov ?? stored.foveation,
   });
 }
 
@@ -300,6 +322,7 @@ export function lockedSettings(f: SettingsFlags): SettingsLocks {
   if (f.hud !== null) locks.hud = f.hud ? '?hud' : '?hud=0';
   if (f.calm !== null) locks.calm = `?calm=${f.calm}`;
   if (f.nogov) locks.qualityLevel = '?nogov';
+  if (f.fov !== undefined && f.fov !== null) locks.foveation = `?fov=${f.fov}`;
   return Object.freeze(locks);
 }
 

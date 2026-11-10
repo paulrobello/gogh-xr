@@ -574,9 +574,10 @@ export function motionReachesOf(
   return drain(motionReachesOfSteps(buffers, indices));
 }
 
-/** The wheel and stream wraps' `uSkyWrap` codes, which the cull growth reads. */
+/** The wheel, stream and wheelflow wraps' `uSkyWrap` codes, which the cull growth reads. */
 const WHEEL = skyWrapCode('wheel');
 const STREAM = skyWrapCode('stream');
+const WHEELFLOW = skyWrapCode('wheelflow');
 
 /** Strokes whose motion reach is measured between two yields of `motionReachesOfSteps`. */
 const MOTION_SLICE = 8192;
@@ -1167,8 +1168,8 @@ export function* createStrokeBatchSteps(
     let reach = 0;
     let rigid = 0;
     if (motionGate(motionBits, STROKE_LAYER.sky)) {
-      // Under wheel only the wheels move, and under stream no sky stroke does.
-      if (motionWrap === WHEEL) rigid = r.wheel;
+      // Under wheel and wheelflow only the wheels move, and under stream no sky stroke does.
+      if (motionWrap === WHEEL || motionWrap === WHEELFLOW) rigid = r.wheel;
       else if (motionWrap !== STREAM) reach = r.sky;
     }
     if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);

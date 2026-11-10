@@ -51,6 +51,7 @@ import { memoReach } from './render/strokes/reach-memo';
 import { createZdiag } from './render/zdiag';
 import { applySettingsChange, type HudLive } from './settings/apply';
 import {
+  foveationPin,
   governorModeOf,
   loadSettings,
   type QualityMode,
@@ -85,7 +86,12 @@ import { type Actions, createInput } from './xr/input';
 import { createInputCounter } from './xr/input-counter';
 import { installKeyboardInput } from './xr/input-keyboard';
 import { CONTROLLER_SLOTS, trackController, trackRightController } from './xr/right-controller';
-import { createSessionController, isVrSupported, resolveTargetFrameRate } from './xr/session';
+import {
+  createSessionController,
+  FOVEATION,
+  isVrSupported,
+  resolveTargetFrameRate,
+} from './xr/session';
 
 // Must run before any WebXR code reads navigator.xr. The MODE guard keeps IWER out of production.
 if (import.meta.env.MODE === 'e2e' && flags.iwer) {
@@ -139,12 +145,13 @@ const audio =
 motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
 /**
- * Sets the sky wrap. Under `wheel` the sky's gate also stays open at calm 0 (setHoldMask), so the
- * discs hold their pose when calm reaches 0 instead of snapping to rest; `?noanim` still closes it.
+ * Sets the sky wrap. Under `wheel` and `wheelflow` the sky's gate also stays open at calm 0
+ * (setHoldMask), so the discs hold their pose when calm reaches 0 instead of snapping to rest;
+ * `?noanim` still closes it.
  */
 function setSkyWrap(wrap: SkyWrap): void {
   motionVariants.setWrap(wrap);
-  motionClock.setHoldMask(wrap === 'wheel' ? 1 << STROKE_LAYER.sky : 0);
+  motionClock.setHoldMask(wrap === 'wheel' || wrap === 'wheelflow' ? 1 << STROKE_LAYER.sky : 0);
 }
 // `?wrap` sets the sky wrap variant whatever A/B group wins: under another group it stays fixed.
 setSkyWrap(flags.wrap ?? DEFAULT_SKY_WRAP);
@@ -411,6 +418,10 @@ const session = createSessionController({
   get targetFrameRate() {
     return nextTargetFrameRate();
   },
+  // The bench keeps its own foveation controls and ignores the setting.
+  get foveation() {
+    return flags.bench === null ? (foveationPin(settingsStore.effective) ?? FOVEATION) : undefined;
+  },
 });
 
 /** An XR entry is in progress: a new build waits for it rather than reloading under it. */
@@ -519,6 +530,9 @@ const strokes = createStrokeBinding({
                 const level = settingsStore.effective.qualityLevel;
                 return level === 'auto' ? null : level;
               },
+              get foveationPin() {
+                return foveationPin(settingsStore.effective);
+              },
               notify: (message) => raiseRateFallback(notices, message),
             });
         },
@@ -603,6 +617,12 @@ settingsStore.subscribe((effective, key) =>
       if (abActive?.group === 'calm') ab?.follow(String(calm));
     },
     hud: hud ? hudLive : null,
+    // A running governor applies the pin itself on its next frame.
+    setFoveation: (pin) => {
+      if (renderer.xr.isPresenting && !strokes.governorDiag()) {
+        renderer.xr.setFoveation(pin ?? FOVEATION);
+      }
+    },
   }),
 );
 settingsStore.subscribe((effective, key) => {
