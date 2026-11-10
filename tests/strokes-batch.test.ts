@@ -383,9 +383,10 @@ describe('suffix draw', () => {
     merged.dispose();
   });
 
-  test('a depth-writing batch, the dome, the lights and the cypress keep the prefix', () => {
+  test('a depth-writing batch, the lights and the cypress keep the prefix', () => {
     expect(drawsSuffix(false, 'world', 0)).toBe(true);
-    expect(drawsSuffix(false, 'dome', 0)).toBe(false);
+    expect(drawsSuffix(false, 'dome', 0)).toBe(true);
+    expect(drawsSuffix(true, 'dome', 0)).toBe(false);
     expect(drawsSuffix(false, 'overlay', 0)).toBe(true);
     expect(drawsSuffix(true, 'world', 0)).toBe(false);
     expect(drawsSuffix(false, 'lights', 0)).toBe(false);
@@ -1668,6 +1669,67 @@ describe('mergeParts', () => {
         expect(Math.abs(taken - (n * part.length) / order.length)).toBeLessThanOrEqual(1);
         expect(part.slice(0, taken).every((p) => prefix.has(p))).toBe(true);
       }
+    }
+    plain.dispose();
+    merged.dispose();
+  });
+
+  test("every suffix of a merged order is the parts' suffixes, within a stroke per part", () => {
+    const buffers = domeCells();
+    const plain = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    const merged = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: allDome,
+    });
+    const order = positionsOf(merged.chunks[1]);
+    const parts = plain.chunks.filter((c) => c.drawClass === 'dome').map(positionsOf);
+    for (let n = 1; n <= order.length; n++) {
+      const suffix = new Set(order.slice(order.length - n));
+      for (const part of parts) {
+        const taken = part.filter((p) => suffix.has(p)).length;
+        expect(Math.abs(taken - (n * part.length) / order.length)).toBeLessThanOrEqual(1);
+        expect(part.slice(part.length - taken).every((p) => suffix.has(p))).toBe(true);
+      }
+    }
+    plain.dispose();
+    merged.dispose();
+  });
+
+  test("a merged dome chunk draws the union of its cells' own suffixes at a shared density", () => {
+    const buffers = domeCells();
+    const plain = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });
+    const merged = createStrokeBatch(buffers, {
+      cellSize: 4,
+      createAtlas: tinyAtlas,
+      mergeParts: allDome,
+    });
+    for (const batch of [plain, merged]) batch.update(originCamera());
+    /** Positions of the instances a chunk binds for its draw: draw instance k is stored drawStart + k. */
+    const drawnOf = (chunk: StrokeBatch['chunks'][number]): string[] => {
+      const p = chunk.geometry.getAttribute('iPosition') as InterleavedBufferAttribute;
+      return Array.from({ length: chunk.drawCount }, (_, k) =>
+        [p.getX(k), p.getY(k), p.getZ(k)].join(','),
+      );
+    };
+    const domes = (batch: StrokeBatch) => batch.chunks.filter((c) => c.drawClass === 'dome');
+    expect(domes(merged)).toHaveLength(1);
+    for (const chunk of [...domes(plain), ...domes(merged)]) {
+      expect(chunk.geometry).toBeInstanceOf(SuffixGeometry);
+    }
+    for (const d of [0.9, 0.5, 0.28, 0.1]) {
+      for (const band of STROKE_BANDS) {
+        plain.setDensity(band, d);
+        merged.setDensity(band, d);
+      }
+      const [chunk] = domes(merged);
+      expect(chunk.drawStart + chunk.drawCount).toBe(chunk.count);
+      const expected = new Set(domes(plain).flatMap(drawnOf));
+      const drawn = drawnOf(chunk);
+      // Each cell drawn alone keeps the end of its own order, and the merged chunk the end of the
+      // interleave: the two sets differ by at most a stroke per cell.
+      expect(drawn.filter((s) => !expected.has(s)).length, `d ${d}`).toBeLessThanOrEqual(3);
+      expect(Math.abs(drawn.length - expected.size), `d ${d}`).toBeLessThanOrEqual(3);
     }
     plain.dispose();
     merged.dispose();

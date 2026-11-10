@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
 import { MAX_MOTION_DT_S } from '../../src/motion/clock.ts';
 import { MOTION_LAYER_MASK } from '../../src/motion/layers.ts';
+import { DEFAULT_BAND_SIZE } from '../../src/render/strokes/bands.ts';
 import { STROKE_LAYER } from '../../src/render/strokes/instance.ts';
 import { srgb8ToLab } from '../../src/util/cielab.ts';
 import { luma, shiftAt } from './block-match';
@@ -133,14 +134,16 @@ test.describe('sky swirl (P4.2)', () => {
   const HALF = 24;
   const SEARCH = 24;
   /**
-   * Patch centres, canvas (u, v down): the points of a 0.1 grid over the sky (u 0.35-0.85, v
-   * 0.1-0.4) that are clear of the star and moon discs and that the prediction moves 4 px or more.
-   * Every shot opens the sky layer alone (`?motionlayers=sky`) and hides the halo (`?nohalo`), so
-   * the P4.3 rings neither move nor brighten the light strokes and the block match reads the sky
-   * swirl alone; the rings have their own test below. The star and moon layers stay still, so a
-   * patch they fill reads no shift: (0.35, 0.1), (0.35, 0.3), (0.55, 0.1), (0.65, 0.1), (0.65,
-   * 0.2), (0.75, 0.2), (0.75, 0.3) and (0.85, 0.2) read under 1 px, and the moon at (0.85, 0.1)
-   * matches nowhere. (0.55, 0.4) moves under 4 px.
+   * Patch candidates, canvas (u, v down): points of a 0.1 grid over the sky (u 0.35-0.85, v
+   * 0.1-0.4) that the prediction moves 4 px or more. Every shot opens the sky layer alone
+   * (`?motionlayers=sky`) and hides the halo (`?nohalo`), so the P4.3 rings neither move nor
+   * brighten the light strokes and the block match reads the sky swirl alone; the rings have their
+   * own test below. The star and moon layers stay still, so a block that reaches a ring's rim can
+   * lock on them at no shift. The base test drops those by the wave test's ring-clearance rule,
+   * which leaves 10 of these 14 on seed 1: (0.35, 0.4), (0.45, 0.1), (0.65, 0.3) and (0.85, 0.3)
+   * reach a rim. Of the rest of the grid, (0.35, 0.1), (0.35, 0.3), (0.55, 0.1), (0.65, 0.1),
+   * (0.65, 0.2), (0.75, 0.2), (0.75, 0.3) and (0.85, 0.2) read under 1 px, the moon at (0.85, 0.1)
+   * matches nowhere, and (0.55, 0.4) moves under 4 px.
    */
   const PATCHES: readonly (readonly [number, number])[] = [
     [0.35, 0.2],
@@ -168,6 +171,13 @@ test.describe('sky swirl (P4.2)', () => {
     await expect
       .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
       .toBe(true);
+    // Every band at density 1 draws every stored stroke, whichever end of its order a density cut
+    // keeps (`drawsSuffix`), so the block matches read the whole dome and not the far band's 0.4
+    // sample of it. The band sizes stay the defaults.
+    await page.evaluate((size) => {
+      if (!window.__goghBands) throw new Error('__goghBands is e2e-only');
+      window.__goghBands({ density: { near: 1, mid: 1, far: 1 }, size });
+    }, DEFAULT_BAND_SIZE);
     await xr.waitFrames(5);
     const url = await page.evaluate(() => {
       if (!window.__goghShot) throw new Error('__goghShot is not installed; boot with ?diag&shot');
@@ -212,17 +222,39 @@ test.describe('sky swirl (P4.2)', () => {
     // Calm 0 closes the gate: byte for byte the rest pose.
     expect(still.equals(rest)).toBe(true);
 
-    const predicted = await page.evaluate(
-      ([points, time]) =>
-        points.map(([u, v]) => {
-          if (!window.__goghSkyShift) throw new Error('__goghSkyShift is e2e-only');
-          return window.__goghSkyShift(u, v, 1, time, 0, 'base');
-        }),
-      [PATCHES, PINNED] as const,
+    const { predicted, clear } = await page.evaluate(
+      ([points, time, half, w, h]) => {
+        const skyShift = window.__goghSkyShift;
+        const ringShift = window.__goghRingShift;
+        if (!skyShift || !ringShift)
+          throw new Error('__goghSkyShift and __goghRingShift are e2e-only');
+        // The rings, in pixels: the probe throws past the last one.
+        const discs: { x: number; y: number; rim: number }[] = [];
+        for (let k = 0; k < 64; k++) {
+          let ring: ReturnType<typeof ringShift>;
+          try {
+            ring = ringShift(k, 0.5, 0.3, 0);
+          } catch {
+            break;
+          }
+          if (ring) discs.push({ x: ring.centre[0] * w, y: ring.centre[1] * h, rim: ring.rim * w });
+        }
+        return {
+          predicted: points.map(([u, v]) => skyShift(u, v, 1, time, 0, 'base')),
+          clear: points.map(([u, v]) =>
+            discs.every((d) => Math.hypot(u * w - d.x, v * h - d.y) > d.rim + half * Math.SQRT2),
+          ),
+        };
+      },
+      [PATCHES, PINNED, HALF, width, height] as const,
     );
     const [restL, halfL, fullL] = [luma(rest), luma(half), luma(full)];
     const rows: { u: number; v: number; ratio: number; angle: number; sharpness: number }[] = [];
     PATCHES.forEach(([u, v], i) => {
+      if (!clear[i]) {
+        console.log(`sky swirl patch (${u}, ${v}): skipped, its block reaches a star or moon rim`);
+        return;
+      }
       const shift = predicted[i];
       if (!shift) throw new Error(`no prediction at (${u}, ${v})`);
       const px = shift[0] * width;
@@ -248,6 +280,7 @@ test.describe('sky swirl (P4.2)', () => {
       expect(Math.hypot(px, py), `patch (${u}, ${v})`).toBeGreaterThan(4);
       rows.push({ u, v, ratio: halfMag / fullMag, angle, sharpness: a.sharpness });
     });
+    expect(rows.length).toBeGreaterThanOrEqual(10);
     const mean = rows.reduce((sum, r) => sum + r.ratio, 0) / rows.length;
     console.log(
       `sky swirl: ${rows.length} patches, mean calm 0.5 / calm 1 shift ratio ${mean.toFixed(3)}`,

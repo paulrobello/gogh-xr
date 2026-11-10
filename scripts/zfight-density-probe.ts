@@ -15,6 +15,12 @@
  *     Over the building pixels of the id capture at density 1: the share that changes at all, the
  *     share that goes light (luma > 90) to dark (< 60), and what the id capture at 0.9 shows there.
  *     `all` adds the same two shares over the whole frame.
+ *   bun scripts/zfight-density-probe.ts far <build-url> <out-dir> <tag> [extra query]
+ *     The painter view (`?painter`, at CAPTURE_SIZE) at the default far density and size, then
+ *     after the governor's first far shed (density × DENSITY_STEP) at the far size (`count` law)
+ *     and grown by sqrt(from / to) (`area` law). Saves `painter-<tag>-far.png`, `-far-count.png`
+ *     and `-far-area.png`, and prints each shed's frame-wide changed and light-to-dark shares.
+ *     Colour captures only: no id build is needed.
  *
  * Extra query such as `zdiag=write` selects the old depth-writing policy. Pass it without a
  * leading `&`, and join several with `&`.
@@ -26,7 +32,10 @@
  */
 import { chromium } from '@playwright/test';
 import sharp from 'sharp';
+import { DENSITY_STEP } from '../src/render/governor.ts';
+import { DEFAULT_BAND_DENSITY, DEFAULT_BAND_SIZE } from '../src/render/strokes/bands.ts';
 import { gpuArgs } from '../tests/e2e/gpu.ts';
+import { CAPTURE_SIZE } from './fidelity-io.ts';
 
 /** Name, eye position and heading, as `__goghPose` takes (the same as `scripts/zfight-probe.ts`). */
 const POSES: readonly (readonly [string, number, number, number, number, number])[] = [
@@ -85,18 +94,16 @@ async function withPage(
   base: string,
   extra: string,
   run: (
-    shot: (pose: readonly number[]) => Promise<Image>,
-    density: (d: number) => Promise<void>,
+    shot: (pose: readonly number[] | null) => Promise<Image>,
+    density: (d: number, band?: string, size?: number) => Promise<void>,
   ) => Promise<void>,
+  viewport: { width: number; height: number } = { width: 1280, height: 1014 },
 ): Promise<void> {
   const url = new URL(base);
   url.search = `?painting=starry-night&diag&shot&nogov&nocache&noanim&seed=1${extra ? `&${extra}` : ''}`;
   const browser = await chromium.launch({ channel: 'chromium', headless: true, args: gpuArgs });
   try {
-    const page = await browser.newPage({
-      viewport: { width: 1280, height: 1014 },
-      deviceScaleFactor: 1,
-    });
+    const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
     await page.goto(url.href);
     await page.waitForFunction(
       () => Boolean(window.__goghShot && window.__goghDiag?.().world),
@@ -115,8 +122,11 @@ async function withPage(
       const start = await frame();
       while ((await frame()) < start + 4) await page.waitForTimeout(30);
     };
-    const shot = async (pose: readonly number[]): Promise<Image> => {
-      await page.evaluate((p) => window.__goghPose?.(p[0], p[1], p[2], p[3], p[4]), [...pose]);
+    // A null pose keeps the camera where it is: the painter camera under `?painter`.
+    const shot = async (pose: readonly number[] | null): Promise<Image> => {
+      if (pose) {
+        await page.evaluate((p) => window.__goghPose?.(p[0], p[1], p[2], p[3], p[4]), [...pose]);
+      }
       await settle();
       const dataUrl = await page.evaluate(() => window.__goghShot?.() ?? '');
       const png = Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
@@ -126,15 +136,24 @@ async function withPage(
         .toBuffer({ resolveWithObject: true });
       return { data, width: info.width, height: info.height };
     };
-    const density = (d: number): Promise<void> =>
-      page.evaluate((v) => {
-        const batch = (
-          globalThis as unknown as { __zfightBatch?: { setDensity(band: string, d: number): void } }
-        ).__zfightBatch;
-        if (!batch)
-          throw new Error('no __zfightBatch: patch the tree with scripts/zfight-id-patch.ts');
-        batch.setDensity('near', v);
-      }, d);
+    const density = (d: number, band = 'near', size?: number): Promise<void> =>
+      page.evaluate(
+        ([v, b, s]) => {
+          const batch = (
+            globalThis as unknown as {
+              __zfightBatch?: {
+                setDensity(band: string, d: number): void;
+                setSizeMultiplier(band: string, m: number): void;
+              };
+            }
+          ).__zfightBatch;
+          if (!batch)
+            throw new Error('no __zfightBatch: patch the tree with scripts/zfight-id-patch.ts');
+          batch.setDensity(b, v);
+          if (s !== null) batch.setSizeMultiplier(b, s);
+        },
+        [d, band, size ?? null] as const,
+      );
     await run(shot, density);
   } finally {
     await browser.close();
@@ -204,6 +223,58 @@ if (command === 'flips' && args[0] && args[1]) {
       console.log(`${name}: ${tag} d1 and d09 saved`);
     }
   });
+} else if (command === 'far' && args[0] && args[1] && args[2]) {
+  const [base, out, tag, extra] = args as [string, string, string, string | undefined];
+  const d0 = DEFAULT_BAND_DENSITY.far;
+  const s0 = DEFAULT_BAND_SIZE.far;
+  const d1 = d0 * DENSITY_STEP;
+  const shots: (readonly [string, number, number])[] = [
+    ['far', d0, s0],
+    // The governor's first far shed under the `count` law (density only) and the default `area`
+    // law, which also grows the survivors by sqrt(from / to).
+    ['far-count', d1, s0],
+    ['far-area', d1, s0 * Math.sqrt(d0 / d1)],
+  ];
+  const images = new Map<string, Image>();
+  await withPage(
+    base,
+    `painter${extra ? `&${extra}` : ''}`,
+    async (shot, density) => {
+      for (const [suffix, d, size] of shots) {
+        await density(d, 'far', size);
+        const image = await shot(null);
+        images.set(suffix, image);
+        const raw = { raw: { width: image.width, height: image.height, channels: 3 as const } };
+        await sharp(image.data, raw).png().toFile(`${out}/painter-${tag}-${suffix}.png`);
+      }
+      await density(d0, 'far', s0);
+    },
+    CAPTURE_SIZE,
+  );
+  const before = images.get('far') as Image;
+  const n = before.width * before.height;
+  for (const suffix of ['far-count', 'far-area']) {
+    const after = images.get(suffix) as Image;
+    let changed = 0;
+    let lightToDark = 0;
+    for (let i = 0; i < n; i++) {
+      if (differs(before.data, after.data, i)) changed++;
+      if (luma(before.data, i) > 90 && luma(after.data, i) < 60) lightToDark++;
+    }
+    console.log(
+      `painter ${tag} ${suffix}`,
+      JSON.stringify({
+        from: { density: d0, size: s0 },
+        to: {
+          density: +d1.toFixed(4),
+          size: suffix === 'far-area' ? +(s0 * Math.sqrt(d0 / d1)).toFixed(4) : s0,
+        },
+        frameChangedPct: pct(changed, n),
+        frameLightToDarkPct: pct(lightToDark, n),
+        lightToDarkPx: lightToDark,
+      }),
+    );
+  }
 } else if (command === 'classify' && args[0]) {
   const [out, colourTag = 'colour', idTag = 'id', scope] = args as [
     string,
@@ -252,7 +323,7 @@ if (command === 'flips' && args[0] && args[1]) {
   }
 } else {
   console.error(
-    'usage: bun scripts/zfight-density-probe.ts flips <url> <out> [query] | density <url> <out> <tag> [query] | classify <out> [colour-tag] [id-tag] [all]',
+    'usage: bun scripts/zfight-density-probe.ts flips <url> <out> [query] | density <url> <out> <tag> [query] | far <url> <out> <tag> [query] | classify <out> [colour-tag] [id-tag] [all]',
   );
   process.exit(2);
 }

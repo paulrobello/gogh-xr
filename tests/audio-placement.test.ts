@@ -22,16 +22,10 @@ import {
   CRICKET_HEIGHT,
   CRICKET_XZ,
   CYPRESS_BASE,
-  CYPRESS_LOWER_BASE,
-  CYPRESS_LOWER_RADIUS,
-  CYPRESS_LOWER_TIP,
-  CYPRESS_RADIUS,
   CYPRESS_TIP,
   STEEPLE_TIP,
-  strokeMassesFor,
   windPosition,
 } from '../src/audio/placement.ts';
-import { nearSurface, RUSTLE_WALL_TOP } from '../src/audio/rustle.ts';
 import { createFootprintTest } from '../src/paintings/starry-night/footprints.ts';
 import { boundaryFactor } from '../src/world/boundary.ts';
 import { createCypress } from '../src/world/cypress.ts';
@@ -92,44 +86,6 @@ describe('Starry Night anchors', () => {
     }
     expect(ambience?.beds.filter((b) => b.cue === 'wind-hill')).toHaveLength(1);
     expect(ambience?.bell).toEqual(bellPosition());
-  });
-
-  test('the cypress masses are the seed-1 generator output', () => {
-    close(CYPRESS_LOWER_BASE, cypress.lower.base, 0.01);
-    close(CYPRESS_LOWER_TIP, cypress.lower.tip, 0.01);
-    expect(CYPRESS_RADIUS).toBeGreaterThanOrEqual(cypress.main.maxDiameter / 2);
-    expect(CYPRESS_RADIUS - cypress.main.maxDiameter / 2).toBeLessThan(0.02);
-    expect(CYPRESS_LOWER_RADIUS).toBeGreaterThanOrEqual(cypress.lower.maxDiameter / 2);
-    expect(CYPRESS_LOWER_RADIUS - cypress.lower.maxDiameter / 2).toBeLessThan(0.02);
-  });
-
-  test('the rustle reaches every cypress vertex, and not open air beside the tree', () => {
-    // A ground far below, so only the cypress masses can count.
-    const near = nearSurface(() => -100, undefined, strokeMassesFor('starry-night'));
-    const pos = cypress.geometry.getAttribute('position');
-    for (const mass of [cypress.main, cypress.lower]) {
-      for (let i = mass.firstVertex; i < mass.firstVertex + mass.vertexCount; i++) {
-        expect(near(pos.getX(i), pos.getY(i), pos.getZ(i))).toBe(true);
-      }
-    }
-    const mid = windPosition();
-    expect(near(mid[0], mid[1], mid[2])).toBe(true);
-    expect(near(mid[0] - 4, mid[1], mid[2])).toBe(false);
-    expect(near(CYPRESS_TIP[0], CYPRESS_TIP[1] + 3, CYPRESS_TIP[2])).toBe(false);
-    expect(strokeMassesFor('gallery')).toEqual([]);
-    expect(strokeMassesFor(null)).toEqual([]);
-  });
-
-  test('a footprint counts as a wall only up to the wall top', () => {
-    const near = nearSurface(
-      () => 0,
-      () => true,
-    );
-    expect(near(0, RUSTLE_WALL_TOP - 0.1, 0)).toBe(true);
-    expect(near(0, RUSTLE_WALL_TOP + 0.1, 0)).toBe(false);
-    // The spire tip stays below the wall top over the ground at the tip.
-    const [tx, ty, tz] = village.church.steepleTip;
-    expect(ty - terrain.heightAt(tx, tz)).toBeLessThan(RUSTLE_WALL_TOP);
   });
 
   test('the gallery and the bare scene have no positional ambience', () => {

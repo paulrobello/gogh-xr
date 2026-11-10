@@ -17,12 +17,6 @@ export const BELL_BELOW_TIP = 3;
 /** Seed-1 base and tip of the main cypress mass (`CypressMass.base`, `.tip`). */
 export const CYPRESS_BASE: Vec3 = Object.freeze([-2.99, -5.19, -9.35]) as Vec3;
 export const CYPRESS_TIP: Vec3 = Object.freeze([-4.68, 9.42, -8.84]) as Vec3;
-/** Seed-1 half of the main mass's widest ring (`CypressMass.maxDiameter / 2`), rounded up. */
-export const CYPRESS_RADIUS = 1.47;
-/** Seed-1 base, tip and half widest ring of the lower cypress mass, rounded up. */
-export const CYPRESS_LOWER_BASE: Vec3 = Object.freeze([-1.5, -5.34, -9.86]) as Vec3;
-export const CYPRESS_LOWER_TIP: Vec3 = Object.freeze([-2.99, 2.93, -9.54]) as Vec3;
-export const CYPRESS_LOWER_RADIUS = 1.35;
 /** The wind sits this far up the cypress axis, base 0 to tip 1: the hillside crown of the tree. */
 export const WIND_AXIS_T = 0.5;
 /** Cricket sources on the grass, world xz: around the painter's hill, short of the village. */
@@ -72,20 +66,4 @@ export function ambienceFor(
     beds.push({ cue: 'crickets', position: [x, ground.heightAt(x, z) + CRICKET_HEIGHT, z] });
   }
   return { beds, bell: bellPosition() };
-}
-
-/** A stroke mass the rustle tests against: points within `radius` of the segment `a`–`b`. */
-export interface Capsule {
-  readonly a: Vec3;
-  readonly b: Vec3;
-  readonly radius: number;
-}
-
-/** The free-standing stroke masses of world `worldId` that its ground and walls do not cover. */
-export function strokeMassesFor(worldId: string | null): readonly Capsule[] {
-  if (worldId !== 'starry-night') return [];
-  return [
-    { a: CYPRESS_BASE, b: CYPRESS_TIP, radius: CYPRESS_RADIUS },
-    { a: CYPRESS_LOWER_BASE, b: CYPRESS_LOWER_TIP, radius: CYPRESS_LOWER_RADIUS },
-  ];
 }

@@ -12,6 +12,7 @@ import { loadavg } from 'node:os';
 import type { Page } from '@playwright/test';
 import sharp from 'sharp';
 import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
+import { DEFAULT_BAND_SIZE } from '../../src/render/strokes/bands.ts';
 import { COVERAGE_POSES, type CoveragePose } from '../world-poses';
 import { luma, shiftAt } from './block-match';
 import { expect, glErrors, test, type Xr } from './fixtures';
@@ -216,8 +217,17 @@ test('wheel: each core advances about its centre at every sample of a full turn,
   for (const [w, wheel] of WHEELS.slice(0, 2).entries()) {
     const { share, half, step } = probes[w];
     const before = load();
+    const perProbe: number[][] = [[], [], [], []];
     await bootWorld(xr, `painter&nohalo&wrap=wheel&motiont=0&motionlayers=sky`);
     await hideHud(page, xr);
+    // Every band at density 1, as in motion.spec's painterShot: the dome draws the suffix of its
+    // order (`drawsSuffix`), so a density below 1 would hand the block match a different far-band
+    // sample. The coverage sweeps keep the shipped densities, so this stays out of bootWorld.
+    await page.evaluate((size) => {
+      if (!window.__goghBands) throw new Error('__goghBands is e2e-only');
+      window.__goghBands({ density: { near: 1, mid: 1, far: 1 }, size });
+    }, DEFAULT_BAND_SIZE);
+    await xr.waitFrames(5);
     const points = [0, 1, 2, 3].map((k) => {
       const a = (k * Math.PI) / 2 + 0.3;
       const r = share * wheel.radius;
@@ -258,13 +268,15 @@ test('wheel: each core advances about its centre at every sample of a full turn,
         rows.push(row);
         console.log(`[e2e] sky wheel turn row: ${row}`);
         const ratio = along / Math.hypot(px, py);
-        // The left wheel at every probe: a reset would turn a probe back, and a still veil would
-        // pull it toward 0 (fix round 3: all 56 at 0.88 to 1.19).
+        // The left wheel at every reading: a reset turns a probe back, to 0 or below. With every
+        // band at density 1 the 21 px block reads 0.497 to 1.325 over a turn (2026-11-10, 56
+        // readings), so the floor sits well clear of a reset and of that noise.
         if (w === 0) {
-          expect(ratio, `${wheel.note} t ${t} probe ${i}`).toBeGreaterThan(0.5);
-          expect(ratio, `${wheel.note} t ${t} probe ${i}`).toBeLessThan(1.5);
+          expect.soft(ratio, `${wheel.note} t ${t} probe ${i}`).toBeGreaterThan(0.3);
+          expect.soft(ratio, `${wheel.note} t ${t} probe ${i}`).toBeLessThan(1.5);
         }
         ratios.push(ratio);
+        perProbe[i].push(ratio);
       });
       // At about the predicted pace, as the median of the four probes. The right wheel's single
       // probes stay on the median: its 13 px blocks over a 3.5 px shift are noisy, and in fix round
@@ -276,9 +288,19 @@ test('wheel: each core advances about its centre at every sample of a full turn,
           .sort((p, q) => p - q)
           .slice(1, 3)
           .reduce((p, q) => p + q) / 2;
-      expect(median, `${wheel.note} t ${t} median pace`).toBeGreaterThan(0.5);
-      expect(median, `${wheel.note} t ${t} median pace`).toBeLessThan(1.5);
+      expect.soft(median, `${wheel.note} t ${t} median pace`).toBeGreaterThan(0.5);
+      expect.soft(median, `${wheel.note} t ${t} median pace`).toBeLessThan(1.5);
     }
+    // Each probe's median over the turn: a still veil over a fixed pixel reads low at every time.
+    // Measured 2026-11-10 at density 1: left 0.993 to 1.091, right 0.804 to 1.002.
+    const [lo, hi] = w === 0 ? [0.8, 1.25] : [0.6, 1.4];
+    perProbe.forEach((rs, i) => {
+      const s = [...rs].sort((p, q) => p - q);
+      const mid = s.length / 2;
+      const m = s.length % 2 ? s[Math.floor(mid)] : (s[mid - 1] + s[mid]) / 2;
+      expect.soft(m, `${wheel.note} probe ${i} median over the turn`).toBeGreaterThan(lo);
+      expect.soft(m, `${wheel.note} probe ${i} median over the turn`).toBeLessThan(hi);
+    });
     console.log(`[e2e] sky wheel turn ${wheel.note}: load ${before} before, ${load()} after`);
   }
   console.log(`[e2e] sky wheel turn:\n${rows.join('\n')}`);

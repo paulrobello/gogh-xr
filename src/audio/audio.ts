@@ -14,11 +14,13 @@
  * ignored while presenting, so an engine that reports the 2D page hidden in immersive mode cannot
  * silence the headset.
  */
+
+import type { StrokeReach } from '../render/strokes/reach-field';
 import type { AudioContextLike } from './context';
 import { type AudioFormat, CUE_IDS, type CueId, pickFormat, type ScoreId, scoreFor } from './cues';
 import { createMixer, MAX_SFX_VOICES, type Mixer, type MixerDiag } from './mixer';
-import { type Ambience, ambienceFor, strokeMassesFor, type Vec3 } from './placement';
-import { createRustleTrigger, type NearStrokes, nearSurface } from './rustle';
+import { type Ambience, ambienceFor, type Vec3 } from './placement';
+import { createRustleTrigger, type NearStrokes, nearStrokes } from './rustle';
 
 interface XyzW {
   readonly x: number;
@@ -27,10 +29,11 @@ interface XyzW {
   readonly w: number;
 }
 
-/** The built world's parts the audio reads: its ground, and its walls for the rustle. */
+/** The built world's parts the audio reads: its ground, and its stroke reach for the rustle. */
 export interface AudioWorld {
   readonly ground: { heightAt(x: number, z: number): number };
-  blocked?(x: number, z: number): boolean;
+  /** Omitted: the world's strokes do not react to the hands, so nothing rustles. */
+  readonly strokeReach?: Pick<StrokeReach, 'distance'>;
 }
 
 /** The camera that rendered the frame: its world matrix (column-major). */
@@ -83,8 +86,11 @@ export interface AudioHost {
   /** A portal transition starts toward world `target`: the whoosh, and the score crossfade. */
   transition(target: string | null): void;
   setVolumes(music: number, sfx: number): void;
-  /** After the frame's render: the listener, the bell, the rustle. `calm` 0 stops the rustle. */
-  frame(camera: ListenerSource, calm: number): void;
+  /**
+   * After the frame's render: the listener, the bell, the rustle. The rustle needs `calm` above 0
+   * and `reactive`, the reactive motion's gate (`?noanim`, `?motionlayers`), as the orbs do.
+   */
+  frame(camera: ListenerSource, calm: number, reactive: boolean): void;
   sessionStart(
     session: Pick<XRSession, 'addEventListener' | 'removeEventListener' | 'visibilityState'>,
   ): void;
@@ -206,12 +212,8 @@ export function createAudioHost(deps: AudioHostDeps): AudioHost {
       setAmbience(world ? ambienceFor(id, world.ground) : null);
       // Only a painting's strokes react (the gallery's motion mask is 0).
       near =
-        world && id !== null && id !== 'gallery'
-          ? nearSurface(
-              (x, z) => world.ground.heightAt(x, z),
-              world.blocked ? (x, z) => world.blocked?.(x, z) ?? false : undefined,
-              strokeMassesFor(id),
-            )
+        world?.strokeReach && id !== null && id !== 'gallery'
+          ? nearStrokes(world.strokeReach)
           : null;
       trigger.reset();
     },
@@ -228,7 +230,7 @@ export function createAudioHost(deps: AudioHostDeps): AudioHost {
     setVolumes(music, sfx) {
       mixer?.setVolumes(music, sfx);
     },
-    frame(camera, calm) {
+    frame(camera, calm, reactive) {
       if (!mixer || mixer.disposed) return;
       const e = camera.matrixWorld.elements;
       position[0] = e[12];
@@ -244,7 +246,7 @@ export function createAudioHost(deps: AudioHostDeps): AudioHost {
       up[2] = e[6] / ul;
       mixer.setListener(pose);
       mixer.frame();
-      if (near && calm > 0 && deps.presenting()) {
+      if (near && calm > 0 && reactive && deps.presenting()) {
         const fired = trigger.frame(deps.disturbers.positions, deps.disturbers.velocities, near);
         for (const p of fired) mixer.rustle(p as Vec3);
       }

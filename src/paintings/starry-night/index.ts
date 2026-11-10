@@ -9,6 +9,7 @@ import { buildFlowFieldSteps } from '../../demo/canvas/field';
 import { type DiagToken, registerDiag, unregisterDiag } from '../../diag/diag';
 import { createSkyHalo, type SkyHalo } from '../../render/sky-halo';
 import { createStrokeBatchSteps, type StrokeBatch } from '../../render/strokes/batch';
+import { buildStrokeReachSteps, chunkSources } from '../../render/strokes/reach-field';
 import {
   BUILD_SHA,
   createIndexedDbStorage,
@@ -63,6 +64,8 @@ export interface WorldBuildTimes {
   scatterMs: number;
   /** `createStrokeBatch`, atlas excluded. */
   batchMs: number;
+  /** The stroke reach field over the batch's chunks (`buildStrokeReachSteps`). */
+  reachMs: number;
   /** All of the above. */
   buildMs: number;
 }
@@ -131,13 +134,24 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     material.uniforms.uSkyLightFeathers.value = featherUniforms;
   }
   const batched = performance.now();
+  // The dome and its moon and stars sit 120 m out (SKY_DOME_RADIUS), and no locomotion brings a
+  // hand near them: flight stops at 55 m and 40 m up, and the ground ends at the ridge inside the
+  // dome. Every other stroke, the boundary haze included, can be pushed by a hand.
+  const strokeReach = await run(
+    buildStrokeReachSteps(
+      chunkSources(batch.chunks.filter((c) => c.drawClass !== 'dome' && c.drawClass !== 'lights')),
+    ),
+    'reach',
+  );
+  const reached = performance.now();
   const atlasMs = batch.stats().atlasMs;
   const times: WorldBuildTimes = {
     decodeMs: decoded - start,
     generateMs: generated - decoded,
     scatterMs: scattered - generated,
     batchMs: batched - scattered - atlasMs,
-    buildMs: batched - start - atlasMs,
+    reachMs: reached - batched,
+    buildMs: reached - start - atlasMs,
   };
 
   const { scene } = deps;
@@ -194,6 +208,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     times,
     cache,
     strokes: batch.stats(),
+    reach: strokeReach.stats,
   }));
   registerDiag('halo', () => ({ visible: halo.mesh.visible, halos: halo.state() }));
   const { heightAt, normalAt } = world.terrain;
@@ -218,6 +233,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     setHaze,
     setHalo,
     halo: halo.mesh,
+    strokeReach,
   };
 }
 

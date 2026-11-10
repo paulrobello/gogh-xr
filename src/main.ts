@@ -25,7 +25,7 @@ import { skyWrapStats } from './diag/sky-wrap-stats';
 import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
 import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
 import { MOTION_TIME_WRAP_S, motionClock } from './motion/clock';
-import { MOTION_LAYER_MASK } from './motion/motion';
+import { MOTION_LAYER_MASK, reactiveGate } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { SKY_WAVE_PER_TURN } from './motion/sky-swirl';
 import { trackerTime } from './motion/tracker-time';
@@ -47,6 +47,7 @@ import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
 import { STROKE_LAYER } from './render/strokes/instance';
 import { pinMotionPhase } from './render/strokes/material';
+import { memoReach } from './render/strokes/reach-memo';
 import { createZdiag } from './render/zdiag';
 import { applySettingsChange, type HudLive } from './settings/apply';
 import {
@@ -298,8 +299,9 @@ const handOrbsState: Mutable<HandOrbsFrame> = {
   enabled: false,
   presenting: false,
   disturbers: reactiveTracker.uniforms.uDisturbers.value,
-  velocities: reactiveTracker.uniforms.uDisturberVelocities.value,
   slots: handSlots,
+  strokeReach: null,
+  reactive: false,
   calm: 1,
   dt: 0,
 };
@@ -314,6 +316,7 @@ function frameHandOrbs(presenting: boolean, dt: number): void {
   }
   handOrbsState.enabled = settingsStore.effective.handOrbs;
   handOrbsState.presenting = presenting;
+  handOrbsState.reactive = reactiveGate(motionClock.uniforms.uMotionLayers.value);
   handOrbsState.calm = settingsStore.effective.calm;
   handOrbsState.dt = dt;
   handOrbs.frame(handOrbsState);
@@ -715,6 +718,7 @@ function renderFrame(time: number, frame?: XRFrame): void {
   audio?.frame(
     renderer.xr.isPresenting ? renderer.xr.getCamera() : camera,
     settingsStore.effective.calm,
+    reactiveGate(motionClock.uniforms.uMotionLayers.value),
   );
   if (abSwitchStart !== null && abSwitch) {
     abSwitch.frameMs = performance.now() - abSwitchStart;
@@ -929,9 +933,15 @@ function bindWorld({ id, module, handle }: LiveWorld): void {
   skyBatch = batch;
   buildArc(batch.atlas);
   reactiveBatch = batch;
+  // One memory for both readers: the rustle asks about the hand points the orbs just asked about.
+  const strokeReach = handle.strokeReach ? memoReach(handle.strokeReach) : null;
+  handOrbsState.strokeReach = strokeReach;
   void strokes.bind(batch);
   registerGalleryReturn(id === GALLERY_ID ? null : () => void switcher.go(GALLERY_ID, 'return'));
-  audio?.setWorld(id, handle);
+  audio?.setWorld(
+    id,
+    strokeReach ? { ground: handle.ground, strokeReach } : { ground: handle.ground },
+  );
 }
 
 /** Releases every binding to the active world, before its module disposes it. */
@@ -942,6 +952,7 @@ function unbindWorld(): void {
   world = null;
   haloWorld = null;
   reactiveBatch = null;
+  handOrbsState.strokeReach = null;
   skyBatch = null;
   // Drops the old world's handle, then holds the rig's height until the next world's ground binds.
   locomotion.setWorld(null);

@@ -8,6 +8,7 @@ import type { VolumeQuery } from '../locomotion/teleport';
 import type { WalkBounds } from '../locomotion/walk-bounds';
 import type { StrokeBatch } from '../render/strokes/batch';
 import type { Vec3 } from '../render/strokes/frame';
+import type { StrokeReach } from '../render/strokes/reach-field';
 import { drain, type Slicer, type Steps } from '../util/slicer';
 import { withTimeout } from '../util/timeout';
 
@@ -135,6 +136,12 @@ export interface WorldHandle {
    * compile them before the world shows. Omitted: nothing comes after the build.
    */
   readonly ready?: Promise<void>;
+  /**
+   * The distance from a point to the nearest stroke a hand can push, out to the hand's reach
+   * (src/render/strokes/reach-field.ts): the hand orbs brighten and the rustle fires by it.
+   * Omitted: a world whose strokes do not react to the hands (the gallery).
+   */
+  readonly strokeReach?: StrokeReach;
 }
 
 export interface WorldModule {

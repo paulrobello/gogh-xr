@@ -12,6 +12,10 @@ import { aim, controlPoint, panel, SETTINGS_KEY, setButton, settings } from './h
 interface HandOrbsDiag {
   enabled: boolean;
   visible: [boolean, boolean];
+  /** Metres to the nearest stroke a hand pushes, or null past its 0.13 m reach. */
+  reach: [number | null, number | null];
+  /** The eased boost, 0-1. */
+  boost: [number, number];
 }
 
 /** IWER's stereo views: three draws each visible mesh once per view. */
@@ -87,10 +91,10 @@ test('the Hand orbs toggle shows and hides one orb per hand in XR only, and pers
   test.setTimeout(120_000);
   await xr.boot('noanim&shot&scene=bare');
   // On by default, and never drawn on the desktop.
-  expect(await orbs(xr)).toEqual({ enabled: true, visible: [false, false] });
+  expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [false, false] });
   await xr.enterXR();
   await restHands(xr);
-  expect(await orbs(xr)).toEqual({ enabled: true, visible: [true, true] });
+  expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [true, true] });
   const shown = await calls(xr);
 
   await flipToggle(page, xr);
@@ -98,14 +102,14 @@ test('the Hand orbs toggle shows and hides one orb per hand in XR only, and pers
   await expect
     .poll(() => page.evaluate((k) => localStorage.getItem(k), SETTINGS_KEY))
     .toContain('"handOrbs":false');
-  expect(await orbs(xr)).toEqual({ enabled: false, visible: [false, false] });
+  expect(await orbs(xr)).toMatchObject({ enabled: false, visible: [false, false] });
   const hidden = await calls(xr);
   await reachHands(xr);
   const off = await canvasPixels(page);
 
   // This open happens with the hands at reach, where neither laser hovers a control.
   await flipToggle(page, xr);
-  expect(await orbs(xr)).toEqual({ enabled: true, visible: [true, true] });
+  expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [true, true] });
   const again = await calls(xr);
   await reachHands(xr);
   const on = await canvasPixels(page);
@@ -127,7 +131,7 @@ test('an untracked hand has no orb', async ({ page, xr }) => {
   await xr.boot('noanim&scene=bare');
   await xr.enterXR();
   await restHands(xr);
-  expect(await orbs(xr)).toEqual({ enabled: true, visible: [true, true] });
+  expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [true, true] });
   const both = await calls(xr);
   await page.evaluate(() => {
     const left = window.__goghIwer?.controllers.left;
@@ -135,8 +139,39 @@ test('an untracked hand has no orb', async ({ page, xr }) => {
     left.connected = false;
   });
   await xr.waitFrames(6);
-  expect(await orbs(xr)).toEqual({ enabled: true, visible: [false, true] });
+  expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [false, true] });
   expect(both - (await calls(xr))).toBe(VIEWS);
+});
+
+test('an orb brightens at the paint and stays at rest 1.5 m over the meadow (seed 1)', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(240_000);
+  await xr.boot('painting=starry-night&seed=1&nogov');
+  await expect
+    .poll(async () => (await xr.diag()).world !== undefined, { timeout: 120_000 })
+    .toBe(true);
+  await xr.enterXR();
+  // The rig stands on the painter's spot, where the seed-1 ground is flat at y = 0: the right hand
+  // 5 cm over the grass, the left one 1.5 m over it.
+  await xr.setPose({
+    head: { position: [0, 1.6, 0], quaternion: [0, 0, 0, 1] },
+    left: { position: [-0.2, 1.5, -0.4] },
+    right: { position: [0.2, 0.05, -0.4] },
+  });
+  await page.waitForTimeout(1000);
+  await xr.waitFrames(6);
+  const o = await orbs(xr);
+  console.log(`[e2e] hand orbs reach ${JSON.stringify(o.reach)}, boost ${JSON.stringify(o.boost)}`);
+  expect(o.visible).toEqual([true, true]);
+  expect(o.reach[0]).toBeNull();
+  expect(o.boost[0]).toBe(0);
+  expect(o.reach[1]).not.toBeNull();
+  expect(o.reach[1] as number).toBeLessThan(0.13);
+  expect(o.boost[1]).toBeGreaterThan(0.4);
+  const world = (await xr.diag()).world as { reach: { strokes: number } };
+  expect(world.reach.strokes).toBeGreaterThan(300_000);
 });
 
 async function shot(page: Page, file: string): Promise<void> {
@@ -176,7 +211,7 @@ test.describe('the look', () => {
     });
     await page.waitForTimeout(1500);
     await xr.waitFrames(6);
-    expect(await orbs(xr)).toEqual({ enabled: true, visible: [true, true] });
+    expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [true, true] });
     await shot(page, 'docs/shots/hand-orbs.png');
 
     // The panel open in front: the left hand ahead of it glows over it, the right one behind it is
@@ -197,7 +232,7 @@ test.describe('the look', () => {
     });
     await page.waitForTimeout(500);
     await xr.waitFrames(6);
-    expect(await orbs(xr)).toEqual({ enabled: true, visible: [true, true] });
+    expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [true, true] });
     await shot(page, 'docs/shots/hand-orbs-panel.png');
   });
 });

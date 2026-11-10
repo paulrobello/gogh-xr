@@ -10,11 +10,12 @@
  * Look. A bright soft core of about `ORB_CORE_RADIUS` and a halo that falls to 0 at
  * `ORB_GLOW_RADIUS`, additive, warm white in the core and Starry Night's moon yellow outside. The
  * fragment shader shades by how close each eye ray passes to the centre, so there is no facet or
- * hard edge. While the hand moves it brightens and its glow grows a little: the hand's speed over
- * `WAKE_REF_SPEED`, times calm, stands in for "moving strokes" (a moving hand drags and swirls
- * them). It does not check that any stroke is in reach: measured at 46 hand positions, the stroke
- * batch's chunk boxes (4 m cells) contain the hand at all but one, strokes or not, and the ground
- * height alone misses the cypress and the walls. No cheap per-hand nearest-stroke query exists.
+ * hard edge. Within a hand's paint reach of a stroke it brightens and its glow grows a little, so
+ * it lights up exactly where the paint moves: the world's stroke reach field
+ * (src/render/strokes/reach-field.ts) gives the distance q from the hand to the nearest stroke's
+ * quad, as the reactive shader measures it, and the boost is 1 - (q / HAND_RADIUS)² times calm,
+ * eased. It reads 0 where the strokes do not react (the gallery, `?noanim`, calm 0). The hand's
+ * speed plays no part: a still hand at the paint pushes it too.
  *
  * Cost. One mesh per hand, one draw per view each while shown, covering only the glow's disc. It
  * depth-tests against the scene and writes no depth, so it never cuts holes in the strokes. What
@@ -41,9 +42,10 @@ import {
   SphereGeometry,
   type Vector4,
 } from 'three';
-import { WAKE_REF_SPEED } from '../motion/reactive';
+import { HAND_RADIUS } from '../motion/reactive';
 import fragmentShader from './hand-orbs.frag.glsl?raw';
 import vertexShader from './hand-orbs.vert.glsl?raw';
+import type { StrokeReach } from './strokes/reach-field';
 
 /**
  * Metres: the bright core's radius (its glow is 1/e there). Paul's 2026-11-09 headset check asked
@@ -71,17 +73,18 @@ export const ORB_GAIN: number = 0.45;
 export const ORB_CORE_SHARE: number = 0.85;
 export const ORB_HALO_SHARE: number = 0.3;
 /**
- * The extra gain share at full speed (the gain reaches ORB_GAIN × (1 + ORB_BOOST)): a peak of 0.72
- * and a mean over the grown disc of 0.122 at full speed, against a saturated 1.0 and 0.258 before.
+ * The extra gain share at full boost, the hand at the paint (the gain reaches ORB_GAIN × (1 +
+ * ORB_BOOST)): a peak of 0.72 and a mean over the grown disc of 0.122, against a saturated 1.0 and
+ * 0.258 before.
  */
 export const ORB_BOOST: number = 0.4;
-/** The glow's extra size at full speed (its radius reaches ORB_GLOW_RADIUS × (1 + ORB_GROW)). */
+/** The glow's extra size at full boost (its radius reaches ORB_GLOW_RADIUS × (1 + ORB_GROW)). */
 export const ORB_GROW: number = 0.2;
 /** The camera's near plane, metres (main.ts). */
 export const ORB_NEAR: number = 0.1;
 /** Metres past the near plane at which the orb switches to back faces. */
 export const ORB_NEAR_MARGIN: number = 0.03;
-/** Seconds: the time constant the speed boost eases with. */
+/** Seconds: the time constant the boost eases with. */
 export const ORB_BOOST_TAU_S: number = 0.15;
 /**
  * Transparent: after every opaque object (the strokes), and before transparent UI of order 0 and
@@ -104,10 +107,12 @@ export interface HandOrbsFrame {
    * head, whose position is the eye the near-plane check below reads.
    */
   readonly disturbers: readonly Vector4[];
-  /** The reactive tracker's `uDisturberVelocities`: xyz m/s. */
-  readonly velocities: readonly Vector4[];
   /** Per hand (left, right), its disturber index, or -1 when no slot holds that hand. */
   readonly slots: readonly [number, number];
+  /** The bound world's stroke reach field, or null for a world without one. */
+  readonly strokeReach: Pick<StrokeReach, 'distance'> | null;
+  /** The reactive motion's gate is open (`uMotionLayers`): strokes move for a hand at all. */
+  readonly reactive: boolean;
   /** Motion calm, 0-1: the reactive push scales with it, so the boost does too. */
   readonly calm: number;
   /** Seconds since the last frame. */
@@ -118,6 +123,10 @@ export interface HandOrbsDiag {
   enabled: boolean;
   /** Left, right. */
   visible: [boolean, boolean];
+  /** Left, right: metres to the nearest stroke the hand pushes, or null past its reach. */
+  reach: [number | null, number | null];
+  /** Left, right: the eased boost, 0-1. */
+  boost: [number, number];
 }
 
 export interface HandOrbs {
@@ -134,6 +143,7 @@ const glslFloat = (value: number): string => value.toExponential(8);
 export function createHandOrbs(parent: Object3D): HandOrbs {
   const geometry = new SphereGeometry(ORB_GLOW_RADIUS * ORB_MESH_MARGIN, 24, 16);
   const boost: [number, number] = [0, 0];
+  const nearest: [number, number] = [Infinity, Infinity];
   let enabled = false;
   const make = (hand: Hand): Mesh => {
     const material = new RawShaderMaterial({
@@ -181,12 +191,17 @@ export function createHandOrbs(parent: Object3D): HandOrbs {
         mesh.visible = show;
         if (!show || !d) {
           boost[h] = 0;
+          nearest[h] = Infinity;
           continue;
         }
         mesh.position.set(d.x, d.y, d.z);
-        const v = state.velocities[slot];
-        const speed = v ? Math.hypot(v.x, v.y, v.z) : 0;
-        const target = Math.min(speed / WAKE_REF_SPEED, 1) * Math.min(Math.max(state.calm, 0), 1);
+        const q =
+          state.reactive && state.strokeReach
+            ? state.strokeReach.distance(d.x, d.y, d.z)
+            : Infinity;
+        nearest[h] = q;
+        const x = q / HAND_RADIUS;
+        const target = x < 1 ? (1 - x * x) * Math.min(Math.max(state.calm, 0), 1) : 0;
         boost[h] = (boost[h] ?? 0) + (target - (boost[h] ?? 0)) * ease;
         const b = boost[h] ?? 0;
         const uniforms = (mesh.material as RawShaderMaterial).uniforms;
@@ -202,7 +217,13 @@ export function createHandOrbs(parent: Object3D): HandOrbs {
       }
     },
     diag() {
-      return { enabled, visible: [meshes[0].visible, meshes[1].visible] };
+      const near = (q: number): number | null => (Number.isFinite(q) ? q : null);
+      return {
+        enabled,
+        visible: [meshes[0].visible, meshes[1].visible],
+        reach: [near(nearest[0]), near(nearest[1])],
+        boost: [boost[0], boost[1]],
+      };
     },
     dispose() {
       for (const mesh of meshes) {

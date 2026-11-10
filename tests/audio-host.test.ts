@@ -7,7 +7,12 @@ import { Matrix4, Vector3, Vector4 } from 'three';
 import { describe, expect, test } from 'vitest';
 import { type AudioHostDeps, createAudioHost } from '../src/audio/audio.ts';
 import { CUE_IDS, type CueId, MANIFEST_PATH } from '../src/audio/cues.ts';
-import { createRustleTrigger, nearSurface, RUSTLE_SPEED } from '../src/audio/rustle.ts';
+import {
+  createRustleTrigger,
+  nearStrokes,
+  RUSTLE_REACH,
+  RUSTLE_SPEED,
+} from '../src/audio/rustle.ts';
 import { audioBytes, FakeAudioContext, settle } from './audio-fake.ts';
 
 interface HostRig {
@@ -64,13 +69,17 @@ function hostRig(overrides: Partial<AudioHostDeps> = {}, files = true): HostRig 
 }
 
 const ground = { heightAt: () => 0 };
+/** A painted floor at y = 0: the distance is the height, out to a hand's reach. */
+const floorReach = {
+  distance: (_x: number, y: number) => (Math.abs(y) < RUSTLE_REACH ? Math.abs(y) : Infinity),
+};
 const camera = { matrixWorld: new Matrix4() };
 
 describe('unlock', () => {
   test('no context until the first pointerdown, and only one after many gestures', async () => {
     const { host, contexts, win } = hostRig();
     host.setWorld('gallery', { ground });
-    host.frame(camera, 1);
+    host.frame(camera, 1, true);
     expect(contexts).toHaveLength(0);
     expect(host.diag()).toMatchObject({ state: 'none', unlocked: false });
     expect(host.diag().score.target).toBe('score-gallery');
@@ -124,7 +133,7 @@ describe('unlock', () => {
     host.unlock();
     await settle();
     host.transition('gallery');
-    host.frame(camera, 1);
+    host.frame(camera, 1, true);
     expect(host.diag()).toMatchObject({ unlocked: true, manifest: 'missing' });
     expect(host.diag().voices).toMatchObject({ music: 0, sfx: 0 });
   });
@@ -208,7 +217,7 @@ describe('listener and rustle', () => {
     const { host, contexts } = hostRig();
     host.unlock();
     const m = new Matrix4().makeRotationY(Math.PI / 2).setPosition(new Vector3(1, 1.6, -2));
-    host.frame({ matrixWorld: m }, 1);
+    host.frame({ matrixWorld: m }, 1, true);
     const l = contexts[0].listener;
     expect([l.positionX.value, l.positionY.value, l.positionZ.value]).toEqual([1, 1.6, -2]);
     // Yaw +90° turns -Z to -X.
@@ -217,49 +226,72 @@ describe('listener and rustle', () => {
     expect(l.upY.value).toBeCloseTo(1, 6);
   });
 
-  test('a fast hand near the ground rustles in a painting in XR, never in the gallery or at calm 0', async () => {
+  test('a fast hand at the paint rustles in a painting in XR, never in the gallery or at calm 0', async () => {
     const { host, state, positions, velocities } = hostRig();
     host.unlock();
     await settle();
     state.presenting = true;
-    positions[1].set(0, 0.2, -1, 1);
+    positions[1].set(0, 0.1, -1, 1);
     velocities[1].set(RUSTLE_SPEED + 0.5, 0, 0, 0);
-    host.setWorld('gallery', { ground });
-    host.frame(camera, 1);
+    host.setWorld('gallery', { ground, strokeReach: floorReach });
+    host.frame(camera, 1, true);
     expect(host.diag().rustle.played).toBe(0);
-    host.setWorld('starry-night', { ground });
-    host.frame(camera, 0);
+    host.setWorld('starry-night', { ground, strokeReach: floorReach });
+    host.frame(camera, 0, true);
     expect(host.diag().rustle.played).toBe(0);
-    host.frame(camera, 1);
+    host.frame(camera, 1, true);
     expect(host.diag().rustle.played).toBe(1);
+  });
+
+  test('no rustle while the reactive gate is shut (?noanim, ?motionlayers), as the orbs stay dim', async () => {
+    const { host, state, positions, velocities } = hostRig();
+    host.unlock();
+    await settle();
+    state.presenting = true;
+    positions[1].set(0, 0.1, -1, 1);
+    velocities[1].set(RUSTLE_SPEED + 0.5, 0, 0, 0);
+    host.setWorld('starry-night', { ground, strokeReach: floorReach });
+    host.frame(camera, 1, false);
+    expect(host.diag().rustle.played).toBe(0);
+    host.frame(camera, 0, true);
+    expect(host.diag().rustle.played).toBe(0);
+    host.frame(camera, 1, true);
+    expect(host.diag().rustle.played).toBe(1);
+  });
+
+  test('a painting without a stroke reach field never rustles', async () => {
+    const { host, state, positions, velocities } = hostRig();
+    host.unlock();
+    await settle();
+    state.presenting = true;
+    positions[1].set(0, 0, -1, 1);
+    velocities[1].set(RUSTLE_SPEED + 0.5, 0, 0, 0);
+    host.setWorld('starry-night', { ground });
+    host.frame(camera, 1, true);
+    expect(host.diag().rustle.played).toBe(0);
   });
 
   test('the trigger fires once per push and re-arms when the hand slows', () => {
     const trigger = createRustleTrigger();
-    const near = nearSurface(() => 0);
-    const p = [new Vector4(0, 0, 0, 0.4), new Vector4(0, 0.3, 0, 1), new Vector4(0, 2, 0, 1)];
+    const near = nearStrokes(floorReach);
+    const p = [new Vector4(0, 0, 0, 0.4), new Vector4(0, 0.1, 0, 1), new Vector4(0, 2, 0, 1)];
     const v = [new Vector4(), new Vector4(1, 0, 0), new Vector4(1, 0, 0)];
     // The head never rustles, the high hand is not near strokes.
-    expect(trigger.frame(p, v, near)).toEqual([[0, 0.3, 0]]);
+    expect(trigger.frame(p, v, near)).toEqual([[0, 0.1, 0]]);
     expect(trigger.frame(p, v, near)).toEqual([]);
     v[1].set(0.4, 0, 0, 0);
     expect(trigger.frame(p, v, near)).toEqual([]);
     v[1].set(0.1, 0, 0, 0);
     trigger.frame(p, v, near);
     v[1].set(1, 0, 0, 0);
-    expect(trigger.frame(p, v, near)).toEqual([[0, 0.3, 0]]);
+    expect(trigger.frame(p, v, near)).toEqual([[0, 0.1, 0]]);
     // An untracked hand (strength 0) re-arms.
     p[1].w = 0;
     expect(trigger.frame(p, v, near)).toEqual([]);
     p[1].w = 1;
-    expect(trigger.frame(p, v, near)).toEqual([[0, 0.3, 0]]);
-    // Near a wall the world reports, well above the ground and below the wall top.
-    const walls = nearSurface(
-      () => -5,
-      (x) => x > 5,
-    );
-    p[2].set(6, 2, 0, 1);
-    v[2].set(1, 0, 0, 0);
-    expect(createRustleTrigger().frame(p, v, walls)).toEqual([[6, 2, 0]]);
+    expect(trigger.frame(p, v, near)).toEqual([[0, 0.1, 0]]);
+    // The reach is the hand's paint reach: 0.2 m over the paint does not rustle.
+    p[1].set(0, 0.2, 0, 1);
+    expect(createRustleTrigger().frame(p, v, near)).toEqual([]);
   });
 });

@@ -80,9 +80,9 @@ export interface StrokeChunk {
   /** Instances drawn, `geometry.instanceCount`: the run from `drawStart` on. */
   readonly drawCount: number;
   /**
-   * First instance drawn. A world or overlay chunk of a nowrite batch (`drawsSuffix`) draws the
-   * last `drawCount` instances, so a density cut drops its earliest-drawn strokes, which lie under
-   * the rest, and `drawStart` is `count - drawCount` (0 while it draws none). Any other chunk
+   * First instance drawn. A dome, world or overlay chunk of a nowrite batch (`drawsSuffix`) draws
+   * the last `drawCount` instances, so a density cut drops its earliest-drawn strokes, which lie
+   * under the rest, and `drawStart` is `count - drawCount` (0 while it draws none). Any other chunk
    * draws a prefix, from 0.
    */
   readonly drawStart: number;
@@ -418,23 +418,23 @@ function createQuadAttributes(): { position: BufferAttribute; index: BufferAttri
  * the stroke drawn last is on top, so a prefix cut would drop the topmost strokes and repaint the
  * surface at every band switch and density shed (docs/verification.md, density cuts from below).
  * A suffix drops the earliest drawn, under the rest. The importance order's keys are symmetric,
- * so a suffix is as evenly stratified as a prefix. Only world and overlay chunks of a nowrite batch
- * take it, so a new draw class keeps the prefix until it opts in:
+ * so a suffix is as evenly stratified as a prefix. Only dome, world and overlay chunks of a nowrite
+ * batch take it, so a new draw class keeps the prefix until it opts in:
  *
  * - The lights and the cypress write depth while they draw (`writeDepthWhileDrawn`), where the
  *   depth order and not the draw order decides.
  * - A suffix would drop pinned strokes first, so a chunk holding any keeps the prefix.
- * - The dome keeps the prefix so it draws the same set as before this change: `motion.spec.ts`'s
- *   pinned-phase check block-matches the far dome at its 0.4 density, and a suffix there lost the
- *   match. A mid or far shed therefore still drops the dome's topmost sky strokes, which
- *   docs/verification.md tracks under density cuts from below, "The dome keeps the prefix".
  */
 export function drawsSuffix(
   depthWrite: boolean,
   drawClass: StrokeDrawClass,
   pinned: number,
 ): boolean {
-  return !depthWrite && pinned === 0 && (drawClass === 'world' || drawClass === 'overlay');
+  return (
+    !depthWrite &&
+    pinned === 0 &&
+    (drawClass === 'dome' || drawClass === 'world' || drawClass === 'overlay')
+  );
 }
 
 /**
