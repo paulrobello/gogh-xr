@@ -168,6 +168,37 @@ test('right A opens the panel; grip on a slider changes nothing; the trigger set
   expect(reloaded.effective.vignette).toBe(0.5);
 });
 
+test('a reopen that changes no label still reports typeset', async ({ xr }) => {
+  test.setTimeout(120_000);
+  await xr.boot('noanim&scene=bare');
+  await xr.enterXR();
+  // Both lasers point away, so no tooltip is written and the reopen changes no text. Troika runs
+  // its sync callback only when a label changed, so a forced re-sync would never report back.
+  await aim(xr, new Vector3(0.2, 1.3, -0.3), new Vector3(2, 1.3, 0));
+  const awayLeft = new Quaternion().setFromUnitVectors(
+    new Vector3(0, 0, -1),
+    new Vector3(-1, 0, 0),
+  );
+  await xr.setPose({
+    left: {
+      position: [-0.2, 1.3, -0.3],
+      quaternion: awayLeft.toArray() as [number, number, number, number],
+    },
+  });
+  const typesetOpen = async (): Promise<boolean> => {
+    const p = await panel(xr);
+    return p.open && p.typeset;
+  };
+
+  await xr.press('right', 'a-button');
+  await expect.poll(typesetOpen, { timeout: 20_000 }).toBe(true);
+  await xr.press('right', 'a-button');
+  await expect.poll(async () => (await panel(xr)).open).toBe(false);
+  await xr.press('right', 'a-button');
+  await expect.poll(typesetOpen, { timeout: 20_000 }).toBe(true);
+  expect((await panel(xr)).hover).toEqual({ left: null, right: null });
+});
+
 test('ending the XR session with the panel open saves its moved pose', async ({ page, xr }) => {
   test.setTimeout(120_000);
   await xr.boot('noanim&scene=bare');

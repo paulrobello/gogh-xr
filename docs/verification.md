@@ -3223,3 +3223,78 @@ Re-review 2 found that the haze, 2.5-3.1° long (half diagonal over distance), i
 - **N6.** The stroke.vert.glsl header comment now says how stream and wheel judge the thin.
 - **N7.** The large star and the moon sit exactly on their eddies' wheel axes, 0.000° off. Their discs (5.33° and 3.93°) are wider than their wheels' edges (4.73° and 3.87°). No other star lies within 12° of any wheel axis. Inside their own wheels the moon and star thin is therefore the rest thin, while the wheel thin can still clear the haze near other wheels.
 - **e2e (new expectations, not yet run).** The left wheel is checked per probe again: every probe within 0.5 to 1.5 of the mirror's prediction at every sample (round 3 measured all 56 at 0.88 to 1.19), plus the median. The right wheel keeps the median check only. In round 3, 9 of its 56 single readings fell outside 0.5 to 1.5 (0.17 to 0.45 and 1.81 to 2.09). They fell at all four probes and at different times, low and high alike, where a still veil over a fixed pixel would read low every time. A 13 px block over a 3.5 px shift is noisy on this paint. N2 removes the still veil, but it does not change that noise.
+
+## Settings panel typeset flag on an unchanged reopen (card 01a1c14b2fe9)
+
+`open()` used to clear `typeset` and force a troika `BatchedText.sync` every time. Troika runs the sync callback only when a member label changed, so a reopen that changed no text (no tooltip to clear, no label repainted) left `__goghDiag().panel.typeset` false forever. `src/ui/typeset-tracker.ts` now starts a sync, and drops `typeset`, only when a text changed since the last one (a throttle flush that assigned text, or a tooltip text that differs). An unchanged reopen forces no re-layout and `typeset` stays true.
+
+- Unit: `tests/typeset-tracker.test.ts` (first sync, unchanged sync is a no-op that keeps true, changed text drops then restores, a superseded sync's callback is ignored).
+- e2e, written and not run: `tests/e2e/panel.spec.ts` "a reopen that changes no label still reports typeset" opens, closes and reopens with both lasers away and polls open and typeset true. Run: `bunx playwright test tests/e2e/panel.spec.ts -g "reopen that changes no label"`. It fails on the old code (typeset never true on the second open).
+- Unverified: the headset and every e2e that waits on `panel.typeset`; run the full panel, hand-orbs, journey and notices specs.
+
+## P7.3 README claim check (2026-11-09, card 01a1ae07511b)
+
+`README.md` was rewritten. Every flag, make target, port, key binding and linked file it names was grepped against the code, the Makefile and `scripts/ports.ts`. Every one was found. Nothing was removed from the README for being absent.
+
+**Flags** (`src/diag/flags.ts`, the `parseFlags` return object; `?bench` is read at the `params.get('bench')` line):
+
+| Flag | Where found |
+| --- | --- |
+| `?painting` | src/diag/flags.ts:287 |
+| `?hud` | src/diag/flags.ts:271 |
+| `?diag` | src/diag/flags.ts:270 |
+| `?bench` | src/diag/flags.ts:259 |
+| `?beauty` | src/diag/flags.ts:280 |
+| `?hz` | src/diag/flags.ts:277 |
+| `?calm` | src/diag/flags.ts:264 |
+| `?noanim` | src/diag/flags.ts:263 |
+| `?seated` | src/diag/flags.ts:291 |
+| `?turn` | src/diag/flags.ts:292 |
+| `?seed` | src/diag/flags.ts:262 |
+| `?mute` | src/diag/flags.ts:300 |
+| `?scene` | src/diag/flags.ts:297 |
+| `?zdiag` | src/diag/flags.ts:293 |
+| `?ab` | src/diag/flags.ts:294 |
+| `?wrap` | src/diag/flags.ts:295 |
+| `?nogov` | src/diag/flags.ts:282 |
+| `?slow` | src/diag/flags.ts:281 |
+| `?nocache` | src/diag/flags.ts:285 |
+| `?update` | src/diag/flags.ts:283 |
+| `?iwer` | src/diag/flags.ts:272 |
+
+**Make targets** (`Makefile`; `dev` and `dev-start` share one rule):
+
+| Target | Where found |
+| --- | --- |
+| install | Makefile:3 |
+| build | Makefile:5 |
+| test | Makefile:7 |
+| lint | Makefile:9 |
+| fmt | Makefile:11 |
+| typecheck | Makefile:13 |
+| checkall | Makefile:15 |
+| checkall-ci | Makefile:16 |
+| bundle-check | Makefile:25 |
+| asset-check | Makefile:36 |
+| audio | Makefile:41 |
+| audio-audition | Makefile:44 |
+| bake | Makefile:47 |
+| e2e | Makefile:49 |
+| update-ab | Makefile:52 |
+| dev, dev-start | Makefile:54 |
+| preview | Makefile:58 |
+| dev-stop | Makefile:61 |
+| dev-restart | Makefile:63 |
+| pre-commit | Makefile:64 |
+
+**Ports and variables:** 4252 (`DEV_PORT`) at scripts/ports.ts:2, 4253 (`E2E_PORT`, default) and the `E2E_PORT` override at scripts/ports.ts:5.
+
+**Keys named in the controls table:** Shift src/xr/input.ts:390, T src/xr/input.ts:420, F src/xr/input.ts:360, M src/xr/input.ts:361 and src/main.ts:853, R src/xr/input.ts:362, G src/main.ts:1014, H src/ui/hud-toggle.ts:92, WASD/Q/E/C/Space src/xr/input-keyboard.ts:21-28. The XR bindings (sticks, right A, right B, left X, stick clicks) are from the Controls table in CLAUDE.md. Right A opens the panel at src/xr/input.ts:117-118. The README does not claim the left menu button, because Quest exposing it is unverified.
+
+**Linked files present:** LICENSE, PRD.md, CLAUDE.md, assets/PROVENANCE.md, docs/perf.md, docs/verification.md, docs/audio/{provenance,suno-prompts,derivatives}.md, plans/phase-0 to phase-7. PRD anchors were taken from the PRD's `### P<n>` headings.
+
+**adb reverse workflow:** `adb reverse tcp:4252 tcp:4252` appears only in PRD.md decision D16 (line 143). No Makefile target, script or doc implements or records it as run. The README documents the four steps and marks them not yet verified on a device. (`docs/perf.md` and earlier verification sections used `adb forward` to the DevTools socket for reading diagnostics, which is a different use.)
+
+**Unverified:** the headset steps in the README. The phase table marks the P1 to P7 headset checks as pending owner sign-off. P0 is signed off (this file, P0-A6). Controls and comfort options were taken from CLAUDE.md and spot-checked against the code above, not driven on a device.
+
+**Not changed:** `CLAUDE.md` (other lanes edit it tonight).

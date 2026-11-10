@@ -103,10 +103,7 @@ test('the Hand orbs toggle shows and hides one orb per hand in XR only, and pers
   await reachHands(xr);
   const off = await canvasPixels(page);
 
-  // This open happens with the hands at reach, where neither laser hovers a control. It reaches
-  // `typeset` only because the first flip's `restHands` left a tooltip on the panel, and `open()`
-  // clearing it is a real text change: the panel's typeset callback never fires on a reopen that
-  // changes no text.
+  // This open happens with the hands at reach, where neither laser hovers a control.
   await flipToggle(page, xr);
   expect(await orbs(xr)).toEqual({ enabled: true, visible: [true, true] });
   const again = await calls(xr);

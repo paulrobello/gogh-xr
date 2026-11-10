@@ -99,6 +99,7 @@ import type { PanelHold } from './panel-toggle';
 import { PANEL_COLORS, PANEL_TYPE } from './settings-panel-colors';
 import { createTextThrottle, type TextTarget } from './text-throttle';
 import { TEXT_FONT_URL } from './troika-config';
+import { createTypesetTracker } from './typeset-tracker';
 
 const STROKE_CAPACITY = 900;
 const FILL_Z = 0.002;
@@ -355,7 +356,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   batch.font = TEXT_FONT_URL;
   batch.position.z = TEXT_Z;
   root.add(batch);
-  let typeset = false;
+  const typesetTracker = createTypesetTracker();
 
   function text(
     value: string,
@@ -779,11 +780,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   /** Assigns the queued texts (throttled only while a slider drags) and typesets them. */
   function syncText(now: number, force: boolean): void {
-    if (!texts.flush(now, force || dragging.size === 0) && !force) return;
-    typeset = false;
-    batch.sync(() => {
-      typeset = true;
-    });
+    const flushed = texts.flush(now, force || dragging.size === 0);
+    if (!flushed && !force) return;
+    if (flushed) typesetTracker.markDirty();
+    typesetTracker.sync((done) => batch.sync(done));
   }
 
   function helpFor(id: string): string {
@@ -796,13 +796,19 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return def.disabled ?? def.help;
   }
 
+  function setTooltipText(value: string): void {
+    if (tooltipText.text === value) return;
+    tooltipText.text = value;
+    typesetTracker.markDirty();
+  }
+
   function showTooltip(id: string | null): boolean {
     if (tooltipApplied && id === tooltipShown) return false;
     tooltipApplied = true;
     tooltipShown = id;
     const layout = id ? LAYOUT.find((c) => c.def.id === id) : undefined;
     if (!id || !layout) {
-      tooltipText.text = '';
+      setTooltipText('');
       tooltipBacking.visible = false;
       return true;
     }
@@ -816,7 +822,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const side = layout.def.column === 0 ? -1 : 1;
     const x = side * (PANEL_W / 2 + TOOLTIP_GAP + width / 2);
     const y = layout.rect.y;
-    tooltipText.text = help;
+    setTooltipText(help);
     tooltipText.position.set(x, y, TOOLTIP_Z - TEXT_Z + 0.001);
     tooltipBacking.scale.set(width, height, 1);
     tooltipBacking.position.set(x, y, TOOLTIP_Z);
@@ -1003,7 +1009,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         : { ...noHover },
       tooltip: tooltipShown,
       grabbing: lastFrame?.grabbing ?? false,
-      typeset,
+      typeset: typesetTracker.typeset,
     }),
     dispose() {
       unsubscribe();
