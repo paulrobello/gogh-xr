@@ -220,18 +220,25 @@ test.describe('the painter view', () => {
     expect(await glErrors(page)).toEqual([]);
   });
 
-  test('with the sky moving, hoist reads its rest field and draws within the tolerance of base, base, wheel, stream and wave wrap', async ({
+  test('with the sky moving, hoist reads its rest field and draws within the tolerance of base, under the base, wheel, stream, wave and wheelrun wraps and the default wheelflow', async ({
     page,
     xr,
   }) => {
-    test.setTimeout(480_000);
+    test.setTimeout(720_000);
     // `noanim` gates the sky motion off, so only a pinned motion time reads iSkyField and
     // iSkyWave. A field left at zero would hold hoist's sky strokes at rest while base's move.
     const still = 'painting=starry-night&noanim&seed=1&shot&painter&nogov';
     await bootWorld(xr, still);
     const rest = await rawPixels(page);
     const rows: string[] = [];
-    for (const extra of ['&wrap=base', '&wrap=wheel', '&wrap=stream', '']) {
+    for (const extra of [
+      '&wrap=base',
+      '&wrap=wheel',
+      '&wrap=stream',
+      '&wrap=wave',
+      '&wrap=wheelrun',
+      '',
+    ]) {
       await bootWorld(
         xr,
         `painting=starry-night&seed=1&shot&painter&nogov&motiont=3.7${extra}&ab=vtx`,
@@ -246,7 +253,7 @@ test.describe('the painter view', () => {
       const moved = pixelDiff(base, rest, HOIST_LEVELS);
       const diff = pixelDiff(hoist, base, HOIST_LEVELS);
       rows.push(
-        `wrap ${extra ? extra.slice(6) : 'wave (default)'}: motion moves ${(moved.share * 100).toFixed(3)}%, hoist differs ${(diff.share * 100).toFixed(4)}% (max ${diff.max})`,
+        `wrap ${extra ? extra.slice(6) : 'wheelflow (default)'}: motion moves ${(moved.share * 100).toFixed(3)}%, hoist differs ${(diff.share * 100).toFixed(4)}% (max ${diff.max})`,
       );
       // The motion must move far more pixels than the tolerance allows, or a still sky would pass.
       expect(moved.share).toBeGreaterThan(10 * HOIST_MAX_SHARE);

@@ -75,24 +75,35 @@ function memoryStorage(): SettingsStorage & { text: string | null } {
 }
 
 describe('the foveation setting', () => {
-  test("defaults to 'auto', and anything outside the set sanitizes to 'auto'", () => {
-    expect(DEFAULT_SETTINGS.foveation).toBe('auto');
-    expect(sanitizeSettings({}).foveation).toBe('auto');
+  test('defaults to Off (a pinned 0), and anything outside the set sanitizes to 0', () => {
+    expect(DEFAULT_SETTINGS.foveation).toBe(0);
+    expect(sanitizeSettings({}).foveation).toBe(0);
     for (const value of ['auto', 0, 0.5, 1] as const) {
       expect(sanitizeSettings({ foveation: value }).foveation).toBe(value);
     }
     for (const value of [0.25, 2, -1, '0.5', 'off', null, Number.NaN, true]) {
-      expect(sanitizeSettings({ foveation: value }).foveation).toBe('auto');
+      expect(sanitizeSettings({ foveation: value }).foveation).toBe(0);
     }
-    expect(foveationPin(DEFAULT_SETTINGS)).toBeNull();
+    expect(foveationPin(DEFAULT_SETTINGS)).toBe(0);
+    expect(foveationPin({ foveation: 'auto' })).toBeNull();
     expect(foveationPin({ foveation: 0 })).toBe(0);
     expect(foveationPin({ foveation: 1 })).toBe(1);
   });
 
-  test('needs no version bump: a v3 blob without it loads auto, and a pin round-trips', () => {
-    expect(SETTINGS_VERSION).toBe(3);
+  test('v3 to v4: a stored auto, the old default, becomes Off once; a pin and a v4 auto are kept', () => {
+    expect(SETTINGS_VERSION).toBe(4);
     const loaded = parseSettings(JSON.stringify({ version: 3, settings: { calm: 0.4 } }));
-    expect(loaded).toMatchObject({ settings: { calm: 0.4, foveation: 'auto' }, recovered: null });
+    expect(loaded).toMatchObject({ settings: { calm: 0.4, foveation: 0 }, recovered: null });
+    const migrated = parseSettings(
+      JSON.stringify({ version: 3, settings: { calm: 0.4, foveation: 'auto' } }),
+    );
+    expect(migrated).toMatchObject({ settings: { calm: 0.4, foveation: 0 }, recovered: null });
+    for (const foveation of [0.5, 1] as const) {
+      const kept = parseSettings(JSON.stringify({ version: 3, settings: { foveation } }));
+      expect(kept.settings.foveation).toBe(foveation);
+    }
+    const chosen = parseSettings(JSON.stringify({ version: 4, settings: { foveation: 'auto' } }));
+    expect(chosen.settings.foveation).toBe('auto');
     for (const foveation of ['auto', 0, 0.5, 1] as const) {
       const storage = memoryStorage();
       expect(saveSettings({ ...DEFAULT_SETTINGS, foveation }, storage)).toBe(true);
@@ -381,8 +392,8 @@ describe('the Foveation row', () => {
     const buttons = [...(row?.querySelectorAll<HTMLButtonElement>('button') ?? [])];
     expect(buttons.map((b) => b.textContent)).toEqual(['Auto', 'Off', '0.5', '1']);
     expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual([
-      'true',
       'false',
+      'true',
       'false',
       'false',
     ]);
@@ -423,8 +434,9 @@ describe('the Foveation row', () => {
     const level = CONTROLS.find((c) => c.id === 'qualityLevel');
     if (!level) throw new Error('no qualityLevel control');
     const settings = { ...DEFAULT_SETTINGS, qualityLevel: 3 };
-    expect(formatValue(level, settings, 'default')).toBe('3 · fov 1');
-    expect(formatValue(level, { ...settings, foveation: 0 }, 'default')).toBe('3 · fov pinned');
+    expect(formatValue(level, settings, 'default')).toBe('3 · fov pinned');
+    expect(formatValue(level, { ...settings, foveation: 'auto' }, 'default')).toBe('3 · fov 1');
+    expect(formatValue(level, { ...settings, qualityLevel: 1 }, 'default')).toBe('1 · fov pinned');
   });
 
   test('under a pin the level summary shows the pinned foveation in place of its own', () => {
@@ -437,6 +449,7 @@ describe('the Foveation row', () => {
 
     const s = store();
     s.set('qualityLevel', 3);
+    s.set('foveation', 'auto');
     const dom = createSettingsDom({
       store: s,
       recenter: () => {},

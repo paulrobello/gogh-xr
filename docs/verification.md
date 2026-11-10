@@ -3393,3 +3393,88 @@ Card 01a1c279af15 (match the rustle's reach to the hand's 0.13 m paint reach). T
 - 0.5 m out from the cypress hull, where the old capsules always rustled, it still rustles at 107 of the 1,370 vertices. 59 of those are among the 1,246 points 0.5 m or more over the ground, in the hull's folds, by another lobe's paint. The other 48 are within 0.5 m of the ground, by the ground's paint. The test bounds the first share under 6%.
 - `tests/audio-host.test.ts` checks the gallery, calm 0 and no-field rules on a synthetic floor field, and that a hand 0.2 m over it does not rustle. `make checkall` passed with the orb section's run.
 - **Fix round 1.** The rustle now needs the reactive gate open as well as calm above 0, the orbs' condition, so `?noanim` and `?motionlayers` without `reactive` play no rustle while no stroke moves (`tests/audio-host.test.ts`). main.ts hands the orbs and the audio one `memoReach` wrap of the field (`src/render/strokes/reach-memo.ts`), which remembers its last two points: the rustle reads the same disturber positions after the render that the orbs read before it, so a firing frame costs no second search (`tests/reach-memo.test.ts`).
+
+## Sky wrap default: wheelflow (strokes move) (2026-11-10)
+
+Paul: "make wheelflow the default, default fov off, wheelflow has the paint leading to the swirls textures animating, i want the actual strokes to move to the swirl". Wheelflow is now the default wrap (`DEFAULT_SKY_WRAP`). Outside the wheels the strokes travel along the field on the wave's loop, scaled by a per-stroke travel share (`skyWheelFlowTravel`). The tone scroll outside the wheels is removed. A new `wheelrun` arm (code 6) does the same on base's loop. CLAUDE.md (Motion A/B variants) has the design. Every number below is from the TS mirror or from a seed-1 `build()` in `tests/sky-wheelflow-world.test.ts`. None is from the headset.
+
+### The guarantee (fix round 1)
+
+The first form (1873afc) bounded the moved quad: it subtracted each stroke's drawn half extent from its clearance. That left a still ring of 2.75-3.25° round each disc at the default level 5 (1.50-1.75° at max beauty, 2.00-2.25° at full size). This is the "paint leading to the swirl does not move" Paul reported.
+
+The controller ruled on 2026-11-10 that a moved outside stroke may overlap a turning disc no more than a resting outside stroke already does. A stroke centred just outside the members' edge already reaches over it by its half extent. So for a dome stroke the bound now holds the moved centre: clear = sin(θ − E), with the approach term, the 0.25 floor and the alignment fade unchanged. The haze keeps its full-size half diagonal in the clearance (`flowExtent` in stroke.vert.glsl). Its rest thin already keeps resting haze off the discs, so for the haze the old guarantee is kept.
+
+### The bound
+
+- Synthetic (`tests/motion-sky-wheel-stream.test.ts`): random directions round every wheel, drawn half extents up to 4°, every loop phase, as dome strokes and as haze. No moved centre, widened by the kept extent, reaches a members' edge it was clear of. No moved dome quad overlaps past an edge by more than its own half extent. No moved haze quad overlaps at all.
+- Seed 1 has 16,400 sky strokes within 10° of a disc, giving 988,913 moved samples. These were taken at far-band sizes 1.12 (max beauty), 1.6 (full), 2.263 (the default fixed level 5) and 3.824 (the far floor under `?ab=vtx` `sparse`), with the haze also at its ×1.5 flight growth:
+  - The closest moved dome centre is 0.0025° outside (clear of) a members' edge.
+  - The largest moved dome quad overlap is 99.9% of the stroke's own half extent (5.413° for the largest stroke at size 3.82).
+  - The closest moved haze quad is 0.0004° clear.
+- The bound uses smoothstep(0, 1.25, x) ≤ 0.9 x, so the travel times the approach stays under the clearance.
+
+### The still ring
+
+The still ring is measured at the first 0.25° bin past each wheel's members' edge whose mean travel share is at least 0.5, counting the dome strokes whose nearest edge it is. A dome stroke keeps no extent clear, so the ring no longer depends on the band size:
+
+| Far size | Central left | Central right | Moon | Large star |
+| --- | --- | --- | --- | --- |
+| 1.12, 1.6, 2.26 and 3.82 (every size) | 0.25° | 0.50° | 0.50° | 0.50° |
+| First form, 2.26 (level 5) | 2.75° | 3.00° | 3.25° | 3.00° |
+
+### The central gap
+
+The old wheelflow faded the 4.10° gap between the central wheels to 0 along the line between their axes. That fade stays dropped. At level-5 size:
+- The 152 strokes within half the gap of that line move up to 0.845° from rest.
+- The 27 strokes within 0.5° of the line move up to 0.342°.
+- No moved centre crosses either central edge (asserted on 16 samples per loop).
+- The farthest a moved quad reaches over a central disc is 6.681° for the capsule and 5.794° for the strip. Both equal the farthest the same strokes reach at rest. The weaker bound therefore adds no overlap there, and no gap fade is needed.
+
+### Seams and alignment
+
+- A scan at 0.02° over the central pair's region and over rings round every wheel finds no step in displacement between neighbouring points above 0.0917° (0.0352° round the rims). The largest displacement in the scan is 1.718°. The first form read 0.0935° and 0.0798°. Without the approach floor (`SKY_WHEELFLOW_APPROACH_FLOOR`, 0.25 of the arc), the share jumped by 1.0 where the flow runs along a rim.
+- The alignment fade holds still up to 29.7% of the moon's rim strokes and 25% of the large star's, where the field opposes the disc's turn.
+
+### The wrap diag
+
+These values come from the TS mirror at the painter view (`batch.update` with the painter camera), over 16 times across a loop:
+- Wheelflow's returning share is 0.416-0.567.
+- Wheelflow's counter-flow share is at most 0.048, against at most 0.040 under wave.
+
+Since fix round 2 the shares leave the wheel members out (they turn rigidly and have no arc), from the shares, their denominator and the counter-flow, and a stroke outside the wheels counts as returning only when its travel share is above 0. Fix round 1 counted members as forward and still edge-band strokes by their loop phase, and read 0.412-0.552 and 0.042.
+
+`tests/e2e/ab.spec.ts` holds wheelflow's live diag to a returning share of 0.3-0.7 and a counter-flow under 0.1. Those bars come from these numbers and were not run.
+
+### wheelrun's reset phase
+
+Across 12,523 patches of the dome, each about 1.5°, the worst patch has 61.5% of its strokes under half size at once with the phase byte (re-measured in fix round 2; an earlier CLAUDE.md figure of 12,399 patches was stale). With the wave phase it is 100%, because the wave shrinks whole bands together. wheelrun uses the phase byte.
+
+That choice rests on this patch statistic only. No captured frame sequence was made for it: the visual judgment of wheelrun's reset, and of wheelflow's motion as a whole, is deferred to Paul's headset check. `bun scripts/motion-variant-probe.ts shots <url> <dir> wheel` writes the painter view of wheelflow and wheelrun at two motion times for that review (the probe's wraps now include both).
+
+### Calm 0 and the cull
+
+The hold mask keeps the sky gate open at calm 0 under wheel, wheelflow and wheelrun. Offsets outside the wheels scale to 0, and wheelrun's shrink fades out below calm 0.1, so calm 0 draws wheel's held frame (unit tests, and an e2e assertion not run here). The cull grows a wheel stroke by `skyWheelReach` and every sky stroke by calm × its swirl reach (`tests/strokes-batch.test.ts`).
+
+### Bundle
+
+After fix round 1, `make checkall` measures tie-key at 34,402 of 37,000 gzip bytes and the JS total at 342,181 of 375,000. After fix round 2 (e85bb8f, 2026-11-10) the JS total is 342,435. For comparison, tie-key was 31,586 when its budget was set, 33,837 after the default change and 34,150 after 1873afc. No budget was raised.
+
+### Not verified
+
+- No e2e spec was run in this lane. The updated `tests/e2e/ab.spec.ts`, `tests/e2e/sky-wheel-stream.spec.ts` and `tests/e2e/motion.spec.ts` have not been run.
+- Nothing is verified on the headset: the motion's look, the narrower still ring, moved paint overlapping a disc's rim, and the vertex cost.
+- The vertex cost under the new default is unmeasured. Every sky vertex outside the wheels now pays the four-wheel travel loop and the two-wheel alignment test on top of wave's phase, on a frame whose shading time is about 54% vertex work. The vertex-cost numbers in "vertex cost or fill" were measured under wave and are stale for the default wheelflow. The headset vtx protocol (`?ab=vtx`, at `&fov=1` and `&fov=0`) under the default is pending, and so is `tests/e2e/vtx.spec.ts`, whose hoist-under-motion loop now also runs `&wrap=wave` and `&wrap=wheelrun` and labels the default arm wheelflow.
+- `tests/e2e/world-coverage.spec.ts`, `tests/e2e/reactive.spec.ts` and `tests/e2e/vtx.spec.ts` boot without `?wrap`, so they now run under wheelflow. The controller runs them on MiniMac.
+
+### The edge band in the e2e (fix round 2)
+
+The review asked for an e2e assertion that the pixels between each members' edge and the edge plus one far-band half stroke (2.15° at level 5) match wheel's frame. Under the centre bound that does not hold, so `tests/e2e/sky-wheel-stream.spec.ts` only logs the band against wheel's frame, with no bar. At level 5 on seed 1, the strokes centred in that band, and how many of them move by more than one pixel of the 1028 px painter capture (0.058°) over a loop:
+
+| Wheel | Strokes in the band | Travel above 0 | Move over 1 px | Largest move |
+| --- | --- | --- | --- | --- |
+| Central left | 961 | 960 | 907 | 1.751° |
+| Central right | 375 | 366 | 348 | 1.717° |
+| Moon | 455 | 342 | 321 | 1.434° |
+| Large star | 559 | 450 | 421 | 1.383° |
+
+What the spec asserts instead is what the bound guarantees on pixels. Inside the big central disc, within 0.62 of its edge (about 5.77°, 0.31° short of the 6.08° the largest level-5 dome stroke's paint can reach), wheelflow and wheelrun draw exactly wheel's frame at motion times 1.3, 3.7 and 6.1. The three small discs have no such region at level 5. The far-outside check widens each exclusion by one level-5 stroke length (4.3°), which leaves 8.35% of the frame, and allows `ceil(1e-4 × count)` pixels to differ from wave and base, logged.

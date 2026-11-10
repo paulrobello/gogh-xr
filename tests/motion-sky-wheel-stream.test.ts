@@ -1,8 +1,8 @@
 /**
- * The `wheel`, `stream` and `wheelflow` sky wraps (2026-11-09, 2026-11-10, src/motion/variants.ts,
- * sky-swirl.ts): the wheel's rigid, periodic turn, its sense, rate and cull bound, and the GLSL's
- * quaternion form of it; the stream's layer weights, contrast compensation and fixed footprint;
- * wheelflow's per-stroke selection, edge fade and speed.
+ * The `wheel`, `stream`, `wheelflow` and `wheelrun` sky wraps (2026-11-09, 2026-11-10,
+ * src/motion/variants.ts, sky-swirl.ts): the wheel's rigid, periodic turn, its sense, rate and cull
+ * bound, and the GLSL's quaternion form of it; the stream's layer weights, contrast compensation and
+ * fixed footprint; wheelflow's and wheelrun's travel outside the wheels, its bound, fades and seams.
  */
 import { Texture } from 'three';
 import { describe, expect, test } from 'vitest';
@@ -10,28 +10,27 @@ import motionGlsl from '../src/motion/motion.glsl?raw';
 import {
   perpendicular,
   rotateAbout,
-  SKY_STREAM_FADE_LEVELS,
   SKY_STREAM_PERIOD,
   SKY_STREAM_RHOS,
   SKY_STREAM_SHIFT,
   SKY_STREAM_TONE_MEAN,
+  SKY_SWIRL_FADE,
   SKY_SWIRL_PERIOD,
   SKY_VORTICES,
   SKY_WHEEL_CORE_SCALE,
   SKY_WHEEL_HAZE_FEATHER,
   SKY_WHEEL_RIM_GAIN,
   SKY_WHEEL_STROKE_HALF,
-  SKY_WHEELFLOW_ALIGN,
   SKY_WHEELFLOW_ALIGN_BAND,
   SKY_WHEELFLOW_ALIGN_BLEND,
   SKY_WHEELFLOW_ALIGN_EASE,
-  SKY_WHEELFLOW_BAND,
-  SKY_WHEELFLOW_GAP,
+  SKY_WHEELFLOW_APPROACH_FLOOR,
   SKY_WHEELFLOW_MIN_SPEED,
-  SKY_WHEELFLOW_PERIOD,
+  SKY_WHEELFLOW_RAMP,
+  SKY_WHEELRUN_CALM_FADE,
+  SKY_WHEELRUN_GAIN_TRAVEL,
   SKY_WHEELS,
   type SkyWheel,
-  skyStreamLevel,
   skyStreamPack,
   skyStreamPhase,
   skyStreamTone,
@@ -45,16 +44,15 @@ import {
   skyWheelAt,
   skyWheelCap,
   skyWheelEdge,
-  skyWheelFlowGapFade,
-  skyWheelFlowOuter,
-  skyWheelFlowShift,
+  skyWheelFlowTravel,
   skyWheelHazeThin,
   skyWheelReach,
+  skyWheelRunGain,
   skyWheelSpin,
   skyWrapLoop,
 } from '../src/motion/sky-swirl.ts';
 import { motionVariants } from '../src/motion/variant-uniforms.ts';
-import { SKY_WRAPS } from '../src/motion/variants.ts';
+import { DEFAULT_SKY_WRAP, SKY_WRAPS } from '../src/motion/variants.ts';
 import { PAINTER_EYE } from '../src/paintings/starry-night/canvas-camera.ts';
 import { WORLD_DOME_SIZE } from '../src/paintings/starry-night/world.ts';
 import { DEFAULT_BAND_SIZE } from '../src/render/strokes/bands.ts';
@@ -365,7 +363,7 @@ describe('wheel', () => {
     });
     expect(Number(defines.SKY_WHEEL_HAZE_FEATHER)).toBeCloseTo(SKY_WHEEL_HAZE_FEATHER, 9);
     for (const line of [
-      'if (uSkyWrap != SKY_WRAP_WHEEL && uSkyWrap != SKY_WRAP_WHEELFLOW) return false;',
+      'if (uSkyWrap != SKY_WRAP_WHEEL && uSkyWrap != SKY_WRAP_WHEELFLOW && uSkyWrap != SKY_WRAP_WHEELRUN) {',
       'return member >= 0 || uSkyWrap == SKY_WRAP_WHEEL;',
       'if (1.0 - dot(SKY_VORTEX_AXIS[i].xyz, dir) < SKY_WHEEL_CORE[i]) member = i;',
       'skyWheelMotion(d, dir, n, l, s, uTime, rigid);',
@@ -646,16 +644,12 @@ describe('stream', () => {
       'float wA = 1.0 - abs(2.0 * fA - 1.0);',
       'float packed = abs(vStream) - 1.0;',
       'float fA = fract(packed);',
-      'float span = (vRect.z - vRect.x) * SKY_STREAM_SHIFT * sign(vStream) * k;',
+      'float span = (vRect.z - vRect.x) * SKY_STREAM_SHIFT * sign(vStream);',
       'vec4 a = texture(uAtlas, clamp(vUv - vec2((fA - 0.5) * span, 0.0), vRect.xy, vRect.zw));',
       'vec4 b = texture(uAtlas, clamp(vUv - vec2((fB - 0.5) * span, 0.0), vRect.xy, vRect.zw));',
       'float ta = mix(rest, a.b, a.r);',
-      'int whole = int(packed);',
-      'int level = whole / BRUSH_COUNT;',
-      'float k = 1.0 - float(level) * SKY_STREAM_INV_FADE_LEVELS;',
-      'float rho2 = SKY_STREAM_RHO2S[whole - level * BRUSH_COUNT];',
-      'float rho2k = rho2 * k + 2.0 * (1.0 - k);',
-      'float gain = mix(1.0, inversesqrt(wA * wA + wB * wB + rho2k * wA * wB), a.r * b.r);',
+      'float rho2 = SKY_STREAM_RHO2S[min(int(packed), BRUSH_COUNT - 1)];',
+      'float gain = mix(1.0, inversesqrt(wA * wA + wB * wB + rho2 * wA * wB), a.r * b.r);',
       'return clamp(m + (wA * (ta - m) + wB * (tb - m)) * gain, 0.0, 1.0);',
     ]) {
       expect(strokeFrag).toContain(line);
@@ -697,43 +691,27 @@ describe('stream', () => {
     expect(strokeVert).toContain('flat out float vStream;');
     expect(strokeFrag).toContain('flat in float vStream;');
     expect(strokeVert).toContain('vStream = stream;');
+    expect(motionGlsl).toContain('stream = skyStream(cross(omega, d), l, brush, phase, t);');
     expect(motionGlsl).toContain(
-      'stream = skyStream(cross(omega, d), l, brush, phase, t, SKY_STREAM_INV_PERIOD, 1.0);',
+      'return (dot(l, v) < 0.0 ? -1.0 : 1.0) * (1.0 + float(brush) + f);',
     );
-    expect(motionGlsl).toContain('float f = fract(t * invPeriod + phase);');
-    expect(motionGlsl).toContain(
-      'float level = floor((1.0 - shift) * SKY_STREAM_FADE_LEVELS + 0.5);',
-    );
-    expect(motionGlsl).toContain('(1.0 + float(brush) + float(BRUSH_COUNT) * level + f);');
   });
 
-  test('the packed varying sign × (1 + brush + BRUSH_COUNT level + f) decodes to the brush, level, f and sign in float32', () => {
+  test('the packed varying sign × (1 + brush + f) decodes to the brush, f and sign in float32', () => {
     for (let brush = 0; brush < SKY_STREAM_RHOS.length; brush++) {
       for (const sign of [-1, 1]) {
         for (let k = 0; k < 256; k++) {
           const f = k / 256 + 0.001;
-          // Level 0, stream's, packs exactly as before the levels.
-          expect(skyStreamPack(sign, brush, f, 0)).toBe(skyStreamPack(sign, brush, f));
-          for (const level of [0, 7, SKY_STREAM_FADE_LEVELS]) {
-            const out = skyStreamUnpack(skyStreamPack(sign, brush, f, level));
-            expect(out.brush).toBe(brush);
-            expect(out.level).toBe(level);
-            expect(out.shift).toBeCloseTo(1 - level / SKY_STREAM_FADE_LEVELS, 12);
-            expect(out.sign).toBe(sign);
-            // 256 in float32 keeps f to 2^-15, about 3e-5.
-            expect(Math.abs(out.f - f)).toBeLessThan(4e-5);
-          }
+          const out = skyStreamUnpack(skyStreamPack(sign, brush, f));
+          expect(out.brush).toBe(brush);
+          expect(out.sign).toBe(sign);
+          // 17 in float32 keeps f to 2^-19, about 2e-6.
+          expect(Math.abs(out.f - f)).toBeLessThan(4e-6);
         }
-        // f rounding up to the next whole number reads the next brush (or the next level's brush
-        // 0) with f 0, where layer A's weight is 0, layer B sits on the rest tap and the gain is 1
-        // for any rho.
-        for (const level of [0, SKY_STREAM_FADE_LEVELS]) {
-          const top = skyStreamUnpack(skyStreamPack(sign, brush, 1 - 1e-8, level));
-          const whole = top.brush + SKY_STREAM_RHOS.length * top.level;
-          const packedWhole = brush + SKY_STREAM_RHOS.length * level;
-          expect(whole === packedWhole || (whole === packedWhole + 1 && top.f === 0)).toBe(true);
-          expect(1 + whole).toBeLessThanOrEqual(257);
-        }
+        // f rounding up to the next whole number reads the next brush with f 0, where layer A's
+        // weight is 0 and the gain is 1 for any rho.
+        const top = skyStreamUnpack(skyStreamPack(sign, brush, 1 - 1e-8));
+        expect(top.brush === brush || (top.brush === brush + 1 && top.f === 0)).toBe(true);
         expect(skyStreamWeights(0, -0.08).gain).toBe(1);
         expect(skyStreamWeights(0, 0.72).gain).toBe(1);
       }
@@ -747,11 +725,24 @@ function fromAxis(w: SkyWheel, angle: number, turn: number): Vec3 {
   return rotateAbout(rotateAbout(w.axis, perpendicular(w.axis), angle), w.axis, turn);
 }
 
-describe('wheelflow', () => {
-  test('inside a wheel a stroke turns exactly as under wheel; outside it holds still and streams', () => {
+/** The angle, radians, of each wheel's members' edge past which direction `dir` lies. */
+function pastEdges(dir: Vec3): number[] {
+  return SKY_WHEELS.map(
+    (w) => Math.acos(Math.min(1, Math.max(-1, dot(w.axis, dir)))) - skyWheelEdge(w),
+  );
+}
+
+const unit = (a: Vec3): Vec3 => scale(a, 1 / len(a));
+
+/** A field velocity of `speed` rad/s along wheel `w`'s turn at `dir` (against it when negative). */
+const along = (w: SkyWheel, dir: Vec3, speed: number): Vec3 =>
+  scale(unit(cross(w.axis, dir)), Math.sign(w.rate) * speed);
+
+describe('wheelflow and wheelrun', () => {
+  test('inside a wheel a stroke turns exactly as under wheel; outside it travels as wave (wheelflow) or base (wheelrun), scaled by its travel', () => {
     const rand = mulberry32(11);
     let inside = 0;
-    let streaming = 0;
+    let moving = 0;
     for (let k = 0; k < 4000; k++) {
       const y = rand();
       const a = 2 * Math.PI * rand();
@@ -760,75 +751,147 @@ describe('wheelflow', () => {
       const p = onDome(dir);
       const n: Vec3 = [-dir[0], -dir[1], -dir[2]];
       const time = 3600 * rand();
-      const flow = skySwirl(p, n, 0.3, time, undefined, 'wheelflow');
-      const shift = skyWheelFlowShift(dir);
+      const half = 2 * rand();
+      const options = { halfDiagonal: half, calm: 1 };
+      const flow = skySwirl(p, n, 0.3, time, undefined, 'wheelflow', undefined, options);
+      const run = skySwirl(p, n, 0.3, time, undefined, 'wheelrun', undefined, options);
+      const travel = skyWheelFlowTravel(dir, skyVelocity(dir), half / SKY_DOME_RADIUS);
       if (skyWheelAt(dir) >= 0) {
         inside++;
-        expect(shift).toBe(-1);
-        expect(flow).toEqual(skySwirl(p, n, 0.3, time, undefined, 'wheel'));
+        expect(travel).toBe(-1);
+        const wheel = skySwirl(p, n, 0.3, time, undefined, 'wheel');
+        expect(flow).toEqual(wheel);
+        expect(run).toEqual(wheel);
         expect(flow.spin).not.toBeNull();
-      } else {
-        expect(flow).toEqual({ offset: [0, 0, 0], turn: 0, gain: 0, spin: null });
-        expect(shift).toBeGreaterThanOrEqual(0);
-        expect(shift).toBeLessThanOrEqual(1);
-        if (skyStreamLevel(shift) < SKY_STREAM_FADE_LEVELS) streaming++;
+        continue;
       }
+      expect(travel).toBeGreaterThanOrEqual(0);
+      expect(travel).toBeLessThanOrEqual(1);
+      if (travel > 0.5) moving++;
+      const wave = skySwirl(p, n, 0.3, time, undefined, 'wave');
+      const base = skySwirl(p, n, 0.3, time, undefined, 'base');
+      expect(flow.spin).toBeNull();
+      expect(run.spin).toBeNull();
+      for (let i = 0; i < 3; i++) {
+        expect(flow.offset[i]).toBeCloseTo(wave.offset[i] * travel, 12);
+        expect(run.offset[i]).toBeCloseTo(base.offset[i] * travel, 12);
+      }
+      expect(flow.turn).toBeCloseTo(wave.turn * travel, 12);
+      expect(run.turn).toBeCloseTo(base.turn * travel, 12);
+      expect(flow.gain).toBe(0);
+      const f = fract(time / SKY_SWIRL_PERIOD + 0.3);
+      expect(run.gain).toBeCloseTo(skyWheelRunGain(f, travel, 1), 12);
+      expect(run.gain).toBeGreaterThanOrEqual(base.gain - 1e-12);
     }
     expect(inside).toBeGreaterThan(20);
-    expect(streaming).toBeGreaterThan(3000);
-    expect(skyWrapLoop('wheelflow', 0.3, 4.1)).toEqual({ tau: 0, gain: 0, returning: false });
+    expect(moving).toBeGreaterThan(3000);
+    // Their loops before the travel: wheelflow is the wave's, wheelrun base's.
+    for (const f of [0.1, 0.3, 0.7, 0.97]) {
+      expect(skyWrapLoop('wheelflow', f, 4.1)).toEqual(skyWrapLoop('wave', f, 4.1));
+      expect(skyWrapLoop('wheelrun', f, 4.1)).toEqual(skyWrapLoop('base', f, 4.1));
+    }
   });
 
-  test('the edge fade: the shift is 0 at each wheel edge, rises monotonically over SKY_WHEELFLOW_BAND (1°) and is full past it', () => {
-    expect((SKY_WHEELFLOW_BAND * 180) / Math.PI).toBeCloseTo(1, 12);
+  test('the bound: no moved centre, widened by the kept extent, reaches a members edge it was clear of at rest, so a dome stroke overlaps a disc by at most its own half extent', () => {
+    const rand = mulberry32(5);
+    const deg = Math.PI / 180;
+    let clearAtRest = 0;
+    let moved = 0;
+    let closest = Number.POSITIVE_INFINITY;
+    let overlapShare = 0;
+    for (const wrap of ['wheelflow', 'wheelrun'] as const) {
+      for (const kind of ['dome', 'haze'] as const) {
+        SKY_WHEELS.forEach((w) => {
+          for (let k = 0; k < 600; k++) {
+            const dir = fromAxis(w, skyWheelEdge(w) + rand() * 8 * deg, 2 * Math.PI * rand());
+            if (skyWheelAt(dir) >= 0) continue;
+            const p = onDome(dir);
+            const n: Vec3 = [-dir[0], -dir[1], -dir[2]];
+            // Drawn half angles from none to past the largest a far-band dome stroke draws (sparse
+            // at the far floor). A dome stroke keeps none of it clear, the haze all of it.
+            const h = rand() * 4 * deg;
+            const kept = kind === 'haze' ? h : 0;
+            const rest = pastEdges(dir).map((e) => e - kept);
+            if (rest.every((e) => e >= 0)) clearAtRest++;
+            const phase = rand();
+            for (let s = 0; s <= 32; s++) {
+              const time = (s / 32) * SKY_SWIRL_PERIOD + 0.0137;
+              const m = skySwirl(p, n, phase, time, undefined, wrap, undefined, {
+                halfDiagonal: kept * SKY_DOME_RADIUS,
+              });
+              const d = sub(add(p, m.offset), PAINTER_EYE);
+              const centre = pastEdges(unit(d));
+              if (len(m.offset) > 1e-9) moved++;
+              centre.forEach((e, j) => {
+                expect(e - kept, `${wrap} ${kind} wheel ${j}`).toBeGreaterThanOrEqual(
+                  Math.min(rest[j], 0) - 1e-12,
+                );
+                if (rest[j] < 0) return;
+                closest = Math.min(closest, e - kept);
+                // The moved quad's overlap past the edge: at most the stroke's own half extent.
+                const over = Math.max(0, h - e);
+                expect(over).toBeLessThanOrEqual(h + 1e-12);
+                if (kind === 'haze') expect(over).toBeLessThanOrEqual(1e-12);
+                if (h > 0) overlapShare = Math.max(overlapShare, over / h);
+              });
+            }
+          }
+        });
+      }
+    }
+    expect(clearAtRest).toBeGreaterThan(4000);
+    expect(moved).toBeGreaterThan(100000);
+    expect(closest).toBeGreaterThanOrEqual(0);
+    expect(overlapShare).toBeLessThanOrEqual(1);
+  });
+
+  test('the edge fade: travel is 0 while the kept extent reaches the edge, rises with the clearance and is full where the flow cannot bring it nearer', () => {
+    const deg = Math.PI / 180;
+    expect(SKY_WHEELFLOW_RAMP).toBe(1.25);
+    // smoothstep(0, 1.25, x) <= 0.9 x for every x >= 0, so travel × approach < clearance.
+    for (let x = 0; x <= 3; x += 0.001) {
+      const t = Math.min(1, x / SKY_WHEELFLOW_RAMP);
+      expect(t * t * (3 - 2 * t)).toBeLessThanOrEqual(0.9 * x + 1e-15);
+    }
     SKY_WHEELS.forEach((w, i) => {
+      const h = 1.5 * deg;
       for (let t = 0; t < 32; t++) {
         const turn = (2 * Math.PI * t) / 32;
-        expect(skyWheelFlowShift(fromAxis(w, skyWheelEdge(w) - 1e-6, turn))).toBe(-1);
-        expect(skyWheelFlowShift(fromAxis(w, skyWheelEdge(w) + 1e-7, turn))).toBeLessThan(1e-5);
-        // The wheel's own edge factor alone: a flow along the disc's turn, so the alignment fade is
-        // 1, and no gap fade.
+        expect(skyWheelFlowTravel(fromAxis(w, skyWheelEdge(w) - 1e-6, turn))).toBe(-1);
+        // A flow along the disc's turn, so the alignment fade is 1, against this wheel alone.
+        const at = (off: number): number => {
+          const dir = fromAxis(w, skyWheelEdge(w) + off, turn);
+          const tangent = along(w, dir, 0.004);
+          const inward = scale(sub(w.axis, scale(dir, dot(w.axis, dir))), -0.002);
+          return skyWheelFlowTravel(dir, add(tangent, inward), h, [w]);
+        };
+        expect(at(0.5 * h), `wheel ${i}`).toBe(0);
+        expect(at(h - 1e-6), `wheel ${i}`).toBe(0);
         let last = 0;
-        for (let s = 1; s <= 20; s++) {
-          const dir = fromAxis(w, skyWheelEdge(w) + (s / 20) * SKY_WHEELFLOW_BAND, turn);
-          const along = scale(cross(w.axis, dir), Math.sign(w.rate));
-          const own = skyWheelFlowShift(dir, along, [w], SKY_WHEELFLOW_BAND, null);
-          expect(own, `wheel ${i}`).toBeGreaterThan(last);
-          expect(Math.max(0, skyWheelFlowShift(dir))).toBeLessThanOrEqual(own);
-          last = own;
+        for (let s = 1; s <= 40; s++) {
+          const now = at(h + (s / 40) * 4 * deg);
+          expect(now, `wheel ${i}`).toBeGreaterThanOrEqual(last);
+          last = now;
         }
-        expect(last).toBeCloseTo(1, 12);
+        expect(last).toBe(1);
+        // A flow straight along the rim brings the stroke no nearer, so it travels in full once
+        // its quad clears the edge by SKY_WHEELFLOW_RAMP of the approach floor, and eases in
+        // before that rather than jumping from still to full.
+        const arc = 0.5 * SKY_SWIRL_PERIOD * 0.004;
+        const ramp = SKY_WHEELFLOW_RAMP * SKY_WHEELFLOW_APPROACH_FLOOR * arc;
+        const rimAt = (clear: number): number => {
+          const dir = fromAxis(w, skyWheelEdge(w) + h + clear, turn);
+          return skyWheelFlowTravel(dir, along(w, dir, 0.004), h, [w]);
+        };
+        expect(rimAt(1.05 * ramp)).toBe(1);
+        expect(rimAt(0.5 * ramp)).toBeGreaterThan(0.3);
+        expect(rimAt(0.5 * ramp)).toBeLessThan(0.7);
+        expect(rimAt(0.02 * ramp)).toBeLessThan(0.01);
       }
     });
   });
 
-  test('the gap fade: the noisy gap between the two central wheels stays slow, every other rim streams near full speed', () => {
-    const [left, right] = SKY_WHEELS;
-    const gap = Math.acos(dot(left.axis, right.axis)) - skyWheelEdge(left) - skyWheelEdge(right);
-    expect(SKY_WHEELFLOW_GAP.gap).toBeCloseTo(gap, 12);
-    expect([SKY_WHEELFLOW_GAP.a, SKY_WHEELFLOW_GAP.b]).toEqual([0, 1]);
-    // Along the great circle between the central axes, edge to edge, under 0.3 of the shift.
-    const axis = unitCross(left.axis, right.axis);
-    for (let s = 0; s <= 40; s++) {
-      const angle = skyWheelEdge(left) + (s / 40) * gap;
-      expect(skyWheelFlowShift(rotateAbout(left.axis, axis, angle))).toBeLessThan(0.3);
-    }
-    // The capsule ends at each axis: on each central wheel's side facing away from the other, the
-    // gap fade is 1, and the paint at 1.5° out streams at 0.8 of the shift or more.
-    const deg = Math.PI / 180;
-    for (const [w, sense] of [
-      [left, -1],
-      [right, 1],
-    ] as const) {
-      for (const off of [1.5, 2, 3]) {
-        const dir = rotateAbout(w.axis, axis, sense * (skyWheelEdge(w) + off * deg));
-        expect(skyWheelFlowGapFade(dir)).toBe(1);
-        expect(skyWheelFlowShift(dir)).toBeGreaterThanOrEqual(0.8);
-      }
-    }
-  });
-
-  test('the alignment fade: no paint streams against the turn of the disc it is nearest, aligned paint is untouched', () => {
+  test('the alignment fade: no paint travels against the turn of the disc it is nearest, aligned paint is untouched', () => {
     const deg = Math.PI / 180;
     expect(SKY_WHEELFLOW_ALIGN_BAND).toBeCloseTo(4 * SKY_WHEEL_STROKE_HALF, 15);
     expect(SKY_WHEELFLOW_ALIGN_EASE).toBeCloseTo(2 * SKY_WHEEL_STROKE_HALF, 15);
@@ -840,8 +903,6 @@ describe('wheelflow', () => {
         const N = 256;
         for (let k = 0; k < N; k++) {
           const dir = fromAxis(w, skyWheelEdge(w) + off * deg, (2 * Math.PI * k) / N);
-          // Only where this wheel's members' edge is the nearest, in chord, of every wheel by more
-          // than the blend, so its alignment alone counts.
           const margin = (o: SkyWheel): number => Math.sqrt(2 * (1 - dot(o.axis, dir))) - o.radius;
           if (
             SKY_WHEELS.some((o) => o !== w && margin(o) < margin(w) + SKY_WHEELFLOW_ALIGN_BLEND)
@@ -856,19 +917,11 @@ describe('wheelflow', () => {
             (Math.hypot(...rim) * Math.max(Math.hypot(...v), SKY_WHEELFLOW_MIN_SPEED));
           if (cosine <= 0) {
             opposed++;
-            expect(skyWheelFlowShift(dir), `wheel ${i} +${off}° turn ${k}`).toBe(0);
+            expect(skyWheelFlowTravel(dir), `wheel ${i} +${off}° turn ${k}`).toBe(0);
           }
-          // A flow along the disc's turn keeps the edge factor alone; one against it is still.
-          const edge = skyWheelFlowShift(dir, rim, [w], SKY_WHEELFLOW_BAND, null);
-          expect(skyWheelFlowShift(dir, scale(rim, 2), SKY_WHEELS, SKY_WHEELFLOW_BAND, null)).toBe(
-            skyWheelFlowShift(dir, rim, SKY_WHEELS, SKY_WHEELFLOW_BAND, null),
-          );
-          expect(skyWheelFlowShift(dir, scale(rim, -1), [w], SKY_WHEELFLOW_BAND, null)).toBe(0);
-          expect(edge).toBeGreaterThan(0);
-          // Past SKY_WHEELFLOW_ALIGN of cosine the alignment fade is exactly 1.
-          if (cosine >= SKY_WHEELFLOW_ALIGN) {
-            expect(skyWheelFlowShift(dir, v, [w], SKY_WHEELFLOW_BAND, null)).toBe(edge);
-          }
+          // Along the turn the alignment is 1; against it the stroke holds still.
+          expect(skyWheelFlowTravel(dir, along(w, dir, -0.002), 0, [w])).toBe(0);
+          expect(skyWheelFlowTravel(dir, along(w, dir, 0.002), 0, [w])).toBe(1);
         }
         report.push(
           `wheel ${i} +${off}°: ${((100 * opposed) / Math.max(1, judged)).toFixed(1)}% opposed, now still`,
@@ -876,168 +929,128 @@ describe('wheelflow', () => {
       }
     });
     console.log(report.join('\n'));
-    // Near a stagnation point the paint fades to still: a flow along the turn but under the speed
-    // floor counts only its share of the floor (a cosine of 0.01, so a smoothstep of 0.0075).
-    const w0 = SKY_WHEELS[2];
-    const at = fromAxis(w0, skyWheelEdge(w0) + 0.5 * deg, 1.1);
-    const rim0 = cross(w0.axis, at);
-    const slow = scale(rim0, (Math.sign(w0.rate) * 0.01 * SKY_WHEELFLOW_MIN_SPEED) / len(rim0));
-    const full = skyWheelFlowShift(
-      at,
-      scale(rim0, Math.sign(w0.rate)),
-      [w0],
-      SKY_WHEELFLOW_BAND,
-      null,
-    );
-    const t = 0.01 / SKY_WHEELFLOW_ALIGN;
-    expect(skyWheelFlowShift(at, slow, [w0], SKY_WHEELFLOW_BAND, null)).toBeCloseTo(
-      full * t * t * (3 - 2 * t),
-      12,
-    );
-    // Past the ease the alignment no longer counts.
+    // Past the ease the alignment no longer counts: a flow against the turn travels in full where
+    // it is far enough out that it cannot reach the edge.
     for (const w of SKY_WHEELS) {
       const dir = fromAxis(
         w,
         skyWheelEdge(w) + SKY_WHEELFLOW_ALIGN_BAND + SKY_WHEELFLOW_ALIGN_EASE + 0.01 * deg,
         0.3,
       );
-      const rim = cross(w.axis, dir);
-      expect(
-        skyWheelFlowShift(dir, scale(rim, -Math.sign(w.rate)), [w], SKY_WHEELFLOW_BAND, null),
-      ).toBe(1);
+      expect(skyWheelFlowTravel(dir, along(w, dir, -0.002), 0, [w])).toBe(1);
     }
   });
 
-  test('no seam: across the central pair, where the nearest wheel switches, and round every rim, the shift changes by at most one fade level per 0.02°', () => {
+  test('no seam: across the central pair and round every rim, strokes 0.02° apart differ in how far they travel by a small share of a stroke', () => {
     const deg = Math.PI / 180;
+    // A dome stroke keeps no extent clear (the bound holds its centre).
+    const h = 0;
+    // How far a dome stroke at `dir` travels each way along the flow, radians: its travel
+    // share of the half-loop arc. A stroke outside the wheels moves along this arc, so two
+    // neighbours that differ by much here part or pile up.
+    const reach = (dir: Vec3): number => {
+      const v = skyVelocity(dir);
+      const travel = skyWheelFlowTravel(dir, v, h);
+      return travel < 0 ? -1 : travel * 0.5 * SKY_SWIRL_PERIOD * len(v);
+    };
     const [left, right] = SKY_WHEELS;
-    const centre = scale(add(left.axis, right.axis), 1 / len(add(left.axis, right.axis)));
+    const centre = unit(add(left.axis, right.axis));
     const e1 = unitCross(unitCross(left.axis, right.axis), centre);
     const e2 = unitCross(centre, e1);
     const step = 0.02 * deg;
     const span = 12 * deg;
     const n = Math.round((2 * span) / step);
-    const at = (i: number, j: number): Vec3 => {
-      const u = -span + i * step;
-      const v = -span + j * step;
-      const p = add(centre, add(scale(e1, u), scale(e2, v)));
-      return scale(p, 1 / len(p));
-    };
-    let worst = 0;
+    const at = (i: number, j: number): Vec3 =>
+      unit(add(centre, add(scale(e1, -span + i * step), scale(e2, -span + j * step))));
+    let worstPair = 0;
+    let largest = 0;
     for (let r = 0; r <= n; r += 10) {
-      let rowPrev = skyWheelFlowShift(at(0, r));
-      let colPrev = skyWheelFlowShift(at(r, 0));
+      let rowPrev = reach(at(0, r));
+      let colPrev = reach(at(r, 0));
       for (let k = 1; k <= n; k++) {
-        const row = skyWheelFlowShift(at(k, r));
-        const col = skyWheelFlowShift(at(r, k));
-        if (row >= 0 && rowPrev >= 0) worst = Math.max(worst, Math.abs(row - rowPrev));
-        if (col >= 0 && colPrev >= 0) worst = Math.max(worst, Math.abs(col - colPrev));
+        const row = reach(at(k, r));
+        const col = reach(at(r, k));
+        largest = Math.max(largest, row, col);
+        if (row >= 0 && rowPrev >= 0) worstPair = Math.max(worstPair, Math.abs(row - rowPrev));
+        if (col >= 0 && colPrev >= 0) worstPair = Math.max(worstPair, Math.abs(col - colPrev));
         rowPrev = row;
         colPrev = col;
       }
     }
-    expect(worst).toBeGreaterThan(0.01);
-    expect(worst).toBeLessThanOrEqual(1 / SKY_STREAM_FADE_LEVELS);
+    let worstRim = 0;
     for (const w of SKY_WHEELS) {
-      for (const off of [0.5, 1, 1.5, 2, 3]) {
-        const a = skyWheelEdge(w) + off * deg;
+      for (const off of [0, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 3, 4]) {
+        const a = skyWheelEdge(w) + h + off * deg;
         const count = Math.ceil((2 * Math.PI * Math.sin(a)) / step);
-        let prev = skyWheelFlowShift(fromAxis(w, a, 0));
+        let prev = reach(fromAxis(w, a, 0));
         for (let t = 1; t <= count; t++) {
-          const s = skyWheelFlowShift(fromAxis(w, a, (2 * Math.PI * t) / count));
-          if (s >= 0 && prev >= 0) {
-            expect(Math.abs(s - prev)).toBeLessThanOrEqual(1 / SKY_STREAM_FADE_LEVELS);
-          }
+          const s = reach(fromAxis(w, a, (2 * Math.PI * t) / count));
+          if (s >= 0 && prev >= 0) worstRim = Math.max(worstRim, Math.abs(s - prev));
           prev = s;
         }
       }
     }
-  });
-
-  test('at a zero shift the streamed tone is the rest tone at every loop fraction and rho: the faded edge does not breathe', () => {
-    for (const rest of [0.2, 0.62]) {
-      for (const rho of [-0.08, 0.15, 0.72]) {
-        for (const f of [0, 0.1, 0.25, 0.5, 0.8]) {
-          const tap = { tone: rest, coverage: 1 };
-          expect(skyStreamTone(rest, tap, tap, f, rho, 0)).toBeCloseTo(rest, 12);
-        }
-      }
-    }
-    // At full shift it is stream's tone exactly.
-    const a = { tone: 0.3, coverage: 1 };
-    const b = { tone: 0.7, coverage: 0.8 };
-    expect(skyStreamTone(0.5, a, b, 0.3, 0.34, 1)).toBe(skyStreamTone(0.5, a, b, 0.3, 0.34));
-  });
-
-  test('the contrast gain at a partial shift holds the blend variance over the loop, and stream (shift 1) is unchanged', () => {
-    const m = SKY_STREAM_TONE_MEAN;
-    const d = 0.1;
-    const tap = { tone: m + d, coverage: 1 };
-    for (const k of [0.25, 0.5, 0.75]) {
-      for (const rho of [-0.08, 0, 0.32, 0.72]) {
-        // Taps read k of the shift apart are correlated by 1 − k (1 − rho).
-        const rhoK = 1 - k * (1 - rho);
-        for (const f of [0, 0.1, 0.25, 0.4, 0.5, 0.75, 0.9]) {
-          const w = skyStreamWeights(f);
-          const gain = (skyStreamTone(m, tap, tap, f, rho, k) - m) / d;
-          const variance = w.wA * w.wA + w.wB * w.wB + 2 * rhoK * w.wA * w.wB;
-          expect(gain * gain * variance, `k ${k} rho ${rho} f ${f}`).toBeCloseTo(1, 12);
-        }
-      }
-    }
-    // The old linear fade of the gain over-boosts at mid-loop: at k 0.5, rho 0 and f 0.25 the
-    // gain is 1/sqrt(0.75) = 1.1547, where the linear form gave 1.2071.
-    const mid = (skyStreamTone(m, tap, tap, 0.25, 0, 0.5) - m) / d;
-    expect(mid).toBeCloseTo(1 / Math.sqrt(0.75), 12);
-    // Shift 1 is stream's gain exactly, bit for bit, at any coverage.
-    const rand = mulberry32(5);
-    for (let i = 0; i < 2000; i++) {
-      const a = { tone: rand(), coverage: rand() };
-      const b = { tone: rand(), coverage: rand() };
-      const rest = rand();
-      const f = rand();
-      const rho = SKY_STREAM_RHOS[i % SKY_STREAM_RHOS.length];
-      const w = skyStreamWeights(f, rho);
-      const ta = rest + (a.tone - rest) * a.coverage;
-      const tb = rest + (b.tone - rest) * b.coverage;
-      const gain = 1 + (w.gain - 1) * a.coverage * b.coverage;
-      const before = Math.min(1, Math.max(0, m + (w.wA * (ta - m) + w.wB * (tb - m)) * gain));
-      expect(skyStreamTone(rest, a, b, f, rho, 1)).toBe(before);
-    }
-  });
-
-  test('the speed: the loop divides the uTime wrap and streams at the wheels mean rim speed, where stream runs faster', () => {
-    expect(3600 / SKY_WHEELFLOW_PERIOD).toBe(1125);
-    // Along a far-band dome stroke, 2 SKY_WHEEL_STROKE_HALF long, rad/s.
-    const strokeLength = 2 * SKY_WHEEL_STROKE_HALF;
-    const flow = (SKY_STREAM_SHIFT / SKY_WHEELFLOW_PERIOD) * strokeLength;
-    const stream = (SKY_STREAM_SHIFT / SKY_STREAM_PERIOD) * strokeLength;
-    const rims = SKY_WHEELS.map((w) => w.rimSpeed);
-    const mean = rims.reduce((x, y) => x + y) / rims.length;
     console.log(
-      `wheelflow ${((flow * 180) / Math.PI).toFixed(3)}°/s, stream ${((stream * 180) / Math.PI).toFixed(3)}°/s, rims ${rims.map((r) => ((r * 180) / Math.PI).toFixed(3)).join(' ')}°/s`,
+      `travel seam per 0.02°: central pair ${(worstPair / deg).toFixed(4)}°, rims ${(worstRim / deg).toFixed(4)}°, largest reach ${(largest / deg).toFixed(3)}°`,
     );
-    expect(Math.abs(flow / mean - 1)).toBeLessThan(0.03);
-    expect(stream / mean).toBeGreaterThan(1.5);
+    expect(largest).toBeGreaterThan(0.5 * deg);
+    expect(worstPair).toBeLessThanOrEqual(SEAM_LIMIT);
+    expect(worstRim).toBeLessThanOrEqual(SEAM_LIMIT);
   });
 
-  test('GLSL: skyWheelFlowShift in motion.glsl, run on its own defines, matches the TS mirror: edge, alignment, blend and gap fades', () => {
-    const shader = glslWheelFlowShift();
+  test('calm 0: outside the wheels wheelflow and wheelrun draw the rest sky, with no stroke frozen mid-shrink', () => {
+    expect(SKY_WHEELRUN_CALM_FADE).toBe(0.1);
+    expect(SKY_WHEELRUN_GAIN_TRAVEL).toBe(4);
+    for (const f of [0, 0.01, 0.03, 0.5, 0.97, 0.999]) {
+      for (const travel of [0, 0.1, 0.25, 0.6, 1]) {
+        expect(Math.abs(skyWheelRunGain(f, travel, 0))).toBe(0);
+        const base = smoothstepTs(0, SKY_SWIRL_FADE, Math.min(f, 1 - f)) - 1;
+        expect(skyWheelRunGain(f, travel, 1)).toBeCloseTo(base * Math.min(1, 4 * travel), 15);
+      }
+      expect(skyWheelRunGain(f, 0.3, 0.05)).toBeCloseTo(0.5 * skyWheelRunGain(f, 0.3, 1), 15);
+    }
+    // The offset and turn scale by calm in motionOffset (scaleMotion), and the gain is the only
+    // part it leaves, so at calm 0 an outside stroke is at rest.
+    expect(motionGlsl).toContain('smoothstep(0.0, SKY_WHEELRUN_CALM_FADE, uCalm)');
+  });
+
+  test('the wheelrun gain: motion.glsl skyWheelRunGain, run as JavaScript, matches the mirror on an (f, travel, calm) grid', () => {
+    const shader = glslWheelRunGain();
+    let worst = 0;
+    let samples = 0;
+    for (let i = 0; i <= 40; i++) {
+      // Dense near the wrap, where the shrink runs, and across the loop.
+      const f = i < 20 ? (i / 20) * 2 * SKY_SWIRL_FADE : (i - 20) / 20;
+      for (const travel of [0, 0.05, 0.1, 0.2, 0.25, 0.3, 0.6, 1]) {
+        for (const calm of [0, 0.02, 0.05, 0.1, 0.5, 1]) {
+          const d = Math.abs(shader(f, travel, calm) - skyWheelRunGain(f, travel, calm));
+          worst = Math.max(worst, d);
+          samples++;
+        }
+      }
+    }
+    expect(samples).toBe(41 * 8 * 6);
+    expect(worst).toBeLessThan(1e-12);
+    // The grid reaches the shrink: the shader's gain is not trivially 0 everywhere.
+    expect(shader(0.01, 1, 1)).toBeLessThan(-0.5);
+  });
+
+  test('GLSL: skyWheelFlowTravel in motion.glsl, run on its own defines, matches the TS mirror: edge, alignment and blend', () => {
+    const shader = glslWheelFlowTravel();
     const rand = mulberry32(23);
     const deg = Math.PI / 180;
     let compared = 0;
     let faded = 0;
     for (const w of SKY_WHEELS) {
       for (let k = 0; k < 1500; k++) {
-        // Out to past the alignment ease of each wheel, where every fade acts.
-        const angle = skyWheelEdge(w) + (rand() * 7 - 0.5) * deg;
+        const angle = skyWheelEdge(w) + (rand() * 9 - 0.5) * deg;
         const dir = fromAxis(w, angle, 2 * Math.PI * rand());
-        // Skip a direction on a membership boundary, where the defines' rounding decides.
         if (SKY_WHEELS.some((o) => Math.abs(1 - dot(o.axis, dir) - 0.5 * o.radius ** 2) < 1e-7)) {
           continue;
         }
-        const expected = skyWheelFlowShift(dir);
-        const got = shader(dir, skyVelocity(dir));
+        const h = rand() * 3 * deg;
+        const expected = skyWheelFlowTravel(dir, skyVelocity(dir), h);
+        const got = shader(dir, skyVelocity(dir), h);
         expect(got, `wheel ${SKY_WHEELS.indexOf(w)} at ${(angle / deg).toFixed(3)}°`).toBeCloseTo(
           expected,
           5,
@@ -1047,54 +1060,50 @@ describe('wheelflow', () => {
       }
     }
     expect(compared).toBeGreaterThan(5900);
-    expect(faded).toBeGreaterThan(500);
-    // The tables themselves: each wheel's turn sense, and the gap's vectors from the central axes.
+    expect(faded).toBeGreaterThan(300);
     const defines = skySwirlGlslDefines();
     expect(parseGlsl(String(defines.SKY_WHEELFLOW_SENSES))).toEqual(
       SKY_WHEELS.map((w) => Math.sign(w.rate)),
     );
-    const [left, right] = SKY_WHEELS;
-    const normal = unitCross(left.axis, right.axis);
-    const vectors: [string, Vec3][] = [
-      ['SKY_WHEELFLOW_GAP_NORMAL', normal],
-      ['SKY_WHEELFLOW_GAP_FROM_A', cross(normal, left.axis)],
-      ['SKY_WHEELFLOW_GAP_FROM_B', cross(right.axis, normal)],
-    ];
-    for (const [name, value] of vectors) {
-      const parsed = parseGlsl(String(defines[name])) as number[];
-      for (let i = 0; i < 3; i++) expect(parsed[i], name).toBeCloseTo(value[i], 8);
-    }
-    expect(parseGlsl(String(defines.SKY_WHEELFLOW_GAP_SIN))).toBeCloseTo(
-      Math.sin(SKY_WHEELFLOW_GAP.gap / 2),
-      8,
-    );
+    const cosines = parseGlsl(String(defines.SKY_WHEEL_EDGE_COSS)) as number[];
+    const sines = parseGlsl(String(defines.SKY_WHEEL_EDGE_SINS)) as number[];
+    SKY_WHEELS.forEach((w, i) => {
+      expect(cosines[i]).toBeCloseTo(Math.cos(skyWheelEdge(w)), 8);
+      expect(sines[i]).toBeCloseTo(Math.sin(skyWheelEdge(w)), 8);
+    });
+    expect(parseGlsl(String(defines.SKY_SWIRL_HALF_PERIOD))).toBe(0.5 * SKY_SWIRL_PERIOD);
   });
 
-  test('GLSL: the fade table is the mirror, and wheelflow is a uniform: every wrap links the same program', () => {
-    const defines = skySwirlGlslDefines();
-    expect(defines.SKY_WHEELFLOW_OUTERS).toBe(
-      `float[${SKY_WHEELS.length}](${SKY_WHEELS.map((w) => skyWheelFlowOuter(w).toExponential(8)).join(', ')})`,
-    );
-    expect(defines.SKY_WHEELFLOW_ALIGN_INNERS).toBe(
-      `float[${SKY_WHEELS.length}](${SKY_WHEELS.map((w) => skyWheelFlowOuter(w, SKY_WHEELFLOW_ALIGN_BAND).toExponential(8)).join(', ')})`,
-    );
-    expect(defines.SKY_WHEELFLOW_ALIGN_OUTERS).toBe(
-      `float[${SKY_WHEELS.length}](${SKY_WHEELS.map((w) => skyWheelFlowOuter(w, SKY_WHEELFLOW_ALIGN_BAND + SKY_WHEELFLOW_ALIGN_EASE).toExponential(8)).join(', ')})`,
-    );
-    expect(defines.SKY_WHEELFLOW_ALIGN).toBe(SKY_WHEELFLOW_ALIGN.toExponential(8));
-    expect(defines.SKY_WHEELFLOW_ALIGN_BLEND).toBe(SKY_WHEELFLOW_ALIGN_BLEND.toExponential(8));
-    expect(defines.SKY_WHEELFLOW_MIN_SPEED2).toBe((SKY_WHEELFLOW_MIN_SPEED ** 2).toExponential(8));
-    expect(defines.SKY_WHEELFLOW_GAP_SIN).toBe(
-      Math.sin(SKY_WHEELFLOW_GAP.halfWidth).toExponential(8),
-    );
-    expect(defines.SKY_WHEELFLOW_INV_PERIOD).toBe((1 / SKY_WHEELFLOW_PERIOD).toExponential(8));
-    expect(motionGlsl).toContain('if (x < SKY_WHEEL_CORE[i]) return -1.0;');
+  test('GLSL: both skyMotion paths branch to the travel, and every wrap links the same program', () => {
     expect(motionGlsl).toContain(
-      'shift *= smoothstep(SKY_WHEEL_CORE[i], SKY_WHEELFLOW_OUTER[i], x);',
+      'if (travel < 0.0) return skyWheelMotion(d, dir, n, l, s, t, rigid);',
+    );
+    expect(motionGlsl).toContain(
+      'float travel = skyWheelFlowTravel(dir, cross(omega, dir), flowExtent * inverseDistance);',
+    );
+    expect(motionGlsl).toContain('iSkyField.xyz * inverseDistance,');
+    expect(motionGlsl).toContain('flowExtent * inverseDistance\n    );');
+    expect(motionGlsl).not.toContain('halfAngles');
+    expect(motionGlsl).toContain(
+      'return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir) * travel, t);',
+    );
+    expect(motionGlsl).toContain('amplitude *= iSkyWave.y * travel;');
+    expect(motionGlsl).toContain(
+      'return Motion(tau * cross(omega, d), tau * dot(omega, n), skyWheelRunGain(f, travel), 0.0);',
+    );
+    expect(motionGlsl).toContain(
+      'return Motion(tau * iSkyField.xyz, tau * iSkyField.w, skyWheelRunGain(f, travel), 0.0);',
+    );
+    expect(motionGlsl).toContain(
+      'm = skyMotion(p, n, l, s, brush, phase, t, flowExtent, rigid, stream);',
+    );
+    expect(motionGlsl).toContain(
+      'if (layer != STROKE_LAYER_SKY || uSkyWrap == SKY_WRAP_STREAM) return 0.0;',
     );
     const before = createStrokeMaterial(new Texture());
     const shaders = [before.vertexShader, before.fragmentShader, { ...before.defines }];
     try {
+      expect(SKY_WRAPS).toContain('wheelrun');
       for (const wrap of SKY_WRAPS) {
         motionVariants.setWrap(wrap);
         const after = createStrokeMaterial(new Texture());
@@ -1102,10 +1111,18 @@ describe('wheelflow', () => {
         expect(after.uniforms.uSkyWrap).toBe(before.uniforms.uSkyWrap);
       }
     } finally {
-      motionVariants.setWrap('wave');
+      motionVariants.setWrap(DEFAULT_SKY_WRAP);
     }
   });
 });
+
+/** The largest difference, radians, in how far two far-band dome strokes 0.02° apart travel. */
+const SEAM_LIMIT = (0.1 * Math.PI) / 180;
+
+function smoothstepTs(a: number, b: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
 
 function unitCross(a: Vec3, b: Vec3): Vec3 {
   const c = cross(a, b);
@@ -1119,11 +1136,48 @@ function parseGlsl(text: string): number | number[] | number[][] {
 }
 
 /**
- * skyWheelFlowShift from motion.glsl, transliterated to JavaScript line for line and run on the
+ * skyWheelRunGain from motion.glsl, transliterated to JavaScript and run on the material's own
+ * defines, with the uCalm uniform as an argument. The skyMotion branches that call it build vec3
+ * expressions with GLSL operator overloading (tau * cross(omega, d)), which a line-for-line
+ * transliteration cannot run without a vector-expression rewriter, so they are checked as text.
+ */
+function glslWheelRunGain(): (f: number, travel: number, calm: number) => number {
+  const head = 'float skyWheelRunGain(float f, float travel) {';
+  const start = motionGlsl.indexOf(head);
+  const end = motionGlsl.indexOf('\n}\n', start);
+  expect(start).toBeGreaterThan(0);
+  const body = motionGlsl.slice(start + head.length, end);
+  const defines = skySwirlGlslDefines();
+  const env: Record<string, unknown> = {};
+  for (const name of body.match(/\bSKY_[A-Z0-9_]+\b/g) ?? []) {
+    env[name] = parseGlsl(String(defines[name]));
+  }
+  expect(Object.keys(env).sort()).toEqual([
+    'SKY_SWIRL_FADE',
+    'SKY_WHEELRUN_CALM_FADE',
+    'SKY_WHEELRUN_GAIN_TRAVEL',
+  ]);
+  const math = {
+    smoothstep: (a: number, b: number, x: number) => {
+      const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    },
+    min: Math.min,
+  };
+  const names = [...Object.keys(env), ...Object.keys(math)];
+  const run = new Function(...names, 'f', 'travel', 'uCalm', body) as (
+    ...args: unknown[]
+  ) => number;
+  const values = [...Object.values(env), ...Object.values(math)];
+  return (f, travel, calm) => run(...values, f, travel, calm);
+}
+
+/**
+ * skyWheelFlowTravel from motion.glsl, transliterated to JavaScript line for line and run on the
  * material's own defines, so a test can evaluate the shader's fades rather than its text.
  */
-function glslWheelFlowShift(): (dir: Vec3, v: Vec3) => number {
-  const head = 'float skyWheelFlowShift(vec3 dir, vec3 v) {';
+function glslWheelFlowTravel(): (dir: Vec3, v: Vec3, h: number) => number {
+  const head = 'float skyWheelFlowTravel(vec3 dir, vec3 v, float h) {';
   const start = motionGlsl.indexOf(head);
   const end = motionGlsl.indexOf('\n}\n', start);
   expect(start).toBeGreaterThan(0);
@@ -1153,7 +1207,7 @@ function glslWheelFlowShift(): (dir: Vec3, v: Vec3) => number {
     abs: Math.abs,
   };
   const names = [...Object.keys(env), ...Object.keys(math)];
-  const run = new Function(...names, 'dir', 'v', body) as (...args: unknown[]) => number;
+  const run = new Function(...names, 'dir', 'v', 'h', body) as (...args: unknown[]) => number;
   const values = [...Object.values(env), ...Object.values(math)];
-  return (dir, v) => run(...values, dir, v);
+  return (dir, v, h) => run(...values, dir, v, h);
 }

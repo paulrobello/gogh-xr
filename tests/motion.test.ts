@@ -38,14 +38,14 @@ const strokeGlsl = readFileSync('src/render/strokes/stroke.vert.glsl', 'utf8');
 const mainTs = readFileSync('src/main.ts', 'utf8');
 
 describe('sky wrap boot default', () => {
-  test('main.ts sets the wave wrap, DEFAULT_SKY_WRAP, unless ?wrap names another', () => {
-    expect(DEFAULT_SKY_WRAP).toBe('wave');
+  test('main.ts sets the wheelflow wrap, DEFAULT_SKY_WRAP, unless ?wrap names another', () => {
+    expect(DEFAULT_SKY_WRAP).toBe('wheelflow');
     expect(mainTs).toContain('setSkyWrap(flags.wrap ?? DEFAULT_SKY_WRAP);');
     // One setter, which also holds the sky gate open at calm 0 under wheel and wheelflow, and the
     // A/B group's setWrap is that setter.
     expect(mainTs.match(/motionVariants\.setWrap\(/g)).toHaveLength(1);
     expect(mainTs).toContain(
-      "motionClock.setHoldMask(wrap === 'wheel' || wrap === 'wheelflow' ? 1 << STROKE_LAYER.sky : 0);",
+      "wrap === 'wheel' || wrap === 'wheelflow' || wrap === 'wheelrun' ? 1 << STROKE_LAYER.sky : 0,",
     );
     expect(mainTs).toContain('setWrap: setSkyWrap,');
     expect(mainTs).not.toMatch(/setWrap\([^)]*'base'/);
@@ -276,7 +276,7 @@ describe('uniform plumbing', () => {
     expect(strokeGlsl.indexOf('thin *= skyLightThin(')).toBeGreaterThan(0);
     expect(gate).toBeLessThan(strokeGlsl.indexOf('gl_Position = projectionMatrix'));
     expect(strokeGlsl).toContain(
-      'Motion m = motionOffset(\n      iMeta.y,\n      iPosition,\n      n,\n      longAxis,\n      shortAxis,\n      iMeta.z,\n      iMeta.x,\n      iColor.a,\n      layerMoves && !wheelTurned,\n      reacts,\n      0.5 * size,\n      stream\n    );',
+      'Motion m = motionOffset(\n      iMeta.y,\n      iPosition,\n      n,\n      longAxis,\n      shortAxis,\n      iMeta.z,\n      iMeta.x,\n      iColor.a,\n      layerMoves && !wheelTurned,\n      reacts,\n      0.5 * size,\n      flowExtent,\n      stream\n    );',
     );
     expect(strokeGlsl.match(/motionOffset\(/g)).toHaveLength(1);
     // The haze thin widens by each reach only behind its own gate (R-P4b).

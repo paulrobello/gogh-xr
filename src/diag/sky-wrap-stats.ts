@@ -12,14 +12,12 @@ import {
   skyCounterFlow,
 } from '../motion/sky-counter-flow';
 import {
-  SKY_STREAM_FADE_LEVELS,
   SKY_WAVE_JITTER,
-  skyStreamLevel,
   skyVelocity,
   skyWavePhase,
   skyWavePolesFor,
   skyWheelAt,
-  skyWheelFlowShift,
+  skyWheelFlowTravel,
   skyWrapLoop,
 } from '../motion/sky-swirl';
 import type { SkyWaveTurns, SkyWrap } from '../motion/variants';
@@ -27,6 +25,7 @@ import { PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import type { StrokeBatch } from '../render/strokes/batch';
 import { strokeAxes } from '../render/strokes/frame';
 import { octDecode, STROKE_LAYER } from '../render/strokes/instance';
+import { SKY_LIGHT_CULL_FLAG } from '../render/strokes/sky-light-cull';
 
 /** At most this many drawn sky strokes are the counter-flow's centres, evenly spaced. */
 export const SKY_WRAP_STATS_CENTRES: number = 4000;
@@ -37,19 +36,24 @@ export interface SkyWrapStats {
   readonly waveTurns: SkyWaveTurns;
   /** Sky strokes drawn by the chunks that passed the last cull. */
   readonly drawn: number;
-  /** Of those, the ones below 0.8 of their rest size (base's wrap shrink). */
+  /**
+   * Of those, the ones below 0.8 of their rest size (base's wrap shrink). Under wheelrun it is
+   * base's envelope outside the wheels before wheelrun scales it by the stroke's travel and calm
+   * (skyWheelRunGain), so an upper bound.
+   */
   readonly small: number;
-  /** Of those, the ones on their way back along the arc (pingpong and wave). */
+  /**
+   * Of those, the ones on their way back along the arc (pingpong and wave). Under wheelflow and
+   * wheelrun only the strokes outside the wheels with a travel share above 0 (skyWheelFlowTravel)
+   * count: a wheel member turns rigidly and a stroke holding still has no way back.
+   */
   readonly returning: number;
   /**
-   * Of those, the ones inside a wheel (skyWheelAt), which turn under wheel and wheelflow, the haze
-   * included.
+   * Of those, the ones inside a wheel (skyWheelAt), which turn under wheel, wheelflow and wheelrun,
+   * the haze included.
    */
   readonly wheeled: number;
-  /**
-   * Of those, the ones whose paint streams: every one under stream, and under wheelflow the ones
-   * outside the wheels whose faded shift (skyWheelFlowShift) packs under the last fade level.
-   */
+  /** Of those, the ones whose paint streams: every one under stream, none under any other wrap. */
   readonly streaming: number;
   /**
    * How the drawn sky strokes' long axes at rest lie against the swirl's flow, |cos| of the angle
@@ -63,9 +67,13 @@ export interface SkyWrapStats {
     readonly beyond60: number;
     readonly median: number;
   };
-  /** (drawn − returning) / drawn: the share moving forward along the flow. */
+  /**
+   * (drawn − returning) / drawn: the share moving forward along the flow. Under wheelflow and
+   * wheelrun the wheel members are left out of this, of returningShare and of their denominator,
+   * and so of the counter-flow: the shares are over the strokes outside the wheels.
+   */
   readonly forwardShare: number;
-  /** returning / drawn. */
+  /** returning / drawn, with the same denominator as forwardShare. */
   readonly returningShare: number;
   /**
    * The local counter-flow (src/motion/sky-counter-flow.ts) among the drawn sky strokes: up to
@@ -82,14 +90,22 @@ interface SkyStrokes {
   readonly start: readonly number[];
   /** The phase fraction the shader uses: the `?motionphase` pin, else the phase byte / 256. */
   readonly phase: Float32Array;
-  /** The wave's loop phase (skyWrapPhase under `wave`) at the gathered waves per turn. */
+  /** The wave's loop phase (skyWrapPhase under `wave` and `wheelflow`) at the gathered turns. */
   readonly wave: Float32Array;
   /** |cos| of the angle between each stroke's long axis at rest and the flow omega × d. */
   readonly along: Float32Array;
   /** Each stroke's wheel index (skyWheelAt), -1 outside every wheel. */
   readonly wheel: Int8Array;
-  /** Each stroke's wheelflow fade level (skyStreamLevel of skyWheelFlowShift), -1 in a wheel. */
-  readonly flow: Int8Array;
+  /** Each stroke's direction from the painter's eye and the field's velocity there, xyz each. */
+  readonly directions: Float32Array;
+  readonly velocity: Float32Array;
+  /**
+   * The angular half extent wheelflow keeps clear on top of each stroke's centre at band size 1
+   * (stroke.vert.glsl flowExtent): the haze's half diagonal over its distance, 0 for the dome.
+   */
+  readonly kept: Float32Array;
+  /** Each stroke's batch chunk index. */
+  readonly chunk: Uint16Array;
   readonly hash: SkyDirectionHash;
 }
 
@@ -117,13 +133,16 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
   const wave = new Float32Array(total);
   const along = new Float32Array(total);
   const wheel = new Int8Array(total);
-  const flow = new Int8Array(total);
   const directions = new Float32Array(3 * total);
+  const velocity = new Float32Array(3 * total);
+  const kept = new Float32Array(total);
+  const chunkOf = new Uint16Array(total);
   batch.chunks.forEach((chunk, c) => {
     const meta = chunk.geometry.getAttribute('iMeta').array;
     const position = chunk.geometry.getAttribute('iPosition').array;
     const normal = chunk.geometry.getAttribute('iNormal').array;
     const tangent = chunk.geometry.getAttribute('iTangent').array;
+    const size = chunk.geometry.getAttribute('iSize').array;
     // snorm16 and unorm16 as the GPU reads them; a float array is already the value.
     const snorm = (x: number): number =>
       normal instanceof Int16Array ? Math.max(x / 32767, -1) : x;
@@ -143,14 +162,31 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
       const n = octDecode(snorm(normal[2 * i]), snorm(normal[2 * i + 1]));
       const { long } = strokeAxes(n, unorm(tangent[i]) * 2 * Math.PI);
       const v = skyVelocity([dx * inv, dy * inv, dz * inv]);
+      velocity[3 * s] = v[0];
+      velocity[3 * s + 1] = v[1];
+      velocity[3 * s + 2] = v[2];
+      chunkOf[s] = c;
+      if ((meta[i * 4 + 3] & SKY_LIGHT_CULL_FLAG) !== 0) {
+        kept[s] = 0.5 * Math.hypot(size[2 * i], size[2 * i + 1]) * inv;
+      }
       const speed = Math.hypot(v[0], v[1], v[2]);
       along[s] = speed > 0 ? Math.abs(long[0] * v[0] + long[1] * v[1] + long[2] * v[2]) / speed : 0;
       wheel[s] = skyWheelAt([dx * inv, dy * inv, dz * inv]);
-      const shift = skyWheelFlowShift([dx * inv, dy * inv, dz * inv]);
-      flow[s] = shift < 0 ? -1 : skyStreamLevel(shift);
     });
   });
-  return { local, start, phase, wave, along, wheel, flow, hash: hashSkyDirections(directions) };
+  return {
+    local,
+    start,
+    phase,
+    wave,
+    along,
+    wheel,
+    directions,
+    velocity,
+    kept,
+    chunk: chunkOf,
+    hash: hashSkyDirections(directions),
+  };
 }
 
 /**
@@ -171,12 +207,19 @@ export function skyWrapStats(
     cache.set(batch, entry);
   }
   const strokes = entry.strokes;
-  const loopPhase = wrap === 'wave' ? strokes.wave : strokes.phase;
+  const loopPhase = wrap === 'wave' || wrap === 'wheelflow' ? strokes.wave : strokes.phase;
+  const bandSize = (c: number): number => {
+    const band = batch.chunks[c].band;
+    return band ? batch.sizeMultiplier(band) : 1;
+  };
+  // Under wheelflow and wheelrun a stroke in a wheel turns rigidly and has no loop along the arc.
+  const wheels = wrap === 'wheelflow' || wrap === 'wheelrun';
   // 255 marks a stroke not drawn this frame, which skyCounterFlow leaves out.
   const returning = new Uint8Array(strokes.phase.length).fill(255);
   const drawnIndices: number[] = [];
   let small = 0;
   let back = 0;
+  let members = 0;
   let wheeled = 0;
   let streaming = 0;
   const along: number[] = [];
@@ -187,22 +230,31 @@ export function skyWrapStats(
     for (let k = 0; k < local.length && local[k] < end; k++) {
       if (local[k] < chunk.drawStart) continue;
       const s = strokes.start[c] + k;
-      const loop = skyWrapLoop(wrap, loopPhase[s], time);
-      returning[s] = loop.returning ? 1 : 0;
+      const member = wheels && strokes.wheel[s] >= 0;
+      const loop = member ? skyWrapLoop('wheel', 0, time) : skyWrapLoop(wrap, loopPhase[s], time);
+      // A stroke whose travel share is 0 holds still, so it has no way back along the arc. The
+      // haze's kept extent is taken at its band's size, before fit caps and flight growth.
+      const back1 =
+        loop.returning &&
+        (!wheels ||
+          skyWheelFlowTravel(
+            dirAt(strokes.directions, s),
+            dirAt(strokes.velocity, s),
+            strokes.kept[s] * bandSize(strokes.chunk[s]),
+          ) > 0);
+      returning[s] = member ? 255 : back1 ? 1 : 0;
       drawnIndices.push(s);
+      if (member) members++;
       if (1 + loop.gain < 0.8) small++;
-      if (loop.returning) back++;
+      if (back1) back++;
       if (strokes.wheel[s] >= 0) wheeled++;
-      if (
-        wrap === 'stream' ||
-        (wrap === 'wheelflow' && strokes.flow[s] >= 0 && strokes.flow[s] < SKY_STREAM_FADE_LEVELS)
-      ) {
-        streaming++;
-      }
+      if (wrap === 'stream') streaming++;
       along.push(strokes.along[s]);
     }
   });
   const drawn = drawnIndices.length;
+  // The forward and returning shares are over the strokes that move along an arc.
+  const along1 = drawn - members;
   const step = Math.max(1, drawn / SKY_WRAP_STATS_CENTRES);
   const centres: number[] = [];
   for (let x = 0; x < drawn; x += step) centres.push(drawnIndices[Math.floor(x)]);
@@ -219,12 +271,17 @@ export function skyWrapStats(
       median: drawn > 0 ? along.sort((a, b) => a - b)[Math.floor(drawn / 2)] : 0,
     },
     returning: back,
-    forwardShare: drawn > 0 ? (drawn - back) / drawn : 0,
-    returningShare: drawn > 0 ? back / drawn : 0,
+    forwardShare: along1 > 0 ? (along1 - back) / along1 : 0,
+    returningShare: along1 > 0 ? back / along1 : 0,
     counterFlow: {
       ...skyCounterFlow(strokes.hash, returning, centres),
       radiusDeg: (SKY_COUNTER_FLOW_RADIUS * 180) / Math.PI,
       centres: centres.length,
     },
   };
+}
+
+/** The xyz triple at index `s` of `array`. */
+function dirAt(array: Float32Array, s: number): [number, number, number] {
+  return [array[3 * s], array[3 * s + 1], array[3 * s + 2]];
 }

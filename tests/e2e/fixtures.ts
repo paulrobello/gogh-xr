@@ -53,14 +53,15 @@ const GL_ERROR =
   /GL_INVALID_|WebGL: INVALID_|CONTEXT_LOST|THREE\.WebGL(Program|Shader)|Shader Error/;
 
 /**
- * Stores the Auto quality level before the page loads. The default is a fixed level, which never
- * judges frames, so a spec of the adaptive governor opts back in to Auto.
+ * Stores the Auto quality level and Auto foveation before the page loads. The default is a fixed
+ * level, which never judges frames, and a foveation pinned Off, which takes both foveation steps
+ * out of the shed order, so a spec of the adaptive governor opts back in to both.
  */
 export async function useAutoQuality(page: Page): Promise<void> {
   await page.addInitScript(() =>
     localStorage.setItem(
       'gogh-xr.settings.v1',
-      JSON.stringify({ version: 3, settings: { qualityLevel: 'auto' } }),
+      JSON.stringify({ version: 4, settings: { qualityLevel: 'auto', foveation: 'auto' } }),
     ),
   );
 }

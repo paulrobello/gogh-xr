@@ -105,7 +105,7 @@ export const STUB_MOTION: MotionFunctions = Object.freeze({
  * The motions motion.glsl runs: the sky swirl (P4.2), the star and moon rings (P4.3), the cypress
  * flame (P4.4) and the reactive push and wake (P4.5) of the app's tracker's current field. The sky
  * entry calls skySwirl with no wrap, so it mirrors the `base` wrap, the TS mirror's default. The
- * shader's default is `wave` (DEFAULT_SKY_WRAP, src/motion/variants.ts). A caller that needs
+ * shader's default is `wheelflow` (DEFAULT_SKY_WRAP, src/motion/variants.ts). A caller that needs
  * another wrap passes it to skySwirl explicitly, as the wrap diag and the e2e probes do.
  */
 export const LIVE_MOTION: MotionFunctions = Object.freeze({
@@ -203,7 +203,10 @@ export function motionOffset(
  * this bounds. Only the haze, on the sky layer, reads it, so every other layer reads 0 here: the
  * star and moon rings' reach is `skyRingReach` (sky-rings.ts). It is 0 under `stream`, where the
  * haze holds still, and under `wheel`, where the shader never calls it and judges the thin at the
- * haze's turned centre instead (motion.glsl skyHazeWheel). `wrap` defaults to `base`, as in skySwirl.
+ * haze's turned centre instead (motion.glsl skyHazeWheel). Under `wheelflow` and `wheelrun` it is
+ * the full reach: a haze stroke outside the wheels travels at most as under `wave` and `base`, and
+ * one inside a wheel is judged at its turned centre, where the shader never calls it. `wrap`
+ * defaults to `base`, as in skySwirl.
  */
 export function motionReach(
   layer: number,
@@ -211,9 +214,7 @@ export function motionReach(
   calm: number,
   wrap: SkyWrap = 'base',
 ): number {
-  if (layer !== STROKE_LAYER.sky || wrap === 'wheel' || wrap === 'stream' || wrap === 'wheelflow') {
-    return 0;
-  }
+  if (layer !== STROKE_LAYER.sky || wrap === 'wheel' || wrap === 'stream') return 0;
   const [x, y, z] = position;
   const [ex, ey, ez] = PAINTER_EYE;
   return calm * SKY_SWIRL_MAX_ANGLE * Math.hypot(x - ex, y - ey, z - ez);

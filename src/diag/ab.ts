@@ -9,7 +9,7 @@
  * desktop. main.ts builds a controller only when a group resolves, so a boot with no A/B flag
  * builds no group and does no per-frame A/B work. The bench ignores all of it.
  */
-import { SKY_WRAPS, type SkyWrap } from '../motion/variants';
+import { SKY_WRAP_AB_ORDER, type SkyWrap } from '../motion/variants';
 import { VTX_ARMS, type VtxArm, vertexArms } from '../render/strokes/vertex-arms';
 import { ZDIAG_MODES, type ZdiagMode } from './flags';
 
@@ -30,7 +30,7 @@ export const AB_GROUPS = {
   /** The motion calm (`?calm`). */
   calm: ['1', '0.5', '0.25'],
   /** The sky swirl's wrap treatment (`?wrap`, src/motion/variants.ts). */
-  wrap: SKY_WRAPS,
+  wrap: SKY_WRAP_AB_ORDER,
   /** Vertex cost against fill (src/render/strokes/vertex-arms.ts). No flag implies it. */
   vtx: VTX_ARMS,
 } as const satisfies Record<string, readonly string[]>;

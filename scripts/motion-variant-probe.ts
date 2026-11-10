@@ -10,7 +10,7 @@
  *
  * `capture` writes the byte-compare PNGs (the `?noanim` painter view, the painter view at two pinned
  * times, and one sky and one cypress pose at a pinned time) with `extra-query` appended, so two
- * builds, or a build with and without `&wrap=wave` (the no-flag default), can be compared byte for
+ * builds, or a build with and without `&wrap=wheelflow` (the no-flag default), can be compared byte for
  * byte.
  * `measure` boots each wrap variant with `?wrap=` and prints, per variant: the bare share under
  * `?coverage` at the 24 coverage poses (tests/world-poses.ts) over pinned times, binary and
@@ -71,7 +71,7 @@ const COVERAGE: readonly Pose[] = COVERAGE_POSES.map(
 const SKY_TIMES = [0.5, 3.7, 6.1];
 /** A pose's eye and heading, as `__goghPose` takes them. */
 const at = (p: Pose): number[] => [p[1], p[2], p[3], p[4], p[5]];
-const WRAPS = ['base', 'pingpong', 'wave'] as const;
+const WRAPS = ['base', 'pingpong', 'wave', 'wheelflow', 'wheelrun'] as const;
 
 async function waitForLoad(): Promise<number> {
   const start = Date.now();

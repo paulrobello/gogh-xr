@@ -253,7 +253,8 @@ test('a stored fixed quality level holds in XR at hz=90 slow=40: no events and n
 }) => {
   await page.addInitScript(([key, value]) => localStorage.setItem(key, value), [
     'gogh-xr.settings.v1',
-    JSON.stringify({ version: 3, settings: { qualityLevel: 3 } }),
+    // Auto foveation, so the level's own foveation steps apply (the default pins it Off).
+    JSON.stringify({ version: 4, settings: { qualityLevel: 3, foveation: 'auto' } }),
   ] as const);
   await xr.boot('demo=canvas&count=325000&slow=40&hz=90');
   expect(await governor(xr)).toMatchObject({ fixedLevel: 3, level: 3, judging: false });

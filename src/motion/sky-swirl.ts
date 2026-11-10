@@ -17,14 +17,17 @@
  * its rest position and never drifts off its region. The same rotation turns the stroke about its
  * own normal by `τ (omega · n)`, so its orientation follows the flow. Near the wrap the stroke
  * shrinks to nothing and grows back (`gain`), so the jump back is never a pop. That is the `base`
- * wrap. The app ships `wave` as the default (src/motion/variants.ts, Paul's 2026-11-08 choice), which
- * replaces the shrink with a travel ahead and back in bands. `wheel`, `stream`, `base` and
- * `pingpong` are the A/B alternatives (`?wrap`, `?ab=wrap`). Two of them have no loop along the
+ * wrap. `wave` (Paul's 2026-11-08 choice) replaces the shrink with a travel ahead and back in bands.
+ * The app ships `wheelflow` as the default (src/motion/variants.ts, Paul's 2026-11-10 choice), and
+ * `wheelrun`, `wave`, `wheel`, `stream`, `base` and `pingpong` are the A/B alternatives (`?wrap`,
+ * `?ab=wrap`). Two of them have no loop along the
  * arc at all (2026-11-09, after Paul rejected lift's reset): `wheel` turns each vortex's core
  * rigidly and forever about its centre direction (skyWheels) and holds every other sky stroke
  * still, and `stream` holds every sky stroke still and scrolls its brush tone along its length in
- * the fragment shader (skyStreamTone). `wheelflow` is `wheel` with the strokes outside the wheels
- * streaming as under `stream`, the shift faded to 0 at each wheel (skyWheelFlowShift).
+ * the fragment shader (skyStreamTone). `wheelflow` and `wheelrun` turn the wheels as `wheel` does
+ * and move the strokes outside them along the field as `wave` and `base` do, each stroke's travel
+ * faded by its own clearance from the wheels (skyWheelFlowTravel), so no moved centre crosses a
+ * turning disc's members' edge.
  *
  * motion.glsl's `skyMotion` is the GLSL; `skySwirlGlslDefines` hands it these tables as defines, so
  * the two read one source. Change them together.
@@ -555,7 +558,8 @@ function skyWaveProductGlsl(splits: readonly WindingSplit[]): string {
 
 /**
  * The loop phase, in loops, that a sky stroke centred at `position` with phase fraction `phase`
- * runs under wrap `wrap`: its phase fraction, except under `wave`, where it is skyWavePhase of its
+ * runs under wrap `wrap`: its phase fraction, except under `wave` and `wheelflow`, where it is
+ * skyWavePhase of its
  * direction from PAINTER_EYE plus SKY_WAVE_JITTER × (phase − ½). Matches the phase skyMotion in
  * motion.glsl passes to skyWrapMotion.
  */
@@ -565,7 +569,7 @@ export function skyWrapPhase(
   phase: number,
   poles: readonly SkyWavePole[] = SKY_WAVE_POLES,
 ): number {
-  if (wrap !== 'wave') return phase;
+  if (wrap !== 'wave' && wrap !== 'wheelflow') return phase;
   const d: Vec3 = [
     position[0] - PAINTER_EYE[0],
     position[1] - PAINTER_EYE[1],
@@ -605,18 +609,19 @@ export interface SkyWrapLoop {
 /**
  * The loop of a stroke with loop phase `phase` (skyWrapPhase) at motion time `time` under wrap
  * variant `wrap` (src/motion/variants.ts). Matches skyMotion and skyWrapMotion in motion.glsl:
- * - `base` sweeps forward and shrinks to nothing over the wrap window.
- * - `pingpong` and `wave` sweep forward over the first half of the loop and ease back over the
- *   second, at full size, with no jump.
- * - `wheel`, `stream` and `wheelflow` have no loop along the arc: tau is 0 (skyWheelSpin,
- *   skyStreamTone).
+ * - `base` and `wheelrun` sweep forward and shrink to nothing over the wrap window.
+ * - `pingpong`, `wave` and `wheelflow` sweep forward over the first half of the loop and ease back
+ *   over the second, at full size, with no jump.
+ * - `wheel` and `stream` have no loop along the arc: tau is 0 (skyWheelSpin, skyStreamTone).
+ * Outside the wheels `wheelflow` and `wheelrun` scale tau by skyWheelFlowTravel, and `wheelrun`'s
+ * gain is skyWheelRunGain (skySwirl), so this is their loop before that scaling.
  */
 export function skyWrapLoop(wrap: SkyWrap, phase: number, time: number): SkyWrapLoop {
-  if (wrap === 'wheel' || wrap === 'stream' || wrap === 'wheelflow') {
+  if (wrap === 'wheel' || wrap === 'stream') {
     return { tau: 0, gain: 0, returning: false };
   }
   const f = fract(time / SKY_SWIRL_PERIOD + phase);
-  if (wrap === 'wave' || wrap === 'pingpong') {
+  if (wrap === 'wave' || wrap === 'pingpong' || wrap === 'wheelflow') {
     return {
       tau: (smoothstep(0, 1, 1 - Math.abs(2 * f - 1)) - 0.5) * SKY_SWIRL_PERIOD,
       gain: 0,
@@ -927,67 +932,28 @@ export function skyStreamPhase(phase: number, time: number): number {
  * The `stream` wrap's packed varying, `sign × (1 + brush + f)` (motion.glsl skyStream, vStream):
  * `sign` ±1 the way the paint streams, `brush` the brush index and `f` the loop fraction.
  */
-export function skyStreamPack(sign: number, brush: number, f: number, level = 0): number {
-  return Math.fround(
-    (sign < 0 ? -1 : 1) * Math.fround(1 + brush + SKY_STREAM_RHOS.length * level + Math.fround(f)),
-  );
+export function skyStreamPack(sign: number, brush: number, f: number): number {
+  return Math.fround((sign < 0 ? -1 : 1) * Math.fround(1 + brush + Math.fround(f)));
 }
 
-/**
- * Decodes skyStreamPack as stroke.frag.glsl does, in float32: the brush, `f`, the sign, the fade
- * level and its shift share, `1 − level / SKY_STREAM_FADE_LEVELS`.
- */
-export function skyStreamUnpack(packed: number): {
-  brush: number;
-  f: number;
-  sign: number;
-  level: number;
-  shift: number;
-} {
+/** Decodes skyStreamPack as stroke.frag.glsl does, in float32: the brush, `f` and the sign. */
+export function skyStreamUnpack(packed: number): { brush: number; f: number; sign: number } {
   const a = Math.fround(Math.abs(packed) - 1);
-  const whole = Math.trunc(a);
-  const level = Math.floor(whole / SKY_STREAM_RHOS.length);
-  return {
-    brush: whole - level * SKY_STREAM_RHOS.length,
-    f: Math.fround(a - Math.floor(a)),
-    sign: Math.sign(packed),
-    level,
-    shift: 1 - level / SKY_STREAM_FADE_LEVELS,
-  };
+  return { brush: Math.trunc(a), f: Math.fround(a - Math.floor(a)), sign: Math.sign(packed) };
 }
 
 /**
- * The `wheelflow` wrap's stream loop, seconds: 3600 / 1125, so it divides the wrap of uTime. Its
- * paint streams at SKY_STREAM_SHIFT / 3.2 = 0.156 stroke lengths per second, 0.475°/s along a
- * far-band dome stroke (3.04°), the wheels' rims' mean speed (0.454-0.517°/s), where `stream`'s
- * 2 s loop runs 0.76°/s. The period sets the speed, not the shift, so SKY_STREAM_RHOS, measured at
- * the shift, still hold.
- */
-export const SKY_WHEELFLOW_PERIOD: number = 3.2;
-/**
- * The levels of the stream's shift share packed into vStream (skyStreamPack): level q draws the
- * shift at 1 − q / 15. `stream` packs 0, and the whole part stays under 256, so `f` keeps 2^-15.
- */
-export const SKY_STREAM_FADE_LEVELS: number = 15;
-
-/**
- * The band, radians, outside each wheel's members over which `wheelflow`'s stream shift ramps from
- * 0 at the members' edge to full: 1°, a third of a far-band dome stroke, so the paint feeding each
- * disc streams at full speed from 1° out (skyWheelFlowShift).
- */
-export const SKY_WHEELFLOW_BAND: number = Math.PI / 180;
-/**
- * The band, radians, outside each wheel's members over which `wheelflow` also fades the stream by
- * how the field's flow lines up with the disc's rim: a far-band dome stroke's length (3.04°), so a
- * streaming stroke whose quad can overlap the turning cap (the members' edge plus half a stroke)
- * never streams against the disc's turn. The alignment then eases out over SKY_WHEELFLOW_ALIGN_EASE.
+ * The band, radians, outside each wheel's members over which `wheelflow` and `wheelrun` fade a
+ * stroke's travel by how the field's flow lines up with the disc's rim: two far-band dome strokes'
+ * length (6.07°), so paint near a disc never travels against or across its turn. The alignment then
+ * eases out over SKY_WHEELFLOW_ALIGN_EASE (3.04°).
  */
 export const SKY_WHEELFLOW_ALIGN_BAND: number = 4 * SKY_WHEEL_STROKE_HALF;
 /** The ease, radians, past SKY_WHEELFLOW_ALIGN_BAND over which the alignment stops counting. */
 export const SKY_WHEELFLOW_ALIGN_EASE: number = 2 * SKY_WHEEL_STROKE_HALF;
 /**
  * The cosine between the field's velocity and the disc's rim velocity at and above which the
- * alignment fade keeps the full shift: it falls smoothly to 0 at a perpendicular or opposed flow.
+ * alignment fade keeps the full travel: it falls smoothly to 0 at a perpendicular or opposed flow.
  */
 export const SKY_WHEELFLOW_ALIGN: number = 0.2;
 /**
@@ -1004,67 +970,38 @@ export const SKY_WHEELFLOW_ALIGN_BLEND: number = Math.PI / 180;
  * central gap's 0.065°/s.
  */
 export const SKY_WHEELFLOW_MIN_SPEED: number = (0.1 * Math.PI) / 180;
-
 /**
- * The capsule round the gap between the two nearest wheels (the two clockwise central wheels),
- * where their fields cancel: about 0.065°/s across the gap, a quarter of the rims' field speed, and
- * the flow's direction across the line between their axes flips twice. It runs along the great
- * circle through the two axes, between them (`fromA` and `fromB`, the arc's tangents at each axis,
- * pointing inward), `halfWidth` either side of it: half the gap's width (2.05°).
+ * The clearance ratio at which a stroke outside the wheels makes its full travel under `wheelflow`
+ * and `wheelrun` (skyWheelFlowTravel): its angular clearance from a wheel's members' edge over the
+ * most a half loop can bring it nearer. smoothstep(0, 1.25, x) never exceeds 0.9 x, so the travel
+ * share times the approach stays under the clearance, and the moved centre never reaches the edge.
  */
-export interface SkyWheelFlowGap {
-  readonly a: number;
-  readonly b: number;
-  readonly normal: Vec3;
-  readonly fromA: Vec3;
-  readonly fromB: Vec3;
-  readonly halfWidth: number;
-  /** The clear gap between the two wheels' edges along the line between their axes, radians. */
-  readonly gap: number;
-}
-
-const unitOf = (v: Vec3): Vec3 => {
-  const l = Math.hypot(v[0], v[1], v[2]);
-  return [v[0] / l, v[1] / l, v[2] / l];
-};
-
-/** The capsule round the gap between the two nearest wheels of `wheels`. */
-export function skyWheelFlowGap(wheels: readonly SkyWheel[] = SKY_WHEELS): SkyWheelFlowGap {
-  let best = { a: 0, b: 1, gap: Infinity };
-  for (let i = 0; i < wheels.length; i++) {
-    for (let j = i + 1; j < wheels.length; j++) {
-      const u = wheels[i].axis;
-      const v = wheels[j].axis;
-      const cos = Math.min(1, u[0] * v[0] + u[1] * v[1] + u[2] * v[2]);
-      const gap = Math.acos(cos) - skyWheelEdge(wheels[i]) - skyWheelEdge(wheels[j]);
-      if (gap < best.gap) best = { a: i, b: j, gap };
-    }
-  }
-  const normal = unitOf(cross(wheels[best.a].axis, wheels[best.b].axis));
-  return Object.freeze({
-    ...best,
-    normal,
-    fromA: cross(normal, wheels[best.a].axis),
-    fromB: cross(wheels[best.b].axis, normal),
-    halfWidth: 0.5 * best.gap,
-  });
-}
-export const SKY_WHEELFLOW_GAP: SkyWheelFlowGap = skyWheelFlowGap();
+export const SKY_WHEELFLOW_RAMP: number = 1.25;
+/**
+ * The least approach skyWheelFlowTravel takes, as a share of the stroke's whole half-loop arc
+ * (SKY_SWIRL_PERIOD / 2 × |v|). A stroke flowing straight along a rim approaches it not at all to
+ * first order, so without a floor its travel would jump from 0 to 1 where its rest centre clears
+ * the edge; with it the travel ramps in over a clearance of SKY_WHEELFLOW_RAMP × 0.25 of the arc. A
+ * floor only lowers the travel, so the bound holds.
+ */
+export const SKY_WHEELFLOW_APPROACH_FLOOR: number = 0.25;
+/**
+ * The travel share from which `wheelrun`'s shrink at the wrap runs at full depth: a stroke that
+ * travels under a quarter of its arc jumps back too little to need hiding, so its shrink fades with
+ * its travel, and a stroke that holds still never shrinks.
+ */
+export const SKY_WHEELRUN_GAIN_TRAVEL: number = 4;
+/**
+ * The calm below which `wheelrun`'s shrink fades out, reaching none at calm 0: the wheels hold the
+ * sky gate open at calm 0 (motionClock.setHoldMask), where the strokes outside them must draw the
+ * rest sky, not a stroke frozen mid-shrink.
+ */
+export const SKY_WHEELRUN_CALM_FADE: number = 0.1;
 
 /** Half the squared chord of wheel `w`'s edge plus `band`. */
-export function skyWheelFlowOuter(w: SkyWheel, band: number = SKY_WHEELFLOW_BAND): number {
+export function skyWheelFlowOuter(w: SkyWheel, band: number): number {
   const chord = 2 * Math.sin((skyWheelEdge(w) + band) / 2);
   return 0.5 * chord * chord;
-}
-
-/**
- * The gap fade at unit direction `dir`: between the gap's two axes, a smoothstep from 0 on the
- * great circle through them to 1 at `halfWidth` from it (in its sine), and 1 elsewhere.
- */
-export function skyWheelFlowGapFade(dir: Vec3, gap: SkyWheelFlowGap = SKY_WHEELFLOW_GAP): number {
-  const along = (t: Vec3): number => t[0] * dir[0] + t[1] * dir[1] + t[2] * dir[2];
-  if (along(gap.fromA) <= 0 || along(gap.fromB) <= 0) return 1;
-  return smoothstep(0, Math.sin(gap.halfWidth), Math.abs(along(gap.normal)));
 }
 
 /**
@@ -1086,33 +1023,50 @@ function alignFade(w: SkyWheel, dir: Vec3, velocity: Vec3, x: number): number {
 }
 
 /**
- * The `wheelflow` wrap's stream shift share of a sky stroke at unit direction `dir` from
- * PAINTER_EYE whose field velocity is `velocity` (omega × d̂, at unit distance): -1 inside a wheel
- * (skyWheelAt), which turns as under `wheel`, else the product over the wheels of a smoothstep in
- * 1 − c·d̂ from the members' edge out over `band`, times the alignment fade (alignFade) of the
- * wheel whose members' edge is nearest in chord, blended with the next nearest's over
- * SKY_WHEELFLOW_ALIGN_BLEND of margin difference, so a stroke near one disc is never judged against
- * the turn of another farther off (the two central wheels turn the same way and so oppose across
- * their gap) and the switch between them has no seam, times the gap fade (skyWheelFlowGapFade; `gap` null leaves it out). Matches skyWheelFlowShift in
- * motion.glsl.
+ * The `wheelflow` and `wheelrun` wraps' travel share of a sky stroke at unit direction `dir` from
+ * PAINTER_EYE whose field velocity is `velocity` (omega × d̂, at unit distance), keeping an extra
+ * angular extent `halfAngle` clear (0 for a dome stroke, the haze's half diagonal over its distance
+ * for the haze): -1 inside a wheel (skyWheelAt), which turns as under `wheel`, else a share in
+ * [0, 1] of the arc its wrap sweeps, so no moved centre (widened by `halfAngle`) crosses a members'
+ * edge, and moved paint overlaps a disc by at most its own half extent, as resting paint just
+ * outside the edge already does. Per wheel within 90° of
+ * it, its clearance (the sine of its angle past the members' edge, under the angle, less
+ * `halfAngle`) over the most a half loop can bring it nearer the axis
+ * (SKY_SWIRL_PERIOD / 2 × |v·c| / sin θ: the distance to the axis is convex along the great circle
+ * the stroke travels on, so it falls no faster than its first-order rate), floored at
+ * SKY_WHEELFLOW_APPROACH_FLOOR of its whole half-loop arc, through smoothstep(0,
+ * SKY_WHEELFLOW_RAMP), which is under 0.9 of its argument, so no moved centre (widened by
+ * `halfAngle`) reaches the edge, and a stroke already at it holds still. Then the alignment fade
+ * (alignFade) of the wheel whose members' edge is nearest in chord, blended with the next nearest's
+ * over SKY_WHEELFLOW_ALIGN_BLEND of margin difference (the two central wheels turn the same way and
+ * so oppose across their gap). Matches skyWheelFlowTravel in motion.glsl.
  */
-export function skyWheelFlowShift(
+export function skyWheelFlowTravel(
   dir: Vec3,
   velocity: Vec3 = skyVelocity(dir),
+  halfAngle = 0,
   wheels: readonly SkyWheel[] = SKY_WHEELS,
-  band: number = SKY_WHEELFLOW_BAND,
-  gap: SkyWheelFlowGap | null = SKY_WHEELFLOW_GAP,
 ): number {
-  let shift = 1;
+  let travel = 1;
   let near1 = Number.POSITIVE_INFINITY;
   let near2 = Number.POSITIVE_INFINITY;
   let align1 = 1;
   let align2 = 1;
+  const floorRate =
+    SKY_WHEELFLOW_APPROACH_FLOOR * Math.hypot(velocity[0], velocity[1], velocity[2]);
   for (const w of wheels) {
-    const x = 1 - (w.axis[0] * dir[0] + w.axis[1] * dir[1] + w.axis[2] * dir[2]);
-    const core = 0.5 * w.radius * w.radius;
-    if (x < core) return -1;
-    shift *= smoothstep(core, skyWheelFlowOuter(w, band), x);
+    const c = w.axis;
+    const cosine = c[0] * dir[0] + c[1] * dir[1] + c[2] * dir[2];
+    const x = 1 - cosine;
+    if (x < 0.5 * w.radius * w.radius) return -1;
+    if (cosine > 0) {
+      const sine = Math.sqrt(Math.max(1 - cosine * cosine, 1e-12));
+      const e = skyWheelEdge(w);
+      const clear = sine * Math.cos(e) - cosine * Math.sin(e) - halfAngle;
+      const radial = Math.abs(c[0] * velocity[0] + c[1] * velocity[1] + c[2] * velocity[2]) / sine;
+      const approach = 0.5 * SKY_SWIRL_PERIOD * Math.max(radial, floorRate);
+      travel *= smoothstep(0, SKY_WHEELFLOW_RAMP, clear / Math.max(approach, 1e-9));
+    }
     const margin = Math.sqrt(2 * x) - w.radius;
     if (margin < near2) {
       const align = alignFade(w, dir, velocity, x);
@@ -1131,13 +1085,21 @@ export function skyWheelFlowShift(
     near2 === Number.POSITIVE_INFINITY
       ? 1
       : smoothstep(-SKY_WHEELFLOW_ALIGN_BLEND, SKY_WHEELFLOW_ALIGN_BLEND, near2 - near1);
-  shift *= align2 + (align1 - align2) * weight;
-  return gap ? shift * skyWheelFlowGapFade(dir, gap) : shift;
+  return travel * (align2 + (align1 - align2) * weight);
 }
 
-/** The fade level skyStreamPack carries for stream shift share `shift`, 0 at full shift. */
-export function skyStreamLevel(shift: number): number {
-  return Math.round((1 - shift) * SKY_STREAM_FADE_LEVELS);
+/**
+ * `wheelrun`'s size delta at loop fraction `f` for a stroke making share `travel` of its sweep, at
+ * calm `calm`: base's shrink at the wrap, at full depth from 1 / SKY_WHEELRUN_GAIN_TRAVEL of travel
+ * up and faded out as calm falls to 0 over SKY_WHEELRUN_CALM_FADE. Matches skyWheelRunGain in
+ * motion.glsl.
+ */
+export function skyWheelRunGain(f: number, travel: number, calm = 1): number {
+  return (
+    (smoothstep(0, SKY_SWIRL_FADE, Math.min(f, 1 - f)) - 1) *
+    Math.min(1, travel * SKY_WHEELRUN_GAIN_TRAVEL) *
+    smoothstep(0, SKY_WHEELRUN_CALM_FADE, calm)
+  );
 }
 
 /** One layer tap of the `stream` tone: the atlas tone and coverage, each 0-1. */
@@ -1151,11 +1113,7 @@ export interface StreamTap {
  * tap that leaves the shape falls back to the rest tone by its coverage, then the weighted
  * deviations from SKY_STREAM_TONE_MEAN scale by the contrast gain, faded to 1 by the product of
  * the two taps' coverages (a tap that fell back to the rest tone is fully correlated with it, so
- * the brush's rho would over-compensate it), clamped to [0, 1]. `shift` is the share of the shift
- * the taps were read at (`wheelflow`'s fade): taps that far apart are correlated by
- * 1 − shift (1 − rho), which the gain takes in place of rho, so the blend's variance holds over the
- * loop at every shift and at 0, where both taps are the rest tap, the gain is 1. Matches
- * stroke.frag.glsl.
+ * the brush's rho would over-compensate it), clamped to [0, 1]. Matches stroke.frag.glsl.
  */
 export function skyStreamTone(
   rest: number,
@@ -1163,27 +1121,37 @@ export function skyStreamTone(
   b: StreamTap,
   f: number,
   rho = 0,
-  shift = 1,
 ): number {
   const w = skyStreamWeights(f, rho);
   const ta = rest + (a.tone - rest) * a.coverage;
   const tb = rest + (b.tone - rest) * b.coverage;
   const m = SKY_STREAM_TONE_MEAN;
-  // Taps `shift` of the shift apart are correlated by 1 − shift (1 − rho): twice that in place of
-  // 2 rho, written so shift 1 gives 2 rho exactly, as stroke.frag.glsl does.
-  const rho2 = shift * (2 * rho) + 2 * (1 - shift);
-  const gainK = 1 / Math.sqrt(w.wA * w.wA + w.wB * w.wB + rho2 * w.wA * w.wB);
-  const gain = 1 + (gainK - 1) * a.coverage * b.coverage;
+  const gain = 1 + (w.gain - 1) * a.coverage * b.coverage;
   return Math.min(1, Math.max(0, m + (w.wA * (ta - m) + w.wB * (tb - m)) * gain));
+}
+
+/** What skySwirl needs beyond the stroke's centre for `wheelflow` and `wheelrun`. */
+export interface SkySwirlOptions {
+  /**
+   * The extent, metres, the travel keeps clear of the wheels on top of the moved centre: the haze
+   * stroke's full-size half diagonal (0.5 × |size|), whose rest thin keeps it off the discs, and 0
+   * (the default) for a dome stroke, whose moved paint may overlap a disc by its own half extent,
+   * as a stroke resting just outside the edge already does (stroke.vert.glsl flowExtent).
+   */
+  readonly halfDiagonal?: number;
+  /** The motion calm, 0-1, which fades `wheelrun`'s shrink (skyWheelRunGain). */
+  readonly calm?: number;
 }
 
 /**
  * The sky motion of a stroke centred at `position` with unit normal `normal` and phase fraction
- * `phase`, at motion time `time`, before calm, under wrap variant `wrap`, and under `wave` at
- * `turns` waves per turn, its tau scaled by skyWaveFade. Matches skyMotion in motion.glsl. `wrap`
- * defaults to `base` here, while the shader defaults to `wave` (DEFAULT_SKY_WRAP), so a caller
- * mirroring the app passes the wrap explicitly. `stream` moves no stroke (skyStreamTone), and
- * `wheelflow` turns the wheels as `wheel` does and moves no other stroke.
+ * `phase`, at motion time `time`, before calm, under wrap variant `wrap`, and under `wave` and
+ * `wheelflow` at `turns` waves per turn, its tau scaled by skyWaveFade. Matches skyMotion in
+ * motion.glsl. `wrap` defaults to `base` here, while the shader defaults to `wheelflow`
+ * (DEFAULT_SKY_WRAP), so a caller mirroring the app passes the wrap explicitly. `stream` moves no
+ * stroke (skyStreamTone). `wheelflow` and `wheelrun` turn the wheels as `wheel` does, and move
+ * every other stroke as `wave` and `base` do, its tau scaled by skyWheelFlowTravel at
+ * `options.halfDiagonal` (0 by default).
  */
 export function skySwirl(
   position: Vec3,
@@ -1193,6 +1161,7 @@ export function skySwirl(
   vortices: readonly SkyVortex[] = SKY_VORTICES,
   wrap: SkyWrap = 'base',
   turns: number = SKY_WAVE_PER_TURN,
+  options: SkySwirlOptions = {},
 ): SkySwirl {
   const d: Vec3 = [
     position[0] - PAINTER_EYE[0],
@@ -1201,22 +1170,40 @@ export function skySwirl(
   ];
   const inv = 1 / Math.hypot(d[0], d[1], d[2]);
   const dir: Vec3 = [d[0] * inv, d[1] * inv, d[2] * inv];
-  if (wrap === 'wheel' || wrap === 'stream' || wrap === 'wheelflow') {
-    const wheels = vortices === SKY_VORTICES ? SKY_WHEELS : skyWheels(vortices);
-    const spin = wrap === 'stream' ? null : skyWheelSpin(dir, time, wheels);
-    if (!spin) return { offset: [0, 0, 0], turn: 0, gain: 0, spin: null };
-    const moved = rotateAbout(d, spin.axis, spin.angle);
-    return { offset: [moved[0] - d[0], moved[1] - d[1], moved[2] - d[2]], turn: 0, gain: 0, spin };
+  const wheeled = wrap === 'wheel' || wrap === 'wheelflow' || wrap === 'wheelrun';
+  const wheels = vortices === SKY_VORTICES ? SKY_WHEELS : skyWheels(vortices);
+  if (wheeled || wrap === 'stream') {
+    const spin = wheeled ? skyWheelSpin(dir, time, wheels) : null;
+    if (spin) {
+      const moved = rotateAbout(d, spin.axis, spin.angle);
+      return {
+        offset: [moved[0] - d[0], moved[1] - d[1], moved[2] - d[2]],
+        turn: 0,
+        gain: 0,
+        spin,
+      };
+    }
+    if (wrap === 'wheel' || wrap === 'stream') {
+      return { offset: [0, 0, 0], turn: 0, gain: 0, spin: null };
+    }
   }
   const omega = skyOmega(dir, vortices);
   const poles = skyWavePolesFor(turns, vortices);
-  const loop = skyWrapLoop(wrap, skyWrapPhase(wrap, position, phase, poles), time);
+  const loopPhase = skyWrapPhase(wrap, position, phase, poles);
+  const loop = skyWrapLoop(wrap, loopPhase, time);
   const fade =
-    wrap === 'wave'
+    wrap === 'wave' || wrap === 'wheelflow'
       ? skyWaveFade(dir, vortices === SKY_VORTICES ? FADE_POLES : skyWaveFadePoles(vortices))
       : 1;
-  const tau = loop.tau * fade;
-  const gain = loop.gain;
+  let travel = 1;
+  let gain = loop.gain;
+  if (wheeled) {
+    travel = skyWheelFlowTravel(dir, cross(omega, dir), (options.halfDiagonal ?? 0) * inv, wheels);
+    if (wrap === 'wheelrun') {
+      gain = skyWheelRunGain(fract(time / SKY_SWIRL_PERIOD + loopPhase), travel, options.calm);
+    }
+  }
+  const tau = loop.tau * fade * travel;
   const v = cross(omega, d);
   return {
     offset: [tau * v[0], tau * v[1], tau * v[2]],
@@ -1228,7 +1215,6 @@ export function skySwirl(
 
 /** A GLSL float literal: always carries a decimal point or an exponent. */
 const glslFloat = (value: number): string => value.toExponential(8);
-const glslVec3 = (v: Vec3): string => `vec3(${v.map(glslFloat).join(', ')})`;
 
 /** The material defines skyMotion in motion.glsl reads: the vortex tables and the loop constants. */
 export function skySwirlGlslDefines(
@@ -1242,7 +1228,6 @@ export function skySwirlGlslDefines(
   const fadePoles = vortices === SKY_VORTICES ? FADE_POLES : skyWaveFadePoles(vortices);
   const fadeChord = 2 * Math.sin(SKY_WAVE_FADE_RADIUS / 2);
   const wheels = vortices === SKY_VORTICES ? SKY_WHEELS : skyWheels(vortices);
-  const gap = vortices === SKY_VORTICES ? SKY_WHEELFLOW_GAP : skyWheelFlowGap(wheels);
   return {
     SKY_VORTEX_COUNT: n,
     SKY_VORTEX_AXES: `vec4[${n}](${axes.join(', ')})`,
@@ -1264,20 +1249,19 @@ export function skySwirlGlslDefines(
     SKY_WHEEL_EDGES: `float[${n}](${wheels.map((w) => glslFloat(skyWheelEdge(w))).join(', ')})`,
     SKY_WHEEL_CAPS: `float[${n}](${wheels.map((w) => glslFloat(skyWheelCap(w))).join(', ')})`,
     SKY_WHEEL_HAZE_FEATHER: glslFloat(SKY_WHEEL_HAZE_FEATHER),
-    SKY_WHEELFLOW_OUTERS: `float[${n}](${wheels.map((w) => glslFloat(skyWheelFlowOuter(w))).join(', ')})`,
+    SKY_WHEEL_EDGE_COSS: `float[${n}](${wheels.map((w) => glslFloat(Math.cos(skyWheelEdge(w)))).join(', ')})`,
+    SKY_WHEEL_EDGE_SINS: `float[${n}](${wheels.map((w) => glslFloat(Math.sin(skyWheelEdge(w)))).join(', ')})`,
+    SKY_SWIRL_HALF_PERIOD: glslFloat(0.5 * SKY_SWIRL_PERIOD),
+    SKY_WHEELFLOW_RAMP: glslFloat(SKY_WHEELFLOW_RAMP),
+    SKY_WHEELFLOW_APPROACH_FLOOR: glslFloat(SKY_WHEELFLOW_APPROACH_FLOOR),
+    SKY_WHEELRUN_GAIN_TRAVEL: glslFloat(SKY_WHEELRUN_GAIN_TRAVEL),
+    SKY_WHEELRUN_CALM_FADE: glslFloat(SKY_WHEELRUN_CALM_FADE),
     SKY_WHEELFLOW_ALIGN_INNERS: `float[${n}](${wheels.map((w) => glslFloat(skyWheelFlowOuter(w, SKY_WHEELFLOW_ALIGN_BAND))).join(', ')})`,
     SKY_WHEELFLOW_ALIGN_OUTERS: `float[${n}](${wheels.map((w) => glslFloat(skyWheelFlowOuter(w, SKY_WHEELFLOW_ALIGN_BAND + SKY_WHEELFLOW_ALIGN_EASE))).join(', ')})`,
     SKY_WHEELFLOW_SENSES: `float[${n}](${wheels.map((w) => glslFloat(Math.sign(w.rate))).join(', ')})`,
     SKY_WHEELFLOW_ALIGN: glslFloat(SKY_WHEELFLOW_ALIGN),
     SKY_WHEELFLOW_ALIGN_BLEND: glslFloat(SKY_WHEELFLOW_ALIGN_BLEND),
     SKY_WHEELFLOW_MIN_SPEED2: glslFloat(SKY_WHEELFLOW_MIN_SPEED * SKY_WHEELFLOW_MIN_SPEED),
-    SKY_WHEELFLOW_GAP_NORMAL: glslVec3(gap.normal),
-    SKY_WHEELFLOW_GAP_FROM_A: glslVec3(gap.fromA),
-    SKY_WHEELFLOW_GAP_FROM_B: glslVec3(gap.fromB),
-    SKY_WHEELFLOW_GAP_SIN: glslFloat(Math.sin(gap.halfWidth)),
-    SKY_WHEELFLOW_INV_PERIOD: glslFloat(1 / SKY_WHEELFLOW_PERIOD),
-    SKY_STREAM_FADE_LEVELS: glslFloat(SKY_STREAM_FADE_LEVELS),
-    SKY_STREAM_INV_FADE_LEVELS: glslFloat(1 / SKY_STREAM_FADE_LEVELS),
     SKY_HALF_TURN: glslFloat(Math.PI),
     SKY_STREAM_INV_PERIOD: glslFloat(1 / SKY_STREAM_PERIOD),
     SKY_STREAM_SHIFT: glslFloat(SKY_STREAM_SHIFT),

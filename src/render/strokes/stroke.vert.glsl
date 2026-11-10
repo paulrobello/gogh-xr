@@ -149,8 +149,9 @@ void main() {
   // the coarse cut on for in-box haze out to about 3.4 m, so haze would vanish near a hand.
   // The haze around a disc then clears a little wider while the sky moves, rather than paying the
   // motion before the thin for every haze stroke. Two wraps differ: under stream no stroke moves,
-  // so the reach is 0 and the thin is the rest thin, and under wheel the haze's rigid turn runs
-  // first (motion.glsl skyHazeWheel), so the thin is judged at the turned centre with no reach.
+  // so the reach is 0 and the thin is the rest thin, and under wheel (and for a haze stroke in a
+  // wheel under wheelflow and wheelrun) the haze's rigid turn runs first (motion.glsl
+  // skyHazeWheel), so the thin is judged at the turned centre with no reach.
   // The motion gates (P4.1, P4.5): the layer's own bit, and the reactive bit with the rest centre
   // inside the reactive box. Closed, as under ?noanim or at calm 0, each is one AND and compare.
   bool layerMoves = motionGate(iMeta.y);
@@ -158,13 +159,17 @@ void main() {
   float thin = 1.0;
   vec3 wheel = vec3(0.0);
   bool wheelTurned = false;
+  // The extent wheelflow and wheelrun keep clear of the wheels on top of the moved centre: the
+  // haze's full-size half diagonal, since its rest thin keeps it off the discs, and 0 otherwise.
+  float flowExtent = 0.0;
   if ((iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {
     float halfExtent = 0.5 * length(size);
+    flowExtent = halfExtent;
     float reach = reacts ? reactiveReach() : 0.0;
     if (layerMoves) {
-      // Under wheel the haze turns with its wheel here and is judged where the turn has carried
-      // it, thinned clear of the other wheels (motion.glsl skyHazeWheel); otherwise it widens by
-      // its motion reach.
+      // Under wheel, and in a wheel under wheelflow and wheelrun, the haze turns with its wheel
+      // here and is judged where the turn has carried it, thinned clear of the other wheels
+      // (motion.glsl skyHazeWheel); otherwise it widens by its motion reach.
       wheelTurned = skyHazeWheel(iPosition, halfExtent, n, longAxis, shortAxis, wheel, thin);
       if (!wheelTurned) reach += motionReach(iMeta.y, iPosition);
     }
@@ -196,6 +201,7 @@ void main() {
       layerMoves && !wheelTurned,
       reacts,
       0.5 * size,
+      flowExtent,
       stream
     );
     // The turn is small (SKY_SWIRL_MAX_TURN plus REACTIVE_MAX_TURN), so cosine and sine are

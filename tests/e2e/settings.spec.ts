@@ -126,7 +126,13 @@ test('a fixed quality level set in the DOM panel applies, survives a reload and 
   page,
 }) => {
   await page.goto('/?diag&noanim&strokesTest');
-  expect(await governorOf(page)).toMatchObject({ fixedLevel: 5, level: 5, foveation: 1 });
+  // The default foveation is pinned Off, so the level's foveation steps read as pinned at 0.
+  expect(await governorOf(page)).toMatchObject({
+    fixedLevel: 5,
+    level: 5,
+    foveation: 0,
+    foveationPin: 0,
+  });
   await page.keyboard.press('m');
   const row = page.locator('#gogh-settings [data-control="qualityLevel"]');
   const slider = row.locator('input[type=range]');
@@ -136,16 +142,16 @@ test('a fixed quality level set in the DOM panel applies, survives a reload and 
   await slider.focus();
   await page.keyboard.press('Home');
   for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
-  await expect(row.locator('.value')).toHaveText('3 · fov 1');
+  await expect(row.locator('.value')).toHaveText('3 · fov pinned');
   await expect
     .poll(async () => governorOf(page))
-    .toMatchObject({ fixedLevel: 3, level: 3, foveation: 1, fbScale: 0.85, history: [] });
+    .toMatchObject({ fixedLevel: 3, level: 3, foveation: 0, fbScale: 0.85, history: [] });
   await expect
     .poll(() => page.evaluate((k) => localStorage.getItem(k), KEY))
     .toContain('"qualityLevel":3');
 
   await page.reload();
-  expect(await governorOf(page)).toMatchObject({ fixedLevel: 3, level: 3, foveation: 1 });
+  expect(await governorOf(page)).toMatchObject({ fixedLevel: 3, level: 3, foveation: 0 });
   const diag = await page.evaluate(
     () => window.__goghDiag?.() as unknown as Record<string, unknown>,
   );
@@ -171,32 +177,45 @@ test('a foveation pin set in the DOM panel applies over the level, survives a re
     return diag.settings as SettingsDiag;
   };
   await page.goto('/?diag&noanim&strokesTest');
-  expect(await governorOf(page)).toMatchObject({ fixedLevel: 5, foveation: 1, foveationPin: null });
+  // The default is Off, a pin of 0: the level keeps its fb and density steps, only the foveation
+  // is the pin.
+  expect(await governorOf(page)).toMatchObject({
+    fixedLevel: 5,
+    level: 5,
+    fbScale: 0.85,
+    foveation: 0,
+    foveationPin: 0,
+  });
   await page.keyboard.press('m');
   const row = page.locator('#gogh-settings [data-control="foveation"]');
   const buttons = row.locator('button');
   await expect(buttons).toHaveText(['Auto', 'Off', '0.5', '1']);
-  await expect(buttons.nth(0)).toHaveAttribute('aria-pressed', 'true');
-  await buttons.nth(1).click();
   await expect(buttons.nth(1)).toHaveAttribute('aria-pressed', 'true');
-  expect((await settingsOf()).effective).toMatchObject({ foveation: 0 });
-  // The level keeps its fb and density steps; only the foveation is the pin.
+  await buttons.nth(2).click();
+  await expect(buttons.nth(2)).toHaveAttribute('aria-pressed', 'true');
+  expect((await settingsOf()).effective).toMatchObject({ foveation: 0.5 });
   await expect
     .poll(async () => governorOf(page))
-    .toMatchObject({ fixedLevel: 5, level: 5, fbScale: 0.85, foveation: 0, foveationPin: 0 });
+    .toMatchObject({ fixedLevel: 5, level: 5, fbScale: 0.85, foveation: 0.5, foveationPin: 0.5 });
+  // Auto hands foveation back to the level, whose steps reach foveation 1 by level 5.
+  await buttons.nth(0).click();
+  await expect(buttons.nth(0)).toHaveAttribute('aria-pressed', 'true');
+  await expect
+    .poll(async () => governorOf(page))
+    .toMatchObject({ fixedLevel: 5, level: 5, foveation: 1, foveationPin: null });
   await expect
     .poll(() => page.evaluate((k) => localStorage.getItem(k), KEY))
-    .toContain('"foveation":0');
+    .toContain('"foveation":"auto"');
 
   await page.reload();
-  expect(await governorOf(page)).toMatchObject({ fixedLevel: 5, foveation: 0, foveationPin: 0 });
-  expect((await settingsOf()).stored).toMatchObject({ foveation: 0 });
+  expect(await governorOf(page)).toMatchObject({ fixedLevel: 5, foveation: 1, foveationPin: null });
+  expect((await settingsOf()).stored).toMatchObject({ foveation: 'auto' });
 
   await page.goto('/?diag&noanim&strokesTest&fov=1');
   expect(await governorOf(page)).toMatchObject({ foveation: 1, foveationPin: 1 });
   expect(await settingsOf()).toMatchObject({
     effective: { foveation: 1 },
-    stored: { foveation: 0 },
+    stored: { foveation: 'auto' },
   });
   await page.keyboard.press('m');
   await expect(row.locator('button').first()).toBeDisabled();

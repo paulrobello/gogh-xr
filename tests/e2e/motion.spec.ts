@@ -17,6 +17,9 @@ import { luma, shiftAt } from './block-match';
 import { expect, glErrors, test, type Xr } from './fixtures';
 import { handOrbsOff } from './helpers';
 
+/** The clock's hold mask with no `?wrap`: the default wheelflow holds the sky gate at calm 0. */
+const DEFAULT_HOLD = 1 << STROKE_LAYER.sky;
+
 interface MotionDiag {
   time: number;
   delta: number;
@@ -63,7 +66,7 @@ test('?noanim holds the motion clock and two world shots 500 ms apart match', as
     calm: 1,
     frozen: true,
     layers: MOTION_LAYER_MASK,
-    hold: 0,
+    hold: DEFAULT_HOLD,
   });
   expect(after).toEqual(before);
   const [a, b] = await Promise.all([rawPixels(first), rawPixels(second)]);
@@ -186,8 +189,8 @@ test.describe('sky swirl (P4.2)', () => {
     return rawPixels(url);
   }
 
-  // Base's own loop (`?wrap=base`): the wave, the default, sets each stroke's phase from its
-  // direction, so the pin would not move the sky coherently. Its own test is below.
+  // Base's own loop (`?wrap=base`): the wave and the default wheelflow set each stroke's phase
+  // from its direction, so the pin would not move the sky coherently. Its own test is below.
   test('a pinned coherent phase moves the sky along the TS prediction, half as far at calm 0.5', async ({
     page,
     xr,
@@ -1004,8 +1007,9 @@ test.describe('star and moon rings (P4.3)', () => {
     expect(outline.length).toBeGreaterThan(500);
     expect(cream.length).toBeGreaterThan(1000);
 
-    // Calm 0 at a pinned time is the rest world, byte for byte.
-    const calm0 = await lightsShot(page, xr, 'calm=0&motiont=2.5');
+    // Calm 0 at a pinned time is the rest world, byte for byte. Under wave: the default wheelflow
+    // holds its discs at the pose the pinned time turned them to.
+    const calm0 = await lightsShot(page, xr, 'calm=0&motiont=2.5&wrap=wave');
     expect(calm0.equals(rest)).toBe(true);
 
     await expect.poll(() => page.evaluate(() => window.__goghRingShift !== undefined)).toBe(true);
@@ -1121,10 +1125,11 @@ test.describe('star and moon rings (P4.3)', () => {
     xr,
   }) => {
     test.setTimeout(360_000);
-    // (c) Calm 0 with the halo drawn is the frozen world, byte for byte.
+    // (c) Calm 0 with the halo drawn is the frozen world, byte for byte. Under wave: the default
+    // wheelflow holds its discs at the pose the pinned time turned them to.
     const rest = await lightsShot(page, xr, 'noanim');
     expect(((await xr.diag()).halo as HaloDiag).visible).toBe(true);
-    const still = await lightsShot(page, xr, 'calm=0&motiont=3.3');
+    const still = await lightsShot(page, xr, 'calm=0&motiont=3.3&wrap=wave');
     expect(((await xr.diag()).halo as HaloDiag).visible).toBe(true);
     expect((await motion(xr)).time).toBe(3.3);
     expect(still.equals(rest)).toBe(true);
@@ -1404,7 +1409,7 @@ test.describe('cypress flame (P4.4)', () => {
       calm: 0,
       frozen: false,
       layers: CYPRESS_ONLY,
-      hold: 0,
+      hold: DEFAULT_HOLD,
     });
     const a = await cypressShot(page, xr, `motiont=${TIMES[0]}`);
     expect(await motion(xr)).toEqual({
@@ -1413,7 +1418,7 @@ test.describe('cypress flame (P4.4)', () => {
       calm: 1,
       frozen: false,
       layers: CYPRESS_ONLY,
-      hold: 0,
+      hold: DEFAULT_HOLD,
     });
     const b = await cypressShot(page, xr, `motiont=${TIMES[1]}`);
     // Calm 0 closes the gate: byte for byte the rest pose.

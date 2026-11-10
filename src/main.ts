@@ -145,17 +145,20 @@ const audio =
 motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
 /**
- * Sets the sky wrap. Under `wheel` and `wheelflow` the sky's gate also stays open at calm 0
- * (setHoldMask), so the discs hold their pose when calm reaches 0 instead of snapping to rest;
+ * Sets the sky wrap. Under `wheel`, `wheelflow` and `wheelrun` the sky's gate also stays open at
+ * calm 0 (setHoldMask), so the discs hold their pose when calm reaches 0 instead of snapping to rest;
  * `?noanim` still closes it.
  */
 function setSkyWrap(wrap: SkyWrap): void {
   motionVariants.setWrap(wrap);
-  motionClock.setHoldMask(wrap === 'wheel' || wrap === 'wheelflow' ? 1 << STROKE_LAYER.sky : 0);
+  motionClock.setHoldMask(
+    wrap === 'wheel' || wrap === 'wheelflow' || wrap === 'wheelrun' ? 1 << STROKE_LAYER.sky : 0,
+  );
 }
 // `?wrap` sets the sky wrap variant whatever A/B group wins: under another group it stays fixed.
 setSkyWrap(flags.wrap ?? DEFAULT_SKY_WRAP);
-// `?waveturns` sets the wave wrap's waves per turn, read only under wave.
+// `?waveturns` sets the wave's waves per turn, read under wave and, outside the wheels, under
+// the default wheelflow.
 motionVariants.setWaveTurns(flags.waveTurns ?? SKY_WAVE_PER_TURN);
 /**
  * `?motiont` pins the motion time for the e2e (R-P4g). `import.meta.env.MODE` is replaced at build

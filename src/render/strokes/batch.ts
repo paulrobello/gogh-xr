@@ -574,10 +574,11 @@ export function motionReachesOf(
   return drain(motionReachesOfSteps(buffers, indices));
 }
 
-/** The wheel, stream and wheelflow wraps' `uSkyWrap` codes, which the cull growth reads. */
+/** The wheel, stream, wheelflow and wheelrun wraps' `uSkyWrap` codes, which the cull growth reads. */
 const WHEEL = skyWrapCode('wheel');
 const STREAM = skyWrapCode('stream');
 const WHEELFLOW = skyWrapCode('wheelflow');
+const WHEELRUN = skyWrapCode('wheelrun');
 
 /** Strokes whose motion reach is measured between two yields of `motionReachesOfSteps`. */
 const MOTION_SLICE = 8192;
@@ -1160,7 +1161,9 @@ export function* createStrokeBatchSteps(
    * while chunk `i` carries the reactive growth, metres. Under wheel the sky's reach is the wheel's,
    * which calm never scales (a disc keeps its radius and calm only slows uTime, motion.glsl
    * skyWheelMotion), so it is added outside the calm factor, at calm 0 too, where the clock holds
-   * the sky gate open under wheel (clock.ts setHoldMask).
+   * the sky gate open under wheel (clock.ts setHoldMask). Under wheelflow and wheelrun the strokes
+   * outside the wheels also travel along the field, at most their swirl reach, so the chunk grows
+   * by both: calm times its swirl reach plus its wheel reach.
    */
   function motionGrowth(i: number): number {
     if (motionBits === 0) return 0;
@@ -1168,9 +1171,11 @@ export function* createStrokeBatchSteps(
     let reach = 0;
     let rigid = 0;
     if (motionGate(motionBits, STROKE_LAYER.sky)) {
-      // Under wheel and wheelflow only the wheels move, and under stream no sky stroke does.
-      if (motionWrap === WHEEL || motionWrap === WHEELFLOW) rigid = r.wheel;
-      else if (motionWrap !== STREAM) reach = r.sky;
+      // Under wheel only the wheels move, under stream no sky stroke does, and under wheelflow
+      // and wheelrun the wheels turn and the rest travel.
+      const wheeled = motionWrap === WHEEL || motionWrap === WHEELFLOW || motionWrap === WHEELRUN;
+      if (wheeled) rigid = r.wheel;
+      if (motionWrap !== WHEEL && motionWrap !== STREAM) reach = r.sky;
     }
     if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);
     if (motionGate(motionBits, STROKE_LAYER.moon)) reach = Math.max(reach, r.moon);

@@ -88,7 +88,7 @@ describe('the qualityLevel setting', () => {
   });
 
   test('survives a save and load at the same settings version (no migration needed)', () => {
-    expect(SETTINGS_VERSION).toBe(3);
+    expect(SETTINGS_VERSION).toBe(4);
     for (const qualityLevel of ['auto', 0, 7, MAX_QUALITY_LEVEL] as const) {
       const storage = memoryStorage();
       expect(saveSettings({ ...DEFAULT_SETTINGS, qualityLevel }, storage)).toBe(true);
@@ -252,10 +252,11 @@ describe('the quality level row', () => {
       input.value = '3';
       input.dispatchEvent(new Event('input'));
       expect(settings.effective.qualityLevel).toBe(3);
-      expect(row.querySelector('.value')?.textContent).toBe('3 · fov 1');
-      expect(input.getAttribute('aria-valuetext')).toBe('3 · fov 1');
+      // The default foveation is a pinned Off, so a foveation step reads as pinned.
+      expect(row.querySelector('.value')?.textContent).toBe('3 · fov pinned');
+      expect(input.getAttribute('aria-valuetext')).toBe('3 · fov pinned');
       expect((row as HTMLElement).title).toContain('each level keeps every step below it');
-      expect((row as HTMLElement).title).toContain('Now: fov 1, fb 0.85');
+      expect((row as HTMLElement).title).toContain('Now: fov 0 (pinned), fb 0.85');
       input.value = '-1';
       input.dispatchEvent(new Event('input'));
       expect(settings.effective.qualityLevel).toBe('auto');

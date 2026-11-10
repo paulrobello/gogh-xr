@@ -105,7 +105,7 @@ test('round trip: a saved settings object loads back equal', () => {
   };
   const storage = memoryStorage();
   expect(saveSettings(settings, storage)).toBe(true);
-  expect(JSON.parse(storage.text ?? '').version).toBe(3);
+  expect(JSON.parse(storage.text ?? '').version).toBe(4);
   expect(loadSettings(storage)).toEqual({ settings, recovered: null });
 });
 
@@ -119,7 +119,7 @@ test.each(['adaptive-72', 'adaptive-90', 'beauty-72'] as const)(
 );
 
 test('v1 to v2: a stored adaptive-90, the old default, becomes adaptive-72; the rest is kept', () => {
-  expect(SETTINGS_VERSION).toBe(3);
+  expect(SETTINGS_VERSION).toBe(4);
   const v1 = (settings: Record<string, unknown>): string =>
     JSON.stringify({ version: 1, settings });
   const old = parseSettings(v1({ quality: 'adaptive-90', moveSpeed: 2.5, hud: true }));
@@ -198,7 +198,7 @@ test.each([
   ['{"version":1}', 'bad-shape'],
   ['{"version":"1","settings":{}}', 'bad-shape'],
   ['{"version":0,"settings":{}}', 'bad-shape'],
-  ['{"version":4,"settings":{}}', 'future-version'],
+  ['{"version":5,"settings":{}}', 'future-version'],
 ])('stored %j falls back to the defaults as %s', (text, reason) => {
   expect(parseSettings(text)).toEqual({ settings: DEFAULT_SETTINGS, recovered: reason });
   expect(loadSettings(memoryStorage(text)).recovered).toBe(reason);
@@ -319,7 +319,7 @@ test('the lock map names the flag that decides each overridden field', () => {
 });
 
 test('hand orbs: on by default; a stored v3 object without the field loads On and keeps the rest', () => {
-  expect(SETTINGS_VERSION).toBe(3);
+  expect(SETTINGS_VERSION).toBe(4);
   const v3 = JSON.stringify({
     version: 3,
     settings: { moveSpeed: 2.5, hud: true, calm: 0.4, qualityLevel: 9 },

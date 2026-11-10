@@ -14,7 +14,7 @@ import { clampCalm } from '../motion/clock';
 import type { GovernorMode } from '../render/governor';
 
 export const SETTINGS_KEY = 'gogh-xr.settings.v1';
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 /**
  * 72 Hz (the default) or 90 Hz with the adaptive governor, or 72 Hz with the max-beauty budget
@@ -66,7 +66,10 @@ export interface Settings {
   readonly quality: QualityMode;
   /** Auto, or a fixed governor level. `?nogov` keeps the governor off whatever this says. */
   readonly qualityLevel: QualityLevel;
-  /** Fixed foveation in XR: 'auto' (the quality level decides) or a pinned 0, 0.5 or 1. */
+  /**
+   * Fixed foveation in XR: a pinned 0 (Off, the default), 0.5 or 1, or 'auto' (the quality level
+   * decides).
+   */
   readonly foveation: FoveationSetting;
   /** The perf HUD's starting visibility. */
   readonly hud: boolean;
@@ -88,7 +91,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   calm: 1,
   quality: 'adaptive-72',
   qualityLevel: 5,
-  foveation: 'auto',
+  foveation: 0,
   hud: false,
   handOrbs: true,
   musicVolume: 0.7,
@@ -121,6 +124,9 @@ export const MIGRATIONS: Migrations = Object.freeze({
   // v3 makes a fixed level 5 the default. The store saves the whole object on any change, so a
   // stored 'auto' is almost always the old default rather than a choice.
   2: (settings) => (settings.qualityLevel === 'auto' ? { ...settings, qualityLevel: 5 } : settings),
+  // v4 makes foveation Off (a pinned 0) the default, for the same reason: a stored 'auto' is
+  // almost always the old default rather than a choice.
+  3: (settings) => (settings.foveation === 'auto' ? { ...settings, foveation: 0 } : settings),
 });
 
 export type SettingsStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -151,8 +157,10 @@ function qualityLevel(value: unknown, fallback: QualityLevel): QualityLevel {
 
 const FOVEATION_PINS: readonly Fov[] = [0, 0.5, 1];
 
-function foveation(value: unknown): FoveationSetting {
-  return FOVEATION_PINS.find((level) => level === value) ?? 'auto';
+/** 'auto' or a pinned level; anything else (missing or wrong) is the default, Off. */
+function foveation(value: unknown, fallback: FoveationSetting): FoveationSetting {
+  if (value === 'auto') return 'auto';
+  return FOVEATION_PINS.find((level) => level === value) ?? fallback;
 }
 
 /**
@@ -183,7 +191,7 @@ export function sanitizeSettings(raw: unknown): Settings {
       ? (r.quality as QualityMode)
       : d.quality,
     qualityLevel: qualityLevel(r.qualityLevel, d.qualityLevel),
-    foveation: foveation(r.foveation),
+    foveation: foveation(r.foveation, d.foveation),
     hud: bool(r.hud, d.hud),
     handOrbs: bool(r.handOrbs, d.handOrbs),
     musicVolume: unit(r.musicVolume, d.musicVolume),

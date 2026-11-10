@@ -28,9 +28,17 @@ describe('AB_GROUPS', () => {
     expect(AB_GROUPS['zdiag-all']).toEqual(['base', ...ZDIAG_MODES]);
     expect(AB_GROUPS.halo).toEqual(['on', 'off']);
     expect(AB_GROUPS.calm).toEqual(['1', '0.5', '0.25']);
-    // Wave first: the default wrap since 2026-11-08. Wheel and stream next, so one press from wave
-    // reaches wheel and two reach stream.
-    expect(AB_GROUPS.wrap).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong', 'wheelflow']);
+    // Wheelflow first: the default wrap since 2026-11-10. Wheelrun next, so one press from the
+    // default reaches the other way to move the strokes into the swirls, and two reach wave.
+    expect(AB_GROUPS.wrap).toEqual([
+      'wheelflow',
+      'wheelrun',
+      'wave',
+      'wheel',
+      'stream',
+      'base',
+      'pingpong',
+    ]);
     expect(AB_GROUPS.vtx).toEqual(['base', 'fewer', 'smaller', 'sparse', 'hoist']);
     expect(Object.keys(AB_GROUPS)).toEqual(['shimmer', 'zdiag-all', 'halo', 'calm', 'wrap', 'vtx']);
   });
@@ -61,11 +69,13 @@ describe('vtx', () => {
 
 describe('wrap', () => {
   it('?wrap implies its group at its variant, after ?zdiag and ?nohalo', () => {
-    expect(resolveAb(flags({ wrap: 'wave' })).activation).toEqual({ group: 'wrap', start: 0 });
-    expect(resolveAb(flags({ wrap: 'wheel' })).activation).toEqual({ group: 'wrap', start: 1 });
-    expect(resolveAb(flags({ wrap: 'stream' })).activation).toEqual({ group: 'wrap', start: 2 });
-    expect(resolveAb(flags({ wrap: 'base' })).activation).toEqual({ group: 'wrap', start: 3 });
-    expect(resolveAb(flags({ wrap: 'pingpong' })).activation).toEqual({ group: 'wrap', start: 4 });
+    expect(resolveAb(flags({ wrap: 'wheelflow' })).activation).toEqual({ group: 'wrap', start: 0 });
+    expect(resolveAb(flags({ wrap: 'wheelrun' })).activation).toEqual({ group: 'wrap', start: 1 });
+    expect(resolveAb(flags({ wrap: 'wave' })).activation).toEqual({ group: 'wrap', start: 2 });
+    expect(resolveAb(flags({ wrap: 'wheel' })).activation).toEqual({ group: 'wrap', start: 3 });
+    expect(resolveAb(flags({ wrap: 'stream' })).activation).toEqual({ group: 'wrap', start: 4 });
+    expect(resolveAb(flags({ wrap: 'base' })).activation).toEqual({ group: 'wrap', start: 5 });
+    expect(resolveAb(flags({ wrap: 'pingpong' })).activation).toEqual({ group: 'wrap', start: 6 });
     const both = resolveAb(flags({ nohalo: true, wrap: 'wave' }));
     expect(both.activation).toEqual({ group: 'halo', start: 1 });
     expect(both.warnings).toEqual(['?nohalo has the A/B button (halo); ?wrap=wave stays fixed']);
@@ -73,7 +83,7 @@ describe('wrap', () => {
 
   it('?ab=wrap starts at an implied ?wrap and keeps a ?nohalo fixed', () => {
     expect(resolveAb(flags({ ab: 'wrap', wrap: 'base' }))).toEqual({
-      activation: { group: 'wrap', start: 3 },
+      activation: { group: 'wrap', start: 5 },
       warnings: [],
     });
     expect(resolveAb(flags({ ab: 'wrap', nohalo: true })).warnings).toEqual([

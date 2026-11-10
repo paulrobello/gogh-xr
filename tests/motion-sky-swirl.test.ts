@@ -367,7 +367,8 @@ describe('sky swirl wiring', () => {
     for (const [name, value] of Object.entries(defines)) expect(material.defines[name]).toBe(value);
     expect(String(defines.SKY_VORTEX_AXES).match(/vec4\(/g)).toHaveLength(SKY_VORTICES.length + 0);
     for (const line of [
-      'vec3 dir = d * inversesqrt(dot(d, d));',
+      'float inverseDistance = inversesqrt(dot(d, d));',
+      'vec3 dir = d * inverseDistance;',
       'omega += v.xyz * (v.w / max(1.0 - dot(v.xyz, dir), SKY_VORTEX_CORE[i]));',
       'float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);',
       'float tau = (f - 0.5) * SKY_SWIRL_PERIOD;',

@@ -24,6 +24,7 @@ import {
 import { SKY_RINGS, skyRingReach } from '../src/motion/sky-rings.ts';
 import { SKY_WHEELS, skySwirlReach, skyWheelReach } from '../src/motion/sky-swirl.ts';
 import { motionVariants } from '../src/motion/variant-uniforms.ts';
+import { DEFAULT_SKY_WRAP } from '../src/motion/variants.ts';
 import { BASE_MESH_RENDER_ORDER } from '../src/paintings/starry-night/base-meshes.ts';
 import { PAINTER_EYE } from '../src/paintings/starry-night/canvas-camera.ts';
 import { createSkyHalo } from '../src/render/sky-halo.ts';
@@ -617,6 +618,8 @@ describe('bands', () => {
     expect(starReach).toBeCloseTo(0.25 * ring.swell * ring.outer * SKY_REACH_MARGIN, 4);
     const rest = radii();
     try {
+      // The sky stroke grows by its swirl reach under wave.
+      motionVariants.setWrap('wave');
       motionClock.setLayerMask(1 << STROKE_LAYER.star);
       motionClock.setCalm(0.5);
       const star = radii();
@@ -680,11 +683,12 @@ describe('bands', () => {
       motionClock.setCalm(1);
       motionClock.setLayerMask(0);
       setReactiveBox([0, 0, 0], [-1, -1, -1]);
+      motionVariants.setWrap(DEFAULT_SKY_WRAP);
     }
     batch.dispose();
   });
 
-  test('a wheel chunk grows by its wheel reach at every calm, calm 0 held, and not under stream (F1)', () => {
+  test('a wheel chunk grows by its wheel reach at every calm, calm 0 held, and not under stream (F1); under wheelflow and wheelrun by its swirl reach too', () => {
     // A sky stroke on the dome half way out the left swirl's wheel, where a half turn moves it its
     // wheel reach, 2 rho.
     const w = SKY_WHEELS[0];
@@ -732,12 +736,28 @@ describe('bands', () => {
       motionClock.setCalm(1);
       motionVariants.setWrap('stream');
       expect(radius()).toBe(rest);
+      // Under wheelflow and wheelrun the wheels turn and the strokes outside them travel, so a
+      // chunk grows by both: calm times its swirl reach (wave's growth) plus its wheel reach, the
+      // wheel's alone at calm 0 under the hold.
+      motionVariants.setWrap('wave');
+      const swirl = radius() - rest;
+      expect(swirl).toBeGreaterThan(1);
+      for (const wrap of ['wheelflow', 'wheelrun'] as const) {
+        motionVariants.setWrap(wrap);
+        for (const calm of [1, 0.5, 0.25]) {
+          motionClock.setCalm(calm);
+          expect(radius(), `${wrap} calm ${calm}`).toBeCloseTo(rest + wheelReach + calm * swirl, 4);
+        }
+        motionClock.setCalm(0);
+        expect(radius(), `${wrap} calm 0 held`).toBeCloseTo(rest + wheelReach, 4);
+        motionClock.setCalm(1);
+      }
     } finally {
       motionClock.setHoldMask(0);
       motionClock.setFrozen(false);
       motionClock.setCalm(1);
       motionClock.setLayerMask(0);
-      motionVariants.setWrap('wave');
+      motionVariants.setWrap(DEFAULT_SKY_WRAP);
     }
     batch.dispose();
   });
@@ -911,6 +931,7 @@ describe('bands', () => {
     // The app clock's gate starts closed: the spheres are the rest spheres.
     const rest = radii();
     try {
+      motionVariants.setWrap('wave');
       motionClock.setLayerMask(MOTION_LAYER_MASK & ~REACTIVE_MOTION_BIT);
       motionClock.setCalm(0.5);
       const half = radii();
@@ -934,6 +955,7 @@ describe('bands', () => {
       motionClock.setFrozen(false);
       motionClock.setCalm(1);
       motionClock.setLayerMask(0);
+      motionVariants.setWrap(DEFAULT_SKY_WRAP);
     }
     batch.chunks.forEach((chunk, i) => {
       const haze = chunk.bounds.center.x < 0;
