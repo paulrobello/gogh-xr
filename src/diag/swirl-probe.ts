@@ -31,10 +31,12 @@ export function predictSkyShift(
     PAINTER_EYE[2] + ray[2] * SKY_DOME_RADIUS,
   ];
   const m = skySwirl(p, [-ray[0], -ray[1], -ray[2]], phase, time, undefined, wrap, turns);
+  // The wheel's rigid turn keeps its radius at every calm (motion.glsl skyWheelMotion).
+  const k = m.spin ? 1 : calm;
   const uv = projectToCanvas([
-    p[0] + calm * m.offset[0],
-    p[1] + calm * m.offset[1],
-    p[2] + calm * m.offset[2],
+    p[0] + k * m.offset[0],
+    p[1] + k * m.offset[1],
+    p[2] + k * m.offset[2],
   ]).uv;
   return uv ? [uv[0] - u, 1 - uv[1] - vDown] : null;
 }

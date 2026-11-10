@@ -22,8 +22,10 @@ import {
   reactiveTracker,
 } from '../src/motion/reactive.ts';
 import { SKY_RINGS, skyRingReach } from '../src/motion/sky-rings.ts';
-import { skySwirlReach } from '../src/motion/sky-swirl.ts';
+import { SKY_WHEELS, skySwirlReach, skyWheelReach } from '../src/motion/sky-swirl.ts';
+import { motionVariants } from '../src/motion/variant-uniforms.ts';
 import { BASE_MESH_RENDER_ORDER } from '../src/paintings/starry-night/base-meshes.ts';
+import { PAINTER_EYE } from '../src/paintings/starry-night/canvas-camera.ts';
 import { createSkyHalo } from '../src/render/sky-halo.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import {
@@ -42,6 +44,7 @@ import {
   interleaveOrders,
   isCypressStroke,
   isPinnedStroke,
+  motionReachesOf,
   SKY_REACH_MARGIN,
   STROKE_DRAW_CLASSES,
   STROKES_AFTER_BASE,
@@ -678,6 +681,89 @@ describe('bands', () => {
       setReactiveBox([0, 0, 0], [-1, -1, -1]);
     }
     batch.dispose();
+  });
+
+  test('a wheel chunk grows by its wheel reach at every calm, calm 0 held, and not under stream (F1)', () => {
+    // A sky stroke on the dome half way out the left swirl's wheel, where a half turn moves it its
+    // wheel reach, 2 rho.
+    const w = SKY_WHEELS[0];
+    const c = w.axis;
+    const side: [number, number, number] = [-c[2], 0, c[0]];
+    const sl = Math.hypot(...side);
+    const a = Math.asin(w.radius / 2);
+    const dir = c.map((x, k) => Math.cos(a) * x + (Math.sin(a) * side[k]) / sl);
+    const position = PAINTER_EYE.map((e, k) => e + 118 * dir[k]) as [number, number, number];
+    const buffers = createStrokeBuffers(1);
+    packInstance(buffers, 0, {
+      position,
+      normal: [-dir[0], -dir[1], -dir[2]],
+      tangent: 0,
+      color: [255, 255, 255, 255],
+      size: [2, 1],
+      brush: 0,
+      layer: STROKE_LAYER.sky,
+      phase: 0,
+    });
+    const batch = createStrokeBatch(buffers, { cellSize: 24, createAtlas: tinyAtlas });
+    const cull = vi.mocked(cullAndSortInto);
+    const radius = (): number => {
+      batch.update(originCamera());
+      return cull.mock.calls.at(-1)?.[0]?.[0]?.radius ?? Number.NaN;
+    };
+    const wheelReach = SKY_REACH_MARGIN * skyWheelReach(...position);
+    expect(wheelReach).toBeGreaterThan(10);
+    const rest = radius();
+    try {
+      motionClock.setLayerMask(1 << STROKE_LAYER.sky);
+      motionVariants.setWrap('wheel');
+      for (const calm of [1, 0.5, 0.25, 0.05]) {
+        motionClock.setCalm(calm);
+        expect(radius(), `calm ${calm}`).toBeCloseTo(rest + wheelReach, 4);
+      }
+      // Calm 0 closes the gate unless the hold keeps the sky open, as main.ts does under wheel.
+      motionClock.setCalm(0);
+      expect(radius()).toBe(rest);
+      motionClock.setHoldMask(1 << STROKE_LAYER.sky);
+      expect(radius()).toBeCloseTo(rest + wheelReach, 4);
+      motionClock.setFrozen(true);
+      expect(radius()).toBe(rest);
+      motionClock.setFrozen(false);
+      motionClock.setCalm(1);
+      motionVariants.setWrap('stream');
+      expect(radius()).toBe(rest);
+    } finally {
+      motionClock.setHoldMask(0);
+      motionClock.setFrozen(false);
+      motionClock.setCalm(1);
+      motionClock.setLayerMask(0);
+      motionVariants.setWrap('wave');
+    }
+    batch.dispose();
+  });
+
+  test('a haze stroke in front of a wheel carries its wheel reach, since it turns with the wheel', () => {
+    const w = SKY_WHEELS[0];
+    const dir = w.axis;
+    const side: [number, number, number] = [-dir[2], 0, dir[0]];
+    const sl = Math.hypot(...side);
+    const a = Math.asin(w.radius / 2);
+    const d = dir.map((x, k) => Math.cos(a) * x + (Math.sin(a) * side[k]) / sl);
+    const position = PAINTER_EYE.map((e, k) => e + 50 * d[k]) as [number, number, number];
+    const buffers = createStrokeBuffers(1);
+    packInstance(buffers, 0, {
+      position,
+      normal: [-d[0], -d[1], -d[2]],
+      tangent: 0,
+      color: [255, 255, 255, 255],
+      size: [3, 1.2],
+      brush: 0,
+      layer: STROKE_LAYER.sky,
+      phase: 0,
+    });
+    buffers.meta[3] = SKY_LIGHT_CULL_FLAG;
+    const reach = skyWheelReach(...position);
+    expect(reach).toBeGreaterThan(5);
+    expect(motionReachesOf(buffers).wheel).toBeCloseTo(SKY_REACH_MARGIN * reach, 4);
   });
 
   test('every chunk holding a stroke the reactive box reaches grows, at random boxes (P4.6)', () => {

@@ -7,16 +7,18 @@ import {
   Scene,
 } from 'three';
 import { describe, expect, test } from 'vitest';
-import { createReactiveTracker, REACTIVE_RADIUS, WAKE_REF_SPEED } from '../src/motion/reactive';
+import { createReactiveTracker, HAND_RADIUS, WAKE_REF_SPEED } from '../src/motion/reactive';
 import {
   createHandOrbs,
   type HandOrbsFrame,
   type Mutable,
   ORB_BOOST,
   ORB_CORE_RADIUS,
+  ORB_CORE_SHARE,
   ORB_GAIN,
   ORB_GLOW_RADIUS,
   ORB_GROW,
+  ORB_HALO_SHARE,
   ORB_MESH_MARGIN,
   ORB_NEAR,
   ORB_NEAR_MARGIN,
@@ -72,12 +74,17 @@ describe('hand orbs', () => {
     expect(orbs.meshes[0].position.toArray()).toEqual(LEFT);
     expect(orbs.meshes[1].position.toArray()).toEqual(RIGHT);
     expect(orbs.diag()).toEqual({ enabled: true, visible: [true, true] });
-    // A compact ball: a core of 5 cm and a glow to 14 cm, far inside the push's 0.6 m reach, so at
-    // a normal reach the eye is well outside it. Closer in, the near plane test below takes over.
-    expect(ORB_CORE_RADIUS).toBe(0.05);
-    expect(ORB_GLOW_RADIUS).toBeGreaterThanOrEqual(0.12);
-    expect(ORB_GLOW_RADIUS * (1 + ORB_GROW) * ORB_MESH_MARGIN).toBeLessThan(0.2);
-    expect(ORB_GLOW_RADIUS).toBeLessThan(REACTIVE_RADIUS / 4);
+    // A small ball (Paul's 2026-11-09 headset check: smaller and dimmer): a core of 3 cm and a
+    // glow to 8 cm, so at a normal reach the eye is well outside it. Closer in, the near plane test
+    // below takes over. A hand's push reaches just past the glow: its edge plus 5 cm.
+    expect(ORB_CORE_RADIUS).toBe(0.03);
+    expect(ORB_GLOW_RADIUS).toBe(0.08);
+    expect(ORB_GLOW_RADIUS * (1 + ORB_GROW) * ORB_MESH_MARGIN).toBeLessThan(0.1);
+    expect(HAND_RADIUS).toBeCloseTo(ORB_GLOW_RADIUS + 0.05, 12);
+    expect(ORB_GLOW_RADIUS * (1 + ORB_GROW)).toBeLessThan(HAND_RADIUS);
+    // About half the old brightness: the peak alpha, 1.15 × the gain, was 1.15 (saturated).
+    expect(ORB_GAIN * (ORB_CORE_SHARE + ORB_HALO_SHARE)).toBeCloseTo(0.5175, 9);
+    expect(ORB_GAIN * (1 + ORB_BOOST) * (ORB_CORE_SHARE + ORB_HALO_SHARE)).toBeLessThan(0.75);
     const geometry = orbs.meshes[0].geometry as unknown as { parameters: { radius: number } };
     expect(geometry.parameters.radius).toBeCloseTo(ORB_GLOW_RADIUS * ORB_MESH_MARGIN, 9);
     // The drawn silhouette (facets included) holds the glow's whole disc.

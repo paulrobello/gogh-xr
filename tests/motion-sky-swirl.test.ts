@@ -286,6 +286,10 @@ describe('sky swirl loop', () => {
       SKY_SWIRL_REACH + 1e-9,
     );
     expect(motionReach(STROKE_LAYER.ground, strokes[0].p, 1)).toBe(0);
+    // The haze holds still under wheel and stream, so its thin needs no motion reach there.
+    expect(motionReach(STROKE_LAYER.sky, domePoint(0.5, 0.9), 1, 'wheel')).toBe(0);
+    expect(motionReach(STROKE_LAYER.sky, domePoint(0.5, 0.9), 1, 'stream')).toBe(0);
+    expect(motionReach(STROKE_LAYER.sky, domePoint(0.5, 0.9), 1, 'wave')).toBeGreaterThan(0);
   });
 
   test('the stroke vanishes at the wrap, so the jump back is never seen', () => {
@@ -381,7 +385,11 @@ describe('sky swirl wiring', () => {
     expect(
       sky.match(/\b(sin|cos|tan|asin|acos|atan|exp|log|pow|sqrt|length|normalize)\(/g),
     ).toBeNull();
-    expect(sky.match(/inversesqrt\(/g)).toHaveLength(1);
+    // The default program's one, and the hoist arm's wheel branch's, which has no rest field to
+    // read the direction from. The wheel's sine and cosine sit in skyWheelMotion, behind its branch.
+    expect(sky.match(/inversesqrt\(/g)).toHaveLength(2);
+    const base = sky.slice(sky.indexOf('#else'));
+    expect(base.match(/inversesqrt\(/g)).toHaveLength(1);
   });
 
   test("a sky chunk's cull reach is its strokes' exact reach, and a still chunk has none", () => {

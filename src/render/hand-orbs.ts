@@ -4,8 +4,8 @@
  *
  * Place. Each orb sits on its hand's disturber in the reactive tracker (src/motion/reactive.ts),
  * read from the tracker's uniforms after it ran this frame, so it is exactly where the stroke
- * shader pushes from. The push itself reaches `REACTIVE_RADIUS` (0.6 m); the orb does not draw
- * that region, which would put the eye inside it and cost a full-viewport pass per eye.
+ * shader pushes from. A hand's push reaches `HAND_RADIUS` (0.13 m), the glow's rest edge plus
+ * 0.05 m, so the paint reacts only where the orb is.
  *
  * Look. A bright soft core of about `ORB_CORE_RADIUS` and a halo that falls to 0 at
  * `ORB_GLOW_RADIUS`, additive, warm white in the core and Starry Night's moon yellow outside. The
@@ -45,10 +45,13 @@ import { WAKE_REF_SPEED } from '../motion/reactive';
 import fragmentShader from './hand-orbs.frag.glsl?raw';
 import vertexShader from './hand-orbs.vert.glsl?raw';
 
-/** Metres: the bright core's radius (its glow is 1/e there). */
-export const ORB_CORE_RADIUS: number = 0.05;
-/** Metres: the halo reaches 0 here, at rest. */
-export const ORB_GLOW_RADIUS: number = 0.14;
+/**
+ * Metres: the bright core's radius (its glow is 1/e there). Paul's 2026-11-09 headset check asked
+ * for smaller, dimmer orbs: 0.05 m and 0.14 m before, scaled by about 0.6 to these.
+ */
+export const ORB_CORE_RADIUS: number = 0.03;
+/** Metres: the halo reaches 0 here, at rest. HAND_RADIUS (reactive.ts) is this plus 0.05 m. */
+export const ORB_GLOW_RADIUS: number = 0.08;
 /**
  * The drawn sphere's radius over the glow's. A 24 × 16 sphere's silhouette stays within 2% of its
  * radius, so the glow's edge lies inside the drawn disc at every scale (the mesh scales with it).
@@ -58,13 +61,20 @@ export const ORB_MESH_MARGIN: number = 1.03;
 export const ORB_COLOR: number = 0xf6d36b;
 /** A warm white: the core. */
 export const ORB_CORE_COLOR: number = 0xfff3d6;
-/** The glow's gain at rest. */
-export const ORB_GAIN: number = 1;
+/**
+ * The glow's gain at rest. The peak alpha is 1.15 × the gain. At 1 the core saturated at rest and
+ * at speed; at 0.45 the rest peak is 0.52 and the mean alpha over the disc 0.087, against 1.0 and
+ * 0.182 before, about half.
+ */
+export const ORB_GAIN: number = 0.45;
 /** The core's and the halo's weights. */
 export const ORB_CORE_SHARE: number = 0.85;
 export const ORB_HALO_SHARE: number = 0.3;
-/** The extra gain share at full speed (the gain reaches ORB_GAIN × (1 + ORB_BOOST)). */
-export const ORB_BOOST: number = 0.6;
+/**
+ * The extra gain share at full speed (the gain reaches ORB_GAIN × (1 + ORB_BOOST)): a peak of 0.72
+ * and a mean over the grown disc of 0.122 at full speed, against a saturated 1.0 and 0.258 before.
+ */
+export const ORB_BOOST: number = 0.4;
 /** The glow's extra size at full speed (its radius reaches ORB_GLOW_RADIUS × (1 + ORB_GROW)). */
 export const ORB_GROW: number = 0.2;
 /** The camera's near plane, metres (main.ts). */

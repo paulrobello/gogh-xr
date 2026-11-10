@@ -30,7 +30,7 @@ import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { SKY_WAVE_PER_TURN } from './motion/sky-swirl';
 import { trackerTime } from './motion/tracker-time';
 import { motionVariants } from './motion/variant-uniforms';
-import { DEFAULT_SKY_WRAP } from './motion/variants';
+import { DEFAULT_SKY_WRAP, type SkyWrap } from './motion/variants';
 import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
 import {
   boundedImport,
@@ -45,6 +45,7 @@ import { createHandOrbs, type HandOrbsFrame, type Mutable } from './render/hand-
 import { createStrokeBinding } from './render/stroke-binding';
 import type { StrokeBatch } from './render/strokes/batch';
 import { createBrushAtlas } from './render/strokes/brush-atlas';
+import { STROKE_LAYER } from './render/strokes/instance';
 import { pinMotionPhase } from './render/strokes/material';
 import { createZdiag } from './render/zdiag';
 import { applySettingsChange, type HudLive } from './settings/apply';
@@ -136,8 +137,16 @@ const audio =
 // `?noanim` freezes the clock.
 motionClock.setCalm(settings.calm);
 motionClock.setFrozen(flags.noanim);
+/**
+ * Sets the sky wrap. Under `wheel` the sky's gate also stays open at calm 0 (setHoldMask), so the
+ * discs hold their pose when calm reaches 0 instead of snapping to rest; `?noanim` still closes it.
+ */
+function setSkyWrap(wrap: SkyWrap): void {
+  motionVariants.setWrap(wrap);
+  motionClock.setHoldMask(wrap === 'wheel' ? 1 << STROKE_LAYER.sky : 0);
+}
 // `?wrap` sets the sky wrap variant whatever A/B group wins: under another group it stays fixed.
-motionVariants.setWrap(flags.wrap ?? DEFAULT_SKY_WRAP);
+setSkyWrap(flags.wrap ?? DEFAULT_SKY_WRAP);
 // `?waveturns` sets the wave wrap's waves per turn, read only under wave.
 motionVariants.setWaveTurns(flags.waveTurns ?? SKY_WAVE_PER_TURN);
 /**
@@ -467,7 +476,7 @@ const ab: AbController | null = abActive
           zdiag,
           setHalo,
           setCalm: (calm) => motionClock.setCalm(calm),
-          setWrap: (wrap) => motionVariants.setWrap(wrap),
+          setWrap: setSkyWrap,
         },
         abActive.variants,
       ),

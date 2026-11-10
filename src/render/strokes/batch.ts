@@ -20,7 +20,9 @@ import { cypressFlameReach } from '../../motion/cypress-flame';
 import { motionGate, REACTIVE_MOTION_BIT, reactiveGate } from '../../motion/layers';
 import { REACTIVE_MAX_GAIN, REACTIVE_REACH } from '../../motion/reactive';
 import { ringOf, skyRingReach } from '../../motion/sky-rings';
-import { skySwirlReach } from '../../motion/sky-swirl';
+import { skySwirlReach, skyWheelReach } from '../../motion/sky-swirl';
+import { motionVariants } from '../../motion/variant-uniforms';
+import { skyWrapCode } from '../../motion/variants';
 import { drain, type Steps } from '../../util/slicer';
 import { addBeforeRender } from '../scene-hooks';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
@@ -546,7 +548,10 @@ export function holdsHaze(buffers: StrokeBuffers, indices?: ArrayLike<number>): 
 
 /** The farthest a chunk's strokes of each moving layer move from rest at calm 1, metres. */
 export interface MotionReaches {
+  /** The sky under wave, base and pingpong: `skySwirlReach`. */
   readonly sky: number;
+  /** The sky under wheel, the haze included: `skyWheelReach`, 0 outside the wheels. */
+  readonly wheel: number;
   readonly star: number;
   readonly moon: number;
   readonly cypress: number;
@@ -555,7 +560,8 @@ export interface MotionReaches {
 /**
  * Per moving layer, the farthest any stroke in `buffers` (or its strokes at `indices`) moves from
  * rest at calm 1, metres, times
- * SKY_REACH_MARGIN: the largest exact `skySwirlReach` of its sky strokes, `skyRingReach` of its
+ * SKY_REACH_MARGIN: the largest exact `skySwirlReach` of its sky strokes and, apart, their largest
+ * exact `skyWheelReach` (the haze, SKY_LIGHT_CULL_FLAG, included), `skyRingReach` of its
  * star and moon strokes (each round the ring its phase byte names, as motion.glsl reads it) and
  * `cypressFlameReach` of its cypress strokes (from the decoded normal and the alpha byte). The
  * cull sphere of a chunk grows by calm times the largest of these whose layer's gate is open
@@ -568,6 +574,10 @@ export function motionReachesOf(
   return drain(motionReachesOfSteps(buffers, indices));
 }
 
+/** The wheel and stream wraps' `uSkyWrap` codes, which the cull growth reads. */
+const WHEEL = skyWrapCode('wheel');
+const STREAM = skyWrapCode('stream');
+
 /** Strokes whose motion reach is measured between two yields of `motionReachesOfSteps`. */
 const MOTION_SLICE = 8192;
 
@@ -577,6 +587,7 @@ export function* motionReachesOfSteps(
   indices?: ArrayLike<number>,
 ): Steps<MotionReaches> {
   let sky = 0;
+  let wheel = 0;
   let star = 0;
   let moon = 0;
   let cypress = 0;
@@ -591,6 +602,7 @@ export function* motionReachesOfSteps(
     const z = p[i * 3 + 2];
     if (layer === STROKE_LAYER.sky) {
       sky = Math.max(sky, skySwirlReach(x, y, z));
+      wheel = Math.max(wheel, skyWheelReach(x, y, z));
     } else if (layer === STROKE_LAYER.star || layer === STROKE_LAYER.moon) {
       const isMoon = layer === STROKE_LAYER.moon;
       const reach = skyRingReach(ringOf(isMoon, buffers.meta[i * 4 + 2]), x, y, z);
@@ -606,6 +618,7 @@ export function* motionReachesOfSteps(
   }
   return {
     sky: sky * SKY_REACH_MARGIN,
+    wheel: wheel * SKY_REACH_MARGIN,
     star: star * SKY_REACH_MARGIN,
     moon: moon * SKY_REACH_MARGIN,
     cypress: cypress * SKY_REACH_MARGIN,
@@ -614,8 +627,8 @@ export function* motionReachesOfSteps(
 
 /** The largest of `motionReachesOf(buffers)`: the farthest any of its strokes moves at calm 1. */
 export function motionReachOf(buffers: StrokeBuffers): number {
-  const { sky, star, moon, cypress } = motionReachesOf(buffers);
-  return Math.max(sky, star, moon, cypress);
+  const { sky, wheel, star, moon, cypress } = motionReachesOf(buffers);
+  return Math.max(sky, wheel, star, moon, cypress);
 }
 
 /**
@@ -843,9 +856,10 @@ export function interleaveOrders(parts: readonly { order: Uint32Array; pinned: n
 
 /** The largest of each field over `reaches`: the reaches of their parts' union. */
 function maxReaches(reaches: readonly MotionReaches[]): MotionReaches {
-  const out = { sky: 0, star: 0, moon: 0, cypress: 0 };
+  const out = { sky: 0, wheel: 0, star: 0, moon: 0, cypress: 0 };
   for (const r of reaches) {
     out.sky = Math.max(out.sky, r.sky);
+    out.wheel = Math.max(out.wheel, r.wheel);
     out.star = Math.max(out.star, r.star);
     out.moon = Math.max(out.moon, r.moon);
     out.cypress = Math.max(out.cypress, r.cypress);
@@ -935,6 +949,8 @@ export function* createStrokeBatchSteps(
    */
   let motionCalm = 0;
   let motionBits = 0;
+  /** The sky wrap's code (`uSkyWrap`) the cull spheres were last grown for. */
+  let motionWrap = -1;
   const MOTION_BITS =
     (1 << STROKE_LAYER.sky) |
     (1 << STROKE_LAYER.star) |
@@ -1140,18 +1156,26 @@ export function* createStrokeBatchSteps(
 
   /**
    * Calm times the largest reach of chunk `i`'s layers whose gate is open, plus the reactive reach
-   * while chunk `i` carries the reactive growth, metres.
+   * while chunk `i` carries the reactive growth, metres. Under wheel the sky's reach is the wheel's,
+   * which calm never scales (a disc keeps its radius and calm only slows uTime, motion.glsl
+   * skyWheelMotion), so it is added outside the calm factor, at calm 0 too, where the clock holds
+   * the sky gate open under wheel (clock.ts setHoldMask).
    */
   function motionGrowth(i: number): number {
     if (motionBits === 0) return 0;
     const r = motionReaches[i];
     let reach = 0;
-    if (motionGate(motionBits, STROKE_LAYER.sky)) reach = Math.max(reach, r.sky);
+    let rigid = 0;
+    if (motionGate(motionBits, STROKE_LAYER.sky)) {
+      // Under wheel only the wheels move, and under stream no sky stroke does.
+      if (motionWrap === WHEEL) rigid = r.wheel;
+      else if (motionWrap !== STREAM) reach = r.sky;
+    }
     if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);
     if (motionGate(motionBits, STROKE_LAYER.moon)) reach = Math.max(reach, r.moon);
     if (motionGate(motionBits, STROKE_LAYER.cypress)) reach = Math.max(reach, r.cypress);
     if (reactiveNear[i]) reach += REACTIVE_REACH * SKY_REACH_MARGIN;
-    return motionCalm * reach;
+    return motionCalm * reach + rigid;
   }
 
   /** While chunk `i` carries the reactive growth, a stretched stroke grows by REACTIVE_MAX_GAIN. */
@@ -1258,9 +1282,11 @@ export function* createStrokeBatchSteps(
       eye.setFromMatrixPosition(camera.matrixWorld);
       const bits = (motionUniforms.uMotionLayers.value >>> 0) & MOTION_BITS;
       const calm = bits === 0 ? 0 : motionUniforms.uCalm.value;
-      const rescale = bits !== motionBits || calm !== motionCalm;
+      const wrap = motionVariants.uniforms.uSkyWrap.value;
+      const rescale = bits !== motionBits || calm !== motionCalm || wrap !== motionWrap;
       motionBits = bits;
       motionCalm = calm;
+      motionWrap = wrap;
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         const near = reactiveReaches(i) ? 1 : 0;

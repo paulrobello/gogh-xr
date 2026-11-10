@@ -40,8 +40,14 @@ const mainTs = readFileSync('src/main.ts', 'utf8');
 describe('sky wrap boot default', () => {
   test('main.ts sets the wave wrap, DEFAULT_SKY_WRAP, unless ?wrap names another', () => {
     expect(DEFAULT_SKY_WRAP).toBe('wave');
-    expect(mainTs).toContain('motionVariants.setWrap(flags.wrap ?? DEFAULT_SKY_WRAP);');
-    expect(mainTs.match(/motionVariants\.setWrap\(/g)).toHaveLength(2);
+    expect(mainTs).toContain('setSkyWrap(flags.wrap ?? DEFAULT_SKY_WRAP);');
+    // One setter, which also holds the sky gate open at calm 0 under wheel, and the A/B group's
+    // setWrap is that setter.
+    expect(mainTs.match(/motionVariants\.setWrap\(/g)).toHaveLength(1);
+    expect(mainTs).toContain(
+      "motionClock.setHoldMask(wrap === 'wheel' ? 1 << STROKE_LAYER.sky : 0);",
+    );
+    expect(mainTs).toContain('setWrap: setSkyWrap,');
     expect(mainTs).not.toMatch(/setWrap\([^)]*'base'/);
   });
 });
@@ -49,7 +55,14 @@ describe('sky wrap boot default', () => {
 describe('motion clock', () => {
   test('defaults: calm 1, not frozen, time 0, gate the live layers', () => {
     const clock = createMotionClock({ layerMask: ALL_MASK });
-    expect(clock.diag()).toEqual({ time: 0, delta: 0, calm: 1, frozen: false, layers: ALL_MASK });
+    expect(clock.diag()).toEqual({
+      time: 0,
+      delta: 0,
+      calm: 1,
+      frozen: false,
+      layers: ALL_MASK,
+      hold: 0,
+    });
     expect(clock.uniforms.uTime.value).toBe(0);
     expect(clock.uniforms.uCalm.value).toBe(1);
     expect(clock.uniforms.uFreeze.value).toBe(0);
@@ -187,6 +200,32 @@ describe('motion clock', () => {
     clock.setLayerMask(0);
     expect(clock.uniforms.uMotionLayers.value).toBe(0);
   });
+
+  test('setHoldMask keeps its layers open at calm 0, within the layer mask, and frozen still closes them (wheel hold)', () => {
+    const sky = 1 << STROKE_LAYER.sky;
+    const clock = createMotionClock({ layerMask: MOTION_LAYER_MASK });
+    clock.setHoldMask(sky);
+    expect(clock.diag().hold).toBe(sky);
+    expect(clock.uniforms.uMotionLayers.value).toBe(MOTION_LAYER_MASK);
+    clock.frame(1000);
+    clock.frame(1500);
+    const held = clock.uniforms.uTime.value;
+    clock.setCalm(0);
+    expect(clock.uniforms.uMotionLayers.value).toBe(sky);
+    // uTime stops, so a wheel holds its pose.
+    clock.frame(2000);
+    expect(clock.uniforms.uTime.value).toBe(held);
+    clock.setFrozen(true);
+    expect(clock.uniforms.uMotionLayers.value).toBe(0);
+    clock.setFrozen(false);
+    clock.setLayerMask(0);
+    expect(clock.uniforms.uMotionLayers.value).toBe(0);
+    clock.setLayerMask(MOTION_LAYER_MASK);
+    clock.setHoldMask(0);
+    expect(clock.uniforms.uMotionLayers.value).toBe(0);
+    clock.setCalm(0.05);
+    expect(clock.uniforms.uMotionLayers.value).toBe(MOTION_LAYER_MASK);
+  });
 });
 
 describe('uniform plumbing', () => {
@@ -233,16 +272,22 @@ describe('uniform plumbing', () => {
     expect(strokeGlsl.match(/reactiveGate\(/g)).toHaveLength(1);
     const gate = strokeGlsl.indexOf('if ((layerMoves || reacts) && thin > 0.0) {');
     expect(gate).toBeGreaterThan(strokeGlsl.indexOf('vec3 local = iPosition'));
-    expect(gate).toBeGreaterThan(strokeGlsl.indexOf('thin = skyLightThin('));
+    expect(gate).toBeGreaterThan(strokeGlsl.indexOf('thin *= skyLightThin('));
+    expect(strokeGlsl.indexOf('thin *= skyLightThin(')).toBeGreaterThan(0);
     expect(gate).toBeLessThan(strokeGlsl.indexOf('gl_Position = projectionMatrix'));
     expect(strokeGlsl).toContain(
-      'float along = position.x;\n    Motion m =\n      motionOffset(iMeta.y, iPosition, n, longAxis, iMeta.z, iColor.a, layerMoves, reacts, along);',
+      'Motion m = motionOffset(\n      iMeta.y,\n      iPosition,\n      n,\n      longAxis,\n      shortAxis,\n      iMeta.z,\n      iMeta.x,\n      iColor.a,\n      layerMoves && !wheelTurned,\n      reacts,\n      0.5 * size,\n      stream\n    );',
     );
     expect(strokeGlsl.match(/motionOffset\(/g)).toHaveLength(1);
     // The haze thin widens by each reach only behind its own gate (R-P4b).
+    expect(strokeGlsl).toContain('float reach = reacts ? reactiveReach() : 0.0;');
+    // Behind the sky gate: under wheel the haze turns and thins with its wheel and its thin is
+    // judged at the turned centre; under every other wrap it widens by its motion reach.
+    expect(strokeGlsl).toContain('    if (layerMoves) {\n      // Under wheel');
     expect(strokeGlsl).toContain(
-      'float reach = (layerMoves ? motionReach(iMeta.y, iPosition) : 0.0) +\n      (reacts ? reactiveReach() : 0.0);',
+      'wheelTurned = skyHazeWheel(iPosition, halfExtent, n, longAxis, shortAxis, wheel, thin);\n      if (!wheelTurned) reach += motionReach(iMeta.y, iPosition);',
     );
+    expect(strokeGlsl).toContain('local = iPosition + wheel + m.offset + longAxis');
     // Nothing else in main reads the motion uniforms: the closed gate is the whole default path.
     const main = strokeGlsl.slice(strokeGlsl.indexOf('void main()'));
     expect(main).not.toMatch(/uTime|uCalm|uMotionLayers|uSkyWrap/);
@@ -255,14 +300,16 @@ describe('uniform plumbing', () => {
       expect(body).toContain(`layer == STROKE_LAYER_${layer}`);
     }
     expect(body.match(/uCalm/g)).toHaveLength(1);
-    expect(body.indexOf('return scaleMotion(m, uCalm);')).toBeGreaterThan(
+    expect(body.indexOf('m = scaleMotion(m, uCalm);')).toBeGreaterThan(
       body.indexOf('Motion r = reactiveMotion('),
     );
+    // The wheel's rigid offset alone is added after the scaling, unscaled (the calm hold).
+    expect(body).toContain('m = scaleMotion(m, uCalm);\n  m.offset += rigid;\n  return m;');
     // Each motion runs behind its own gate (P4.5): the layer dispatch behind layerMoves, the
     // reactive term behind reacts. The gains combine as size factors, so the wrap envelope still
     // scales a stroke the reactive stretch grows.
     expect(body).toContain('if (!layerMoves) {\n  } else if (layer == STROKE_LAYER_SKY) {');
-    expect(body).toContain('if (reacts) {\n    Motion r = reactiveMotion(p, n);');
+    expect(body).toContain('if (reacts) {\n    Motion r = reactiveMotion(p, n, l, halfSize);');
     expect(body).toContain('m.bright += r.bright;');
     expect(body).toContain('m.gain = (1.0 + m.gain) * (1.0 + r.gain) - 1.0;');
     expect(body.match(/m\.gain/g)).toHaveLength(2);

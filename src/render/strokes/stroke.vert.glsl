@@ -49,6 +49,10 @@ flat out vec4 vRect;
 flat out vec3 vNormal;
 flat out vec3 vLong;
 flat out vec3 vShort;
+// The sky's stream wrap (motion.glsl skyStream): sign × (1 + brush + f), with f its loop fraction,
+// the sign the way its paint streams along u and the brush the one whose tone correlation
+// stroke.frag.glsl reads. 0, no stream, for every other stroke and wrap.
+flat out float vStream;
 
 // #include sky-rings.glsl (src/motion/sky-rings.glsl, spliced in by material.ts)
 // #include motion.glsl (src/motion/motion.glsl, spliced in by material.ts)
@@ -136,38 +140,64 @@ void main() {
   // the farthest the motion can carry its centre, so a moved quad at its judged size stays inside
   // the judged extent and out of the disc cone. The reactive stretch growth (P4.5) comes after the
   // thin, so a grown haze quad can reach past that extent. It still stays out of the cone: a haze
-  // stroke grows only within the reactive radius of the head or a hand, at most about 1.4 m from
-  // the eye, and its rest half-diagonal is at least 1.62 m (boundary.ts HAZE_STROKE_SIZE 3 x 1.2,
-  // every band size >= 1), so its sinB is 1 and the thin was already the coarse hemisphere cut.
+  // stroke grows only with its centre within 0.6 m of the head or 0.696 m of a hand (its half-size
+  // is past the hand's 0.4 m cap), so within about 1.5 m of the eye for a hand within about 0.8 m,
+  // and its rest half-diagonal is at least 1.62 m (boundary.ts HAZE_STROKE_SIZE 3 x 1.2, every band
+  // size >= 1), so its sinB is 1 and the thin was already the coarse hemisphere cut. This holds
+  // while the hand is within about 1 m of the eye; a controller set down farther away inside the
+  // haze shell could grow a haze stroke over a disc. Widening the thin by the growth cap would turn
+  // the coarse cut on for in-box haze out to about 3.4 m, so haze would vanish near a hand.
   // The haze around a disc then clears a little wider while the sky moves, rather than paying the
-  // motion before the thin for every haze stroke.
+  // motion before the thin for every haze stroke. Two wraps differ: under stream no stroke moves,
+  // so the reach is 0 and the thin is the rest thin, and under wheel the haze's rigid turn runs
+  // first (motion.glsl skyHazeWheel), so the thin is judged at the turned centre with no reach.
   // The motion gates (P4.1, P4.5): the layer's own bit, and the reactive bit with the rest centre
   // inside the reactive box. Closed, as under ?noanim or at calm 0, each is one AND and compare.
   bool layerMoves = motionGate(iMeta.y);
   bool reacts = reactiveGate(iPosition);
   float thin = 1.0;
+  vec3 wheel = vec3(0.0);
+  bool wheelTurned = false;
   if ((iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {
-    float reach = (layerMoves ? motionReach(iMeta.y, iPosition) : 0.0) +
-      (reacts ? reactiveReach() : 0.0);
-    thin = skyLightThin((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size) + reach);
+    float halfExtent = 0.5 * length(size);
+    float reach = reacts ? reactiveReach() : 0.0;
+    if (layerMoves) {
+      // Under wheel the haze turns with its wheel here and is judged where the turn has carried
+      // it, thinned clear of the other wheels (motion.glsl skyHazeWheel); otherwise it widens by
+      // its motion reach.
+      wheelTurned = skyHazeWheel(iPosition, halfExtent, n, longAxis, shortAxis, wheel, thin);
+      if (!wheelTurned) reach += motionReach(iMeta.y, iPosition);
+    }
+    thin *= skyLightThin((modelMatrix * vec4(iPosition + wheel, 1.0)).xyz, halfExtent + reach);
     size *= sqrt(thin);
   }
   vec3 local = iPosition + longAxis * (position.x * size.x) + shortAxis * (position.y * size.y);
   // iColor.a never draws: under alpha-to-coverage, alpha below 1 inside a stroke dithers (R3). It
   // carries a cypress stroke's flame data, read only behind the motion gate (P4.4).
   vec3 color = iColor.rgb;
+  float stream = 0.0;
   // Motion (P4.1): the two gates and one branch for a stroke whose layer is still and that is
   // outside the reactive box, or for every stroke while frozen or at calm 0, and none for a
   // thinned-out haze stroke. The motion is the centre's, the same at every corner; the corner work
   // is the turn of the axes. The depth hashes below keep reading the rest iPosition, so a moving
   // stroke keeps its depth order.
   if ((layerMoves || reacts) && thin > 0.0) {
-    // The quad corner along the stroke. Only lift's branch moves it (motion.glsl skyLift), so
-    // every other wrap and layer draws position.x. The uv keeps the rest corner, so under lift the
-    // whole brush scales into the shorter quad.
-    float along = position.x;
-    Motion m =
-      motionOffset(iMeta.y, iPosition, n, longAxis, iMeta.z, iColor.a, layerMoves, reacts, along);
+    // Only the sky's wheel turns the normal and the axes (motion.glsl skyWheelMotion), and only
+    // its stream sets stream. A haze stroke the wheel already turned above takes no second turn.
+    Motion m = motionOffset(
+      iMeta.y,
+      iPosition,
+      n,
+      longAxis,
+      shortAxis,
+      iMeta.z,
+      iMeta.x,
+      iColor.a,
+      layerMoves && !wheelTurned,
+      reacts,
+      0.5 * size,
+      stream
+    );
     // The turn is small (SKY_SWIRL_MAX_TURN plus REACTIVE_MAX_TURN), so cosine and sine are
     // polynomials; this pair has c² + s² <= 1, so a turned quad never outgrows its rest extent.
     float a2 = m.turn * m.turn;
@@ -177,7 +207,7 @@ void main() {
     shortAxis = c * shortAxis - s * longAxis;
     longAxis = turned;
     size *= 1.0 + m.gain;
-    local = iPosition + m.offset + longAxis * (along * size.x) +
+    local = iPosition + wheel + m.offset + longAxis * (position.x * size.x) +
       shortAxis * (position.y * size.y);
     // The star and moon rings' crest (P4.3); 0 for every other layer.
     color *= 1.0 + m.bright;
@@ -235,6 +265,7 @@ void main() {
   vUv = rect.xy + rect.zw * (position.xy + 0.5);
   vRect = vec4(rect.xy, rect.xy + rect.zw);
   vColor = color;
+  vStream = stream;
 
   // Last, after every other output.
   if (thin <= 0.0) {

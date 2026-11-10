@@ -14,16 +14,17 @@ uniform uint uMotionLayers;
 // The reactive motion's field (src/motion/reactive.ts): per disturber (head, controller 0,
 // controller 1) its world position and strength (w, 0 when untracked) and its rig-relative velocity, m/s; its
 // wake samples, newest first, at j * WAKE_SAMPLES + i, with their weight in w; and the box round
-// every weighted disturber and sample, grown by the radius (negative half extents when empty).
+// every weighted disturber and sample, each grown by its disturber's radius (negative half extents
+// when empty).
 uniform vec4 uDisturbers[REACTIVE_DISTURBERS];
 uniform vec4 uDisturberVelocities[REACTIVE_DISTURBERS];
 uniform vec4 uWake[REACTIVE_WAKE_SAMPLES];
 uniform vec3 uReactiveCentre;
 uniform vec3 uReactiveHalf;
 // The sky wrap A/B variant (src/motion/variants.ts): SKY_WRAP_WAVE (0, the default),
-// SKY_WRAP_LIFT, SKY_WRAP_BASE, or pingpong, the fall-through, which no GLSL names. Read only in
-// skyMotion, so a moving sky vertex under the default wave pays one compare, base two, and lift
-// and pingpong three.
+// SKY_WRAP_WHEEL, SKY_WRAP_STREAM, SKY_WRAP_BASE or SKY_WRAP_PINGPONG. Read in skyMotion, so a moving sky vertex
+// under the default wave pays one compare, base two, pingpong three, wheel four and stream four, and
+// on haze vertices once in skyHazeWheel and, off wheel, once in motionReach.
 uniform uint uSkyWrap;
 // The wave wrap's waves per turn (SKY_WAVE_TURNS in sky-swirl.ts, ?waveturns), read only on the
 // wave branch.
@@ -109,37 +110,137 @@ Motion skyWrapMotion(vec3 d, vec3 omega, vec3 n, float phase, float amplitude, f
   return Motion(tau * cross(omega, d), tau * dot(omega, n), 0.0, 0.0);
 }
 
-// Matches skyLiftLoop and skyLiftCorner in sky-swirl.ts: the lift wrap's along-length envelope,
-// for a stroke at fraction f of lift's own loop whose long axis has projection `head` on its
-// travel, omega × d (tau only grows, so the offset tau (omega × d) always moves along +omega × d),
-// and its quad corner x along the stroke. Inside SKY_LIFT_WINDOW of either end of the loop the
-// length eases to 0 at the wrap: on the way in the stroke grows from its tail, on the way out it
-// shortens toward its head, the end that faces its travel. It returns the corner
-// x (1 - cut) + clip / 2, where |clip| is cut: positive clip keeps the +x end and negative the -x
-// end. Only lift's branch calls it, so no other wrap or layer moves the corner. A few multiply-adds
-// and a smoothstep.
-float skyLift(float f, float head, float x) {
-  float e = min(f, 1.0 - f) * SKY_LIFT_INV_WINDOW;
-  float cut = 1.0 - smoothstep(0.0, 1.0, e);
-  float clip = (f < 0.5) == (head < 0.0) ? cut : -cut;
-  return x * (1.0 - cut) + 0.5 * clip;
+// The wheel wrap's discs (skyWheels in sky-swirl.ts), in vortex order: half the squared chord of
+// each wheel's radius, its signed turns per second, a whole number per MOTION_TIME_WRAP_S, and
+// the angles from its axis of its members' rim (edge) and of 0.95 of its core (cap), radians, which
+// only the haze's thin reads (skyHazeWheel).
+const float SKY_WHEEL_CORE[SKY_VORTEX_COUNT] = SKY_WHEEL_CORES;
+const float SKY_WHEEL_RATE[SKY_VORTEX_COUNT] = SKY_WHEEL_RATES;
+const float SKY_WHEEL_EDGE[SKY_VORTEX_COUNT] = SKY_WHEEL_EDGES;
+const float SKY_WHEEL_CAP[SKY_VORTEX_COUNT] = SKY_WHEEL_CAPS;
+
+// v turned by the unit quaternion (q, w): v + 2w (q × v) + 2 q × (q × v).
+vec3 skyQuatRotate(vec3 q, float w, vec3 v) {
+  vec3 u = 2.0 * cross(q, v);
+  return v + w * u + cross(q, u);
+}
+
+// Matches skyWheelSpin and skySwirl's wheel branch in sky-swirl.ts: a stroke at d from SKY_EYE,
+// unit direction dir, inside wheel i (1 - c·dir under half its squared chord) turns rigidly about
+// the wheel's axis c by 2π fract(t rate), unbounded in time and periodic, as the unit quaternion
+// of half that angle, with the built-in sine and cosine. Its centre, its normal n and both axes l
+// and s turn with it, so the stroke keeps its place in the disc, with no shear and no reset. The
+// boundary haze (SKY_LIGHT_CULL_FLAG) in front of a wheel, chosen by the same direction from the
+// eye, turns with it, and every stroke outside the wheels holds still. The turn's
+// offset goes to rigid, which motionOffset adds after its calm scaling: a turned disc scaled by calm
+// would fold onto its axis, so the wheel keeps its radius at every calm and calm slows it through
+// uTime instead. At calm 0 uTime stops and the clock keeps the sky gate open under wheel
+// (clock.ts setHoldMask), so the discs hold their pose rather than snapping to rest. The wheels are
+// disjoint, so at most one matches. Per vertex in a wheel: a fract, a sine, a cosine and four
+// quaternion turns.
+Motion skyWheelMotion(
+  vec3 d,
+  vec3 dir,
+  inout vec3 n,
+  inout vec3 l,
+  inout vec3 s,
+  float t,
+  inout vec3 rigid
+) {
+  for (int i = 0; i < SKY_VORTEX_COUNT; i++) {
+    vec3 c = SKY_VORTEX_AXIS[i].xyz;
+    if (1.0 - dot(c, dir) >= SKY_WHEEL_CORE[i]) continue;
+    float h = SKY_HALF_TURN * fract(t * SKY_WHEEL_RATE[i]);
+    vec3 q = sin(h) * c;
+    float w = cos(h);
+    n = skyQuatRotate(q, w, n);
+    l = skyQuatRotate(q, w, l);
+    s = skyQuatRotate(q, w, s);
+    rigid = skyQuatRotate(q, w, d) - d;
+    break;
+  }
+  return Motion(vec3(0.0), 0.0, 0.0, 0.0);
+}
+
+// The boundary haze under wheel (stroke.vert.glsl, behind the open sky gate): the haze is the one
+// sky stroke with SKY_LIGHT_CULL_FLAG, and no other layer carries it. Returns false under every
+// other wrap, at one compare, and the caller widens the thin by motionReach instead. Under wheel it
+// turns a haze stroke centred at p in a wheel with it (skyWheelMotion: n, l, s and rigid, which the
+// caller adds and hands no other sky motion), so motionOffset runs no second wheel loop, and
+// returns true with `thin` the wheel's thin of a stroke of angular half extent halfExtent / |d|
+// (the half diagonal over its distance, at least its true angle). The haze is 2.5-3.1° long, about
+// twice a dome stroke, so membership by the dome's margin lets it reach past the 0.95 cap: a turned
+// haze stroke whose extent crosses another wheel's cap (SKY_WHEEL_CAP, the 0.95 core) would slide
+// against that wheel at the contact (the tear), and a still one whose extent crosses a wheel's edge
+// (SKY_WHEEL_EDGE, the members' rim) would veil the turning disc. Each thins to 0 there, ramping
+// back over SKY_WHEEL_HAZE_FEATHER of clear gap, judged at the full size like skyLightThin, so a
+// drawn quad never crosses. The dome behind is covered, so a thinned haze stroke leaves no bare sky.
+// Its own wheel is skipped: a turn about its axis keeps the stroke's angle to it.
+bool skyHazeWheel(
+  vec3 p,
+  float halfExtent,
+  inout vec3 n,
+  inout vec3 l,
+  inout vec3 s,
+  inout vec3 rigid,
+  inout float thin
+) {
+  if (uSkyWrap != SKY_WRAP_WHEEL) return false;
+  vec3 d = p - SKY_EYE;
+  float inv = inversesqrt(dot(d, d));
+  vec3 dir = d * inv;
+  int member = -1;
+  for (int i = 0; i < SKY_VORTEX_COUNT; i++) {
+    if (1.0 - dot(SKY_VORTEX_AXIS[i].xyz, dir) < SKY_WHEEL_CORE[i]) member = i;
+  }
+  skyWheelMotion(d, dir, n, l, s, uTime, rigid);
+  vec3 seen = normalize(d + rigid);
+  float h = halfExtent * inv;
+  for (int j = 0; j < SKY_VORTEX_COUNT; j++) {
+    if (j == member) continue;
+    float edge = member < 0 ? SKY_WHEEL_EDGE[j] : SKY_WHEEL_CAP[j];
+    float theta = acos(clamp(dot(SKY_VORTEX_AXIS[j].xyz, seen), -1.0, 1.0));
+    thin *= smoothstep(0.0, SKY_WHEEL_HAZE_FEATHER, theta - h - edge);
+  }
+  return true;
+}
+
+// Matches skyStreamPhase in sky-swirl.ts: the stream wrap's loop fraction from the stroke's phase
+// byte, and the sign of its long axis l along its flow v = omega × d, the way its paint streams
+// (+1 also where the flow is still), packed with the brush as sign × (1 + brush + f), which
+// stroke.frag.glsl decodes from vStream. 0 is no stream.
+float skyStream(vec3 v, vec3 l, uint brush, float phase, float t) {
+  float f = fract(t * SKY_STREAM_INV_PERIOD + phase);
+  return (dot(l, v) < 0.0 ? -1.0 : 1.0) * (1.0 + float(brush) + f);
 }
 
 // Matches skySwirl in sky-swirl.ts. The field is one rotation vector about SKY_EYE: each vortex
 // turns at gamma / max(chord², core²) about its axis (Rankine, no square root), plus the drift about
 // the vertical. The stroke sweeps a short arc of it per SKY_SWIRL_PERIOD: forward and back in
-// bands under the default wave, and under base and lift forward only, shrinking to nothing at the
-// wrap (base) or shortening along its length (lift, skyLift), lift on its own SKY_LIFT_INV_PERIOD
-// loop. l is the stroke's long axis at rest, and along its quad corner along the stroke, which
-// only lift moves.
-// The default wave is the first compare, so it pays one, base two, and lift and pingpong three.
-// SKY_VORTEX_COUNT is a handful (4): each vortex costs a dot, a max, a divide and a multiply-add
-// per vertex.
+// bands under the default wave, and under base forward only, shrinking to nothing at the wrap.
+// Under wheel the cores turn rigidly and the rest holds still (skyWheelMotion), and under stream
+// every stroke holds still and hands its loop to the fragment shader (skyStream). l and s are the
+// stroke's normal and long and short axes, which only wheel turns, and brush its brush index
+// (iMeta.x). rigid is the wheel's calm-free offset, 0 unless the wheel branch
+// sets it, and stream is vStream, 0 unless the stream branch sets it.
+// The default wave is the first compare, so it pays one, base two, pingpong three, and wheel and
+// stream four. SKY_VORTEX_COUNT is a handful (4): each vortex costs a dot, a max, a divide and a
+// multiply-add per vertex.
 #ifdef VTX_HOIST
 // The `vtx` group's hoist arm (src/render/strokes/vertex-arms.ts): the same motion from the
 // stroke's rest field, built on the CPU (iSkyField, iSkyWave in stroke.vert.glsl), so only the
 // time-dependent part runs per vertex.
-Motion skyMotion(vec3 p, vec3 n, vec3 l, float phase, float t, inout float along) {
+Motion skyMotion(
+  vec3 p,
+  inout vec3 n,
+  inout vec3 l,
+  inout vec3 s,
+  uint brush,
+  float phase,
+  float t,
+  inout vec3 rigid,
+  inout float stream
+) {
   float amplitude = SKY_SWIRL_PERIOD;
   if (uSkyWrap == SKY_WRAP_WAVE) {
     phase = iSkyWave.x + SKY_WAVE_JITTER * (phase - 0.5);
@@ -153,18 +254,30 @@ Motion skyMotion(vec3 p, vec3 n, vec3 l, float phase, float t, inout float along
       smoothstep(0.0, SKY_SWIRL_FADE, min(f, 1.0 - f)) - 1.0,
       0.0
     );
-  } else if (uSkyWrap == SKY_WRAP_LIFT) {
-    float f = fract(t * SKY_LIFT_INV_PERIOD + phase);
-    float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
-    along = skyLift(f, dot(l, iSkyField.xyz), along);
-    return Motion(tau * iSkyField.xyz, tau * iSkyField.w, 0.0, 0.0);
+  } else if (uSkyWrap != SKY_WRAP_PINGPONG) {
+    if (uSkyWrap == SKY_WRAP_WHEEL) {
+      vec3 d = p - SKY_EYE;
+      return skyWheelMotion(d, d * inversesqrt(dot(d, d)), n, l, s, t, rigid);
+    }
+    stream = skyStream(iSkyField.xyz, l, brush, phase, t);
+    return Motion(vec3(0.0), 0.0, 0.0, 0.0);
   }
   float f = fract(t * SKY_SWIRL_INV_PERIOD + phase);
   float tau = (smoothstep(0.0, 1.0, 1.0 - abs(2.0 * f - 1.0)) - 0.5) * amplitude;
   return Motion(tau * iSkyField.xyz, tau * iSkyField.w, 0.0, 0.0);
 }
 #else
-Motion skyMotion(vec3 p, vec3 n, vec3 l, float phase, float t, inout float along) {
+Motion skyMotion(
+  vec3 p,
+  inout vec3 n,
+  inout vec3 l,
+  inout vec3 s,
+  uint brush,
+  float phase,
+  float t,
+  inout vec3 rigid,
+  inout float stream
+) {
   vec3 d = p - SKY_EYE;
   vec3 dir = d * inversesqrt(dot(d, d));
   vec3 omega = vec3(0.0, SKY_DRIFT, 0.0);
@@ -186,12 +299,10 @@ Motion skyMotion(vec3 p, vec3 n, vec3 l, float phase, float t, inout float along
       0.0
     );
   }
-  if (uSkyWrap != SKY_WRAP_LIFT) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);
-  float f = fract(t * SKY_LIFT_INV_PERIOD + phase);
-  float tau = (f - 0.5) * SKY_SWIRL_PERIOD;
-  vec3 v = cross(omega, d);
-  along = skyLift(f, dot(l, v), along);
-  return Motion(tau * v, tau * dot(omega, n), 0.0, 0.0);
+  if (uSkyWrap == SKY_WRAP_PINGPONG) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);
+  if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion(d, dir, n, l, s, t, rigid);
+  stream = skyStream(cross(omega, d), l, brush, phase, t);
+  return Motion(vec3(0.0), 0.0, 0.0, 0.0);
 }
 #endif
 
@@ -257,52 +368,95 @@ Motion cypressMotion(vec3 p, vec3 n, float phase, float flame, float t) {
   float gain = taper > 0.0 ? smoothstep(0.0, CYPRESS_FLAME_FADE, min(f, 1.0 - f)) - 1.0 : 0.0;
   return Motion(s * up + a * side, 0.0, gain, 0.0);
 }
+// The reactive motion's per-slot constants (reactive.ts): slot 0 is the head and slots 1 and 2 the
+// hands, so a hand's small radius and its own gains are constants, not uniforms. The loops below
+// have constant bounds, so an unrolling compiler folds each lookup to an immediate.
+const float REACTIVE_SLOT_INV_R2[REACTIVE_DISTURBERS] = REACTIVE_INV_RADIUS2;
+const float REACTIVE_SLOT_PUSH[REACTIVE_DISTURBERS] = REACTIVE_PUSH_GAIN;
+const float REACTIVE_SLOT_DRAG[REACTIVE_DISTURBERS] = REACTIVE_DRAG_S;
+const float REACTIVE_SLOT_SWIRL[REACTIVE_DISTURBERS] = REACTIVE_SWIRL;
+const float REACTIVE_SLOT_LEVER[REACTIVE_DISTURBERS] = REACTIVE_LEVER;
+const float REACTIVE_SLOT_HALF_CAP[REACTIVE_DISTURBERS] = REACTIVE_HALF_CAP;
+
 // Matches reactiveMotion in reactive.ts (P4.5), on every layer behind reactiveGate: each disturber
 // pushes the stroke centred at p away by its strength times the falloff (1 - x²)² times
-// PUSH_GAIN (p - d), 0 at the disturber itself, and drags it by its velocity times DRAG_S; each
+// PUSH_GAIN min(|p - d|, LEVER) along p - d, 0 at the disturber itself, and drags it by its
+// velocity times DRAG_S. x is q / R, q the disturber's distance to the stroke's quad (l the long
+// axis, halfSize its drawn half-size, capped at HALF_CAP: 0 for the head, so its q is |p - d|); each
 // wake sample turns it about its normal n through the sample by weight times SWIRL times the
-// falloff. The rotations' offsets are linear in p - w, so the loop sums t (p - w) and t and takes
-// one cross product after it. The sum loses its part along n, so the stroke slides along its
+// falloff. Radius, gain, drag and swirl are the disturber's slot's own, and a wake sample uses its
+// disturber's. The rotations' offsets are linear in p - w, so the loop sums t (p - w) and t and
+// takes one cross product after it. The sum loses its part along n, so the stroke slides along its
 // surface, and is clamped to REACTIVE_REACH; the turn is capped at REACTIVE_MAX_TURN. The gain is
-// the push's areal stretch in the tangent plane, (1 + a)(1 + a - tr M) with a = calm G Σ s f² and
-// tr M = calm 4 G / R² Σ s f |t|² (t the tangent part of p - d), as a size factor √J, never below
+// the push's areal stretch in the tangent plane, (1 + a)(1 + a - tr M) with a = calm Σ G s f² and
+// tr M = -calm Σ t · ∇(G s f² m) (t the tangent part of p - d), as a size factor √J, never below
 // 1 and capped at 1 + REACTIVE_MAX_GAIN: strokes spread apart grow to keep covering the surface
 // (R-P4o). No phase: it is a pure function of p and the field.
-// Cost per vertex inside the box, counted in scalar ALU operations: 3 disturbers of about 25, 24
-// wake samples of about 15, then a tail of about 37 (swirl cross product, normal removal, reach
-// clamp, stretch), about 470 in all. The P4.6 desktop record (docs/perf.md, Motion) measures the
-// frame with a controller sweeping inside the cypress; the Quest cost is pending the owner (P4.7).
-Motion reactiveMotion(vec3 p, vec3 n) {
+// Cost per vertex inside the box, counted in scalar ALU operations: one short-axis cross product
+// (6), the head at about 25 (its branch folds away when the loop unrolls), 2 hands of about 75
+// (the quad distance, the lever and its stretch term), 24 wake samples of about 15, then a tail of
+// about 35 (swirl cross product, normal removal, reach clamp, stretch), about 580 in all, up from
+// about 470 with the centre distance (if the loops do not unroll, each lookup is a constant-array
+// read and the head pays the branch's test). The P4.6
+// desktop record (docs/perf.md, Motion) measures the frame with a controller sweeping inside the
+// cypress; the Quest cost is pending the owner (P4.7).
+Motion reactiveMotion(vec3 p, vec3 n, vec3 l, vec2 halfSize) {
   vec3 offset = vec3(0.0);
   float spread = 0.0;
   float squeeze = 0.0;
+  vec3 sAxis = cross(n, l);
   for (int j = 0; j < REACTIVE_DISTURBERS; j++) {
     vec4 d = uDisturbers[j];
     vec3 e = p - d.xyz;
     float e2 = dot(e, e);
-    float f = max(1.0 - e2 * REACTIVE_INV_RADIUS2, 0.0);
+    float en = dot(e, n);
+    float tangent = e2 - en * en;
+    // The centre distance and no lever, which the head keeps. Its cap is the constant 0, so an
+    // unrolled loop drops the branch for slot 0.
+    float q2 = e2;
+    float qDrop = tangent;
+    float m = 1.0;
+    float lever = 0.0;
+    if (REACTIVE_SLOT_HALF_CAP[j] > 0.0) {
+      // A hand's distance to the stroke's quad, its half-size capped, and its push lever.
+      vec2 hs = min(halfSize, vec2(REACTIVE_SLOT_HALF_CAP[j]));
+      vec2 ax = abs(vec2(dot(e, l), dot(e, sAxis)));
+      vec2 inPlane = max(ax - hs, 0.0);
+      q2 = e2 - dot(ax - inPlane, ax + inPlane);
+      qDrop = tangent - dot(ax, ax - inPlane);
+      float ir = inversesqrt(max(e2, 1e-24));
+      m = min(1.0, REACTIVE_SLOT_LEVER[j] * ir);
+      lever = m < 1.0 ? tangent * ir * ir : 0.0;
+    }
+    float invR2 = REACTIVE_SLOT_INV_R2[j];
+    float f = max(1.0 - q2 * invR2, 0.0);
     float sf = d.w * f;
     float s = sf * f;
-    offset += s * (REACTIVE_PUSH_GAIN * e + REACTIVE_DRAG_S * uDisturberVelocities[j].xyz);
-    float en = dot(e, n);
-    spread += s;
-    squeeze += sf * (e2 - en * en);
+    float g = REACTIVE_SLOT_PUSH[j];
+    float sg = s * g * m;
+    offset += sg * e + (s * REACTIVE_SLOT_DRAG[j]) * uDisturberVelocities[j].xyz;
+    spread += sg;
+    squeeze += g * m * (4.0 * invR2 * sf * qDrop + s * lever);
   }
   vec3 swirl = vec3(0.0);
   float theta = 0.0;
-  for (int i = 0; i < REACTIVE_WAKE_SAMPLES; i++) {
-    vec4 w = uWake[i];
-    vec3 e = p - w.xyz;
-    float f = max(1.0 - dot(e, e) * REACTIVE_INV_RADIUS2, 0.0);
-    float t = w.w * REACTIVE_SWIRL * f * f;
-    swirl += t * e;
-    theta += t;
+  for (int j = 0; j < REACTIVE_DISTURBERS; j++) {
+    float invR2 = REACTIVE_SLOT_INV_R2[j];
+    float k = REACTIVE_SLOT_SWIRL[j];
+    for (int i = 0; i < REACTIVE_WAKE_PER_SLOT; i++) {
+      vec4 w = uWake[j * REACTIVE_WAKE_PER_SLOT + i];
+      vec3 e = p - w.xyz;
+      float f = max(1.0 - dot(e, e) * invR2, 0.0);
+      float t = w.w * k * f * f;
+      swirl += t * e;
+      theta += t;
+    }
   }
   offset += cross(n, swirl);
   offset -= n * dot(n, offset);
   offset *= min(1.0, REACTIVE_REACH * inversesqrt(max(dot(offset, offset), 1e-12)));
-  float a = uCalm * REACTIVE_PUSH_GAIN * spread;
-  float stretch = (1.0 + a) * (1.0 + a - uCalm * REACTIVE_STRETCH_M * squeeze);
+  float a = uCalm * spread;
+  float stretch = (1.0 + a) * (1.0 + a - uCalm * squeeze);
   float gain = min(sqrt(max(stretch, 1.0)) - 1.0, REACTIVE_MAX_GAIN);
   return Motion(offset, min(theta, REACTIVE_MAX_TURN), gain, 0.0);
 }
@@ -313,18 +467,23 @@ Motion reactiveMotion(vec3 p, vec3 n) {
 // gains combine as size factors, so a wrapping stroke still shrinks to nothing and a stretched one
 // grows. MOTION_PHASE_PIN is the e2e's coherent phase
 // (material.ts pinMotionPhase), never defined in a production build. flame is the instance's
-// colour alpha, which only the cypress reads (P4.4), l its long axis at rest and along its quad
-// corner along the stroke, which only the sky reads and only lift moves (skyLift).
+// colour alpha, which only the cypress reads (P4.4). n, l and s are its normal and long and short
+// axes and brush its brush index, which only the sky reads, and only the wheel turns n, l and s
+// (skyWheelMotion); stream is vStream, which only the sky's stream wrap sets
+// (skyStream). The wheel's rigid offset is added after the calm scaling.
 Motion motionOffset(
   uint layer,
   vec3 p,
-  vec3 n,
-  vec3 l,
+  inout vec3 n,
+  inout vec3 l,
+  inout vec3 s,
   uint phaseByte,
+  uint brush,
   float flame,
   bool layerMoves,
   bool reacts,
-  inout float along
+  vec2 halfSize,
+  inout float stream
 ) {
 #ifdef MOTION_PHASE_PIN
   float phase = MOTION_PHASE_PIN;
@@ -333,9 +492,10 @@ Motion motionOffset(
 #endif
   float t = uTime;
   Motion m = Motion(vec3(0.0), 0.0, 0.0, 0.0);
+  vec3 rigid = vec3(0.0);
   if (!layerMoves) {
   } else if (layer == STROKE_LAYER_SKY) {
-    m = skyMotion(p, n, l, phase, t, along);
+    m = skyMotion(p, n, l, s, brush, phase, t, rigid, stream);
   } else if (layer == STROKE_LAYER_STAR) {
     m = starMotion(p, phaseByte, t);
   } else if (layer == STROKE_LAYER_MOON) {
@@ -344,21 +504,26 @@ Motion motionOffset(
     m = cypressMotion(p, n, phase, flame, t);
   }
   if (reacts) {
-    Motion r = reactiveMotion(p, n);
+    Motion r = reactiveMotion(p, n, l, halfSize);
     m.offset += r.offset;
     m.turn += r.turn;
     m.gain = (1.0 + m.gain) * (1.0 + r.gain) - 1.0;
     m.bright += r.bright;
   }
-  return scaleMotion(m, uCalm);
+  m = scaleMotion(m, uCalm);
+  m.offset += rigid;
+  return m;
 }
 
 // Matches motionReach in motion.ts: how far, metres, the open gate can move the stroke centred at p
 // from rest, calm included. Only called behind motionGate, for the haze's sky-light thin, so only
 // the sky layer's reach is here: no star or moon stroke carries SKY_LIGHT_CULL_FLAG, and their
-// rings stay inside the cones' rim (sky-rings.ts).
+// rings stay inside the cones' rim (sky-rings.ts). The haze is the only sky stroke with that flag.
+// It holds still under stream, so its reach is 0 there. Never called under wheel, where the thin is
+// judged at the turned centre instead (skyHazeWheel).
 float motionReach(uint layer, vec3 p) {
-  return layer == STROKE_LAYER_SKY ? uCalm * SKY_SWIRL_MAX_ANGLE * length(p - SKY_EYE) : 0.0;
+  if (layer != STROKE_LAYER_SKY || uSkyWrap == SKY_WRAP_STREAM) return 0.0;
+  return uCalm * SKY_SWIRL_MAX_ANGLE * length(p - SKY_EYE);
 }
 
 // Matches reactiveReach in motion.ts: the farthest, metres, the reactive motion moves a stroke,

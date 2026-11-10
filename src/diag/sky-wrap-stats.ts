@@ -16,6 +16,7 @@ import {
   skyVelocity,
   skyWavePhase,
   skyWavePolesFor,
+  skyWheelAt,
   skyWrapLoop,
 } from '../motion/sky-swirl';
 import type { SkyWaveTurns, SkyWrap } from '../motion/variants';
@@ -37,15 +38,14 @@ export interface SkyWrapStats {
   readonly small: number;
   /** Of those, the ones on their way back along the arc (pingpong and wave). */
   readonly returning: number;
-  /** Of those, the ones lift draws shorter than full length: inside a lift window. */
-  readonly cut: number;
-  /** cut / drawn: the share of the drawn sky strokes in transition. */
-  readonly cutShare: number;
+  /** Of those, the ones inside a wheel (skyWheelAt), which turn under wheel, the haze included. */
+  readonly wheeled: number;
   /**
    * How the drawn sky strokes' long axes at rest lie against the swirl's flow, |cos| of the angle
    * between the long axis and omega × d: the share within 30° of it (|cos| ≥ cos 30°), the share
-   * more than 60° off it (|cos| < ½), which lift shortens mostly across their travel,
-   * and the median |cos|. Strokes where the flow is still count as crossways.
+   * more than 60° off it (|cos| < ½), and the median |cos|. Under stream the paint streams along
+   * each stroke's length, so this says how much of it streams along the flow. Strokes where the
+   * flow is still count as crossways.
    */
   readonly alignment: {
     readonly within30: number;
@@ -75,6 +75,8 @@ interface SkyStrokes {
   readonly wave: Float32Array;
   /** |cos| of the angle between each stroke's long axis at rest and the flow omega × d. */
   readonly along: Float32Array;
+  /** Each stroke's wheel index (skyWheelAt), -1 outside every wheel. */
+  readonly wheel: Int8Array;
   readonly hash: SkyDirectionHash;
 }
 
@@ -101,6 +103,7 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
   const phase = new Float32Array(total);
   const wave = new Float32Array(total);
   const along = new Float32Array(total);
+  const wheel = new Int8Array(total);
   const directions = new Float32Array(3 * total);
   batch.chunks.forEach((chunk, c) => {
     const meta = chunk.geometry.getAttribute('iMeta').array;
@@ -128,9 +131,10 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
       const v = skyVelocity([dx * inv, dy * inv, dz * inv]);
       const speed = Math.hypot(v[0], v[1], v[2]);
       along[s] = speed > 0 ? Math.abs(long[0] * v[0] + long[1] * v[1] + long[2] * v[2]) / speed : 0;
+      wheel[s] = skyWheelAt([dx * inv, dy * inv, dz * inv]);
     });
   });
-  return { local, start, phase, wave, along, hash: hashSkyDirections(directions) };
+  return { local, start, phase, wave, along, wheel, hash: hashSkyDirections(directions) };
 }
 
 /**
@@ -157,7 +161,7 @@ export function skyWrapStats(
   const drawnIndices: number[] = [];
   let small = 0;
   let back = 0;
-  let cut = 0;
+  let wheeled = 0;
   const along: number[] = [];
   batch.chunks.forEach((chunk, c) => {
     if (!chunk.mesh.visible) return;
@@ -171,7 +175,7 @@ export function skyWrapStats(
       drawnIndices.push(s);
       if (1 + loop.gain < 0.8) small++;
       if (loop.returning) back++;
-      if (loop.clip !== 0) cut++;
+      if (strokes.wheel[s] >= 0) wheeled++;
       along.push(strokes.along[s]);
     }
   });
@@ -184,8 +188,7 @@ export function skyWrapStats(
     waveTurns: turns,
     drawn,
     small,
-    cut,
-    cutShare: drawn > 0 ? cut / drawn : 0,
+    wheeled,
     alignment: {
       within30: drawn > 0 ? along.filter((a) => a >= Math.cos(Math.PI / 6)).length / drawn : 0,
       beyond60: drawn > 0 ? along.filter((a) => a < 0.5).length / drawn : 0,

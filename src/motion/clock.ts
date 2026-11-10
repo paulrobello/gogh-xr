@@ -28,8 +28,8 @@ export interface MotionUniforms {
   uFreeze: { value: number };
   /**
    * The motion gate, one bit per stroke layer (bit `STROKE_LAYER.x`): the layers whose motion
-   * runs this frame. 0 when frozen or at calm 0, else `MOTION_LAYER_MASK`. A stroke whose bit is
-   * clear pays one AND, compare and branch, and no motion maths.
+   * runs this frame. 0 when frozen, the layer mask and the hold mask at calm 0, else the layer
+   * mask. A stroke whose bit is clear pays one AND, compare and branch, and no motion maths.
    */
   uMotionLayers: { value: number };
 }
@@ -46,6 +46,8 @@ export interface MotionState {
   readonly frozen: boolean;
   /** The layers the clock opens when not frozen and calm is above 0 (`setLayerMask`). */
   readonly layers: number;
+  /** The layers it keeps open at calm 0 while not frozen (`setHoldMask`), within `layers`. */
+  readonly hold: number;
 }
 
 export interface MotionClock {
@@ -57,6 +59,12 @@ export interface MotionClock {
   setFrozen(frozen: boolean): void;
   /** The layers whose motion runs while the clock is not frozen and calm is above 0. */
   setLayerMask(mask: number): void;
+  /**
+   * The layers of the layer mask that stay open at calm 0 while not frozen: the sky under the
+   * `wheel` wrap (main.ts), whose discs hold the pose they reached as uTime stops instead of
+   * snapping to rest, since every offset but the wheel's scales to 0 there.
+   */
+  setHoldMask(mask: number): void;
   diag(): MotionState;
 }
 
@@ -73,6 +81,7 @@ export function clampCalm(calm: number): number {
 
 export function createMotionClock(options: MotionClockOptions = {}): MotionClock {
   let layerMask = (options.layerMask ?? MOTION_LAYER_MASK) >>> 0;
+  let holdMask = 0;
   const uniforms: MotionUniforms = {
     uTime: { value: 0 },
     uCalm: { value: 1 },
@@ -86,7 +95,11 @@ export function createMotionClock(options: MotionClockOptions = {}): MotionClock
   const sync = (): void => {
     uniforms.uCalm.value = calm;
     uniforms.uFreeze.value = frozen ? 1 : 0;
-    uniforms.uMotionLayers.value = frozen || calm <= 0 ? 0 : layerMask;
+    uniforms.uMotionLayers.value = frozen
+      ? 0
+      : calm <= 0
+        ? (layerMask & holdMask) >>> 0
+        : layerMask;
   };
   const clock: MotionClock = {
     uniforms,
@@ -111,7 +124,18 @@ export function createMotionClock(options: MotionClockOptions = {}): MotionClock
       layerMask = mask >>> 0;
       sync();
     },
-    diag: () => ({ time: uniforms.uTime.value, delta, calm, frozen, layers: layerMask }),
+    setHoldMask(mask) {
+      holdMask = mask >>> 0;
+      sync();
+    },
+    diag: () => ({
+      time: uniforms.uTime.value,
+      delta,
+      calm,
+      frozen,
+      layers: layerMask,
+      hold: holdMask,
+    }),
   };
   clock.setCalm(options.calm ?? 1);
   clock.setFrozen(options.frozen ?? false);

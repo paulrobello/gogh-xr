@@ -440,6 +440,7 @@ test.describe('the painter view', () => {
       drawn: number;
       small: number;
       returning: number;
+      wheeled: number;
       forwardShare: number;
       returningShare: number;
       counterFlow: { pairs: number; opposed: number; share: number; radiusDeg: number };
@@ -470,7 +471,7 @@ test.describe('the painter view', () => {
 
     await bootWorld('&ab=wrap');
     const variants = ((await ab(xr)) as AbDiag).variants;
-    expect(variants).toEqual(['wave', 'lift', 'base', 'pingpong']);
+    expect(variants).toEqual(['wave', 'wheel', 'stream', 'base', 'pingpong']);
     await hideHud();
     expect((await rawPixels(page)).equals(fresh), 'wrap wave matches a fresh boot').toBe(true);
     const programs = (await diag()).programs;
@@ -504,9 +505,11 @@ test.describe('the painter view', () => {
         // Base shrinks its wrapping strokes and never turns back, so nothing counter-flows.
         expect(w.small).toBeGreaterThan(0);
         expect([w.returning, w.counterFlow.opposed]).toEqual([0, 0]);
-      } else if (variant === 'lift') {
-        // Forward only at full width: they shorten along their length instead of shrinking.
+      } else if (variant === 'wheel' || variant === 'stream') {
+        // No arc loop: nothing shrinks, nothing turns back, so nothing counter-flows. The wheel's
+        // cores turn rigidly and the stream streams inside still strokes.
         expect([w.small, w.returning, w.counterFlow.opposed]).toEqual([0, 0, 0]);
+        if (variant === 'wheel') expect(w.wheeled).toBeGreaterThan(0);
       } else if (variant === 'pingpong') {
         // Full size, with about half the strokes on their way back, side by side with the rest.
         expect(w.small).toBe(0);

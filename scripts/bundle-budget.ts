@@ -16,15 +16,17 @@ export type ChunkBudget = { pattern: RegExp; label: string; maxGzipBytes: number
 
 /**
  * Measured 2026-11-09 on debc2bd at the default gzip level: index 136,527, three.core 48,715,
- * troika-config 43,634, tie-key 25,230 (largest of the rest), JS total 323,714 bytes.
+ * troika-config 43,634, JS total 323,714 bytes. tie-key, which holds the stroke shader source,
+ * measured 31,586 after the wheel and stream wraps and the hand-orb quad distance (2026-11-09).
  * Each budget is the measured size plus a margin, rounded up to a clean number. After rounding the
- * margins are 14.6% (troika-config) to 18.9% (default, over tie-key): index 17.2%, three.core
- * 14.9%, JS total 15.8%.
+ * margins are 14.6% (troika-config) to 17.2% (index): tie-key 17.1%, three.core 14.9%, JS total
+ * 15.8%. The default covers every other chunk, the largest today under 17,000.
  */
 export const CHUNK_BUDGETS: readonly ChunkBudget[] = [
   { pattern: /^index$/, label: 'index', maxGzipBytes: 160_000 },
   { pattern: /^three\.core$/, label: 'three.core', maxGzipBytes: 56_000 },
   { pattern: /^troika-config$/, label: 'troika-config', maxGzipBytes: 50_000 },
+  { pattern: /^tie-key$/, label: 'tie-key', maxGzipBytes: 37_000 },
 ];
 /** Applies to every chunk no pattern above matches, new chunks included. */
 export const DEFAULT_CHUNK_BUDGET_BYTES = 30_000;

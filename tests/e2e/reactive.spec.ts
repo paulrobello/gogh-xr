@@ -19,9 +19,10 @@ import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
 import { MAX_MOTION_DT_S } from '../../src/motion/clock.ts';
 import { REACTIVE_MOTION_BIT } from '../../src/motion/layers.ts';
 import {
+  HAND_RADIUS,
   HAND_STRENGTH,
+  HEAD_RADIUS,
   HEAD_STRENGTH,
-  REACTIVE_RADIUS,
   REACTIVE_REACH,
   type ReactiveField,
   reactiveMotion,
@@ -272,10 +273,13 @@ test.describe('reactive strokes (P4.5)', () => {
     test.setTimeout(240_000);
     await bootXr(page, xr, 'motionlayers=reactive');
     expect(((await xr.diag()).motion as { layers: number }).layers).toBe(REACTIVE_MOTION_BIT);
-    // The eye 2.4 m out from the hull: no stroke within the head's radius. The controller 0.1 m
-    // inside the hull, straight ahead, so it projects onto the frame centre.
-    const view = cypressView(2.4);
-    const inside = ahead(view, 2.5);
+    // The eye 1.2 m out from the hull: no stroke within the head's radius. The controller 0.02 m
+    // inside the hull, straight ahead, so it projects onto the frame centre and the hull strokes
+    // whose quad lies within its 0.13 m radius move (2026-11-09: a hand reacts only at its orb, by
+    // the distance to each stroke's quad).
+    expect(1.2).toBeGreaterThan(HEAD_RADIUS);
+    const view = cypressView(1.2);
+    const inside = ahead(view, 1.22);
     await place(page, xr, view, PARKED, PARKED);
     await settle(page, xr);
     const before = await reactive(xr);
@@ -316,15 +320,16 @@ test.describe('reactive strokes (P4.5)', () => {
 
     const size = await canvasSize(page);
     expect(size).toEqual(VIEW);
-    // Strokes whose centre is within the radius move by at most the reach; each spans at most
-    // about 0.5 m past its centre on the cypress. Seen 2.4 m off, anything changed lies inside
-    // asin((R + reach + 0.5) / 2.4) of the centre.
+    // Strokes whose quad is within the hand's radius move by at most the reach. Such a stroke's
+    // centre is at most its half-length (0.24 m on the cypress) past the radius, and it spans at
+    // most about 0.5 m past its centre (grown at most 2×). Seen 1.2 m off, anything changed lies
+    // inside asin((R + reach + 0.24 + 0.5) / 1.2) of the centre.
     const outer = await pixelsAt(
       page,
-      Math.asin((REACTIVE_RADIUS + REACTIVE_REACH + 0.5) / 2.4),
+      Math.asin((HAND_RADIUS + REACTIVE_REACH + 0.24 + 0.5) / 1.2),
       size.height,
     );
-    const inner = await pixelsAt(page, Math.atan(0.3 / 2.4), size.height);
+    const inner = await pixelsAt(page, Math.atan(HAND_RADIUS / 1.2), size.height);
     const moved = radialDiff(far, pushed, size, inner, outer);
     const sprung = radialDiff(far, back, size, inner, outer);
     console.log(
@@ -334,10 +339,14 @@ test.describe('reactive strokes (P4.5)', () => {
     expect(moved.innerChanged).toBeGreaterThan(0.2);
     expect(moved.outerChanged).toBe(0);
 
-    // Direction: a patch on the hull 0.3 m right of the push point, near the push's peak, moves
-    // outward, away from the controller, by about what the TS mirror predicts for a stroke there on
-    // the ring-9 circle (measured 22.3 px against 17.7 px). The flipped prediction, a push toward
-    // the controller, must fail the same check, so a reversed push in motion.glsl fails this test.
+    // Direction: a patch on the hull 0.1 m right of the push point moves outward, away from the
+    // controller, by about what the TS mirror predicts for a typical cypress stroke there
+    // (half-length 0.175 m, the cypress median, half-width 0.05 m, upright: the median |long.y| of
+    // the cypress strokes there is 0.93), on the ring-9 circle. Offline, every seed-1 stroke that
+    // covers that point moves outward, by 1.44 cm on average (2026-11-09 fix round 2). Nearer the
+    // push point the patch also sees the stretch growth of strokes centred past it, so 0.058, 0.08
+    // and 0.13 m are logged, not held. The flipped prediction, a push toward the controller, must
+    // fail the same check, so a reversed push in motion.glsl fails this test.
     // Only the right: left of the push point the hull turns away from the ring-9 circle, so the
     // strokes there sit past the radius and the circle's prediction does not hold.
     const focal =
@@ -354,9 +363,10 @@ test.describe('reactive strokes (P4.5)', () => {
     };
     const farL = luma(far);
     const pushedL = luma(pushed);
-    {
+    for (const along of [0.058, 0.08, 0.1, 0.13]) {
+      const held = along === 0.1;
       const side = 1;
-      const phi = (side * 0.3) / CYPRESS_HULL;
+      const phi = (side * along) / CYPRESS_HULL;
       const out: Vec3 = [
         CYPRESS_OUT[0] * Math.cos(phi) + CYPRESS_OUT[2] * Math.sin(phi),
         0,
@@ -367,15 +377,19 @@ test.describe('reactive strokes (P4.5)', () => {
         AXIS_9[1],
         AXIS_9[2] + CYPRESS_HULL * out[2],
       ];
-      const u = reactiveMotion(q, out, field).offset;
+      const u = reactiveMotion(q, out, field, 1, {
+        long: [0, 1, 0],
+        halfSize: [0.175, 0.05],
+      }).offset;
       const [px, py] = project(view, q, focal);
       const [mx, my] = project(view, [q[0] + u[0], q[1] + u[1], q[2] + u[2]], focal);
       const predicted: [number, number] = [mx - px, my - py];
       const m = shiftAt(farL, pushedL, Math.round(px), Math.round(py), 10, 36);
       const measured: [number, number] = [m.dx, m.dy];
       console.log(
-        `[e2e] reactive push 0.3 m right: predicted (${predicted[0].toFixed(1)}, ${predicted[1].toFixed(1)}) px (${(Math.hypot(...u) * 100).toFixed(1)} cm), measured (${m.dx.toFixed(1)}, ${m.dy.toFixed(1)}) px, sharpness ${m.sharpness.toFixed(1)}`,
+        `[e2e] reactive push ${(along * 100).toFixed(1)} cm right${held ? '' : ' (logged)'}: predicted (${predicted[0].toFixed(1)}, ${predicted[1].toFixed(1)}) px (${(Math.hypot(...u) * 100).toFixed(1)} cm), measured (${m.dx.toFixed(1)}, ${m.dy.toFixed(1)}) px, sharpness ${m.sharpness.toFixed(1)}`,
       );
+      if (!held) continue;
       // Outward: away from the frame centre, where the controller projects.
       expect(Math.sign(predicted[0])).toBe(side);
       expect(m.sharpness).toBeGreaterThan(3);
@@ -404,17 +418,21 @@ test.describe('reactive strokes (P4.5)', () => {
     // Every motion layer open, as shipped, at the pinned-coverage checks' two times
     // (world-coverage.spec.ts), so the cypress flame's wrap and the push meet in one frame and the
     // pair of frames differs by the push alone. Each row is [eye metres off the surface, controller
-    // metres ahead of the eye]: at 0.3-0.4 m off the surface the head pushes as well (its radius is
-    // 0.6 m), and the controller reaches the surface or 0.1 m past it. The ruling's own pose is the
-    // eye 0.3 m off the cypress with the controller 0.3 m ahead. The 0.3 m-deep rows are measured
-    // and reported, not held.
-    const held: readonly [number, number, string][] = [
-      [0.6, 0.3, '0.3 m short'],
-      [0.3, 0.3, 'at the surface (ruling pose)'],
-      [0.4, 0.4, 'at the surface'],
-      [0.4, 0.5, '0.1 m inside'],
+    // metres ahead of the eye, whether the hand moves strokes]: at 0.3-0.4 m off the surface the
+    // head pushes as well (its radius is 0.6 m), and the controller reaches the surface or 0.1 m
+    // past it. The ruling's own pose is the eye 0.3 m off the cypress with the controller 0.3 m
+    // ahead. A hand reaches only 0.13 m (HAND_RADIUS) past a quad, so the controller 0.3 m short moves nothing:
+    // that row's frames are the parked frames. The 0.3 m-deep rows are measured and reported, not
+    // held, and whether they differ is not checked: the hand is then past its radius from the hull.
+    const held: readonly [number, number, string, boolean | null][] = [
+      [0.6, 0.3, '0.3 m short', false],
+      [0.3, 0.3, 'at the surface (ruling pose)', true],
+      [0.4, 0.4, 'at the surface', true],
+      [0.4, 0.5, '0.1 m inside', true],
     ];
-    const measured: readonly [number, number, string][] = [[0.4, 0.7, '0.3 m inside']];
+    const measured: readonly [number, number, string, boolean | null][] = [
+      [0.4, 0.7, '0.3 m inside', null],
+    ];
     const rows: {
       name: string;
       time: number;
@@ -434,7 +452,7 @@ test.describe('reactive strokes (P4.5)', () => {
         ['village', villageView],
       ] as const) {
         const parkedAt = new Map<number, Buffer>();
-        for (const [eye, hand, label] of [...held, ...measured]) {
+        for (const [eye, hand, label, reacts] of [...held, ...measured]) {
           const view = at(eye);
           let parked = parkedAt.get(eye);
           if (!parked) {
@@ -446,8 +464,10 @@ test.describe('reactive strokes (P4.5)', () => {
           await place(page, xr, view, PARKED, ahead(view, hand));
           await settle(page, xr);
           const near = await canvasPixels(page);
-          // The controller reaches the surface: the frames differ.
-          expect(near.equals(parked), `${name} ${label} at ${time}`).toBe(false);
+          // Within its radius of the surface the controller moves strokes and the frames differ;
+          // farther, it moves nothing.
+          if (reacts !== null)
+            expect(near.equals(parked), `${name} ${label} at ${time}`).toBe(!reacts);
           const row = {
             name,
             time,
@@ -475,14 +495,15 @@ test.describe('reactive strokes (P4.5)', () => {
     xr,
   }) => {
     test.setTimeout(240_000);
-    // The cypress coverage pose: the eye 0.6 m off the hull, the controller 0.3 m ahead of it.
+    // The eye 0.6 m off the hull, the controller 0.55 m ahead of it: 0.05 m short of the hull,
+    // within the hand's 0.13 m radius.
     await bootXr(page, xr, '');
     const view = cypressView(0.6);
-    await place(page, xr, view, PARKED, ahead(view, 0.3));
+    await place(page, xr, view, PARKED, ahead(view, 0.55));
     await settle(page, xr);
     const still = await reactive(xr);
     expect(still.boxStrokes).not.toBeNull();
-    // A sweep across the hull at 1.5 m/s for one wake window, 0.3 m ahead of the eye, rig-local
+    // A sweep across the hull at 1.5 m/s for one wake window, 0.55 m ahead of the eye, rig-local
     // x from -0.9 m: the box stretches along the weighted wake.
     const swept = await page.evaluate(
       async ([window_s, eyeHeight]) => {
@@ -497,7 +518,7 @@ test.describe('reactive strokes (P4.5)', () => {
         await new Promise<void>((done) => {
           const step = (now: number): void => {
             const t = (now - t0) / 1000;
-            right.position.set(-0.9 + 1.5 * t, eyeHeight, -0.3);
+            right.position.set(-0.9 + 1.5 * t, eyeHeight, -0.55);
             const r = diag().reactive as {
               boxStrokes: number | null;
               box: { min: number[]; max: number[] } | null;
@@ -612,10 +633,10 @@ test.describe('reactive strokes (P4.5)', () => {
     expect(Math.max(...frames.map((f) => f.hand.wakeWeight))).toBeGreaterThan(0);
     for (const f of frames) {
       if (!f.box) throw new Error('the reactive box is empty during the sweep');
-      // The box holds the hand grown by the radius on every axis.
+      // The box holds the hand grown by its radius on every axis.
       for (let a = 0; a < 3; a++) {
-        expect(f.hand.position[a] - REACTIVE_RADIUS).toBeGreaterThan(f.box.min[a] - 1e-4);
-        expect(f.hand.position[a] + REACTIVE_RADIUS).toBeLessThan(f.box.max[a] + 1e-4);
+        expect(f.hand.position[a] - HAND_RADIUS).toBeGreaterThan(f.box.min[a] - 1e-4);
+        expect(f.hand.position[a] + HAND_RADIUS).toBeLessThan(f.box.max[a] + 1e-4);
       }
     }
     const first = frames[0].box as { min: Vec3; max: Vec3 };
@@ -765,9 +786,10 @@ test.describe('reactive strokes (P4.5)', () => {
     test.setTimeout(240_000);
     await bootXr(page, xr, 'motionlayers=reactive');
     const view = cypressView(2.4);
-    // The controller 0.8 m short of the hull, still in the rig while the stick walks the rig up to
-    // it: the walk brings the hull into the hand's reach, not the hand's motion.
-    const inside = ahead(view, 1.6);
+    // The controller 0.7 m short of the hull, still in the rig while the stick walks the rig up to
+    // it, so the walk brings the hand to the hull and through the 0.696 m box, not the hand's
+    // motion. The 350 ms walk at 2 m/s covers about 0.7 m.
+    const inside = ahead(view, 1.7);
     await place(page, xr, view, PARKED, inside);
     await settle(page, xr);
     const held = await watch(page, 300, null);
@@ -783,6 +805,20 @@ test.describe('reactive strokes (P4.5)', () => {
     expect(walking.speed).toBeLessThan(1e-3);
     // The proximity push is tied to world positions: strokes were within the hand's box.
     expect(walking.boxStrokes).toBeGreaterThan(0);
+    // The walk carries the hand with the rig, and the ground under the cypress falls, so where it
+    // stops is set by the frame timing and the slope, not by the 0.13 m reach (2026-11-09: one run
+    // stopped 0.75 m on and 0.59 m lower, clear of every stroke). The push is tied to world
+    // positions, so hold the hand still at the hull point the walk was aimed at, 0.02 m inside it,
+    // in the walked rig's own frame.
+    const rig = (await xr.diag()).rig as { position: number[]; yaw: number };
+    const target = world(view, ahead(view, 2.42));
+    const dx = target[0] - rig.position[0];
+    const dz = target[2] - rig.position[2];
+    const c = Math.cos(rig.yaw);
+    const s = Math.sin(rig.yaw);
+    await xr.setPose({
+      right: { position: [c * dx - s * dz, target[1] - rig.position[1], s * dx + c * dz] },
+    });
     await settle(page, xr);
     const hand = await canvasPixels(page);
     // The same rig pose with the hand parked 60 m down: the held hand's push is what differs.

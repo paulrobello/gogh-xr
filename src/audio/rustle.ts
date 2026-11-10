@@ -1,13 +1,19 @@
 /**
  * When a hand pushes strokes (P4.5's reactive motion), the stroke rustle plays at it. The reactive
  * tracker emits no push event, so this reads its uniforms: a tracked hand (slots 1 and 2, the
- * controllers) that speeds up past `RUSTLE_SPEED` while within `REACTIVE_RADIUS` of a stroke
+ * controllers) that speeds up past `RUSTLE_SPEED` while within `RUSTLE_REACH` of a stroke
  * surface (the ground, a wall, or a free-standing mass such as the cypress) fires once, then
  * re-arms once it slows below `RUSTLE_REARM_SPEED`. The mixer rate-limits
  * what fires (`RUSTLE_MIN_INTERVAL_S`, `RUSTLE_MAX_VOICES`).
  */
-import { REACTIVE_RADIUS } from '../motion/reactive';
 import type { Capsule, Vec3 } from './placement';
+
+/**
+ * Metres: the rustle's reach round a stroke surface. It is the 0.6 m push radius hands had before
+ * 2026-11-09, which a hand's push (`HAND_RADIUS`, 0.13 m) no longer matches: the cypress capsules
+ * are coarse, so their margin needs it to cover every cypress vertex.
+ */
+export const RUSTLE_REACH = 0.6;
 
 /** Hand speed, m/s, that fires a rustle. */
 export const RUSTLE_SPEED = 0.6;
@@ -45,8 +51,8 @@ function capsuleDistance(x: number, y: number, z: number, { a, b }: Capsule): nu
 }
 
 /**
- * A point near the ground (within `REACTIVE_RADIUS` above or below it), where the world reports a
- * wall or footprint (`blocked`) below `RUSTLE_WALL_TOP`, or within `REACTIVE_RADIUS` of a stroke
+ * A point near the ground (within `RUSTLE_REACH` above or below it), where the world reports a
+ * wall or footprint (`blocked`) below `RUSTLE_WALL_TOP`, or within `RUSTLE_REACH` of a stroke
  * mass (`masses`, such as the cypress).
  */
 export function nearSurface(
@@ -56,9 +62,9 @@ export function nearSurface(
 ): NearStrokes {
   return (x, y, z) => {
     const above = y - heightAt(x, z);
-    if (Math.abs(above) < REACTIVE_RADIUS) return true;
+    if (Math.abs(above) < RUSTLE_REACH) return true;
     if (above < RUSTLE_WALL_TOP && blocked?.(x, z)) return true;
-    return masses.some((m) => capsuleDistance(x, y, z, m) < m.radius + REACTIVE_RADIUS);
+    return masses.some((m) => capsuleDistance(x, y, z, m) < m.radius + RUSTLE_REACH);
   };
 }
 

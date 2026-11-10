@@ -18,9 +18,12 @@
  * own normal by `τ (omega · n)`, so its orientation follows the flow. Near the wrap the stroke
  * shrinks to nothing and grows back (`gain`), so the jump back is never a pop. That is the `base`
  * wrap. The app ships `wave` as the default (src/motion/variants.ts, Paul's 2026-11-08 choice), which
- * replaces the shrink with a travel ahead and back in bands. `lift`, `base` and `pingpong` stay as
- * the A/B alternatives (`?wrap`, `?ab=wrap`): lift keeps base's forward-only arc on a loop of its
- * own (SKY_LIFT_PERIOD) and replaces its shrink with a cut along the stroke's length (skyLiftLoop).
+ * replaces the shrink with a travel ahead and back in bands. `wheel`, `stream`, `base` and
+ * `pingpong` are the A/B alternatives (`?wrap`, `?ab=wrap`). Two of them have no loop along the
+ * arc at all (2026-11-09, after Paul rejected lift's reset): `wheel` turns each vortex's core
+ * rigidly and forever about its centre direction (skyWheels) and holds every other sky stroke
+ * still, and `stream` holds every sky stroke still and scrolls its brush tone along its length in
+ * the fragment shader (skyStreamTone).
  *
  * motion.glsl's `skyMotion` is the GLSL; `skySwirlGlslDefines` hands it these tables as defines, so
  * the two read one source. Change them together.
@@ -29,6 +32,7 @@ import regionsJson from '../../assets/bake/starry-night/regions.json';
 import { canvasRay, PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import type { Vec3 } from '../render/strokes/frame';
 import { SKY_DOME_RADIUS } from '../world/sky';
+import { MOTION_TIME_WRAP_S } from './clock';
 import { SKY_WAVE_TURNS, type SkyWaveTurns, type SkyWrap } from './variants';
 
 /** Seconds per loop: 3600 / 450, so it divides the 3600 s wrap of uTime (ruling R-P4d). */
@@ -579,6 +583,12 @@ export interface SkySwirl {
   readonly turn: number;
   /** Size delta: the stroke draws at 1 + gain of its size, gain in [-1, 0]. */
   readonly gain: number;
+  /**
+   * The `wheel` wrap's rigid turn of the stroke, centre and axes, about its wheel's axis, or null.
+   * The offset is then the turned centre's, and the turn 0. Unlike every other motion it does not
+   * scale with calm: calm slows the wheel through uTime instead.
+   */
+  readonly spin: SkySpin | null;
 }
 
 /** A stroke's place in its loop under a wrap variant (`skyWrapLoop`). */
@@ -589,84 +599,366 @@ export interface SkyWrapLoop {
   readonly gain: number;
   /** Whether tau is falling: the way back along the arc under `pingpong` and `wave`. */
   readonly returning: boolean;
-  /**
-   * Lift's along-length cut, in [-1, 1], 0 at full length: the share of the stroke's length
-   * removed, positive keeping the end that faces its travel (its head, on the way out) and negative
-   * the end it comes from (its tail, on the way in). `skyLiftCorner` turns it into the corner remap.
-   */
-  readonly clip: number;
-}
-
-/**
- * Lift's window: the share of the loop, at either end, over which the stroke shortens to
- * nothing or grows back along its length. With every stroke's loop staggered by its phase byte,
- * 2 × SKY_LIFT_WINDOW of the sky strokes are in a window at any moment, and the cut, a smoothstep,
- * removes half of a window's length on average, so the sky loses SKY_LIFT_WINDOW of its stroke
- * area, against base's 7.5% (SKY_SWIRL_FADE). Each window lasts SKY_LIFT_WINDOW × SKY_LIFT_PERIOD,
- * 0.4 s.
- */
-export const SKY_LIFT_WINDOW: number = 0.1;
-/**
- * Lift's own loop, seconds: half SKY_SWIRL_PERIOD, so its stroke covers base's arc (tau still spans
- * ±SKY_SWIRL_PERIOD / 2, so every reach bound holds) at twice base's rate. That is the wave's mean
- * rate, 2, with a constant peak of 2 under the wave's 3, so the headset A/B compares a flow with a
- * pulse at one speed. The window stays SKY_LIFT_WINDOW of the loop, 0.4 s, and 2 × SKY_LIFT_WINDOW
- * of the strokes are in transition.
- */
-export const SKY_LIFT_PERIOD: number = SKY_SWIRL_PERIOD / 2;
-
-/**
- * Lift's envelope at loop fraction `f` (skyLift in motion.glsl): the cut is
- * 1 − smoothstep(0, 1, e), e = min(f, 1 − f) / SKY_LIFT_WINDOW, positive past mid-loop, where the
- * stroke shortens toward its head, and negative before it, where it grows from its tail.
- */
-export function skyLiftLoop(f: number): { clip: number } {
-  const cut = 1 - smoothstep(0, 1, Math.min(f, 1 - f) / SKY_LIFT_WINDOW);
-  return { clip: f < 0.5 ? -cut : cut };
-}
-
-/**
- * The quad corner's along-length coordinate under a cut (stroke.vert.glsl): `x` the rest corner in
- * [−½, ½], `clip` skyWrapLoop's cut and `head` the stroke's long axis at rest dotted with its
- * travel, omega × d (the offset tau (omega × d) only moves forward), whose sign says which end
- * faces the travel (0 counts as +x). The kept end stays where it is and the other moves toward it;
- * the uv keeps the rest corner, so the brush scales.
- */
-export function skyLiftCorner(x: number, clip: number, head: number): number {
-  const c = head < 0 ? -clip : clip;
-  return x * (1 - Math.abs(c)) + 0.5 * c;
 }
 
 /**
  * The loop of a stroke with loop phase `phase` (skyWrapPhase) at motion time `time` under wrap
- * variant `wrap` (src/motion/variants.ts). Matches skyMotion, skyWrapMotion and skyLift in
- * motion.glsl:
+ * variant `wrap` (src/motion/variants.ts). Matches skyMotion and skyWrapMotion in motion.glsl:
  * - `base` sweeps forward and shrinks to nothing over the wrap window.
- * - `lift` sweeps base's arc forward at full width over its own SKY_LIFT_PERIOD loop, and shortens
- *   along its length to nothing over the wrap window instead (skyLiftLoop).
  * - `pingpong` and `wave` sweep forward over the first half of the loop and ease back over the
  *   second, at full size, with no jump.
+ * - `wheel` and `stream` have no loop along the arc: tau is 0 (skyWheelSpin, skyStreamTone).
  */
 export function skyWrapLoop(wrap: SkyWrap, phase: number, time: number): SkyWrapLoop {
-  const f = fract(time / (wrap === 'lift' ? SKY_LIFT_PERIOD : SKY_SWIRL_PERIOD) + phase);
+  if (wrap === 'wheel' || wrap === 'stream') return { tau: 0, gain: 0, returning: false };
+  const f = fract(time / SKY_SWIRL_PERIOD + phase);
   if (wrap === 'wave' || wrap === 'pingpong') {
     return {
       tau: (smoothstep(0, 1, 1 - Math.abs(2 * f - 1)) - 0.5) * SKY_SWIRL_PERIOD,
       gain: 0,
       returning: f > 0.5,
-      clip: 0,
     };
   }
-  const tau = (f - 0.5) * SKY_SWIRL_PERIOD;
-  if (wrap === 'base') {
-    return {
-      tau,
-      gain: smoothstep(0, SKY_SWIRL_FADE, Math.min(f, 1 - f)) - 1,
-      returning: false,
-      clip: 0,
-    };
+  return {
+    tau: (f - 0.5) * SKY_SWIRL_PERIOD,
+    gain: smoothstep(0, SKY_SWIRL_FADE, Math.min(f, 1 - f)) - 1,
+    returning: false,
+  };
+}
+
+/**
+ * The share of each vortex core that the `wheel` wrap's strokes may reach, as a chord. Under 1
+ * because the two central cores nearly touch (0.27° apart, regions.json), and two clockwise wheels
+ * that touch move in opposite directions at the contact, which tears. At 0.95 the reach of every
+ * pair of wheels stays at least 1° apart (the unit tests check the gap).
+ */
+export const SKY_WHEEL_CORE_SCALE: number = 0.95;
+/**
+ * Half a dome stroke's length, radians from the eye: half of `WORLD_DOME_SIZE.slope`, the sky's
+ * angular length, at the far band's size multiplier (`DEFAULT_BAND_SIZE.far`, 1.6), the largest a
+ * dome stroke draws (a unit test pins both). A stroke is in a wheel when its centre lies this far
+ * inside SKY_WHEEL_CORE_SCALE of the core, so a turning stroke's long axis never reaches past that.
+ * Its corners can reach about 0.2° further on an oblique stroke (half its diagonal, not its length),
+ * which still leaves about 0.7° of the still ring clear between the central wheels' members.
+ */
+export const SKY_WHEEL_STROKE_HALF: number = 0.5 * 0.03312 * 1.6;
+/**
+ * The `wheel` rim's target speed as a multiple of the field's own speed round the rim (mean
+ * |omega × d̂| over it, at calm 1): 2, the wave's mean speed, which covers the arc twice per loop.
+ * Each wheel then rounds its rate to a whole number of turns per MOTION_TIME_WRAP_S, so a turn
+ * divides the wrap of uTime and the motion has no seam there.
+ */
+export const SKY_WHEEL_RIM_GAIN: number = 2;
+/**
+ * The ramp, radians of clear gap, over which a haze stroke thins back in from a wheel it would
+ * cross under `wheel` (skyWheelHazeThin): 0.5°.
+ */
+export const SKY_WHEEL_HAZE_FEATHER: number = (0.5 * Math.PI) / 180;
+
+/** A `wheel` disc: a vortex core turning rigidly about its centre direction. */
+export interface SkyWheel {
+  readonly note: string;
+  /** Unit direction from PAINTER_EYE through the centre: the vortex's axis. */
+  readonly axis: Vec3;
+  /**
+   * The wheel's radius as a chord of the unit sphere: SKY_WHEEL_STROKE_HALF inside
+   * SKY_WHEEL_CORE_SCALE of the core's. A stroke whose centre is inside it turns.
+   */
+  readonly radius: number;
+  /** Whole turns per MOTION_TIME_WRAP_S, signed: positive turns right-handed about `axis`. */
+  readonly turns: number;
+  /** Turns per second, signed: `turns / MOTION_TIME_WRAP_S`. */
+  readonly rate: number;
+  /** Seconds per turn. */
+  readonly period: number;
+  /** The rim's speed, rad/s of view angle, and the field's mean speed round it at calm 1. */
+  readonly rimSpeed: number;
+  readonly fieldRimSpeed: number;
+}
+
+/** `v` turned by `angle` radians right-handed about unit `axis` (Rodrigues). */
+export function rotateAbout(v: Vec3, axis: Vec3, angle: number): Vec3 {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const k = cross(axis, v);
+  const d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
+  return [
+    v[0] * c + k[0] * s + axis[0] * d * (1 - c),
+    v[1] * c + k[1] * s + axis[1] * d * (1 - c),
+    v[2] * c + k[2] * s + axis[2] * d * (1 - c),
+  ];
+}
+
+/** A unit vector perpendicular to unit `c`. */
+export function perpendicular(c: Vec3): Vec3 {
+  const side: Vec3 = Math.abs(c[1]) < 0.9 ? [-c[2], 0, c[0]] : [1, 0, 0];
+  const l = Math.hypot(side[0], side[1], side[2]);
+  return [side[0] / l, side[1] / l, side[2] / l];
+}
+
+/** The vortices' `wheel` discs, in vortex order (skyWheelMotion in motion.glsl reads them). */
+export function skyWheels(vortices: readonly SkyVortex[] = SKY_VORTICES): readonly SkyWheel[] {
+  return Object.freeze(
+    vortices.map((v) => {
+      // The rim's angle from the axis, and the field's mean speed at 64 points round it.
+      const alpha = 2 * Math.asin((SKY_WHEEL_CORE_SCALE * v.core) / 2) - SKY_WHEEL_STROKE_HALF;
+      const radius = 2 * Math.sin(alpha / 2);
+      const e1 = perpendicular(v.axis);
+      let sum = 0;
+      for (let k = 0; k < 64; k++) {
+        const rim = rotateAbout(rotateAbout(v.axis, e1, alpha), v.axis, (k / 64) * 2 * Math.PI);
+        sum += Math.hypot(...skyVelocity(rim, vortices));
+      }
+      const fieldRimSpeed = sum / 64;
+      const omega = (SKY_WHEEL_RIM_GAIN * fieldRimSpeed) / Math.sin(alpha);
+      const turns =
+        Math.sign(v.gamma) * Math.max(1, Math.round((omega * MOTION_TIME_WRAP_S) / (2 * Math.PI)));
+      const rate = turns / MOTION_TIME_WRAP_S;
+      return Object.freeze({
+        note: v.note,
+        axis: v.axis,
+        radius,
+        turns,
+        rate,
+        period: 1 / Math.abs(rate),
+        rimSpeed: 2 * Math.PI * Math.abs(rate) * Math.sin(alpha),
+        fieldRimSpeed,
+      });
+    }),
+  );
+}
+
+export const SKY_WHEELS: readonly SkyWheel[] = skyWheels();
+
+/**
+ * The index in `wheels` of the wheel holding unit direction `dir`, or -1: the first whose chord
+ * to `dir` is under its radius, as `1 − c·d̂ < radius² / 2` (motion.glsl). The wheels are
+ * disjoint (unit tests), so the order never matters.
+ */
+export function skyWheelAt(dir: Vec3, wheels: readonly SkyWheel[] = SKY_WHEELS): number {
+  for (let i = 0; i < wheels.length; i++) {
+    const c = wheels[i].axis;
+    const w = wheels[i].radius;
+    if (1 - (c[0] * dir[0] + c[1] * dir[1] + c[2] * dir[2]) < 0.5 * w * w) return i;
   }
-  return { tau, gain: 0, returning: false, ...skyLiftLoop(f) };
+  return -1;
+}
+
+/** Wheel `wheel`'s angle at motion time `time`, radians in [0, 2π): `2π fract(time × rate)`. */
+export function skyWheelAngle(wheel: SkyWheel, time: number): number {
+  return 2 * Math.PI * fract(time * wheel.rate);
+}
+
+/** A rigid turn of a stroke about an axis through PAINTER_EYE (the `wheel` wrap). */
+export interface SkySpin {
+  readonly axis: Vec3;
+  /** Radians, right-handed about `axis`, in [0, 2π). */
+  readonly angle: number;
+  /** The wheel's index in SKY_WHEELS. */
+  readonly wheel: number;
+}
+
+/**
+ * The `wheel` wrap's turn of a sky stroke whose direction from PAINTER_EYE is `dir`, at motion
+ * time `time`: its wheel's axis and angle, or null outside every wheel. The boundary haze turns
+ * with its wheel too, chosen by the same direction. Matches skyWheelMotion in motion.glsl.
+ */
+export function skyWheelSpin(
+  dir: Vec3,
+  time: number,
+  wheels: readonly SkyWheel[] = SKY_WHEELS,
+): SkySpin | null {
+  const i = skyWheelAt(dir, wheels);
+  return i < 0 ? null : { axis: wheels[i].axis, angle: skyWheelAngle(wheels[i], time), wheel: i };
+}
+
+/** A wheel's edge: the angle, radians from its axis, of its members' rim. */
+export function skyWheelEdge(w: SkyWheel): number {
+  return 2 * Math.asin(w.radius / 2);
+}
+
+/**
+ * A wheel's cap: the angle, radians from its axis, of SKY_WHEEL_CORE_SCALE of its core, which no
+ * turning dome stroke reaches past: the edge plus SKY_WHEEL_STROKE_HALF.
+ */
+export function skyWheelCap(w: SkyWheel): number {
+  return skyWheelEdge(w) + SKY_WHEEL_STROKE_HALF;
+}
+
+/**
+ * The `wheel` wrap's thin of a boundary haze stroke centred at `position` with half diagonal
+ * `halfExtent` metres, at motion time `time`. Matches skyHazeWheel in motion.glsl. The stroke's
+ * angular half extent is halfExtent over its distance from PAINTER_EYE. A stroke in a wheel turns
+ * with it, and from where the turn has carried it, its extent must clear every other wheel's cap. A
+ * still stroke's extent must clear every wheel's edge. Each thins to 0 at no gap and back to 1 over
+ * SKY_WHEEL_HAZE_FEATHER, so a drawn haze quad never crosses into a wheel it does not turn with,
+ * and a turning one never reaches another wheel's turning paint.
+ */
+export function skyWheelHazeThin(
+  position: Vec3,
+  halfExtent: number,
+  time: number,
+  wheels: readonly SkyWheel[] = SKY_WHEELS,
+): number {
+  const d: Vec3 = [
+    position[0] - PAINTER_EYE[0],
+    position[1] - PAINTER_EYE[1],
+    position[2] - PAINTER_EYE[2],
+  ];
+  const length = Math.hypot(d[0], d[1], d[2]);
+  const dir: Vec3 = [d[0] / length, d[1] / length, d[2] / length];
+  const member = skyWheelAt(dir, wheels);
+  const seen =
+    member < 0 ? dir : rotateAbout(dir, wheels[member].axis, skyWheelAngle(wheels[member], time));
+  const h = halfExtent / length;
+  let thin = 1;
+  wheels.forEach((w, j) => {
+    if (j === member) return;
+    const edge = member < 0 ? skyWheelEdge(w) : skyWheelCap(w);
+    const c = w.axis[0] * seen[0] + w.axis[1] * seen[1] + w.axis[2] * seen[2];
+    const theta = Math.acos(Math.min(1, Math.max(-1, c)));
+    thin *= smoothstep(0, SKY_WHEEL_HAZE_FEATHER, theta - h - edge);
+  });
+  return thin;
+}
+
+/**
+ * The farthest the `wheel` wrap moves a sky stroke centred at (x, y, z), metres: 2ρ, ρ its
+ * distance from its wheel's axis line through PAINTER_EYE, the chord of a half turn, and 0
+ * outside every wheel. A rigid turn keeps ρ, so this is exact. The stroke batch calls it for every
+ * sky stroke at build, the boundary haze included.
+ */
+export function skyWheelReach(
+  x: number,
+  y: number,
+  z: number,
+  wheels: readonly SkyWheel[] = SKY_WHEELS,
+): number {
+  const dx = x - PAINTER_EYE[0];
+  const dy = y - PAINTER_EYE[1];
+  const dz = z - PAINTER_EYE[2];
+  const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (length === 0) return 0;
+  const i = skyWheelAt([dx / length, dy / length, dz / length], wheels);
+  if (i < 0) return 0;
+  const c = wheels[i].axis;
+  const along = c[0] * dx + c[1] * dy + c[2] * dz;
+  return 2 * Math.sqrt(Math.max(0, length * length - along * along));
+}
+
+/**
+ * The `stream` wrap's loop, seconds: 3600 / 1800, so it divides the wrap of uTime. Each of its two
+ * tone layers slides SKY_STREAM_SHIFT along the stroke per loop and resets while its weight is 0.
+ */
+export const SKY_STREAM_PERIOD: number = 2;
+/**
+ * How far each `stream` tone layer slides along the stroke per loop, in stroke lengths: the paint
+ * streams at SKY_STREAM_SHIFT / SKY_STREAM_PERIOD = 0.25 lengths per second, about the wave's
+ * mean speed (2 × 0.004 rad/s × 120 m, about 1 m/s) for a 4 m far-sky stroke. The two layers sit
+ * half a loop, SKY_STREAM_SHIFT / 2, apart along the stroke.
+ */
+export const SKY_STREAM_SHIFT: number = 0.5;
+/**
+ * The brush tone's mean inside the shapes, the pivot skyStreamTone compensates the contrast
+ * about: the coverage-weighted mean over every brush of the default atlas, 0.4872 (unit tests).
+ */
+export const SKY_STREAM_TONE_MEAN: number = 0.487;
+/**
+ * Per brush (brush-atlas-data.ts BRUSHES), its tone's correlation with itself SKY_STREAM_SHIFT / 2
+ * (120 texels) along the stroke, over its coverage-weighted texels in the default atlas (unit
+ * tests, within 0.05). The ridges and bristles run along the stroke, so they correlate most. The
+ * 50/50 blend of two layers with correlation ρ keeps (1 + ρ) / 2 of one layer's variance, so
+ * skyStreamWeights divides by the square root of the blend's share, per brush.
+ */
+export const SKY_STREAM_RHOS: readonly number[] = Object.freeze([
+  0.57, 0.68, 0.49, 0.72, 0.62, 0.64, 0.18, 0.31, 0.39, 0.15, 0.32, 0.23, 0.15, -0.08, 0.03, 0.03,
+]);
+
+/** The `stream` wrap's two tone layers at loop fraction `f` (stroke.frag.glsl). */
+export interface SkyStreamWeights {
+  /** Layer A's loop fraction, `f`, and layer B's, `fract(f + ½)`. */
+  readonly fA: number;
+  readonly fB: number;
+  /** Their weights: `wA = 1 − |2 fA − 1|`, 0 where layer A resets, and `wB = 1 − wA`. */
+  readonly wA: number;
+  readonly wB: number;
+  /**
+   * The contrast gain, `1 / √(wA² + wB² + 2 ρ wA wB)`, ρ the brush's SKY_STREAM_RHOS entry: the
+   * tone's deviation from its mean scales by it, so the blend keeps one layer's contrast at every
+   * weight and the stream does not breathe.
+   */
+  readonly gain: number;
+  /** Each layer's slide along the stroke, in stroke lengths, before the stroke's direction. */
+  readonly shiftA: number;
+  readonly shiftB: number;
+}
+
+/** The `stream` layers at loop fraction `f`. Matches stroke.frag.glsl. */
+export function skyStreamWeights(f: number, rho = 0): SkyStreamWeights {
+  const fA = fract(f);
+  const fB = fract(fA + 0.5);
+  const wA = 1 - Math.abs(2 * fA - 1);
+  const wB = 1 - wA;
+  return {
+    fA,
+    fB,
+    wA,
+    wB,
+    gain: 1 / Math.sqrt(wA * wA + wB * wB + 2 * rho * wA * wB),
+    shiftA: (fA - 0.5) * SKY_STREAM_SHIFT,
+    shiftB: (fB - 0.5) * SKY_STREAM_SHIFT,
+  };
+}
+
+/**
+ * The `stream` loop fraction of a stroke with phase fraction `phase` at motion time `time`:
+ * `fract(time / SKY_STREAM_PERIOD + phase)`, so neighbours with other phase bytes never cross-fade
+ * together. Matches skyMotion's stream branch in motion.glsl.
+ */
+export function skyStreamPhase(phase: number, time: number): number {
+  return fract(time / SKY_STREAM_PERIOD + phase);
+}
+
+/**
+ * The `stream` wrap's packed varying, `sign × (1 + brush + f)` (motion.glsl skyStream, vStream):
+ * `sign` ±1 the way the paint streams, `brush` the brush index and `f` the loop fraction.
+ */
+export function skyStreamPack(sign: number, brush: number, f: number): number {
+  return Math.fround((sign < 0 ? -1 : 1) * Math.fround(1 + brush + Math.fround(f)));
+}
+
+/** Decodes skyStreamPack as stroke.frag.glsl does, in float32: the brush, `f` and the sign. */
+export function skyStreamUnpack(packed: number): { brush: number; f: number; sign: number } {
+  const a = Math.fround(Math.abs(packed) - 1);
+  return { brush: Math.trunc(a), f: Math.fround(a - Math.floor(a)), sign: Math.sign(packed) };
+}
+
+/** One layer tap of the `stream` tone: the atlas tone and coverage, each 0-1. */
+export interface StreamTap {
+  readonly tone: number;
+  readonly coverage: number;
+}
+
+/**
+ * The streamed tone at loop fraction `f` from the rest tap's tone and the two layer taps: a layer
+ * tap that leaves the shape falls back to the rest tone by its coverage, then the weighted
+ * deviations from SKY_STREAM_TONE_MEAN scale by the contrast gain, faded to 1 by the product of
+ * the two taps' coverages (a tap that fell back to the rest tone is fully correlated with it, so
+ * the brush's rho would over-compensate it), clamped to [0, 1]. Matches stroke.frag.glsl.
+ */
+export function skyStreamTone(
+  rest: number,
+  a: StreamTap,
+  b: StreamTap,
+  f: number,
+  rho = 0,
+): number {
+  const w = skyStreamWeights(f, rho);
+  const ta = rest + (a.tone - rest) * a.coverage;
+  const tb = rest + (b.tone - rest) * b.coverage;
+  const m = SKY_STREAM_TONE_MEAN;
+  const gain = 1 + (w.gain - 1) * a.coverage * b.coverage;
+  return Math.min(1, Math.max(0, m + (w.wA * (ta - m) + w.wB * (tb - m)) * gain));
 }
 
 /**
@@ -674,7 +966,7 @@ export function skyWrapLoop(wrap: SkyWrap, phase: number, time: number): SkyWrap
  * `phase`, at motion time `time`, before calm, under wrap variant `wrap`, and under `wave` at
  * `turns` waves per turn, its tau scaled by skyWaveFade. Matches skyMotion in motion.glsl. `wrap`
  * defaults to `base` here, while the shader defaults to `wave` (DEFAULT_SKY_WRAP), so a caller
- * mirroring the app passes the wrap explicitly.
+ * mirroring the app passes the wrap explicitly. `stream` moves no stroke (skyStreamTone).
  */
 export function skySwirl(
   position: Vec3,
@@ -692,6 +984,13 @@ export function skySwirl(
   ];
   const inv = 1 / Math.hypot(d[0], d[1], d[2]);
   const dir: Vec3 = [d[0] * inv, d[1] * inv, d[2] * inv];
+  if (wrap === 'wheel' || wrap === 'stream') {
+    const wheels = vortices === SKY_VORTICES ? SKY_WHEELS : skyWheels(vortices);
+    const spin = wrap === 'wheel' ? skyWheelSpin(dir, time, wheels) : null;
+    if (!spin) return { offset: [0, 0, 0], turn: 0, gain: 0, spin: null };
+    const moved = rotateAbout(d, spin.axis, spin.angle);
+    return { offset: [moved[0] - d[0], moved[1] - d[1], moved[2] - d[2]], turn: 0, gain: 0, spin };
+  }
   const omega = skyOmega(dir, vortices);
   const poles = skyWavePolesFor(turns, vortices);
   const loop = skyWrapLoop(wrap, skyWrapPhase(wrap, position, phase, poles), time);
@@ -706,6 +1005,7 @@ export function skySwirl(
     offset: [tau * v[0], tau * v[1], tau * v[2]],
     turn: tau * (omega[0] * normal[0] + omega[1] * normal[1] + omega[2] * normal[2]),
     gain,
+    spin: null,
   };
 }
 
@@ -723,6 +1023,7 @@ export function skySwirlGlslDefines(
   const cores = vortices.map((v) => glslFloat(0.5 * v.core * v.core));
   const fadePoles = vortices === SKY_VORTICES ? FADE_POLES : skyWaveFadePoles(vortices);
   const fadeChord = 2 * Math.sin(SKY_WAVE_FADE_RADIUS / 2);
+  const wheels = vortices === SKY_VORTICES ? SKY_WHEELS : skyWheels(vortices);
   return {
     SKY_VORTEX_COUNT: n,
     SKY_VORTEX_AXES: `vec4[${n}](${axes.join(', ')})`,
@@ -739,8 +1040,16 @@ export function skySwirlGlslDefines(
     SKY_SWIRL_PERIOD: glslFloat(SKY_SWIRL_PERIOD),
     SKY_SWIRL_INV_PERIOD: glslFloat(1 / SKY_SWIRL_PERIOD),
     SKY_SWIRL_FADE: glslFloat(SKY_SWIRL_FADE),
-    SKY_LIFT_INV_WINDOW: glslFloat(1 / SKY_LIFT_WINDOW),
-    SKY_LIFT_INV_PERIOD: glslFloat(1 / SKY_LIFT_PERIOD),
+    SKY_WHEEL_CORES: `float[${n}](${wheels.map((w) => glslFloat(0.5 * w.radius * w.radius)).join(', ')})`,
+    SKY_WHEEL_RATES: `float[${n}](${wheels.map((w) => glslFloat(w.rate)).join(', ')})`,
+    SKY_WHEEL_EDGES: `float[${n}](${wheels.map((w) => glslFloat(skyWheelEdge(w))).join(', ')})`,
+    SKY_WHEEL_CAPS: `float[${n}](${wheels.map((w) => glslFloat(skyWheelCap(w))).join(', ')})`,
+    SKY_WHEEL_HAZE_FEATHER: glslFloat(SKY_WHEEL_HAZE_FEATHER),
+    SKY_HALF_TURN: glslFloat(Math.PI),
+    SKY_STREAM_INV_PERIOD: glslFloat(1 / SKY_STREAM_PERIOD),
+    SKY_STREAM_SHIFT: glslFloat(SKY_STREAM_SHIFT),
+    SKY_STREAM_TONE_MEAN: glslFloat(SKY_STREAM_TONE_MEAN),
+    SKY_STREAM_RHO2: `float[${SKY_STREAM_RHOS.length}](${SKY_STREAM_RHOS.map((r) => glslFloat(2 * r)).join(', ')})`,
     SKY_SWIRL_MAX_ANGLE: glslFloat(SKY_SWIRL_MAX_ANGLE),
   };
 }

@@ -121,9 +121,9 @@ test('?waveturns takes only 1, 2 or 3, trimmed', () => {
 });
 
 test('?wrap takes only its variants', () => {
-  for (const wrap of ['base', 'pingpong', 'wave', 'lift'] as const)
+  for (const wrap of ['base', 'pingpong', 'wave', 'wheel', 'stream'] as const)
     expect(parseFlags(`?wrap=${wrap}`).wrap).toBe(wrap);
-  for (const retired of ['fade', 'half', 'pair', 'opacity', 'flow', 'dive']) {
+  for (const retired of ['fade', 'half', 'pair', 'opacity', 'flow', 'dive', 'lift']) {
     expect(parseFlags(`?wrap=${retired}`).wrap).toBeNull();
   }
   expect(parseFlags('?wrap').wrap).toBeNull();

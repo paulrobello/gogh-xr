@@ -779,8 +779,9 @@ test('the cull flag bit is free, the defines and uniforms match, and the GLSL ho
     'thin *= smoothstep(0.0, feather, gap);',
     'if ((iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {',
     // The margin is the drawn quad's full half diagonal, before the shrink, plus the motion reach
-    // while the gate is open (R-P4b).
-    'thin = skyLightThin((modelMatrix * vec4(iPosition, 1.0)).xyz, 0.5 * length(size) + reach);',
+    // while the gate is open (R-P4b), at the wheel's turned centre under wheel.
+    'float halfExtent = 0.5 * length(size);',
+    'thin *= skyLightThin((modelMatrix * vec4(iPosition + wheel, 1.0)).xyz, halfExtent + reach);',
     'size *= sqrt(thin);',
     'if (thin <= 0.0) {',
     'gl_Position = vec4(2.0, 2.0, 2.0, 1.0);',
@@ -793,7 +794,7 @@ test('the cull flag bit is free, the defines and uniforms match, and the GLSL ho
     glsl.indexOf('vec2 size = iSize * sizeScale * uVtxSize;'),
   );
   expect(glsl.indexOf('vec2 size = iSize * sizeScale * uVtxSize;')).toBeLessThan(
-    glsl.indexOf('thin = skyLightThin('),
+    glsl.indexOf('thin *= skyLightThin('),
   );
   expect(glsl.indexOf('size *= sqrt(thin);')).toBeLessThan(glsl.indexOf('vec3 local = iPosition'));
   // The early-out runs before any inverse trigonometry in the loop.

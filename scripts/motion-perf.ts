@@ -92,7 +92,7 @@ type Hand =
   | 'parked'
   /** Circling the far-reach centre, 9 m from a head at the painter's spot; the left one parked. */
   | 'far reach'
-  /** Circling 0.6 m ahead of the head; the left controller disconnected (untracked). */
+  /** Circling 0.42 m ahead of the head; the left controller disconnected (untracked). */
   | 'at reach';
 interface Config {
   readonly name: string;
@@ -162,14 +162,20 @@ const CONFIGS: readonly Config[] = [
   },
 ];
 
-/** The far-reach circle's centre, 0.2 m inside the hull, rig-local with the rig at the origin. */
+/**
+ * The hand circles' radius, metres. A hand reaches only 0.13 m (HAND_RADIUS), so the circles run
+ * 0.02 m inside the hull with a 0.1 m radius, which keeps the hand within reach of the hull
+ * strokes all the way round (2026-11-09).
+ */
+const CIRCLE_RADIUS = 0.1;
+/** The far-reach circle's centre, 0.02 m inside the hull, rig-local with the rig at the origin. */
 const FAR_CENTRE: Vec3 = [
-  AXIS_9[0] + 1.09 * CYPRESS_OUT[0],
+  AXIS_9[0] + (CYPRESS_HULL - 0.02) * CYPRESS_OUT[0],
   AXIS_9[1],
-  AXIS_9[2] + 1.09 * CYPRESS_OUT[2],
+  AXIS_9[2] + (CYPRESS_HULL - 0.02) * CYPRESS_OUT[2],
 ];
-/** The at-reach circle's centre: 0.6 m ahead of the head, so 0.2 m inside the hull. */
-const REACH_CENTRE: Vec3 = [0, EYE_HEIGHT, -0.6];
+/** The at-reach circle's centre: 0.42 m ahead of the head, so 0.02 m inside the hull. */
+const REACH_CENTRE: Vec3 = [0, EYE_HEIGHT, -0.42];
 
 /** Counts GPU time per animation frame with TIME_ELAPSED queries; installed before the app runs. */
 function installFrameTimer(): void {
@@ -321,7 +327,7 @@ async function pose(page: Page, config: Config, view: View): Promise<void> {
   );
   if (!config.xr) return;
   await page.evaluate(
-    ([pitch, hand, far, reach, eyeHeight]) => {
+    ([pitch, hand, far, reach, eyeHeight, radius]) => {
       const device = window.__goghIwer;
       if (!device) throw new Error('no IWER');
       device.position.set(0, eyeHeight, 0);
@@ -336,16 +342,20 @@ async function pose(page: Page, config: Config, view: View): Promise<void> {
         return;
       }
       const centre = hand === 'far reach' ? far : reach;
-      // A 0.2 m circle at 1.5 m/s round the centre, driven from the page's own rAF.
+      // A circle of `radius` at 1.5 m/s round the centre, driven from the page's own rAF.
       const t0 = performance.now();
       const step = (now: number): void => {
-        const a = ((now - t0) / 1000) * (1.5 / 0.2);
-        right.position.set(centre[0] + 0.2 * Math.cos(a), centre[1] + 0.2 * Math.sin(a), centre[2]);
+        const a = ((now - t0) / 1000) * (1.5 / radius);
+        right.position.set(
+          centre[0] + radius * Math.cos(a),
+          centre[1] + radius * Math.sin(a),
+          centre[2],
+        );
         requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
     },
-    [view.pitch, config.hand, FAR_CENTRE, REACH_CENTRE, EYE_HEIGHT] as const,
+    [view.pitch, config.hand, FAR_CENTRE, REACH_CENTRE, EYE_HEIGHT, CIRCLE_RADIUS] as const,
   );
 }
 

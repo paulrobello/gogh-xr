@@ -15,9 +15,16 @@ import { PAINTER_EYE } from '../paintings/starry-night/canvas-camera';
 import { STROKE_LAYER } from '../render/strokes/instance';
 import { CYPRESS_FLAME_NONE, cypressFlame } from './cypress-flame';
 import { motionGate, reactiveGate } from './layers';
-import { REACTIVE_REACH, reactiveMotion, reactiveTracker } from './reactive';
+import {
+  POINT_STROKE,
+  REACTIVE_REACH,
+  reactiveMotion,
+  reactiveTracker,
+  type StrokeShape,
+} from './reactive';
 import { moonRing, ringOf, skyRing } from './sky-rings';
 import { SKY_SWIRL_MAX_ANGLE, skySwirl } from './sky-swirl';
+import type { SkyWrap } from './variants';
 
 export {
   MOTION_LAYER_MASK,
@@ -64,6 +71,11 @@ export interface MotionInput {
   readonly time: number;
   /** `uCalm`: the reactive stretch growth compensates the calm-scaled push (P4.5). */
   readonly calm: number;
+  /**
+   * The stroke's long axis and drawn half-size, `0.5 * size` in stroke.vert.glsl, which a hand's
+   * quad distance reads. Absent, the stroke is a point (`POINT_STROKE`).
+   */
+  readonly stroke?: StrokeShape;
 }
 
 /** One layer's motion of a stroke, before calm scaling. */
@@ -107,8 +119,8 @@ export const LIVE_MOTION: MotionFunctions = Object.freeze({
   moon: ({ position, phaseByte, time }: MotionInput) => moonRing(position, phaseByte, time),
   cypress: ({ position, normal, phase, flameByte, time }: MotionInput) =>
     cypressFlame(position, normal, phase, flameByte, time),
-  reactive: ({ position, normal, calm }: MotionInput) =>
-    reactiveMotion(position, normal, reactiveTracker.field(), calm),
+  reactive: ({ position, normal, calm, stroke }: MotionInput) =>
+    reactiveMotion(position, normal, reactiveTracker.field(), calm, stroke ?? POINT_STROKE),
 });
 
 function layerMotion(layer: number, fns: MotionFunctions): LayerMotion {
@@ -138,7 +150,8 @@ export interface MotionUniformValues {
  * reactive bit; their offsets, turns and brightnesses add and are scaled by calm, and their gains
  * combine as size factors, `(1 + a)(1 + r) − 1`, unscaled, so a wrapping stroke still shrinks to
  * nothing and a stretched one grows (the reactive gain already carries calm). `flameByte` is the
- * stroke's colour alpha byte, which only the cypress reads.
+ * stroke's colour alpha byte, which only the cypress reads. `stroke` is the long axis and drawn
+ * half-size the shader passes for a hand's quad distance; without it the stroke is a point.
  * stroke.vert.glsl also tests the reactive box before the reactive term; outside it the term is
  * exactly 0 (reactive.ts), so this mirror leaves the box out. Its gated block also skips a haze
  * stroke its sky-light thin has collapsed (`thin` 0), which draws nothing either way. The sky layer
@@ -152,6 +165,7 @@ export function motionOffset(
   uniforms: MotionUniformValues,
   fns: MotionFunctions = LIVE_MOTION,
   flameByte: number = CYPRESS_FLAME_NONE,
+  stroke?: StrokeShape,
 ): Motion {
   const layerMoves = motionGate(uniforms.layerMask, layer);
   const reacts = reactiveGate(uniforms.layerMask);
@@ -164,6 +178,7 @@ export function motionOffset(
     flameByte,
     time: uniforms.time,
     calm: uniforms.calm,
+    stroke,
   };
   const a = layerMoves ? layerMotion(layer, fns)(input) : REST;
   const r = reacts ? fns.reactive(input) : REST;
@@ -186,10 +201,17 @@ export function motionOffset(
  * (R-P4b). On the dome it is at most SKY_SWIRL_REACH; nearer the eye, as on the P1 canvas, it is a
  * few centimetres. The stroke batch's cull uses each stroke's exact `skySwirlReach` instead, which
  * this bounds. Only the haze, on the sky layer, reads it, so every other layer reads 0 here: the
- * star and moon rings' reach is `skyRingReach` (sky-rings.ts).
+ * star and moon rings' reach is `skyRingReach` (sky-rings.ts). It is 0 under `stream`, where the
+ * haze holds still, and under `wheel`, where the shader never calls it and judges the thin at the
+ * haze's turned centre instead (motion.glsl skyHazeWheel). `wrap` defaults to `base`, as in skySwirl.
  */
-export function motionReach(layer: number, position: Vec3, calm: number): number {
-  if (layer !== STROKE_LAYER.sky) return 0;
+export function motionReach(
+  layer: number,
+  position: Vec3,
+  calm: number,
+  wrap: SkyWrap = 'base',
+): number {
+  if (layer !== STROKE_LAYER.sky || wrap === 'wheel' || wrap === 'stream') return 0;
   const [x, y, z] = position;
   const [ex, ey, ez] = PAINTER_EYE;
   return calm * SKY_SWIRL_MAX_ANGLE * Math.hypot(x - ex, y - ey, z - ez);

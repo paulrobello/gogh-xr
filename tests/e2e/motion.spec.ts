@@ -56,7 +56,14 @@ test('?noanim holds the motion clock and two world shots 500 ms apart match', as
   const second = await shot();
   const after = await motion(xr);
 
-  expect(before).toEqual({ time: 0, delta: 0, calm: 1, frozen: true, layers: MOTION_LAYER_MASK });
+  expect(before).toEqual({
+    time: 0,
+    delta: 0,
+    calm: 1,
+    frozen: true,
+    layers: MOTION_LAYER_MASK,
+    hold: 0,
+  });
   expect(after).toEqual(before);
   const [a, b] = await Promise.all([rawPixels(first), rawPixels(second)]);
   expect(a.length).toBeGreaterThan(0);
@@ -185,6 +192,7 @@ test.describe('sky swirl (P4.2)', () => {
       calm: 0,
       frozen: false,
       layers: SKY_ONLY,
+      hold: 0,
     });
     const half = await painterShot(page, xr, `calm=0.5&motiont=${PINNED}&wrap=base`);
     const full = await painterShot(page, xr, `calm=1&motiont=${PINNED}&wrap=base`);
@@ -195,6 +203,7 @@ test.describe('sky swirl (P4.2)', () => {
       calm: 1,
       frozen: false,
       layers: SKY_ONLY,
+      hold: 0,
     });
     expect(((await xr.diag()).halo as { visible: boolean }).visible).toBe(false);
     // Pinned: the time holds while frames run.
@@ -1362,6 +1371,7 @@ test.describe('cypress flame (P4.4)', () => {
       calm: 0,
       frozen: false,
       layers: CYPRESS_ONLY,
+      hold: 0,
     });
     const a = await cypressShot(page, xr, `motiont=${TIMES[0]}`);
     expect(await motion(xr)).toEqual({
@@ -1370,6 +1380,7 @@ test.describe('cypress flame (P4.4)', () => {
       calm: 1,
       frozen: false,
       layers: CYPRESS_ONLY,
+      hold: 0,
     });
     const b = await cypressShot(page, xr, `motiont=${TIMES[1]}`);
     // Calm 0 closes the gate: byte for byte the rest pose.

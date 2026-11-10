@@ -2721,6 +2721,8 @@ Re-measured on the production build with `tests/e2e/entry-time.ts` (load 11.00 b
 
 ## Sky wrap variants: dive and lift (2026-11-09)
 
+**Superseded 2026-11-09.** Paul rejected lift after the headset A/B, and the next section (Sky wrap variants: wheel and stream) removed it: its branch, `skyLift`, the `along` corner remap, the `SKY_LIFT_*` constants, `tests/e2e/sky-lift.spec.ts` and `docs/shots/swirl-lift-strip.jpg` are gone. This section and its fix rounds are kept as the record of what was measured.
+
 This change added two `?wrap` arms for the headset A/B, `?wrap=dive` and `?wrap=lift`. Paul dropped `dive` the same day (fix round 1 below), so `SKY_WRAPS` is now wave, lift, base, pingpong, and `?ab=wrap` reaches lift with one press from wave. The measurements before fix round 1 were taken with dive present. Removing it changes no lift pixel. Fix round 2 moved lift's corner remap into its own branch and gave lift its own 4 s loop, so the first build's lift pace, cost and coverage figures below are superseded where fix round 2 says so. `wave` stays the default on every boot. Both arms move only the main sky layer. Stars, moon, sky-rings, the halo and the sky lights keep their own motion.
 
 ### What they draw
@@ -3015,3 +3017,209 @@ It writes `docs/shots/swirl-wave-strip.jpg` and `swirl-lift-strip.jpg` as JPEG a
 **Coverage.** The sky-lift coverage test now samples each wrap's own loop at 8 evenly spaced times: wave and base at 0.5 to 7.5 s, 1 s apart, and lift at 0.25 to 3.75 s, 0.5 s apart. The coverage figures above are from the first build's 8 s lift loop. The share in transition is the same 20%, but the per-time values will differ.
 
 **Gates.** The unit tests and `make checkall` passed. No Playwright run was made this round. The controller runs sky-lift.spec, the ab.spec wrap tests, the vtx.spec hoist test, a default capture `cmp` against 0a9aaaf and the strips on MiniMac.
+
+## Hand orbs smaller and dimmer, paint reacts only at the orb (2026-11-09)
+
+After his headset check, Paul asked for smaller, less bright orbs. He also reported that the paint reacted to a hand well before its orb was near.
+
+### Old and new numbers
+
+| | Before | Now |
+| --- | --- | --- |
+| Orb core radius (`ORB_CORE_RADIUS`) | 0.05 m | 0.03 m |
+| Orb glow radius (`ORB_GLOW_RADIUS`) | 0.14 m | 0.08 m |
+| Rest gain (`ORB_GAIN`), speed boost (`ORB_BOOST`), growth (`ORB_GROW`) | 1, 0.6, 0.2 | 0.45, 0.4, 0.2 |
+| Peak alpha at rest, at full speed (clipped at 1) | 1.15 (1.0), 1.84 (1.0) | 0.52, 0.72 |
+| Mean alpha over the drawn disc at rest, at full speed | 0.182, 0.258 | 0.087, 0.122 |
+| Hand radius | 0.6 m | 0.13 m (`HAND_RADIUS`) |
+| Hand push gain, drag, swirl | 0.6, 0.04 s, 0.12 rad | 0.8, 0.01 s, 0.35 rad |
+| Largest still push of a hand | 0.103 m | 0.030 m |
+| Head radius, strength, gain, drag, swirl | 0.6 m, 0.4, 0.6, 0.04 s, 0.12 rad | unchanged |
+| `REACTIVE_REACH` (offset clamp and cull reach) | 0.25 m | 0.1 m |
+
+The alpha figures integrate the fragment shader's glow, `gain × (0.85 e^(−b²/core²) + 0.3 (1 − b²/glow²)³)`, over the disc. Brightness halves at rest and at speed on the mean. The old peak was saturated in both states, so its peak cannot halve the same way.
+
+### The hand radius
+
+A stroke's rest centre is a point of the stroke, so it is never closer to the hand than the stroke's nearest point. With R = glow edge + 0.05 m = 0.13 m, a stroke whose nearest point lies more than 0.05 m past the rest glow edge has its centre outside R, so it does not move, whatever its size. At full speed the glow grows to 0.096 m, and R is then 0.034 m past it.
+
+Stroke size sets how much of the paint touching the orb can react. A long stroke that touches the glow with its centre outside R stays still. This was measured on the seed-1 world scatter, using the real bake rasters and `scatterWorld`. Hand positions were placed 1 cm off random strokes whose centre is 0 to 2.3 m above the ground, inside the boundary. The quad distance is the distance to the stroke's rectangle (length × width) in its plane, plus the normal offset. The script was a one-off and is not committed.
+
+| Host layer | Reachable strokes | Half-length p50 / p90 / max | Hands | Strokes touching the glow per hand | Share of those with centre inside R | Their mean falloff | Strokes moved per hand | Moved strokes with their quad more than 0.05 m past the glow |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ground, before (R 0.6, glow 0.14) | 103,014 | 0.38 / 1.31 / 2.03 m | 981 | 62.9 | 92% | 0.77 | 316 | 230,665 (74%) |
+| ground, now | 103,014 | 0.38 / 1.31 / 2.03 m | 1,949 | 38.3 | 41% | 0.38 | 16.0 | 0 |
+| cypress, before | 9,027 | 0.175 / 0.204 / 0.235 m | 77 | 82.8 | 100% | 0.76 | 438 | 24,376 (72%) |
+| cypress, now | 9,027 | 0.175 / 0.204 / 0.235 m | 191 | 47.1 | 34% | 0.36 | 16.3 | 0 |
+| building, before | 43,269 | 0.32 / 0.54 / 0.76 m | 442 | 48.2 | 93% | 0.59 | 102 | 20,142 (45%) |
+| building, now | 43,269 | 0.32 / 0.54 / 0.76 m | 860 | 32.8 | 18% | 0.45 | 5.9 | 0 |
+
+Before the change, about three quarters of the strokes a hand moved lay farther than 5 cm past its glow, which is what Paul saw. Now none do. A hand still moves about 16 strokes on the ground or the cypress and 6 on a wall. A long stroke whose centre is near the orb still moves its ends beyond R. Its growth adds up to half-length × 0.8, which is 0.30 m for a median ground stroke, and its turn adds up to half-length × 0.5 rad.
+
+### Retuned hand constants
+
+Fix round 2 (below) replaces the push gain and the stretch with a 0.4 gain on a lever capped at 0.13 m and the quad distance. The drag, swirl and reach stand.
+
+- Push gain 0.8: the largest still push is 0.286 × 0.8 × 0.13 = 0.030 m, 0.058 m from the hand. The foot point grows 1.8×, under the 2× cap.
+- Drag 0.01 s: 0.015 m at 1.5 m/s, 12% of the radius, where the head's is 10% of its own. The smallest Jacobian determinant of a hand's push plus drag on the surface is 0.30 at 1 m/s, 0.24 at 1.5 m/s and 0.07 at 3 m/s, so it never folds. The old hand's was 0.43 at 1.5 m/s and 0.29 at 3 m/s. At gain 0.9 with drag 0.015 s it folds from about 2 m/s, and a unit test pins the no-fold property.
+- Swirl 0.35 rad: wake samples are 150 ms apart, 0.225 m at 1.5 m/s, more than the hand's radius, so a stroke on the trail is within one or two samples rather than four or five.
+- `REACTIVE_REACH` 0.1 m, under the hand radius. The head's still push (0.041 m) and normal motion stay under it, so only a fast physical head move clips the head now.
+
+### Shader cost
+
+Per-slot constants are compile-time `const float[3]` arrays from material defines, with no new uniforms. Folding the push gain into the falloff weight saves one multiply per disturber. The per-slot stretch factor adds one. Two multiplies leave the tail, since `uCalm × spread` and `uCalm × squeeze` no longer carry constants. The wake loop became nested, by slot and then sample, with the same per-sample operations. The net is 2 scalar operations fewer, about 468 instead of about 470, if the constant-bound loops unroll. If they do not, each lookup is a constant-array read instead of an immediate. The section compiles as GLSL ES 3.00 under glslangValidator.
+
+### Gates and what is not verified
+
+- The unit tests and `make checkall` passed.
+- This round made no Playwright run (fix round 2 below has the MiniMac runs). reactive.spec moved the push test to the eye 1.2 m off the cypress with the controller 0.02 m inside it, and the direction patch to R/√5 = 0.058 m. In the coverage rows, a controller 0.3 m short must now leave the frame equal to the parked frame. The box-count sweep moved to 0.05 m short of the hull. The stick-walk start moved to 0.7 m short.
+- The hand-orbs share bound is now under 5% per orb. All of these values need a measuring run.
+- docs/shots/hand-orbs.png and docs/shots/hand-orbs-panel.png are stale.
+- The rustle still fires within 0.6 m (`RUSTLE_REACH`).
+
+### Fix round 2: a hand reads the distance to the stroke's quad
+
+The first MiniMac e2e run showed the hand reaction was too weak. The cypress push test measured no shift (predicted 11.8 px, measured 0.0 px), the village coverage rows held frames identical to the parked ones, and the Q41 walk changed 0 pixels. The cause was the centre distance: most strokes the glow touches have their centre outside 0.13 m (only 41% on the ground, 34% on the cypress and 18% on a wall were inside), and those inside sat near the radius, where the falloff is small (mean f² 0.36 to 0.45).
+
+Three fixes were weighed:
+
+- (A) A per-stroke lower bound on the distance, the centre distance minus the half-diagonal. It over-reaches along a stroke's short axis, so long strokes beside the orb would move.
+- (B) A larger radius. It brings back the reaction well before the orb arrives, which was the original complaint (74% of moved ground strokes past glow + 0.05 m at 0.6 m).
+- (C) The exact distance from the hand to the stroke's drawn quad, chosen. q is the length of the hand's offset from the quad's rectangle: along the long axis past the half-length, across past the half-width, and off the plane. The half-size it reads is capped at 0.4 m (`HAND_HALF_SIZE_CAP`), so the reactive box stays bounded. The head reads half-size 0, so its field is unchanged.
+
+The push is G f(q)² min(|p − d|, λ) along p − d, with λ = 0.13 m (`HAND_LEVER`). Without the lever cap, a stroke whose centre is far from the hand but whose quad the hand touches would be pushed by G |p − d|, unbounded in the stroke's size. With it, a stroke the hand sits over moves by up to G λ = 0.052 m at G = 0.4 (was 0.8). For strokes of one size and orientation, the radial bound on the map's derivative is 1.54 (G λ + D v) / R, which is 0.97 at 3 m/s with D = 0.01 s, under 1. The unit fold test checks the Jacobian determinant over a point, a cypress-sized and a long ground-sized stroke, along x and turned 30°, at 0, 1.5 and 3 m/s along and across, and it stays above 0. The stretch term is −t · ∇(G s f² m), which reduces to the old 4 G / R² s f |t|² for a point and is checked against a finite-difference Jacobian on the quad's axes.
+
+Measured on the seed-1 world scatter with the real bake rasters (3000 hand positions 1 cm off reachable strokes, as before):
+
+| Host layer | Strokes touching the glow per hand | Share of those that move | Their mean f² | Strokes moved per hand | Moved with centre outside R | Moved strokes > glow + 0.05 m | Max nearest-point distance past the glow |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ground | 38.3 | 89.5% (round 1: 41%) | 0.81 | 53.0 | 70% | 0 (0.0%) | 0.050 m |
+| cypress | 47.1 | 99.9% (34%) | 0.82 | 75.2 | 78% | 0 (0.0%) | 0.050 m |
+| building | 32.8 | 94.9% (18%) | 0.86 | 41.4 | 86% | 0 (0.0%) | 0.050 m |
+
+No moved stroke lies more than 0.05 m past the glow edge, by construction: a moved stroke's capped quad distance is under 0.13 m, and its true quad distance is never more. The 10.5% of glow-touching ground strokes that stay still are longer than 0.8 m, which the cap reads as 0.8 m long. A 0.8 m cap moves 96.9% of them but grows the hand's box from 0.70 m to 1.26 m.
+
+The box grows a hand by `DISTURBER_BOX_RADII`, R plus the capped half-diagonal, 0.696 m (the head stays at 0.6 m, wake samples at their disturber's radius). At the cypress pose the box held 2,400 strokes still and up to 4,291 through a 1.5 m/s sweep, in the final MiniMac run (an earlier run of the same code read 4,362).
+
+The disturber loop's cost rises from about 25 to about 75 scalar operations for each hand, plus one short-axis cross product. The head runs the quad maths only behind `REACTIVE_SLOT_HALF_CAP[j] > 0.0`, which folds away for slot 0 when the loop unrolls, so it stays at about 25 (fix round 3). The reactive function costs about 580 operations per vertex inside the box, up from about 470. It only runs for strokes inside the box.
+
+The wake swirl still falls off with the centre distance, so a long stroke the orb touches is pushed but not curled.
+
+#### Gates (fix round 2)
+
+- Unit tests (123 files, 1695 tests) and `make checkall` passed. The changed reactive section compiles as GLSL ES 3.00 under glslangValidator.
+- MiniMac e2e, reactive.spec and hand-orbs.spec, Metal ANGLE on an Apple M4: 9 passed, 0 failed.
+- Cypress push: 79.2% of the inner 56 px changed, with mean diff 6.63 (round 1: 34.6% and 2.11). No pixel changed past 706 px, and the frame springs back byte for byte.
+- Direction: 0.1 m right of the push point, predicted (11.4, 0.0) px, measured (8.6, 2.2) px, sharpness 7.6. The held patch moved from 0.058 m to 0.1 m. At 0.058 m the patch measures (−3.2, −0.5) px at sharpness 2.7, because strokes centred past it grow over it and the image there is soft. At 0.08 m it measures (8.2, 1.9) px and at 0.13 m (25.8, 36.0) px. Both are logged, not held.
+- Coverage: every row stays under 0.5% bare, the worst at 0.176%. The rows with the controller at the surface or 0.1 m inside now differ from the parked frames, the village ones included.
+- Q41 walk: 466 pixels differ after the walk (round 1: 0, and the test needs more than 100). Walking alone left a wake weight of 3e-14 and a speed of 1e-13.
+- Hand orbs: 2.14% of the frame per orb at 0.48 m, under the 5% bound.
+- Box strokes: 2,400 still at the cypress pose and up to 4,291 through the 1.5 m/s sweep (round 1: up to 2,231). Walking past a held hand reached 4,578.
+- Not verified: the Quest cost of the reactive function at about 580 operations.
+- Haze and the disc cones: a hand grows a haze stroke only with its centre within 0.696 m of the hand. With the hand within about 0.8 m of the eye, that centre is within about 1.5 m of the eye. That is inside the haze stroke's rest half-diagonal of at least 1.62 m (1.72 m with the reach), so the thin is already the coarse hemisphere cut and the grown stroke stays out of the cones. The bound holds while the hand is within about 1 m of the eye. A controller set down farther away, inside the 45-55 m haze shell, could grow a haze stroke over a disc. Widening the thin by the growth cap would close that gap, but it turns the coarse cut on for in-box haze out to about 3.4 m, so haze would vanish as a hand nears it. The thin is left as it is.
+
+## Sky wrap variants: wheel and stream (2026-11-09)
+
+Paul rejected lift and picked two new arms for the headset A/B. `SKY_WRAPS` is now wave, wheel, stream, base, pingpong, with the codes 0 to 4 in that order, so `?ab=wrap` reaches wheel with one press from wave and stream with two. `wave` stays the default on every boot. Both arms move only the main sky layer, and neither adds a draw call or a program: they are branches on the existing `uSkyWrap` uniform.
+
+### Lift removal and byte-identity
+
+- Removed: lift's branch in both `skyMotion` bodies, `skyLift`, the `inout float along` that `stroke.vert.glsl` seeded with `position.x` and passed through `motionOffset`, `SKY_LIFT_PERIOD`, `SKY_LIFT_WINDOW`, `SKY_LIFT_INV_PERIOD`, `skyLiftLoop`, `skyLiftCorner`, the `clip` field of `SkyWrapLoop`, the `cut` and `cutShare` diag fields, `tests/e2e/sky-lift.spec.ts` and `docs/shots/swirl-lift-strip.jpg`. The quad corner along the stroke is `position.x` again on every path.
+- The wave, base and pingpong branch bodies are unchanged. Only the `skyMotion` and `motionOffset` signatures changed: `along` went, and `inout vec3 l, s` (the stroke's axes, which wheel turns) and `inout vec2 stream` came in. The default body's pingpong test became an explicit `uSkyWrap == SKY_WRAP_PINGPONG`, and the hoist body's `!= SKY_WRAP_PINGPONG`, so a moving sky vertex still pays one compare under wave, two under base and three under pingpong in both bodies. Wheel and stream pay four.
+- `tests/sky-wrap-golden.test.ts` pins the TS mirror: `skySwirl` and `skyWrapLoop` for wave (1, 2 and 3 waves per turn), base and pingpong at 24 dome directions, 2 phases and 3 times (1.7, 5.25 and 3599.9 s), recorded at 775768e, before the change, in `tests/fixtures/sky-wrap-golden.json`, and compared with `toEqual` at 12 significant figures. It passes. `SKY_WRAP_GOLDEN_WRITE=1` re-records it.
+- glslangValidator accepted all four shaders dumped from the built materials (default and hoist, vertex and fragment). No pixel comparison of wave against 775768e was made, since no browser run was allowed. The controller's ab.spec run (a no-flag boot byte for byte as `?wrap=wave`) is the GPU check.
+
+### Wheel
+
+- **What moves.** Each of the four vortex cores turns rigidly about its painted axis. The wheel is the cap within `SKY_WHEEL_CORE_SCALE` (0.95) of the core radius, tested as `1 − c·d < r²/2` (`SKY_WHEEL_CORES` holds `r²/2`). The central pair's cores nearly touch (their wheels are 0.27° apart at full radius), so 0.95 keeps a still ring between them: the minimum gap between any two wheels is 1.067° (left and right swirl), and 1.497° (left swirl and large star).
+- **Rate.** A wheel's rim speed is `SKY_WHEEL_RIM_GAIN` (2) times the field's mean speed round that rim, sampled at 64 points, which is the wave's mean rate in units of the stroke's sweep (the wave sweeps base's arc twice per loop). The rate is rounded to whole turns per 3600 s, so the angle `2π fract(t × turns / 3600)` is continuous across the clock's wrap seam. Each wheel turns in its vortex's own sense.
+
+| Wheel | Turns per hour | Period |
+| --- | --- | --- |
+| Left swirl | 31 | 116.1 s |
+| Right swirl | 80 | 45.0 s |
+| Moon | 53 | 67.9 s |
+| Large star | 46 | 78.3 s |
+
+The left swirl's rim then moves at 10.15 mrad/s against the wave's mean of 10.22 mrad/s there. The rounding moves the others by under half a turn per hour.
+
+- **Shader.** `skyWheelMotion` loops over the four axes, one dot and one compare each, and on a hit takes `h = π fract(t × SKY_WHEEL_RATE[i])`, `q = sin(h) c`, `w = cos(h)`, and rotates the dome offset `d` and both stroke axes with `skyQuatRotate` (2 crosses and 2 multiply-adds each). That is one fract, one sin, one cos and three quaternion rotations, exact for any angle, with no small-angle series. Turning `l` and `s` keeps each stroke's shape and its angle to the flow, so a wheel turns like a painted disc. The offset is `(rotated d − d) / uCalm`: calm already scales the angle through `uTime`, which the clock advances at the calm rate, and `scaleMotion` multiplies the offset by calm again. Calm 0 and `?noanim` close the gate, so the sky draws at rest.
+- **Outside the wheels: held still.** A non-rigid rotation outside the cores (the field's own differential speed) would wind neighbouring strokes apart without bound over the hour, and running the wave there would bring back the pulse Paul rejected. The boundary haze (`SKY_LIGHT_CULL_FLAG`) holds still too. The seam between a turning wheel and the still ring is the risk, so the coverage spec measures a ring from 0.85 to 1.1 wheel radii separately (below).
+- **Cull bound.** `MotionReaches.wheel` is each stroke's exact reach, twice its distance from its wheel's axis (`skyWheelReach`, the chord of a half turn), and 0 outside every wheel and for the haze. Under wheel `motionGrowth` uses it in place of the sky reach (calm-scaled in this first build, which fix round 1 corrects: the wheel growth is calm-independent), at most 43.9 m (a unit test checks every wheel stroke at 64 angles against it). Under stream the sky growth is 0. Every other layer's and wrap's growth is unchanged, and a wrap change triggers the chunk rescale.
+
+### Stream
+
+- **What moves.** Every stroke stays at rest and keeps its alpha footprint, while its paint streams along its long axis, downstream along the field. The vertex stage computes the loop phase `f = fract(t / SKY_STREAM_PERIOD + phase)` (2 s, phase byte per stroke) and the downstream sign, `sign(l · (omega × d))` (`iSkyField` in the hoist body), and passes them with the brush index in one flat `vec3 vStream`. Every other wrap and layer leaves it zero.
+- **Flow-map cross-fade.** Two taps of the brush cell half a loop apart, `fA = f` and `fB = fract(f + 0.5)`, each shifted by `(fk − 0.5) × SKY_STREAM_SHIFT` (0.5) stroke lengths and clamped to the brush's own atlas cell, `vRect`. The weights are `wA = 1 − |2 fA − 1|` and `wB = 1 − wA`, which sum to 1, so each tap is at weight 0 when it jumps back. The paint moves 0.25 stroke lengths per second.
+- **Contrast compensation.** The blend of two taps loses contrast, so the tone is scaled about `SKY_STREAM_TONE_MEAN` (0.487, the atlas tone mean measured by a unit test) by `1 / sqrt(wA² + wB² + 2ρ wA wB)`, with ρ the correlation between the two taps' tones at their separation. ρ varies by brush from −0.08 to 0.72 (0.34 over the atlas), so `SKY_STREAM_RHOS` holds one per brush and the fragment stage reads `SKY_STREAM_RHO2S[brush]` (2ρ). A unit test checks the variance stays 1 within 0.1 over the loop for ρ = −0.08, 0, 0.34 and 0.72, and that each brush's measured ρ is within 0.05 of the table.
+- **Fixed footprint.** Each tap falls back to the rest tone by its own coverage (`mix(rest, tap.b, tap.r)`), so a tap that reads off the shape's end adds no paint, and the coverage and alpha come from the rest tap only. The stream changes colour inside the stroke and never its outline.
+- **Fragment cost.** Two extra `texture()` taps and about 20 ALU ops (two clamps, the weights, the inversesqrt gain, two mixes, one clamp) on stream fragments only. Every stroke fragment pays one compare (`vStream.y != 0.0`) and every stroke one flat `vec3` varying, under every wrap. The vertex cost is the fract and the sign. Stream adds no cull growth.
+
+### Tests
+
+- `tests/motion-sky-wheel-stream.test.ts` (16 tests): wheels disjoint by at least 0.5°, whole turns per hour, rigid rotation, periodic across the wrap seam, the angle advancing monotonically in the vortex's own sense, the axes turning with the stroke, strokes outside held still, the cull bound, the GLSL quaternion transcription against the mirror (within 1e-5 m, the define precision), the stream period and shift, weights summing to 1, the compensation, the atlas tone statistics, the `streamTone` mirror, and text checks that the footprint comes from the rest tap only.
+- `tests/motion-variants.test.ts`, `tests/ab.test.ts`, `tests/flags.test.ts` (`lift` is now a retired value), `tests/motion.test.ts`, `tests/motion-sky-swirl.test.ts` and the golden test above.
+- `make checkall` passed: 125 files and 1701 Vitest tests.
+
+### Specs the controller must run
+
+No Playwright run was made. These specs were written or updated and need a run:
+
+- `tests/e2e/sky-wheel-stream.spec.ts`: selection by `?wrap` and by A/B presses, `?noanim` and calm 0 drawing the rest sky under both arms. The wheel block-match: 4 points per central wheel over 12 samples of a full turn, a 0.5 s step each, against `__goghSkyShift(..., 'wheel')`, requiring the along-flow component within 0.5 to 1.5 times the prediction. The stream footprint: the alpha mask at 6 times equals the `?noanim` mask while more than 1% of the pixels change colour. Coverage under wave, base, wheel and stream at the painter view and 2 more poses, 8 times each, with sky-only and wheel-seam rows reported, and the 0.5% limit on the wheel and stream whole-frame rows. Strips gated by `SWIRL_STRIPS=1`, writing `docs/shots/swirl-wheel-strip.jpg` (2 s apart) and `swirl-stream-strip.jpg` (1/3 s apart).
+- `tests/e2e/ab.spec.ts`: the variants list, wheel and stream reporting no small, returning or opposed strokes and some `wheeled`.
+- `tests/e2e/vtx.spec.ts`: the hoist test now loops over base, wheel, stream and the default.
+- Values to record: the wheel block-match ratios per wheel, the stream changed-pixel share, the coverage rows (whole frame, sky only, wheel seam) per wrap and pose, and the strips for Paul.
+
+### Fix round 1: hold at calm 0, calm-free cull, one stream float (2026-11-09)
+
+The review (CHANGES REQUESTED) found F1 to F9. The controller ruled F4 as hold.
+
+- **F1, the cull.** The wheel's offset never scales with calm, so its growth does not either: `motionGrowth` returns calm times the other layers' reach plus `r.wheel`, under wheel, at every calm and at calm 0, where the sky gate is held open (F4). A batch unit test pins the growth to the wheel reach at calm 1, 0.5, 0.25 and 0.05, at calm 0 with the hold, and to the rest sphere at calm 0 without it, when frozen and under stream.
+- **F2, the stream footprint spec.** The stream boots with `&motionlayers=sky`, so no star ring, moon ring or cypress flame moves, and the reference mask is the stream boot's own first sample, at the same gate state, which every later sample must equal. The difference from `?noanim` is logged only. The wheel block-match boots with `&motionlayers=sky` too.
+- **F3, one flat float.** `vStream = sign × (1 + brush + f)`, 0 for no stream. The fragment stage tests `vStream != 0.0` and on the stream path decodes `packed = abs(vStream) − 1`, the brush as `int(packed)`, `f = fract(packed)` and `sign(vStream)`. At 17, float32 keeps f to 2^-19. When f rounds up to the next whole number the next brush's rho is read with f 0, where wA is 0 and the gain is 1 for any rho (unit test over all 16 brushes, both signs and 256 fractions). Against 775768e the default path now pays one flat float varying written by every stroke vertex (18 to 19 flat scalars) and one compare per stroke fragment; a moving sky vertex also pays three adds for the wheel's rigid offset (`m.offset += rigid`, zero off the wheel). Removing the remainder needs a define, which would link a program per A/B press. The controller benches `?bench` under wave between 775768e and this commit.
+- **F4, hold.** `skyWheelMotion` writes the turn's offset to an `inout vec3 rigid` instead of dividing by `uCalm`, and `motionOffset` adds it after `scaleMotion`. The clock gained `setHoldMask`: the layers of the layer mask it keeps open at calm 0 while not frozen. main.ts's `setSkyWrap` sets the wrap and the hold together (the sky bit under wheel, else none), for `?wrap` and for the A/B group. At calm 0 `uTime` stops, so the discs stay where they were, every other offset scales to 0, and the cull keeps the wheel growth. Periodicity is untouched, since the angle is still `2π fract(t × rate)`, and no calm step moves a disc, since calm enters only through the rate `uTime` advances at. `?noanim` still closes every gate, so it draws the rest sky, and so do captures. `?ab=calm` (1, 0.5, 0.25) only changes the turning speed, with no jump at a press. Under every other wrap calm 0 closes the gate as before.
+- **F5, the normal.** `n` turns with the disc (`n = skyQuatRotate(q, w, n)`), one more quaternion turn on wheel strokes only. A unit test checks the turned normal is the dome's inward normal at the moved centre within 1e-6.
+- **F6, the tips.** `gain = mix(1.0, gain, a.r * b.r)`, mirrored in `skyStreamTone`. A unit test checks the tone off the shape is the rest tone at rho −0.08, 0 and 0.72 and three loop fractions, so the tips no longer breathe.
+- **F7.** The variants.ts header says four compares for stream.
+- **F8.** The wheel block-match adds one window at `period − 0.25` (across a turn boundary) and one at 3599.75 (across the uTime wrap, which `__goghMotionT` takes to 0.25).
+- **F9, the central ring.** A stroke is in a wheel when its centre is `SKY_WHEEL_STROKE_HALF` inside 0.95 of the core: half the dome stroke's angular length, `WORLD_DOME_SIZE.slope` 0.0331 rad, at the far band's size 1.6, which is 0.0265 rad (1.52°). No turning stroke then reaches past 0.95 of the core at any angle to the rim. The central wheels' member centres are 4.10° apart (2.2 far strokes), and 1.07° stays clear between the farthest reaches of their strokes. The wheels shrink: the left swirl to 9.30° (86% of the 0.95 cap), the right to 2.86° (65%), the moon eddy to 3.87° (72%) and the star eddy to 4.73° (76%). The rates were re-derived at the new rims: 32, 94, 69 and 55 turns per hour (112.5, 38.3, 52.2 and 65.5 s a turn), each within 7% of the wave's mean rim speed (left 9.02 against 9.04 mrad/s). The largest wheel reach is now 38.8 m. The wheel strip should show both central discs turning with a still band about 4° wide between them, in which no stroke slides against another, and the right disc visibly smaller than the painted swirl.
+
+**Gates.** `make checkall` passed: 125 files and 1704 Vitest tests. glslangValidator accepted the four dumped shaders. No Playwright run was made. The controller runs `tests/e2e/sky-wheel-stream.spec.ts` (whose selection test now checks that calm 0 under wheel holds the 3.7 s pose, less than 1% of the central left disc's pixels differing from calm 1 sky-only), `ab.spec.ts` and `vtx.spec.ts`, and benches wave.
+
+### Fix round 2: the haze thin under wheel and stream, and the haze veil in the block match (2026-11-09)
+
+The MiniMac e2e run of fix round 1 had five failures in this lane.
+
+- **motion.spec (3 tests).** `__goghDiag().motion` gained `hold`, so the exact expectations now carry `hold: 0` (no hold outside wheel).
+- **The calm 0 hold (sky-wheel-stream.spec, selection test).** 2954 of 45,172 pixels inside the central left disc differed between calm 0 and calm 1 sky-only at motiont 3.7. A whole-frame diff placed them on the boundary haze, across the lower sky, the right swirl and behind the cypress, not on the wheel. The cause was the haze's sky-light thin: `motionReach` widens it by calm times the sky reach whenever the sky gate is open, so it changed with calm even though the haze holds still under wheel. `motionReach` now returns 0 under wheel and stream (two compares on haze vertices only, mirrored in motion.ts), so the haze keeps its rest thin at every calm there. The held pose is the pinned pose: calm 0 and calm 1 sky-only now draw the same frame, 0 of 1,315,840 pixels differing, and the test asserts that equality over the whole frame.
+- **The right wheel's block match.** It measured 0.25 px against 1.96 px predicted at half its radius, and 0.07 against 3.5 px at 0.3 of it over 1.5 s. The right wheel is not slower: its rate define is pinned to the mirror by the unit tests and shares the left wheel's code path, and 2029 to 2239 of its 4784 inner pixels (0.8 of its radius) change over every 1.5 s window, about 43%. The boundary haze shell (45-55 m out, up to 45 m high, 3 × 1.2 m strokes, about 3.4° each) holds still under wheel and lies in front of the 2.86° disc, so a block there matches the still haze. The right wheel's check is now that its inner paint changes over every window, with its block-match rows logged. Once the haze kept its rest thin, one left-wheel probe was veiled too (0.89 px against 2.06 at t 9.375, and 0.13 at t 93.75), so the left wheel's pace check is now the median of its four probes, within 0.5 to 1.5 of the prediction, with every probe required forward. The windows at 112.25 s (across the turn boundary) and 3599.75 s (across the uTime wrap) matched, and gave identical rows, since 3600 s is 32 whole turns of the left wheel.
+
+**Design concern for the A/B.** Under wheel the haze shell holds still in front of most of the painter view's sky, so the wheels turn behind a still veil, which hides most of the small right wheel's turn. Under wave the haze moves with the field. Turning the haze with the wheels is possible (the rotation is about an axis through the eye, so a haze stroke stays at its distance), but its sky-light thin would then need the wheel reach.
+
+**Gates.** `make checkall` passed: 125 files and 1704 Vitest tests. On MiniMac, motion.spec, sky-wheel-stream.spec, ab.spec and vtx.spec are listed in the report with their pass and fail lines.
+
+### Fix round 3: the haze turns with the wheels (2026-11-09)
+
+Round 2's design concern blocked the arm: under wheel the still haze veiled the turning discs, while under wave the haze moves with the sky.
+
+- **Membership and turn.** `skyWheelMotion` no longer skips `SKY_LIGHT_CULL_FLAG`. A haze stroke whose centre's direction from the eye passes the same core test turns with that wheel, about the same axis through the eye, at the same rate and under the same calm hold. The turn keeps its distance from the eye, so a haze stroke stays in its shell. The TS mirrors (`skyWheelSpin`, `skySwirl`, `skyWheelReach`, the `wrap` diag's `wheeled`) drop their haze exception to match.
+- **The moon and star thin.** It is now judged at the turned centre: under wheel, `stroke.vert.glsl` adds `skyWheelOffset` (motion.glsl, the wheel's rigid offset alone) to the rest centre before `skyLightThin`, behind the sky gate, and `motionReach` stays 0. Giving the haze the wheel's reach instead would have needed the same per-vertex wheel loop to find the reach, and would have over-thinned the haze around any star inside a wheel by up to twice its distance from the axis, about 16 m at 50 m. Anchoring is exact and costs the same loop, on haze vertices under wheel only. A haze stroke turns about its wheel's axis, which keeps its angle to that axis, so inside the moon's and the star's own wheels the thin stays the rest thin.
+- **Cull.** `motionReachesOf` now gives haze strokes their `skyWheelReach`, so a haze chunk in front of a wheel grows by its wheel reach under wheel (`tests/strokes-batch.test.ts`).
+- **Stream.** Unchanged: stream moves no stroke, so the haze stays still there, as the dome does.
+- **Other wraps.** Wave, base and pingpong are unchanged: every new path is behind `uSkyWrap == SKY_WRAP_WHEEL`, and `tests/sky-wrap-golden.test.ts` passes.
+- **The right wheel's e2e check.** Restored to a block match: at every sample of its turn, the median of its four probes' measured shift is within 0.5 to 1.5 of the TS mirror's prediction. The left wheel keeps its per-probe forward check and the same median check.
+
+**Measured on MiniMac (2026-11-09).** Over 14 windows each, the left wheel's 56 probes all measured 0.88 to 1.19 of the predicted shift (round 2 had one probe at 0.43, veiled by the still haze), with medians 1.03 to 1.08. The right wheel's medians were 0.83 to 1.20. Its single probes ranged 0.17 to 2.09, because a haze stroke centred just outside the 2.86° disc can still cover a 13 px block. The calm 0 hold still draws the same frame as calm 1 sky-only.
+
+**Gates.** `make checkall` passed: 125 files and 1706 Vitest tests. On MiniMac, motion.spec, sky-wheel-stream.spec, ab.spec and vtx.spec gave 35 passed (3.5 min), with load 2.17 before and 2.51 after.
+
+### Fix round 4: the haze clear of the wheels it does not turn with (2026-11-09)
+
+Re-review 2 found that the haze, 2.5-3.1° long (half diagonal over distance), inherits the dome's 1.52° membership margin. So a turning haze stroke reaches about 1.5° past 0.95 of its core, across the 1.07° still ring at the central contact (N1, the F9 tear in the haze). A still haze stroke centred just outside a wheel reaches up to 3.1° inward and covers most of the 2.86° right wheel (N2).
+
+- **N1 and N2, one thin.** Under wheel, on haze vertices behind the open sky gate, `skyHazeWheel` (motion.glsl, mirrored by `skyWheelHazeThin` in sky-swirl.ts) multiplies the haze's thin by `smoothstep(0, SKY_WHEEL_HAZE_FEATHER, theta - h - edge)` for every wheel it does not turn with. Here theta is that wheel's angle from the stroke's turned direction, h its half diagonal over its distance, and the feather 0.5°. For a turning stroke the edge is the other wheel's 0.95 cap (`SKY_WHEEL_CAPS`), and for a still one it is the wheel's member edge (`SKY_WHEEL_EDGES`). The thin is judged at the full size, so a drawn quad never crosses. A unit test checks this over 1600 strokes round the four rims. The membership margin is unchanged, so the right wheel keeps its turning haze. The cost is a ring of haze about 3-4° wide outside each wheel's edge, and the haze tips that reached across caps, thinned out, with the covered dome showing behind them.
+- **N3.** The dead `flags` parameter is gone from both `skyMotion` bodies and `motionOffset`, and with it the vertex shader's `iMeta.w` argument.
+- **N5.** A haze vertex pays one `uSkyWrap == SKY_WRAP_WHEEL` compare, in `skyHazeWheel`. Off wheel, `motionReach` pays its layer compare and the stream compare (round 2). Under wheel the vertex shader runs the haze's turn once, and `motionOffset` is told the sky does not move for that stroke, so it runs no second wheel loop. Wave, base and pingpong draw as before. The golden test passes, and `glslangValidator` compiles both the base and the hoist vertex programs.
+- **N6.** The stroke.vert.glsl header comment now says how stream and wheel judge the thin.
+- **N7.** The large star and the moon sit exactly on their eddies' wheel axes, 0.000° off. Their discs (5.33° and 3.93°) are wider than their wheels' edges (4.73° and 3.87°). No other star lies within 12° of any wheel axis. Inside their own wheels the moon and star thin is therefore the rest thin, while the wheel thin can still clear the haze near other wheels.
+- **e2e (new expectations, not yet run).** The left wheel is checked per probe again: every probe within 0.5 to 1.5 of the mirror's prediction at every sample (round 3 measured all 56 at 0.88 to 1.19), plus the median. The right wheel keeps the median check only. In round 3, 9 of its 56 single readings fell outside 0.5 to 1.5 (0.17 to 0.45 and 1.81 to 2.09). They fell at all four probes and at different times, low and high alike, where a still veil over a fixed pixel would read low every time. A 13 px block over a 3.5 px shift is noisy on this paint. N2 removes the still veil, but it does not change that noise.

@@ -118,11 +118,12 @@ test('the Hand orbs toggle shows and hides one orb per hand in XR only, and pers
   console.log(`[e2e] hand orbs draw calls: ${shown} on, ${hidden} off, ${again} on again`);
   expect(again - hidden).toBe(2 * VIEWS);
   expect(shown - hidden).toBe(2 * VIEWS);
-  // Each orb is a compact ball: at 0.48 m it changes a few percent of the frame, never the whole.
+  // Each orb is a small ball: at 0.48 m it changed about 7% of the frame with the 0.14 m glow, and
+  // the 0.08 m glow covers about a third of that area (2026-11-09, not measured yet).
   const perOrb = changedShare(on, off) / 2;
   console.log(`[e2e] hand orbs: ${(perOrb * 100).toFixed(2)}% of the frame per orb at 0.48 m`);
   expect(perOrb).toBeGreaterThan(0.002);
-  expect(perOrb).toBeLessThan(0.1);
+  expect(perOrb).toBeLessThan(0.05);
 });
 
 test('an untracked hand has no orb', async ({ page, xr }) => {

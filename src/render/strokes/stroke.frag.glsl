@@ -16,12 +16,45 @@ flat in vec4 vRect;
 flat in vec3 vNormal;
 flat in vec3 vLong;
 flat in vec3 vShort;
+// The sky's stream wrap (stroke.vert.glsl): sign × (1 + brush + f), 0 for no stream.
+flat in float vStream;
+// Per brush, twice its tone's correlation half a stream shift along u (SKY_STREAM_RHOS).
+const float SKY_STREAM_RHO2S[BRUSH_COUNT] = SKY_STREAM_RHO2;
 
 out vec4 fragColor;
 
 // Height with the coverage premultiply undone (atlas quirk C8), guarded against empty texels.
 float height(vec4 texel) {
   return texel.g / max(texel.r, 0.05);
+}
+
+// Matches skyStreamWeights and skyStreamTone in sky-swirl.ts: the stream wrap's tone at this
+// fragment from the rest tap's tone. Two layer taps slide along u, the stroke's length, by
+// (f - 1/2) SKY_STREAM_SHIFT of the brush rect each, half a loop apart, clamped to the rect like
+// the relief taps; a tap that leaves the shape falls back to the rest tone by its coverage. Their
+// weights sum to 1 and each is 0 where its layer resets, and the deviation from the tone's mean
+// scales by 1 / sqrt(wA² + wB² + 2 rho wA wB), rho the brush's, so the blend keeps one layer's
+// contrast. The gain fades to 1 as either tap leaves the shape, since a tap that fell back to the
+// rest tone is fully correlated with it. The offset is constant over the primitive and vStream is
+// flat, so the implicit-derivative taps run in uniform control flow and pick the rest tap's mip.
+// vStream decodes to the brush (its whole part less 1), f (its fraction) and the sign; f rounding
+// up to the next whole number at the loop's end reads the next brush's rho for that frame, where
+// wA is 0 and the gain is 1 for any rho. Two taps and about 25 ALU operations.
+float streamTone(float rest) {
+  float packed = abs(vStream) - 1.0;
+  float fA = fract(packed);
+  float fB = fract(fA + 0.5);
+  float wA = 1.0 - abs(2.0 * fA - 1.0);
+  float wB = 1.0 - wA;
+  float span = (vRect.z - vRect.x) * SKY_STREAM_SHIFT * sign(vStream);
+  vec4 a = texture(uAtlas, clamp(vUv - vec2((fA - 0.5) * span, 0.0), vRect.xy, vRect.zw));
+  vec4 b = texture(uAtlas, clamp(vUv - vec2((fB - 0.5) * span, 0.0), vRect.xy, vRect.zw));
+  float ta = mix(rest, a.b, a.r);
+  float tb = mix(rest, b.b, b.r);
+  float rho2 = SKY_STREAM_RHO2S[min(int(packed), BRUSH_COUNT - 1)];
+  float gain = mix(1.0, inversesqrt(wA * wA + wB * wB + rho2 * wA * wB), a.r * b.r);
+  float m = SKY_STREAM_TONE_MEAN;
+  return clamp(m + (wA * (ta - m) + wB * (tb - m)) * gain, 0.0, 1.0);
 }
 
 void main() {
@@ -60,6 +93,7 @@ void main() {
   // Half-Lambert moonlight kept to a ±15% band so the painted colour dominates.
   float moon = dot(n, uMoonDir) * 0.5 + 0.5;
   float shade = 0.85 + 0.3 * moon;
-  float tone = 0.75 + 0.5 * t.b;
+  // The stream wrap's tone (streamTone); every other fragment pays this one compare.
+  float tone = 0.75 + 0.5 * (vStream != 0.0 ? streamTone(t.b) : t.b);
   fragColor = vec4(vColor * tone * shade, alpha);
 }

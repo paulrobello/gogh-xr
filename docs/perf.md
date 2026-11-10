@@ -151,7 +151,7 @@ The wake loop's cost is not in this table. On the desktop the eye is the only di
 
 No row measures the wake-loop GPU cost. The IWER GPU timings are not a cost. In an earlier single-run record, motion read 8% to 23% cheaper than `?noanim` in IWER, which no shader change can do. These rows therefore record only the counts.
 
-"Box strokes" counts the drawn strokes whose rest centre is inside the reactive box, which are the strokes that run the reactive loops. The box is one axis-aligned box round every weighted disturber and its wake samples, grown by `REACTIVE_RADIUS`. The head is always one of the disturbers.
+"Box strokes" counts the drawn strokes whose rest centre is inside the reactive box, which are the strokes that run the reactive loops. The box is one axis-aligned box round every weighted disturber and its wake samples, grown by `REACTIVE_RADIUS` (0.6 m when measured; since 2026-11-09 a disturber grows it by its radius plus its capped half-diagonal, 0.6 m for the head and 0.696 m for a hand, and a wake sample by its disturber's radius). The head is always one of the disturbers.
 
 | Configuration | View | GPU ms | Draw calls | Drawn strokes | Box strokes (end / most) | Box min | Box max | Tracked (head, slot 0, slot 1) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

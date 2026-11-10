@@ -220,7 +220,7 @@ test.describe('the painter view', () => {
     expect(await glErrors(page)).toEqual([]);
   });
 
-  test('with the sky moving, hoist reads its rest field and draws within the tolerance of base, base, lift and wave wrap', async ({
+  test('with the sky moving, hoist reads its rest field and draws within the tolerance of base, base, wheel, stream and wave wrap', async ({
     page,
     xr,
   }) => {
@@ -231,7 +231,7 @@ test.describe('the painter view', () => {
     await bootWorld(xr, still);
     const rest = await rawPixels(page);
     const rows: string[] = [];
-    for (const extra of ['&wrap=base', '&wrap=lift', '']) {
+    for (const extra of ['&wrap=base', '&wrap=wheel', '&wrap=stream', '']) {
       await bootWorld(
         xr,
         `painting=starry-night&seed=1&shot&painter&nogov&motiont=3.7${extra}&ab=vtx`,
