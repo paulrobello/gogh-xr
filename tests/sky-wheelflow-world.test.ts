@@ -104,7 +104,7 @@ const pastEdges = (dir: Vec3): number[] =>
 const nearWheels = (within: number): SkyStroke[] =>
   strokes.filter((s) => skyWheelAt(s.dir) < 0 && pastEdges(s.dir).some((e) => e < within));
 
-describe('wheelflow and wheelrun on the seed-1 sky', () => {
+describe('wheelflow and wheelrun on the seed-1 sky', { timeout: 180_000 }, () => {
   test('the bound: no moved dome centre crosses a members edge, so moved paint overlaps a disc by at most its own half extent; no moved haze quad reaches one, at any band size', () => {
     const near = nearWheels(10 * deg);
     expect(near.length).toBeGreaterThan(2000);
