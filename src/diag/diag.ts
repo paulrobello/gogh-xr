@@ -67,6 +67,11 @@ declare global {
     /** e2e builds only, with `?diag`: the portal veil at `alpha` while no transition runs. */
     __goghVeil?: (alpha: number) => void;
     __goghSkyControl?: (mode: 'sky' | 'hidden' | 'black') => void;
+    /**
+     * e2e builds only: forces one gallery ripple contact at canvas uv (u, v), v up, or releases it
+     * with null (src/paintings/hand-ripple.ts). False when no rippling painting is bound.
+     */
+    __goghRipple?: (u: number, v: number, strength: number | null) => boolean;
   }
 }
 

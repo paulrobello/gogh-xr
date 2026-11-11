@@ -11,6 +11,7 @@ import type { Vec3 } from '../render/strokes/frame';
 import type { StrokeReach } from '../render/strokes/reach-field';
 import { drain, type Slicer, type Steps } from '../util/slicer';
 import { withTimeout } from '../util/timeout';
+import type { HandRipple } from './hand-ripple';
 
 /** A standing pose: a floor position and a heading. Yaw 0 faces -Z, positive turns left. */
 export interface WorldPose {
@@ -142,6 +143,11 @@ export interface WorldHandle {
    * Omitted: a world whose strokes do not react to the hands (the gallery).
    */
   readonly strokeReach?: StrokeReach;
+  /**
+   * The painting's ripple where a hand orb touches it (src/paintings/hand-ripple.ts), which main.ts
+   * drives every frame. Omitted: a world whose painting does not ripple.
+   */
+  readonly ripple?: HandRipple;
 }
 
 export interface WorldModule {

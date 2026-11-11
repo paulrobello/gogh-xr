@@ -31,6 +31,7 @@ import { SKY_WAVE_PER_TURN } from './motion/sky-swirl';
 import { trackerTime } from './motion/tracker-time';
 import { motionVariants } from './motion/variant-uniforms';
 import { DEFAULT_SKY_WRAP, type SkyWrap } from './motion/variants';
+import { type HandRipple, type HandRippleFrame, rippleAmplitude } from './paintings/hand-ripple';
 import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
 import {
   boundedImport,
@@ -333,6 +334,40 @@ function frameHandOrbs(presenting: boolean, dt: number): void {
 }
 // three compiles a program on its first visible draw, and `compile` also takes hidden meshes.
 if (handOrbs) renderer.compile(handOrbs.meshes[0], camera, scene);
+/**
+ * A painting world's motion mask: every live layer and the reactive bit, less what `?motionlayers`
+ * (e2e builds only) closes. The gallery's clock runs with 0, so its ripple judges the reactive gate
+ * on this mask instead.
+ */
+const motionLayersOnly = import.meta.env.MODE === 'e2e' ? flags.motionlayers : null;
+const worldMotionMask =
+  motionLayersOnly === null ? MOTION_LAYER_MASK : MOTION_LAYER_MASK & motionLayersOnly;
+/** The bound world's hand ripple (the gallery's live scan), or null. */
+let handRipple: HandRipple | null = null;
+/** Reused every frame, so driving the ripple allocates nothing. */
+const handRippleState: Mutable<HandRippleFrame> = {
+  presenting: false,
+  enabled: false,
+  busy: false,
+  amplitude: 0,
+  disturbers: reactiveTracker.uniforms.uDisturbers.value,
+  slots: handSlots,
+  dt: 0,
+};
+/** After `frameHandOrbs`, which maps this frame's hands to their disturber slots. */
+function frameHandRipple(presenting: boolean, busy: boolean, dt: number): void {
+  if (!handRipple) return;
+  handRippleState.presenting = presenting;
+  handRippleState.enabled = settingsStore.effective.handOrbs;
+  handRippleState.busy = busy;
+  handRippleState.amplitude = rippleAmplitude(
+    flags.noanim,
+    settingsStore.effective.calm,
+    worldMotionMask,
+  );
+  handRippleState.dt = dt;
+  handRipple.frame(handRippleState);
+}
 // The system recenter resets the reference space, so the head and the controllers jump.
 renderer.xr.addEventListener('sessionstart', () => {
   renderer.xr.getReferenceSpace()?.addEventListener('reset', () => locomotion.markDiscontinuity());
@@ -731,6 +766,7 @@ function renderFrame(time: number, frame?: XRFrame): void {
     if (!busy) detectPortals();
     trackDisturbers(time, renderer.xr.isPresenting, frame);
     frameHandOrbs(renderer.xr.isPresenting, dt);
+    frameHandRipple(renderer.xr.isPresenting, busy, dt);
   }
   zdiag.beforeRender(camera);
   const renderStart = performance.now();
@@ -937,9 +973,8 @@ function worldDeps(sliced: boolean, loadRaster: WorldDeps['loadRaster']): WorldD
 function bindWorld({ id, module, handle }: LiveWorld): void {
   // Only a painting's world moves: the gallery, canvas demo, test scene and bench share its stroke
   // layers (R-P4f). `?motionlayers` (e2e builds only) can close layers, never open one.
-  const only = import.meta.env.MODE === 'e2e' ? flags.motionlayers : null;
-  const mask = only === null ? MOTION_LAYER_MASK : MOTION_LAYER_MASK & only;
-  motionClock.setLayerMask(id === GALLERY_ID ? 0 : mask);
+  motionClock.setLayerMask(id === GALLERY_ID ? 0 : worldMotionMask);
+  handRipple = handle.ripple ?? null;
   haloWorld = handle;
   handle.setHalo?.(haloOn);
   if (abActive?.group === 'halo') {
@@ -976,6 +1011,7 @@ function unbindWorld(): void {
   haloWorld = null;
   reactiveBatch = null;
   handOrbsState.strokeReach = null;
+  handRipple = null;
   skyBatch = null;
   // Drops the old world's handle, then holds the rig's height until the next world's ground binds.
   locomotion.setWorld(null);
@@ -1042,6 +1078,14 @@ if (flags.diag) {
       vignette?.setVeilColor(mode === 'black' ? [0, 0, 0] : SKY_VEIL_COLOR);
     };
   }
+}
+if (import.meta.env.MODE === 'e2e') {
+  // One forced ripple contact for desktop shots and specs, on whichever world is bound.
+  window.__goghRipple = (u, v, strength) => {
+    if (!handRipple) return false;
+    handRipple.force(u, v, strength);
+    return true;
+  };
 }
 // G returns to the gallery from a world on the desktop, as the panel's button does (P5.5).
 window.addEventListener('keydown', (event) => {

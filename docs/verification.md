@@ -3631,3 +3631,29 @@ The MiniMac gate on c294ea9 failed `tests/e2e/sky-wheel-stream.spec.ts` coverage
   - the counter-flow (0.0777 to 0.0870) and the returning share (0.473 to 0.496), which count flags;
   - the kept-wheel bound: 742,776 moved samples, closest haze quad 0.0004° and dome centre 0.0025°.
 - **Not verified.** The e2e coverage was not rerun, and the 0.42% target is the proxy's prediction. The seams line runs through two points and extrapolates steeply (intercept −0.28%), so it is the less certain of the two.
+
+## Gallery ripple (2026-11-10)
+
+A hand orb at the live Starry Night scan ripples it (src/paintings/gallery/ripple.ts, CLAUDE.md Gallery). Measured on the desktop, M4 Max, headless Chrome with ANGLE Metal, against a `vite build --mode e2e` preview, the eye placed with `__goghPose(0, 1.6, -3.1, 0, 0)` at 1280 × 720:
+
+- `__goghRipple(0.42, 0.62, 1)` changed 69,845 pixels, all inside the box (444, 156)-(746, 457), which lies inside the scan. The swirl turns the left star and the central swirl about the contact, the rings show as concentric waves and the moulding, walls and plaque hold still (docs/shots/gallery-ripple-touch.jpg, docs/shots/gallery-ripple-rest-vs-touch.jpg, rest left, touch right).
+- `__goghRipple(0, 0, null)` then gave a frame byte-identical to the rest frame before the touch (no differing pixel).
+- The gallery draws 11 calls at that pose with or without the contact, and links 7 programs.
+
+Fix round 1 (review F1-F5) changed three behaviours, checked by unit tests only, with no new desktop or IWER measurement:
+
+- A hand that touches again after a gap, more than 3 cm (`RIPPLE_RETARGET_M`) from the old centre, settles the old ripple at the rise rate before the new one starts, so the centre never jumps. A drag still follows the hand.
+- A portal transition eases the ripple out over `RIPPLE_FALL_S` instead of snapping it flat, and takes no new contact.
+- The warp is spliced into three's own `map_fragment` chunk, with only its sample coordinate replaced, rather than replacing the chunk. The no-contact path still samples `vMapUv` unchanged, but the byte-identity above was measured on the replaced chunk and was not re-measured after the splice.
+
+The IWER spec (tests/e2e/gallery-ripple.spec.ts) first ran in the MiniMac commit gate on c5ecbbb. Its bars: the ripple annulus (0.04-0.20 m round the touch, orb discs left out) must change more than 10% of its pixels, nothing outside the scan's projected box may change, the frame after the release must equal the hover frame byte for byte, and at a coming-soon frame no pixel outside the two orb discs may change. Three of its four tests passed (Starry Night: annulus 100% changed, 0 px outside the scan). The coming-soon test failed with 1,043 changed pixels beyond the orb discs, out of 9,679.
+
+The cause was the spec's projection, not the app. IWER with stereo off renders one view, its left eye, IPD / 2 (0.0315 m) left of the head (XRDeviceBase `updateViews`), and the spec projected from the head. Re-running the spec's diff on the two canvas captures stored in the failure's trace:
+
+- From the head, all 1,043 pixels lie on the right of the hover orb's disc, 1.10 to 1.30 glow radii from its predicted centre, with channel steps of 1 to 7 levels.
+- From the left eye, the scan's projected edges land on x 541.2 and 766.9, where the capture shows them (541 and 767). The head puts them 14 px left.
+- From the left eye, no changed pixel lies beyond the orb discs, even with the discs cut to the bare 0.08 m glow radius and no pixel margin.
+
+The spec now projects from the rendered eye and asserts stereo is off. The fix has not been rerun in e2e. tests/e2e/reactive.spec.ts projects from the head the same way and passes. Its bars may have room for a 14 to 24 px offset, which is untested.
+
+Nothing has run on a headset.

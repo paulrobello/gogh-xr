@@ -44,6 +44,7 @@ import {
 } from './layout';
 import { underpaint } from './palette';
 import type { Plaques } from './plaques';
+import { createGalleryRipple, type GalleryRipple } from './ripple';
 import {
   createBaseGeometry,
   DEFAULT_GALLERY_SEED,
@@ -114,6 +115,8 @@ interface Built {
 let built: Built | null = null;
 /** This world's own `world` diag registration, so its dispose removes only that one. */
 let worldDiag: DiagToken | null = null;
+/** Its `galleryRipple` diag registration, likewise. */
+let rippleDiag: DiagToken | null = null;
 
 /** A plane at the painting's true size showing `crop` of its texture. */
 function scanGeometry(h: Hanging, crop: UvCrop): PlaneGeometry {
@@ -243,6 +246,8 @@ async function assemble(deps: WorldDeps, owned: Owned): Promise<WorldHandle> {
 
   const frames: FrameDiag[] = [];
   const scans: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
+  /** The live painting's scan ripples where a hand orb touches it; coming-soon scans never do. */
+  let ripple: GalleryRipple | null = null;
   HANGINGS.forEach((h, i) => {
     const texture = textures[i];
     const image = texture?.image as ImageBitmap | undefined;
@@ -271,6 +276,9 @@ async function assemble(deps: WorldDeps, owned: Owned): Promise<WorldHandle> {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: SCAN_DEPTH_UNITS,
     });
+    if (!ripple && h.painting.status === 'live' && texture && debug !== 'bare') {
+      ripple = createGalleryRipple(h, crop, material);
+    }
     const mesh = new Mesh(scanGeometry(h, crop), material);
     mesh.name = `scan-${h.painting.id}`;
     mesh.position.set(...wallPoint(h.wall, h.s, h.y, SCAN_DEPTH));
@@ -352,6 +360,9 @@ async function assemble(deps: WorldDeps, owned: Owned): Promise<WorldHandle> {
     },
   }));
 
+  const handRipple = ripple as GalleryRipple | null;
+  if (handRipple) rippleDiag = registerDiag('galleryRipple', () => handRipple.diag());
+
   return {
     batch,
     ground: { heightAt: () => 0, normalAt: () => UP },
@@ -365,6 +376,7 @@ async function assemble(deps: WorldDeps, owned: Owned): Promise<WorldHandle> {
       maxY: ROOM.height - WALK_MARGIN,
     },
     ready,
+    ...(handRipple ? { ripple: handRipple } : {}),
   };
 }
 
@@ -375,6 +387,8 @@ export function dispose(): void {
   if (!built) return;
   if (worldDiag) unregisterDiag('world', worldDiag);
   worldDiag = null;
+  if (rippleDiag) unregisterDiag('galleryRipple', rippleDiag);
+  rippleDiag = null;
   built.disposed = true;
   built.plaques?.dispose();
   built.batch.dispose();
