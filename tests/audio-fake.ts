@@ -10,6 +10,7 @@ import type {
   AudioNodeLike,
   AudioParamLike,
   BufferSourceLike,
+  CompressorNodeLike,
   GainNodeLike,
   PannerNodeLike,
 } from '../src/audio/context.ts';
@@ -114,6 +115,22 @@ export class FakeGain extends FakeNode implements GainNodeLike {
   }
 }
 
+export class FakeCompressor extends FakeNode implements CompressorNodeLike {
+  readonly threshold: FakeParam;
+  readonly knee: FakeParam;
+  readonly ratio: FakeParam;
+  readonly attack: FakeParam;
+  readonly release: FakeParam;
+  constructor(ctx: FakeAudioContext) {
+    super(ctx, 'compressor');
+    this.threshold = new FakeParam(ctx, -24);
+    this.knee = new FakeParam(ctx, 30);
+    this.ratio = new FakeParam(ctx, 12);
+    this.attack = new FakeParam(ctx, 0.003);
+    this.release = new FakeParam(ctx, 0.25);
+  }
+}
+
 export class FakePanner extends FakeNode implements PannerNodeLike {
   panningModel = 'equalpower';
   distanceModel = 'inverse';
@@ -207,6 +224,9 @@ export class FakeAudioContext implements AudioContextLike {
   }
   createGain(): FakeGain {
     return new FakeGain(this);
+  }
+  createDynamicsCompressor(): FakeCompressor {
+    return new FakeCompressor(this);
   }
   createPanner(): FakePanner {
     return new FakePanner(this);

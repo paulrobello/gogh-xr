@@ -3,7 +3,7 @@
  * gesture (src/audio/audio.ts), feeds:
  *
  *   score voices → per-score gain → music bus ┐
- *   sfx voices → gain → [HRTF panner] → sfx bus ┴→ master (mute) → destination
+ *   sfx voices → gain → [HRTF panner] → sfx bus ┴→ master (mute) → limiter trim → limiter → destination
  *
  * The music and SFX buses follow the `musicVolume` and `sfxVolume` settings, and the master gain
  * mutes. Every positional cue gets its own HRTF `PannerNode`, and the listener follows the camera
@@ -75,9 +75,51 @@ export interface CueSpatial {
   readonly maxDistance: number;
 }
 
+/** dB to linear amplitude. */
+const dbToGain = (db: number): number => 10 ** (db / 20);
+
+/**
+ * Runtime trims on the mastered beds (Paul, headset, 2026-11-11), applied to each voice's own gain
+ * so the files, which `make asset-check` byte-checks against their loudness targets, stay as they
+ * are. Wind is +4 dB over its old gain of 1. Crickets are +10 dB over their old 0.6, a gain and
+ * not a closer panner, because a smaller refDistance or rolloff would also change how fast the
+ * five voices fade as the viewer walks away, where Paul asked only for a louder bed.
+ */
+export const WIND_HILL_GAIN_DB = 4;
+export const CRICKETS_GAIN_DB = 10;
+export const WIND_HILL_GAIN = dbToGain(WIND_HILL_GAIN_DB);
+export const CRICKETS_BASE_GAIN = 0.6;
+export const CRICKETS_GAIN = CRICKETS_BASE_GAIN * dbToGain(CRICKETS_GAIN_DB);
+
+/**
+ * The master limiter's settings. The boosted beds can sum past full scale at a high SFX volume,
+ * and a DAC clips hard, so a fast compressor with a high ratio sits before the destination.
+ */
+export const LIMITER = Object.freeze({
+  threshold: -3,
+  knee: 0,
+  ratio: 20,
+  attack: 0.003,
+  release: 0.15,
+});
+
+/**
+ * A DynamicsCompressorNode applies automatic makeup gain: (1 / fullRangeGain) ^ 0.6, where
+ * fullRangeGain is the compression curve applied to 1.0 (W3C Web Audio, "Computing the makeup
+ * gain"). For a hard knee the curve above the threshold is linear in dB with slope 1 / ratio
+ * (the spec text only says "linear, based on the ratio" and leaves the shape to the user agent,
+ * and Chromium uses this form), so fullRangeGain is threshold + (0 - threshold) / ratio dB.
+ * At -3 dB and ratio 20 that is -2.85 dB, a makeup of +1.71 dB. `LIMITER_TRIM` is its inverse,
+ * a gain in front of the compressor, so the level below the threshold equals the pre-limiter
+ * level. The threshold then acts at `-threshold + makeup` dB above the master level, -1.29 dBFS.
+ */
+export const LIMITER_MAKEUP_DB =
+  -(LIMITER.threshold + (0 - LIMITER.threshold) / LIMITER.ratio) * 0.6;
+export const LIMITER_TRIM = dbToGain(-LIMITER_MAKEUP_DB);
+
 export const CUE_SPATIAL: Readonly<Partial<Record<CueId, CueSpatial>>> = Object.freeze({
-  'wind-hill': { gain: 1, refDistance: 6, rolloffFactor: 1, maxDistance: 200 },
-  crickets: { gain: 0.6, refDistance: 3, rolloffFactor: 1.2, maxDistance: 120 },
+  'wind-hill': { gain: WIND_HILL_GAIN, refDistance: 6, rolloffFactor: 1, maxDistance: 200 },
+  crickets: { gain: CRICKETS_GAIN, refDistance: 3, rolloffFactor: 1.2, maxDistance: 120 },
   'church-bell': { gain: 1, refDistance: 20, rolloffFactor: 1, maxDistance: 400 },
   'stroke-rustle': { gain: 0.8, refDistance: 0.5, rolloffFactor: 1, maxDistance: 20 },
 });
@@ -203,7 +245,17 @@ export function createMixer(deps: MixerDeps): Mixer {
   const sfxBus = ctx.createGain();
   musicBus.connect(master);
   sfxBus.connect(master);
-  master.connect(ctx.destination);
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = LIMITER.threshold;
+  limiter.knee.value = LIMITER.knee;
+  limiter.ratio.value = LIMITER.ratio;
+  limiter.attack.value = LIMITER.attack;
+  limiter.release.value = LIMITER.release;
+  const limiterTrim = ctx.createGain();
+  limiterTrim.gain.value = LIMITER_TRIM;
+  master.connect(limiterTrim);
+  limiterTrim.connect(limiter);
+  limiter.connect(ctx.destination);
   let volumes = { music: deps.volumes.music, sfx: deps.volumes.sfx };
   let muted = deps.muted ?? false;
   master.gain.value = muted ? 0 : 1;
@@ -624,6 +676,8 @@ export function createMixer(deps: MixerDeps): Mixer {
       musicBus.disconnect();
       sfxBus.disconnect();
       master.disconnect();
+      limiterTrim.disconnect();
+      limiter.disconnect();
       buffers.clear();
       encoded.clear();
       decoding.clear();

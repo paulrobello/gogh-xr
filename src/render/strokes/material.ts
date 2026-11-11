@@ -78,6 +78,14 @@ export const RELIEF_STRENGTH = 0.08;
 /** Smallest relief finite-difference step, in mip-0 atlas texels. */
 export const RELIEF_MIN_TEXELS = 2;
 /**
+ * Coarsest atlas mip the coverage tap may read (stroke.frag.glsl). The GPU picks the mip from the
+ * larger screen derivative, so a small stroke seen near edge-on, such as the painter's hill crest
+ * from its flank, lands on mip 8 or coarser. There no brush keeps a coverage texel at 0.5, so the
+ * stroke vanished and the crest drew bare. Mip 6 keeps 10 to 14 of each brush's 64 cell texels at
+ * 0.5 or more, at least 0.7 of each brush's mip-0 share (tests/strokes-coverage-lod.test.ts).
+ */
+export const COVERAGE_MAX_LOD = 6;
+/**
  * Boundary haze strokes grow by up to this share of their size at `uHazeThickness` 1 (P3.5). The
  * cull sphere of a chunk holding haze always includes the full growth (batch.ts).
  */
@@ -183,6 +191,8 @@ export function createStrokeMaterial(
       // Every brush rect spans the same texel width: one stroke length.
       RECT_TEXELS: brushTexelRect(0).width,
       RELIEF_MIN_TEXELS,
+      COVERAGE_MAX_LOD: glslFloat(COVERAGE_MAX_LOD),
+      COVERAGE_MAX_RHO2: glslFloat(4 ** COVERAGE_MAX_LOD),
       DEPTH_TIE_BREAK_NDC: glslFloat(DEPTH_TIE_BREAK_STEPS * NDC_DEPTH_STEP),
       DEPTH_TIE_BREAK_MAX_M: glslFloat(DEPTH_TIE_BREAK_MAX_M),
       DEPTH_TIE_BREAK_FRONT_FLAG: `${DEPTH_TIE_BREAK_FRONT_FLAG}u`,

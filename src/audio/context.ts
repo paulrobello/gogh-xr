@@ -20,6 +20,14 @@ export interface GainNodeLike extends AudioNodeLike {
   readonly gain: AudioParamLike;
 }
 
+export interface CompressorNodeLike extends AudioNodeLike {
+  readonly threshold: AudioParamLike;
+  readonly knee: AudioParamLike;
+  readonly ratio: AudioParamLike;
+  readonly attack: AudioParamLike;
+  readonly release: AudioParamLike;
+}
+
 export interface PannerNodeLike extends AudioNodeLike {
   panningModel: string;
   distanceModel: string;
@@ -66,6 +74,7 @@ export interface AudioContextLike {
   readonly listener: AudioListenerLike;
   createGain(): GainNodeLike;
   createPanner(): PannerNodeLike;
+  createDynamicsCompressor(): CompressorNodeLike;
   createBufferSource(): BufferSourceLike;
   decodeAudioData(data: ArrayBuffer): Promise<AudioBufferLike>;
   resume(): Promise<void>;

@@ -684,7 +684,12 @@ describe('stream', () => {
   });
 
   test('the footprint is fixed: coverage and alpha read only the rest tap, and only the tone streams', () => {
-    expect(strokeFrag).toContain('vec4 t = texture(uAtlas, vUv);\n  float cov = t.r;');
+    // The rest tap, retaken at the coverage mip cap past it (COVERAGE_MAX_LOD), is the only one
+    // coverage reads.
+    expect(strokeFrag).toContain('vec4 t = texture(uAtlas, vUv);');
+    expect(strokeFrag).toContain(
+      '    t = textureLod(uAtlas, vUv, COVERAGE_MAX_LOD);\n  }\n  float cov = t.r;',
+    );
     expect(strokeFrag).toContain(
       'float tone = 0.75 + 0.5 * (vStream != 0.0 ? streamTone(t.b) : t.b);',
     );

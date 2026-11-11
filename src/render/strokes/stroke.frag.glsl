@@ -59,6 +59,13 @@ float streamTone(float rest) {
 
 void main() {
   vec4 t = texture(uAtlas, vUv);
+  // The coverage mip cap (COVERAGE_MAX_LOD in material.ts): the GPU picks the mip from the larger
+  // screen derivative, so past the cap the tap is retaken there. Below it the implicit tap stands.
+  vec2 du = dFdx(vUv) * float(ATLAS_SIZE);
+  vec2 dv = dFdy(vUv) * float(ATLAS_SIZE);
+  if (max(dot(du, du), dot(dv, dv)) > COVERAGE_MAX_RHO2) {
+    t = textureLod(uAtlas, vUv, COVERAGE_MAX_LOD);
+  }
   float cov = t.r;
   // Ruling R3: sharpen coverage to ~0 or 1 except a one-pixel rim, so alpha-to-coverage does not
   // dither the stroke interior into flickering stripes.

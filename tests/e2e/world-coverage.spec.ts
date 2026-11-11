@@ -17,7 +17,7 @@
 import type { Page } from '@playwright/test';
 import { REACTIVE_MOTION_BIT } from '../../src/motion/layers.ts';
 import { STROKE_LAYER } from '../../src/render/strokes/instance.ts';
-import { COVERAGE_POSES, type CoveragePose } from '../world-poses';
+import { COVERAGE_POSES, type CoveragePose, CREST_POSES } from '../world-poses';
 import { expect, glErrors, test, type Xr } from './fixtures';
 
 /** Most bare share allowed at any pose (P2-A3). */
@@ -217,6 +217,32 @@ test('at each of the 24 poses at most 0.5% of the view is bare, within the defau
   console.log(
     `[e2e] coverage max bare ${(worst.bare * 100).toFixed(3)}% (${worst.name}), max weighted ${(worstWeighted.weighted * 100).toFixed(3)}% (${worstWeighted.name})`,
   );
+  for (const r of rows) {
+    expect(r.bare, r.name).toBeLessThanOrEqual(MAX_BARE);
+    expect(r.drawn, r.name).toBeLessThanOrEqual(DEFAULT_BUDGET);
+  }
+  expect(await glErrors(page)).toEqual([]);
+});
+
+test('from the hill flank, looking up at the crest from all four sides, at most 0.5% of the view is bare', async ({
+  page,
+  xr,
+}) => {
+  test.setTimeout(180_000);
+  await xr.boot(`${SWEEP}&coverage`);
+  expect((await world(xr)).debug).toBe('coverage');
+  const rows: { name: string; bare: number; weighted: number; drawn: number }[] = [];
+  for (const pose of CREST_POSES) {
+    await visit(page, xr, pose);
+    const { binary, weighted } = await bareShare(page);
+    const drawn = ((await xr.diag()).world as WorldDiag).strokes.visible;
+    rows.push({ name: pose.name, bare: binary, weighted, drawn });
+  }
+  for (const r of rows) {
+    console.log(
+      `[e2e] crest coverage ${r.name}: bare ${(r.bare * 100).toFixed(3)}%, weighted ${(r.weighted * 100).toFixed(3)}%, drawn ${r.drawn}`,
+    );
+  }
   for (const r of rows) {
     expect(r.bare, r.name).toBeLessThanOrEqual(MAX_BARE);
     expect(r.drawn, r.name).toBeLessThanOrEqual(DEFAULT_BUDGET);

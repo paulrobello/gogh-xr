@@ -39,3 +39,19 @@ export const COVERAGE_POSES: readonly CoveragePose[] = Object.freeze([
   { name: 'boundary 47 m inward', position: [0, -3.83, -47], yaw: Math.PI, pitch: 0.05 },
   { name: 'high over the valley', position: [0, 30, -10], yaw: 0, pitch: -0.6 },
 ] as const);
+
+/**
+ * Five poses on the painter's hill flank, 4.5-5 m from the spot, each looking up the hill at its
+ * crest (2026-11-11). Each eye stands 1.6 m above `createTerrain(1).heightAt`, which puts it 0.25 to
+ * 0.56 m above the crest's flat top, so the top's far half is seen 3-7° from edge-on. There its
+ * small strokes took a brush mip with no coverage left and the crest drew bare (COVERAGE_MAX_LOD in
+ * src/render/strokes/material.ts). Kept out of COVERAGE_POSES, whose 24 poses the unit budget and
+ * sky river checks pin.
+ */
+export const CREST_POSES: readonly CoveragePose[] = Object.freeze([
+  { name: 'crest from behind', position: [0, 0.56, 4.5], yaw: 0, pitch: -0.12 },
+  { name: 'crest from behind, grazing', position: [0, 0.25, 5], yaw: 0, pitch: -0.05 },
+  { name: 'crest from ahead', position: [0, 0.47, -4.5], yaw: Math.PI, pitch: -0.1 },
+  { name: 'crest from the east', position: [4.5, 0.53, 0], yaw: HALF_PI, pitch: -0.12 },
+  { name: 'crest from the west', position: [-4.5, 0.5, 0], yaw: -HALF_PI, pitch: -0.11 },
+] as const);

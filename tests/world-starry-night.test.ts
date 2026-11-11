@@ -114,7 +114,7 @@ import { boundaryFactor } from '../src/world/boundary.ts';
 import { CYPRESS_OUTLINE } from '../src/world/cypress.ts';
 import { gableSlopeNormal, toLocal, toWorld } from '../src/world/house-geometry.ts';
 import { WINDOW_COLOR } from '../src/world/village.ts';
-import { COVERAGE_POSES } from './world-poses.ts';
+import { COVERAGE_POSES, CREST_POSES } from './world-poses.ts';
 
 /** Painted footprint area into and out of the face fit, per world layer, while `on`. */
 const fitLog = vi.hoisted(() => ({
@@ -1264,7 +1264,7 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     const camera = new PerspectiveCamera(QUEST_FOV, QUEST_ASPECT, 0.05, 1000);
     camera.rotation.order = 'YXZ';
     const drawn: Record<string, number> = {};
-    for (const { name, position, yaw, pitch } of COVERAGE_POSES) {
+    for (const { name, position, yaw, pitch } of [...COVERAGE_POSES, ...CREST_POSES]) {
       camera.position.set(...position);
       camera.rotation.set(pitch, yaw, 0);
       camera.updateMatrixWorld();

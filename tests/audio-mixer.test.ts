@@ -8,7 +8,12 @@ import { CUE_IDS, type CueId, MANIFEST_PATH } from '../src/audio/cues.ts';
 import {
   BELL_FIRST_S,
   BELL_INTERVAL_S,
+  CRICKETS_GAIN,
+  CUE_SPATIAL,
   createMixer,
+  LIMITER,
+  LIMITER_MAKEUP_DB,
+  LIMITER_TRIM,
   MAX_MUSIC_VOICES,
   MAX_SFX_VOICES,
   type MixerDeps,
@@ -16,12 +21,14 @@ import {
   RUSTLE_MIN_INTERVAL_S,
   SCORE_CROSSFADE_S,
   SCORE_FADE_IN_S,
+  WIND_HILL_GAIN,
 } from '../src/audio/mixer.ts';
 import { type Ambience, ambienceFor, bellPosition } from '../src/audio/placement.ts';
 import {
   audioBytes,
   chain,
   FakeAudioContext,
+  type FakeCompressor,
   type FakeGain,
   type FakeNode,
   FakePanner,
@@ -115,10 +122,26 @@ describe('gain routing', () => {
     await settle();
     const [score] = sourcesOf(ctx, DURATIONS['score-gallery']);
     const music = chain(score);
-    expect(music.map((n) => n.kind)).toEqual(['source', 'gain', 'gain', 'gain', 'destination']);
+    expect(music.map((n) => n.kind)).toEqual([
+      'source',
+      'gain',
+      'gain',
+      'gain',
+      'gain',
+      'compressor',
+      'destination',
+    ]);
     const [whoosh] = sourcesOf(ctx, DURATIONS['portal-whoosh']);
     const sfx = chain(whoosh);
-    expect(sfx.map((n) => n.kind)).toEqual(['source', 'gain', 'gain', 'gain', 'destination']);
+    expect(sfx.map((n) => n.kind)).toEqual([
+      'source',
+      'gain',
+      'gain',
+      'gain',
+      'gain',
+      'compressor',
+      'destination',
+    ]);
     const [cricket] = sourcesOf(ctx, DURATIONS.crickets);
     const bed = chain(cricket);
     expect(bed.map((n) => n.kind)).toEqual([
@@ -127,6 +150,8 @@ describe('gain routing', () => {
       'panner',
       'gain',
       'gain',
+      'gain',
+      'compressor',
       'destination',
     ]);
     const musicBus = music[2] as FakeGain;
@@ -137,6 +162,44 @@ describe('gain routing', () => {
     expect(music[3]).toBe(sfx[3]);
     expect(musicBus.gain.value).toBeCloseTo(0.7, 6);
     expect(sfxBus.gain.value).toBeCloseTo(0.5, 6);
+  });
+
+  test('the beds carry their runtime trims, and a limiter sits before the destination', async () => {
+    const { ctx, mixer } = rig();
+    await mixer.load();
+    mixer.setAmbience(starry);
+    await settle();
+    expect(WIND_HILL_GAIN).toBeCloseTo(10 ** (4 / 20), 9);
+    expect(CRICKETS_GAIN).toBeCloseTo(0.6 * 10 ** (10 / 20), 9);
+    expect(CUE_SPATIAL['wind-hill']?.gain).toBe(WIND_HILL_GAIN);
+    expect(CUE_SPATIAL.crickets?.gain).toBe(CRICKETS_GAIN);
+    // The panner distance model is unchanged.
+    expect(CUE_SPATIAL.crickets).toMatchObject({
+      refDistance: 3,
+      rolloffFactor: 1.2,
+      maxDistance: 120,
+    });
+    const [wind] = sourcesOf(ctx, DURATIONS['wind-hill']);
+    const crickets = sourcesOf(ctx, DURATIONS.crickets);
+    expect(crickets).toHaveLength(5);
+    await Promise.resolve();
+    ctx.advance(3);
+    expect(voiceGain(wind).gain.value).toBeCloseTo(WIND_HILL_GAIN, 6);
+    for (const c of crickets) expect(voiceGain(c).gain.value).toBeCloseTo(CRICKETS_GAIN, 6);
+    const limiter = chain(wind).find((n) => n.kind === 'compressor') as FakeCompressor;
+    expect(limiter.threshold.value).toBe(LIMITER.threshold);
+    expect(limiter.ratio.value).toBe(LIMITER.ratio);
+    // The compressor's automatic makeup gain is (1 / curve(1.0)) ^ 0.6 = +1.71 dB at -3 dB, ratio
+    // 20, and the trim in front of it cancels it.
+    const fullRangeGain = 10 ** ((-3 + 3 / 20) / 20);
+    const makeup = (1 / fullRangeGain) ** 0.6;
+    expect(LIMITER_MAKEUP_DB).toBeCloseTo(1.71, 2);
+    expect(LIMITER_TRIM).toBeCloseTo(1 / makeup, 9);
+    expect(LIMITER_TRIM * makeup).toBeCloseTo(1, 12);
+    const trim = chain(wind)
+      .filter((n) => n.kind === 'gain')
+      .at(-1) as FakeGain;
+    expect(trim.gain.value).toBeCloseTo(LIMITER_TRIM, 12);
   });
 
   test('every positional cue has its own HRTF panner, at its anchor', async () => {
