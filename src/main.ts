@@ -21,10 +21,12 @@ import {
 } from './diag/ab';
 import { installDiag, installPose, installShot, registerDiag } from './diag/diag';
 import { flags } from './diag/flags';
+import type { PerfContext, PerfRecorder } from './diag/perf';
 import { skyWrapStats } from './diag/sky-wrap-stats';
 import { type ArcMesh, createArcMesh } from './locomotion/arc-mesh';
 import { type ArcTarget, createLocomotion } from './locomotion/locomotion';
 import { MOTION_TIME_WRAP_S, motionClock } from './motion/clock';
+import { REACTIVE_MOTION_BIT } from './motion/layers';
 import { MOTION_LAYER_MASK, reactiveGate } from './motion/motion';
 import { insideReactiveBox, reactiveTracker } from './motion/reactive';
 import { SKY_WAVE_PER_TURN } from './motion/sky-swirl';
@@ -77,6 +79,7 @@ import {
   registerGalleryReturn,
 } from './ui/panel-toggle';
 import { createVignette } from './ui/vignette';
+import { readRunningBuildId } from './update/policy';
 import { startUpdates } from './update/start';
 import type { Updates } from './update/updates';
 import { busyWait } from './util/busy-wait';
@@ -302,6 +305,15 @@ function trackDisturbers(time: number, presenting: boolean, frame?: XRFrame): vo
     locomotion.rig.matrixWorld.elements,
   );
 }
+/** Hands to the `?perf` recorder: the speed the tracker took for slots 1 and 2 this frame. */
+function recordHandSpeeds(recorder: PerfRecorder): void {
+  const positions = reactiveTracker.uniforms.uDisturbers.value;
+  const velocities = reactiveTracker.uniforms.uDisturberVelocities.value;
+  for (let h = 0; h < 2; h += 1) {
+    const v = velocities[h + 1];
+    recorder.hand(h, positions[h + 1].w > 0, Math.hypot(v.x, v.y, v.z));
+  }
+}
 /** The hand orbs (outside the bench): built at boot, hidden until a tracked hand in XR. */
 const handOrbs = runLocomotion ? createHandOrbs(scene) : null;
 const handSlots: [number, number] = [-1, -1];
@@ -342,6 +354,14 @@ if (handOrbs) renderer.compile(handOrbs.meshes[0], camera, scene);
 const motionLayersOnly = import.meta.env.MODE === 'e2e' ? flags.motionlayers : null;
 const worldMotionMask =
   motionLayersOnly === null ? MOTION_LAYER_MASK : MOTION_LAYER_MASK & motionLayersOnly;
+/** The `reactive` A/B group's gate: off closes the reactive bit on the clock and for the ripple. */
+let reactiveOn = true;
+function setReactive(on: boolean): void {
+  reactiveOn = on;
+  motionClock.setClosedMask(on ? 0 : REACTIVE_MOTION_BIT);
+}
+/** The `?perf` recorder (src/diag/perf.ts), loaded behind the flag; null until then and without it. */
+let perf: PerfRecorder | null = null;
 /** The bound world's hand ripple (the gallery's live scan), or null. */
 let handRipple: HandRipple | null = null;
 /** Reused every frame, so driving the ripple allocates nothing. */
@@ -363,7 +383,7 @@ function frameHandRipple(presenting: boolean, busy: boolean, dt: number): void {
   handRippleState.amplitude = rippleAmplitude(
     flags.noanim,
     settingsStore.effective.calm,
-    worldMotionMask,
+    reactiveOn ? worldMotionMask : worldMotionMask & ~REACTIVE_MOTION_BIT,
   );
   handRippleState.dt = dt;
   handRipple.frame(handRippleState);
@@ -529,6 +549,7 @@ const ab: AbController | null = abActive
           setHalo,
           setCalm: (calm) => motionClock.setCalm(calm),
           setWrap: setSkyWrap,
+          setReactive,
         },
         abActive.variants,
       ),
@@ -716,6 +737,8 @@ function detectPortals(): void {
 }
 function renderFrame(time: number, frame?: XRFrame): void {
   const workStart = performance.now();
+  // three passes the XR rAF time while presenting and the window's otherwise.
+  perf?.frame(time, renderer.xr.isPresenting);
   const dt = lastTime === 0 ? 0 : (time - lastTime) / 1000;
   const dtMs = lastTime === 0 ? 0 : time - lastTime;
   lastTime = time;
@@ -741,13 +764,19 @@ function renderFrame(time: number, frame?: XRFrame): void {
   if (ab && actions.abCycle) {
     abSwitchStart = performance.now();
     ab.cycle();
+    const switched = ab.diag();
     abSwitch = {
-      variant: ab.diag().variant,
+      variant: switched.variant,
       applyMs: performance.now() - abSwitchStart,
       frameMs: null,
     };
+    // The closing window keeps the variant it measured; the next opens on the new one.
+    perf?.mark(`ab ${switched.group}=${switched.variant}`);
     // The DOM is invisible in immersive mode, so the HUD carries the switch, hidden or not.
     hud?.setVisible(true);
+  } else if (perf && actions.abCycle) {
+    // With no A/B group, the A/B button marks a `?perf` segment, so a headset test needs no CDP.
+    perf.mark('button');
   }
   if (flags.slow > 0) busyWait(flags.slow);
   if (pinnedMotionTime === null) motionClock.frame(time);
@@ -765,6 +794,7 @@ function renderFrame(time: number, frame?: XRFrame): void {
     locomotion.frame(busy ? frozenActions(actions) : actions, renderer.xr.isPresenting);
     if (!busy) detectPortals();
     trackDisturbers(time, renderer.xr.isPresenting, frame);
+    if (perf) recordHandSpeeds(perf);
     frameHandOrbs(renderer.xr.isPresenting, dt);
     frameHandRipple(renderer.xr.isPresenting, busy, dt);
   }
@@ -1149,3 +1179,49 @@ void isVrSupported(navigator.xr).then((supported) => {
     });
   });
 });
+
+// `?perf` (src/diag/perf.ts): a windowed frame recorder, loaded only behind the flag, so a boot
+// without it carries none of it. Honoured in production like `?slow`. The bench ignores it.
+if (flags.perf && flags.bench === null) {
+  void import('./diag/perf')
+    .then(({ createPerfRecorder }) => {
+      const buildId = `${__BUILD_SHA__}/${readRunningBuildId()?.slice(0, 12) ?? 'dev'}`;
+      const context = (presenting: boolean): PerfContext => {
+        const gov = strokes.governorDiag();
+        const active = ab?.diag() ?? null;
+        return {
+          group: active?.group ?? null,
+          variant: active?.variant ?? null,
+          targetHz: presenting ? (gov?.frameRate ?? targetFrameRateFor(sessionQuality)) : null,
+          level: gov ? (gov.fixedLevel ?? 'auto') : null,
+          liveLevel: gov?.level ?? null,
+          foveation: gov?.foveation ?? null,
+          painting: switcher.active?.id ?? null,
+          buildId,
+        };
+      };
+      let storage: Storage | null = null;
+      try {
+        storage = window.localStorage;
+      } catch {
+        storage = null;
+      }
+      const recorder = createPerfRecorder({ context, storage });
+      perf = recorder;
+      renderer.xr.addEventListener('sessionstart', () => recorder.mark('xr-start'));
+      renderer.xr.addEventListener('sessionend', () => recorder.mark('xr-end'));
+      // A reload or navigation closes the open window, so it persists with the rest.
+      window.addEventListener('pagehide', () => recorder.mark('pagehide'));
+      settingsStore.subscribe((effective, key) => {
+        if (key === 'qualityLevel') recorder.mark(`level ${effective.qualityLevel}`);
+      });
+      const target = window as unknown as Record<string, unknown>;
+      target.__goghPerfMark = (label?: string) =>
+        recorder.mark(typeof label === 'string' && label ? label : 'mark');
+      target.__goghPerfClear = () => recorder.clear();
+      if (flags.diag) {
+        registerDiag('perf', () => ({ windows: recorder.windows(), current: recorder.current() }));
+      }
+    })
+    .catch((error: unknown) => console.warn('perf recorder failed to start', error));
+}

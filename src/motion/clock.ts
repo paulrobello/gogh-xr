@@ -65,6 +65,11 @@ export interface MotionClock {
    * snapping to rest, since every offset but the wheel's scales to 0 there.
    */
   setHoldMask(mask: number): void;
+  /**
+   * Bits forced closed on top of the layer and hold masks: the `reactive` A/B group's `off` closes
+   * `REACTIVE_MOTION_BIT` here, so a world rebind (`setLayerMask`) keeps it closed.
+   */
+  setClosedMask(mask: number): void;
   diag(): MotionState;
 }
 
@@ -82,6 +87,7 @@ export function clampCalm(calm: number): number {
 export function createMotionClock(options: MotionClockOptions = {}): MotionClock {
   let layerMask = (options.layerMask ?? MOTION_LAYER_MASK) >>> 0;
   let holdMask = 0;
+  let closedMask = 0;
   const uniforms: MotionUniforms = {
     uTime: { value: 0 },
     uCalm: { value: 1 },
@@ -95,11 +101,8 @@ export function createMotionClock(options: MotionClockOptions = {}): MotionClock
   const sync = (): void => {
     uniforms.uCalm.value = calm;
     uniforms.uFreeze.value = frozen ? 1 : 0;
-    uniforms.uMotionLayers.value = frozen
-      ? 0
-      : calm <= 0
-        ? (layerMask & holdMask) >>> 0
-        : layerMask;
+    const open = frozen ? 0 : calm <= 0 ? (layerMask & holdMask) >>> 0 : layerMask;
+    uniforms.uMotionLayers.value = closedMask === 0 ? open : (open & ~closedMask) >>> 0;
   };
   const clock: MotionClock = {
     uniforms,
@@ -126,6 +129,10 @@ export function createMotionClock(options: MotionClockOptions = {}): MotionClock
     },
     setHoldMask(mask) {
       holdMask = mask >>> 0;
+      sync();
+    },
+    setClosedMask(mask) {
+      closedMask = mask >>> 0;
       sync();
     },
     diag: () => ({

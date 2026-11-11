@@ -9,6 +9,7 @@
  * desktop. main.ts builds a controller only when a group resolves, so a boot with no A/B flag
  * builds no group and does no per-frame A/B work. The bench ignores all of it.
  */
+import { setTrackerTimeSource, TRACKER_TIME_SOURCES } from '../motion/tracker-time';
 import { SKY_WRAP_AB_ORDER, type SkyWrap } from '../motion/variants';
 import { VTX_ARMS, type VtxArm, vertexArms } from '../render/strokes/vertex-arms';
 import { ZDIAG_MODES, type ZdiagMode } from './flags';
@@ -33,11 +34,18 @@ export const AB_GROUPS = {
   wrap: SKY_WRAP_AB_ORDER,
   /** Vertex cost against fill (src/render/strokes/vertex-arms.ts). No flag implies it. */
   vtx: VTX_ARMS,
+  /**
+   * The reactive tracker's time source (src/motion/tracker-time.ts): the XR frame's
+   * predictedDisplayTime as shipped, or the callback time. No flag implies it.
+   */
+  trackertime: TRACKER_TIME_SOURCES,
+  /** The reactive motion gate (`REACTIVE_MOTION_BIT`), open or closed. No flag implies it. */
+  reactive: ['on', 'off'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type AbGroupName = keyof typeof AB_GROUPS;
 
-type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap' | 'vtx';
+type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap' | 'vtx' | 'trackertime' | 'reactive';
 
 /** The setting each group drives. Two groups that drive the same setting are rivals. */
 const OWNS: Record<AbGroupName, AbSetting> = {
@@ -47,6 +55,8 @@ const OWNS: Record<AbGroupName, AbSetting> = {
   calm: 'calm',
   wrap: 'wrap',
   vtx: 'vtx',
+  trackertime: 'trackertime',
+  reactive: 'reactive',
 };
 
 /** The flags the resolution reads (src/diag/flags.ts), plus the effective calm. */
@@ -83,7 +93,7 @@ export interface AbResolution {
 
 /** An A/B flag other than `?ab`: the setting it drives, its text and the group it implies. */
 interface ImpliedFlag {
-  readonly setting: Exclude<AbSetting, 'calm' | 'vtx'>;
+  readonly setting: Exclude<AbSetting, 'calm' | 'vtx' | 'trackertime' | 'reactive'>;
   readonly text: string;
   readonly variant: string;
   readonly group: AbGroupName;
@@ -277,6 +287,8 @@ export interface AbGroupDeps {
   setCalm(calm: number): void;
   /** The sky wrap variant (src/motion/variants.ts). */
   setWrap(wrap: SkyWrap): void;
+  /** Opens (true) or closes the reactive motion gate. Absent, the `reactive` group does nothing. */
+  setReactive?(on: boolean): void;
 }
 
 /**
@@ -305,6 +317,18 @@ export function createAbGroup(
     // so no switch links a program.
     vertexArms.activate();
     return { name, variants, apply: (variant) => vertexArms.set(variant as VtxArm) };
+  }
+  if (name === 'trackertime') {
+    // A module switch trackerTime reads each frame, so there is no program to link.
+    return {
+      name,
+      variants,
+      apply: (variant) => setTrackerTimeSource(variant === 'callback' ? 'callback' : 'predicted'),
+    };
+  }
+  if (name === 'reactive') {
+    // One bit of uMotionLayers, a uniform, so there is no program to link.
+    return { name, variants, apply: (variant) => deps.setReactive?.(variant === 'on') };
   }
   return { name, variants, apply: (variant) => deps.setCalm(Number(variant)) };
 }

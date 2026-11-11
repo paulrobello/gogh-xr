@@ -10,6 +10,10 @@ import {
   resolveAb,
 } from '../src/diag/ab';
 import { parseFlags, ZDIAG_MODES } from '../src/diag/flags';
+import { createMotionClock } from '../src/motion/clock';
+import { REACTIVE_MOTION_BIT } from '../src/motion/layers';
+import { MOTION_LAYER_MASK, reactiveGate } from '../src/motion/motion';
+import { trackerTime, trackerTimeSource } from '../src/motion/tracker-time';
 import { VTX_FEWER_KEEP, VTX_SMALLER_SCALE, vertexArms } from '../src/render/strokes/vertex-arms';
 
 const NONE: AbFlags = {
@@ -40,7 +44,83 @@ describe('AB_GROUPS', () => {
       'pingpong',
     ]);
     expect(AB_GROUPS.vtx).toEqual(['base', 'fewer', 'smaller', 'sparse', 'hoist']);
-    expect(Object.keys(AB_GROUPS)).toEqual(['shimmer', 'zdiag-all', 'halo', 'calm', 'wrap', 'vtx']);
+    expect(AB_GROUPS.trackertime).toEqual(['predicted', 'callback']);
+    expect(AB_GROUPS.reactive).toEqual(['on', 'off']);
+    expect(Object.keys(AB_GROUPS)).toEqual([
+      'shimmer',
+      'zdiag-all',
+      'halo',
+      'calm',
+      'wrap',
+      'vtx',
+      'trackertime',
+      'reactive',
+    ]);
+  });
+});
+
+describe('trackertime and reactive', () => {
+  const deps = () => ({
+    zdiag: { setMode: vi.fn(), prepare: vi.fn() },
+    setHalo: vi.fn(),
+    setCalm: vi.fn(),
+    setWrap: vi.fn(),
+    setReactive: vi.fn(),
+  });
+
+  it('have no implying flag, start at the shipped variant, and keep implied flags fixed', () => {
+    expect(resolveAb(flags({ ab: 'trackertime' }))).toEqual({
+      activation: { group: 'trackertime', start: 0 },
+      warnings: [],
+    });
+    expect(resolveAb(flags({ ab: 'reactive' }))).toEqual({
+      activation: { group: 'reactive', start: 0 },
+      warnings: [],
+    });
+    // ?ab wins over every implied flag, which drives another setting and so stays fixed.
+    const both = resolveAb(flags({ ab: 'reactive', zdiag: 'noa2c', nohalo: true, wrap: 'wave' }));
+    expect(both.activation).toEqual({ group: 'reactive', start: 0 });
+    expect(both.warnings).toEqual([
+      '?ab=reactive has the A/B button (reactive); ?zdiag=noa2c stays fixed, ?nohalo stays fixed, ' +
+        '?wrap=wave stays fixed',
+    ]);
+    // An implied flag alone never reaches either group.
+    expect(resolveAb(flags({ nohalo: true })).activation?.group).toBe('halo');
+    expect(resolveAb(flags({ ab: 'trackertime', bench: '1000' })).activation).toBeNull();
+  });
+
+  it('trackertime switches the tracker time source live, with no program to precompile', () => {
+    const d = deps();
+    const group = createAbGroup('trackertime', d);
+    const frame = { predictedDisplayTime: 1016 };
+    group.apply('callback');
+    expect(trackerTimeSource()).toBe('callback');
+    expect(trackerTime(1000, frame)).toBe(1000);
+    group.apply('predicted');
+    expect(trackerTimeSource()).toBe('predicted');
+    expect(trackerTime(1000, frame)).toBe(1016);
+    expect(d.zdiag.prepare).not.toHaveBeenCalled();
+  });
+
+  it('reactive drives the gate setter, and the clock closes only the reactive bit', () => {
+    const d = deps();
+    const group = createAbGroup('reactive', d);
+    group.apply('off');
+    expect(d.setReactive).toHaveBeenLastCalledWith(false);
+    group.apply('on');
+    expect(d.setReactive).toHaveBeenLastCalledWith(true);
+    expect(d.zdiag.prepare).not.toHaveBeenCalled();
+
+    const clock = createMotionClock({ layerMask: MOTION_LAYER_MASK });
+    expect(reactiveGate(clock.uniforms.uMotionLayers.value)).toBe(true);
+    clock.setClosedMask(REACTIVE_MOTION_BIT);
+    expect(reactiveGate(clock.uniforms.uMotionLayers.value)).toBe(false);
+    expect(clock.uniforms.uMotionLayers.value).toBe(MOTION_LAYER_MASK & ~REACTIVE_MOTION_BIT);
+    // A world rebind keeps it closed.
+    clock.setLayerMask(MOTION_LAYER_MASK);
+    expect(reactiveGate(clock.uniforms.uMotionLayers.value)).toBe(false);
+    clock.setClosedMask(0);
+    expect(clock.uniforms.uMotionLayers.value).toBe(MOTION_LAYER_MASK);
   });
 });
 

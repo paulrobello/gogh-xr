@@ -3673,3 +3673,15 @@ The aim was to make density sheds cut fill as well as instances. Under the defau
 The cypress-flame and P4.6 sway coverage tests failed too. The CPU raster read the GPU's bare share 2 to 2.4 times low, and it left out motion, which roughly doubled the gap at the river pose.
 
 The finding: `area` at level 5 leaves 0.022% of headroom at hill west, so almost any cut to the far band's painted area breaks the coverage bar. The vtx A/B's `sparse` arm cut instances by 30% with the area held, and saved 3.4 ms on the headset (Vertex cost or fill). Cutting instances at a constant painted area keeps coverage, and that is what the fixed quality levels already do under `area`. Paul parked the law change on 2026-11-11, and `area` stays the default.
+
+## Headset instrumentation: `?perf`, `?ab=trackertime`, `?ab=reactive` (2026-11-11)
+
+For the CDP-read headset session: polling `__goghDiag()` every frame costs about 4 ms on the Quest, so the build records in-app and the reader takes one read per test.
+
+- `?perf` (`src/diag/perf.ts`, CLAUDE.md URL flags): windowed frame intervals in a 131,072-entry ring, closed into summaries on `__goghPerfMark(label)`, every A/B switch, XR start and end, and a quality-level change, each without its first 1 s. Summaries persist to `gogh-xr.perf.v1` once per close. Read `__goghDiag().perf.windows` (or the localStorage key) once after each test.
+- Hand speed spread (card 01a1bb2274e5, criterion 3): boot `https://gogh-xr.pardev.net/?painting=starry-night&ab=trackertime&perf&diag&slow=20`, sweep a hand at a steady speed for about 20 s, press the A/B button (single left stick click) to switch to `callback`, sweep again, and compare the two windows' `handSpeed[i].cv` and `jitterRms`.
+- Hands-in-paint cost (card 01a1c3941b57): boot `https://gogh-xr.pardev.net/?painting=starry-night&ab=reactive&perf&diag&hud`, hold both hands in the paint near the cypress, and compare the `on` and `off` windows' `meanMs`, `p95Ms` and `overBudgetPct`.
+
+Verified locally (2026-11-11): unit tests for the recorder maths (nearest-rank percentiles, the over-budget shares at 1.5 and 2.5 × the budget, the settle, windows closing on a mark and on an A/B switch with the variant each measured, the ring bound, a window's budget taken from its own frames when the live presenting state flips before the close (three sets `isPresenting` before `sessionstart` and `sessionend`), the 200-window and size bounds on storage, the reload, clear, and the hand-speed mean, sd, cv and jitter) and for the two groups' resolve, precedence and apply, in `tests/perf-recorder.test.ts` and `tests/ab.test.ts`. `make checkall` green. Bundle: index 142,973 to 143,514 gzip bytes (+541), a new `perf` chunk of 1,390, JS total 350,002 to 351,961.
+
+Not verified: `tests/e2e/perf.spec.ts` was written and not run (load ruling), and nothing has run on the headset. A boot without `?perf` or an A/B flag pays one null check per frame for the recorder (`perf?.frame`, and `if (perf)` after the tracker) and one compare in `trackerTime`; no pixel can change, but the byte-identity specs were not rerun here.
