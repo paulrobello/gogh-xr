@@ -3655,6 +3655,21 @@ The cause was the spec's projection, not the app. IWER with stereo off renders o
 - From the left eye, the scan's projected edges land on x 541.2 and 766.9, where the capture shows them (541 and 767). The head puts them 14 px left.
 - From the left eye, no changed pixel lies beyond the orb discs, even with the discs cut to the bare 0.08 m glow radius and no pixel margin.
 
-The spec now projects from the rendered eye and asserts stereo is off. The fix has not been rerun in e2e. tests/e2e/reactive.spec.ts projects from the head the same way and passes. Its bars may have room for a 14 to 24 px offset, which is untested.
+The spec now projects from the rendered eye and asserts stereo is off. The MiniMac commit gate on 6200d38 (2026-11-11 04:55Z) passed all four tests, with the coming-soon frame at 0 px beyond the orbs, and the whole e2e project at 151 passed and 7 skipped. tests/e2e/reactive.spec.ts projects from the head the same way and passes. Its bars may have room for a 14 to 24 px offset, which is untested.
 
-Nothing has run on a headset.
+Paul checked it in the headset on the deployed cc1d172 and signed off ("Looks good", 2026-11-11).
+
+## Floor density law: parked (2026-11-11, card 01a1c0f053dd)
+
+The aim was to make density sheds cut fill as well as instances. Under the default `area` law a shed grows the survivors by sqrt(from / to), so the painted area holds. On the headset at fixed level 5, `count` measured 20.37 ms against `area`'s 23.74 ms with the same 280k strokes, but left holes in the sky. A lane built a third law, `floor` (branch `worktree-agent-a826c75745d09f42a`, 87b2904, not merged). It cuts at the strokes' own size until a band's painted area falls to 0.7 of its start, then grows the survivors to hold it there. A CPU raster of the 24 coverage poses predicted that level 5 would pass. The MiniMac GPU run (2026-11-11 09:00Z, `?coverage`, 0.5% bar) failed it:
+
+| Pose at level 5 | `area` (main, 6200d38 gate) | `floor` |
+| --- | --- | --- |
+| hill west | 0.478% | 0.532% |
+| spot ahead | 0.277% | 0.428% |
+| spot ahead, wheelrun at motiont 0.5 | 0.302% | 0.645% |
+| under the cypress | 0.025% | 0.157% |
+
+The cypress-flame and P4.6 sway coverage tests failed too. The CPU raster read the GPU's bare share 2 to 2.4 times low, and it left out motion, which roughly doubled the gap at the river pose.
+
+The finding: `area` at level 5 leaves 0.022% of headroom at hill west, so almost any cut to the far band's painted area breaks the coverage bar. The vtx A/B's `sparse` arm cut instances by 30% with the area held, and saved 3.4 ms on the headset (Vertex cost or fill). Cutting instances at a constant painted area keeps coverage, and that is what the fixed quality levels already do under `area`. Paul parked the law change on 2026-11-11, and `area` stays the default.
