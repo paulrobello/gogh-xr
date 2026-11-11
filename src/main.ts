@@ -157,8 +157,7 @@ function setSkyWrap(wrap: SkyWrap): void {
 }
 // `?wrap` sets the sky wrap variant whatever A/B group wins: under another group it stays fixed.
 setSkyWrap(flags.wrap ?? DEFAULT_SKY_WRAP);
-// `?waveturns` sets the wave's waves per turn, read under wave and, outside the wheels, under
-// the default wheelflow.
+// `?waveturns` sets the wave's waves per turn, read under wave.
 motionVariants.setWaveTurns(flags.waveTurns ?? SKY_WAVE_PER_TURN);
 /**
  * `?motiont` pins the motion time for the e2e (R-P4g). `import.meta.env.MODE` is replaced at build
@@ -172,8 +171,9 @@ const pinnedMotionPhase = import.meta.env.MODE === 'e2e' ? flags.motionphase : n
 if (import.meta.env.MODE === 'e2e') {
   pinMotionPhase(flags.motionphase);
   void import('./diag/swirl-probe').then(
-    ({ moonDiscRim, predictHaloGlow, predictRingShift, predictSkyShift }) => {
+    ({ moonDiscRim, predictHaloGlow, predictRingShift, predictSkyShift, riverHeading }) => {
       window.__goghSkyShift = predictSkyShift;
+      window.__goghRiverHeading = riverHeading;
       window.__goghRingShift = predictRingShift;
       window.__goghHaloGlow = predictHaloGlow;
       window.__goghMoonDisc = moonDiscRim;

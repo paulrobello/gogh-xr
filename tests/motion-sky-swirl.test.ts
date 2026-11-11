@@ -16,6 +16,7 @@ import {
   SKY_SWIRL_REACH,
   SKY_VORTICES,
   skyOmega,
+  skyRiverReach,
   skySwirl,
   skySwirlGlslDefines,
   skySwirlReach,
@@ -407,7 +408,11 @@ describe('sky swirl wiring', () => {
         phase: 0,
       });
     }
-    expect(motionReachOf(buffers)).toBe(1.001 * skySwirlReach(-30, 50, -60));
+    // The largest of the wraps' reaches: the river arms' bound (skyRiverReach) passes the vortex
+    // field's exact half loop here.
+    expect(motionReachOf(buffers)).toBe(
+      1.001 * Math.max(skySwirlReach(-30, 50, -60), skyRiverReach(-30, 50, -60)),
+    );
     expect(motionReachOf(buffers)).toBeLessThanOrEqual(
       1.001 * motionReach(STROKE_LAYER.sky, [-30, 50, -60], 1),
     );

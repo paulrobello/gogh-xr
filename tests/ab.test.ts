@@ -28,11 +28,11 @@ describe('AB_GROUPS', () => {
     expect(AB_GROUPS['zdiag-all']).toEqual(['base', ...ZDIAG_MODES]);
     expect(AB_GROUPS.halo).toEqual(['on', 'off']);
     expect(AB_GROUPS.calm).toEqual(['1', '0.5', '0.25']);
-    // Wheelflow first: the default wrap since 2026-11-10. Wheelrun next, so one press from the
-    // default reaches the other way to move the strokes into the swirls, and two reach wave.
+    // Wheelrun first: the default wrap since 2026-11-10. Wheelflow next, so one press from the
+    // default reaches the other river arm, and two reach wave.
     expect(AB_GROUPS.wrap).toEqual([
-      'wheelflow',
       'wheelrun',
+      'wheelflow',
       'wave',
       'wheel',
       'stream',
@@ -69,8 +69,8 @@ describe('vtx', () => {
 
 describe('wrap', () => {
   it('?wrap implies its group at its variant, after ?zdiag and ?nohalo', () => {
-    expect(resolveAb(flags({ wrap: 'wheelflow' })).activation).toEqual({ group: 'wrap', start: 0 });
-    expect(resolveAb(flags({ wrap: 'wheelrun' })).activation).toEqual({ group: 'wrap', start: 1 });
+    expect(resolveAb(flags({ wrap: 'wheelrun' })).activation).toEqual({ group: 'wrap', start: 0 });
+    expect(resolveAb(flags({ wrap: 'wheelflow' })).activation).toEqual({ group: 'wrap', start: 1 });
     expect(resolveAb(flags({ wrap: 'wave' })).activation).toEqual({ group: 'wrap', start: 2 });
     expect(resolveAb(flags({ wrap: 'wheel' })).activation).toEqual({ group: 'wrap', start: 3 });
     expect(resolveAb(flags({ wrap: 'stream' })).activation).toEqual({ group: 'wrap', start: 4 });

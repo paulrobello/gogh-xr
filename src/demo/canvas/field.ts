@@ -92,7 +92,7 @@ export const FLOW_SMOOTH_RADIUS = 12;
 /** Texels of work between two yields of the flow field's steps. */
 const FLOW_SLICE = 1 << 15;
 
-function* boxBlurSteps(
+export function* boxBlurSteps(
   values: Float32Array,
   width: number,
   height: number,

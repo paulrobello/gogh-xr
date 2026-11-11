@@ -219,5 +219,8 @@ export function createStrokeMaterial(
     alphaToCoverage: true,
   });
   material.name = 'stroke-a2c';
+  // A geometry without iRiver (every one but the Starry Night batch's sky chunks) reads this, not
+  // whatever generic attribute value the context last held; the river arms then hold it still.
+  (material.defaultAttributeValues as Record<string, number[]>).iRiver = [0, 0, 0, 0];
   return material as StrokeMaterial;
 }

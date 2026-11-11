@@ -224,18 +224,23 @@ test('at each of the 24 poses at most 0.5% of the view is bare, within the defau
   expect(await glErrors(page)).toEqual([]);
 });
 
-test('with the sky swirl pinned mid-motion, the spot-ahead view stays within 0.5% bare', async ({
+test('with the sky river pinned mid-motion, the spot-ahead view stays within 0.5% bare under both river arms at 8 times through the loop', async ({
   page,
   xr,
 }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(900_000);
   const [ahead] = COVERAGE_POSES;
   expect(ahead.name).toBe('spot ahead');
   // The sweep above runs under ?noanim, so it never sees the motion. These shots run the shipped
-  // default, the wheelflow wrap (src/motion/variants.ts): its wheels turn, and outside them the
-  // sky strokes travel ahead and back on the wave's loop.
-  for (const time of [0.5, 3.7]) {
-    await xr.boot(`painting=starry-night&seed=1&shot&coverage&motiont=${time}`);
+  // default, the wheelrun wrap (src/motion/variants.ts), and wheelflow: the kept wheels turn, and
+  // outside them the sky strokes travel along the river, wheelrun one way with base's shrink
+  // scaled by its travel, wheelflow ahead and back at full size. 8 times span the 8 s loop.
+  const runs: [string, number][] = [];
+  for (const wrap of ['', '&wrap=wheelflow']) {
+    for (let k = 0; k < 8; k++) runs.push([wrap, 0.5 + k]);
+  }
+  for (const [wrap, time] of runs) {
+    await xr.boot(`painting=starry-night&seed=1&shot&coverage&motiont=${time}${wrap}`);
     expect((await world(xr)).debug).toBe('coverage');
     const motion = (await xr.diag()).motion as { time: number; frozen: boolean; layers: number };
     expect(motion.time).toBe(time);
@@ -246,7 +251,7 @@ test('with the sky swirl pinned mid-motion, the spot-ahead view stays within 0.5
     const { binary, weighted } = await bareShare(page);
     const drawn = ((await xr.diag()).world as WorldDiag).strokes.visible;
     console.log(
-      `[e2e] coverage spot ahead at motiont ${time}: bare ${(binary * 100).toFixed(3)}%, weighted ${(weighted * 100).toFixed(3)}%, drawn ${drawn}`,
+      `[e2e] coverage spot ahead ${wrap ? wrap.slice(6) : 'wheelrun'} at motiont ${time}: bare ${(binary * 100).toFixed(3)}%, weighted ${(weighted * 100).toFixed(3)}%, drawn ${drawn}`,
     );
     expect(binary).toBeLessThanOrEqual(MAX_BARE);
   }

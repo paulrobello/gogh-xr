@@ -17,8 +17,10 @@ import { luma, shiftAt } from './block-match';
 import { expect, glErrors, test, type Xr } from './fixtures';
 import { handOrbsOff } from './helpers';
 
-/** The clock's hold mask with no `?wrap`: the default wheelflow holds the sky gate at calm 0. */
+/** The clock's hold mask with no `?wrap`: the default wheelrun holds the sky gate at calm 0. */
 const DEFAULT_HOLD = 1 << STROKE_LAYER.sky;
+/** Every motion layer and the reactive bit but the sky's, as a `?motionlayers` flag. */
+const ALL_BUT_SKY = 'motionlayers=star,moon,cypress,reactive';
 
 interface MotionDiag {
   time: number;
@@ -189,8 +191,10 @@ test.describe('sky swirl (P4.2)', () => {
     return rawPixels(url);
   }
 
-  // Base's own loop (`?wrap=base`): the wave and the default wheelflow set each stroke's phase
-  // from its direction, so the pin would not move the sky coherently. Its own test is below.
+  // Base's own loop (`?wrap=base`): the wave sets each stroke's phase from its direction and the
+  // default wheelrun moves each along its own river velocity, so the pin would not move the sky
+  // coherently. The wave's own test is below, and the river's sign check is in
+  // sky-wheel-stream.spec.ts.
   test('a pinned coherent phase moves the sky along the TS prediction, half as far at calm 0.5', async ({
     page,
     xr,
@@ -942,7 +946,9 @@ test.describe('star and moon rings (P4.3)', () => {
       },
       [MOON, MOON_INNER, 20, CAPTURE_SIZE.width, CAPTURE_SIZE.height] as const,
     );
-    const shot = await lightsShot(page, xr, `motiont=${crest.t}`);
+    // Every motion layer but the sky's: under the river default with motionphase=0 the whole dome
+    // round the disc moves and shrinks in step, which the clip share does not read.
+    const shot = await lightsShot(page, xr, `motiont=${crest.t}&${ALL_BUT_SKY}`);
     expect((await motion(xr)).time).toBeCloseTo(crest.t, 9);
     const crestShare = clippedShare(shot, disc);
     // The crest is live: the moon band's mean luma, from its radius to 0.79 of its rim, is above the
@@ -1007,8 +1013,8 @@ test.describe('star and moon rings (P4.3)', () => {
     expect(outline.length).toBeGreaterThan(500);
     expect(cream.length).toBeGreaterThan(1000);
 
-    // Calm 0 at a pinned time is the rest world, byte for byte. Under wave: the default wheelflow
-    // holds its discs at the pose the pinned time turned them to.
+    // Calm 0 at a pinned time is the rest world, byte for byte. Under wave: the default wheelrun
+    // holds its kept discs at the pose the pinned time turned them to.
     const calm0 = await lightsShot(page, xr, 'calm=0&motiont=2.5&wrap=wave');
     expect(calm0.equals(rest)).toBe(true);
 
@@ -1029,7 +1035,11 @@ test.describe('star and moon rings (P4.3)', () => {
       },
       [MOON, cream, times, width, height] as const,
     );
-    await xr.boot('painting=starry-night&seed=1&shot&painter&nogov&motionphase=0&motiont=0');
+    // The sky's motion is closed: under the river default with motionphase=0 the dome behind the
+    // band moves and shrinks in step through the sweep, a luma swing the regression would read.
+    await xr.boot(
+      `painting=starry-night&seed=1&shot&painter&nogov&motionphase=0&motiont=0&${ALL_BUT_SKY}`,
+    );
     await expect
       .poll(async () => (await xr.diag()).world !== undefined, { timeout: 90_000 })
       .toBe(true);
@@ -1126,7 +1136,7 @@ test.describe('star and moon rings (P4.3)', () => {
   }) => {
     test.setTimeout(360_000);
     // (c) Calm 0 with the halo drawn is the frozen world, byte for byte. Under wave: the default
-    // wheelflow holds its discs at the pose the pinned time turned them to.
+    // wheelrun holds its kept discs at the pose the pinned time turned them to.
     const rest = await lightsShot(page, xr, 'noanim');
     expect(((await xr.diag()).halo as HaloDiag).visible).toBe(true);
     const still = await lightsShot(page, xr, 'calm=0&motiont=3.3&wrap=wave');

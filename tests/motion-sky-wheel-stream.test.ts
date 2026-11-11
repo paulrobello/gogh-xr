@@ -7,9 +7,15 @@
 import { Texture } from 'three';
 import { describe, expect, test } from 'vitest';
 import motionGlsl from '../src/motion/motion.glsl?raw';
+import { SKY_RIVER_MAX_CURVATURE } from '../src/motion/sky-river.ts';
 import {
   perpendicular,
   rotateAbout,
+  SKY_RIVER_FIRST_WHEEL,
+  SKY_RIVER_FLOW_SCALE,
+  SKY_RIVER_JITTER,
+  SKY_RIVER_SPEED,
+  SKY_RIVER_WHEELS,
   SKY_STREAM_PERIOD,
   SKY_STREAM_RHOS,
   SKY_STREAM_SHIFT,
@@ -363,13 +369,14 @@ describe('wheel', () => {
     });
     expect(Number(defines.SKY_WHEEL_HAZE_FEATHER)).toBeCloseTo(SKY_WHEEL_HAZE_FEATHER, 9);
     for (const line of [
-      'if (uSkyWrap != SKY_WRAP_WHEEL && uSkyWrap != SKY_WRAP_WHEELFLOW && uSkyWrap != SKY_WRAP_WHEELRUN) {',
+      'uSkyWrap != SKY_WRAP_WHEEL && uSkyWrap != SKY_WRAP_WHEELFLOW && uSkyWrap != SKY_WRAP_WHEELRUN\n  ) {',
       'return member >= 0 || uSkyWrap == SKY_WRAP_WHEEL;',
-      'if (1.0 - dot(SKY_VORTEX_AXIS[i].xyz, dir) < SKY_WHEEL_CORE[i]) member = i;',
-      'skyWheelMotion(d, dir, n, l, s, uTime, rigid);',
+      'if (i >= first && 1.0 - dot(SKY_VORTEX_AXIS[i].xyz, dir) < SKY_WHEEL_CORE[i]) member = i;',
+      'skyWheelMotion(d, dir, n, l, s, uTime, rigid, first);',
       'vec3 seen = normalize(d + rigid);',
       'float h = halfExtent * inv;',
-      'if (j == member) continue;',
+      'if (j == member || j < first) continue;',
+      'int first = uSkyWrap == SKY_WRAP_WHEEL ? 0 : SKY_RIVER_FIRST_WHEEL;',
       'float edge = member < 0 ? SKY_WHEEL_EDGE[j] : SKY_WHEEL_CAP[j];',
       'float theta = acos(clamp(dot(SKY_VORTEX_AXIS[j].xyz, seen), -1.0, 1.0));',
       'thin *= smoothstep(0.0, SKY_WHEEL_HAZE_FEATHER, theta - h - edge);',
@@ -725,23 +732,35 @@ function fromAxis(w: SkyWheel, angle: number, turn: number): Vec3 {
   return rotateAbout(rotateAbout(w.axis, perpendicular(w.axis), angle), w.axis, turn);
 }
 
-/** The angle, radians, of each wheel's members' edge past which direction `dir` lies. */
-function pastEdges(dir: Vec3): number[] {
-  return SKY_WHEELS.map(
-    (w) => Math.acos(Math.min(1, Math.max(-1, dot(w.axis, dir)))) - skyWheelEdge(w),
-  );
-}
-
 const unit = (a: Vec3): Vec3 => scale(a, 1 / len(a));
+
+/**
+ * A river rotation at unit direction `dir` as skyRiverBake shapes one: ω = σ A v (κ d̂ + d̂ × t̂)
+ * for a random tangent t̂, sign σ, amplitude A in [0, 1] and curvature κ up to
+ * SKY_RIVER_MAX_CURVATURE, so ω × d̂ = σ A v t̂, and a random packed iRiver.w: a winding fade
+ * level 1-255 plus a phase in [0, 1).
+ */
+function riverAt(dir: Vec3, rand: () => number): { omega: Vec3; phase: number } {
+  const e1 = perpendicular(dir);
+  const t = rotateAbout(e1, dir, 2 * Math.PI * rand());
+  const m = cross(dir, t);
+  const k = (rand() < 0.5 ? -1 : 1) * rand() * SKY_RIVER_SPEED;
+  const kappa = (2 * rand() - 1) * SKY_RIVER_MAX_CURVATURE;
+  return {
+    omega: [k * (kappa * dir[0] + m[0]), k * (kappa * dir[1] + m[1]), k * (kappa * dir[2] + m[2])],
+    phase: 1 + Math.floor(254.999 * rand()) + Math.min(rand(), 1 - 2 ** -12),
+  };
+}
 
 /** A field velocity of `speed` rad/s along wheel `w`'s turn at `dir` (against it when negative). */
 const along = (w: SkyWheel, dir: Vec3, speed: number): Vec3 =>
   scale(unit(cross(w.axis, dir)), Math.sign(w.rate) * speed);
 
 describe('wheelflow and wheelrun', () => {
-  test('inside a wheel a stroke turns exactly as under wheel; outside it travels as wave (wheelflow) or base (wheelrun), scaled by its travel', () => {
+  test('the river arms: a kept wheel member turns exactly as under wheel, and every other stroke, the big swirl included, travels along its river omega scaled by its travel', () => {
     const rand = mulberry32(11);
     let inside = 0;
+    let big = 0;
     let moving = 0;
     for (let k = 0; k < 4000; k++) {
       const y = rand();
@@ -752,11 +771,13 @@ describe('wheelflow and wheelrun', () => {
       const n: Vec3 = [-dir[0], -dir[1], -dir[2]];
       const time = 3600 * rand();
       const half = 2 * rand();
-      const options = { halfDiagonal: half, calm: 1 };
+      const river = riverAt(dir, rand);
+      const options = { halfDiagonal: half, calm: 1, river };
       const flow = skySwirl(p, n, 0.3, time, undefined, 'wheelflow', undefined, options);
       const run = skySwirl(p, n, 0.3, time, undefined, 'wheelrun', undefined, options);
-      const travel = skyWheelFlowTravel(dir, skyVelocity(dir), half / SKY_DOME_RADIUS);
-      if (skyWheelAt(dir) >= 0) {
+      const v = cross(river.omega, dir);
+      const travel = skyWheelFlowTravel(dir, v, half / SKY_DOME_RADIUS, SKY_RIVER_WHEELS);
+      if (skyWheelAt(dir, SKY_RIVER_WHEELS) >= 0) {
         inside++;
         expect(travel).toBe(-1);
         const wheel = skySwirl(p, n, 0.3, time, undefined, 'wheel');
@@ -765,70 +786,90 @@ describe('wheelflow and wheelrun', () => {
         expect(flow.spin).not.toBeNull();
         continue;
       }
+      if (skyWheelAt(dir) === 0) big++;
       expect(travel).toBeGreaterThanOrEqual(0);
       expect(travel).toBeLessThanOrEqual(1);
       if (travel > 0.5) moving++;
-      const wave = skySwirl(p, n, 0.3, time, undefined, 'wave');
-      const base = skySwirl(p, n, 0.3, time, undefined, 'base');
       expect(flow.spin).toBeNull();
       expect(run.spin).toBeNull();
+      const d = sub(p, PAINTER_EYE);
+      const w = cross(river.omega, d);
+      const fRun = fract(time / SKY_SWIRL_PERIOD + 0.3);
+      const tauRun = (fRun - 0.5) * SKY_SWIRL_PERIOD * travel;
+      const fFlow = fract(time / SKY_SWIRL_PERIOD + river.phase + SKY_RIVER_JITTER * (0.3 - 0.5));
+      const tauFlow =
+        (smoothstepTs(0, 1, 1 - Math.abs(2 * fFlow - 1)) - 0.5) *
+        SKY_SWIRL_PERIOD *
+        SKY_RIVER_FLOW_SCALE *
+        travel *
+        (Math.floor(river.phase) / 255);
       for (let i = 0; i < 3; i++) {
-        expect(flow.offset[i]).toBeCloseTo(wave.offset[i] * travel, 12);
-        expect(run.offset[i]).toBeCloseTo(base.offset[i] * travel, 12);
+        expect(flow.offset[i]).toBeCloseTo(tauFlow * w[i], 9);
+        expect(run.offset[i]).toBeCloseTo(tauRun * w[i], 9);
       }
-      expect(flow.turn).toBeCloseTo(wave.turn * travel, 12);
-      expect(run.turn).toBeCloseTo(base.turn * travel, 12);
+      expect(flow.turn).toBeCloseTo(tauFlow * dot(river.omega, n), 12);
+      expect(run.turn).toBeCloseTo(tauRun * dot(river.omega, n), 12);
       expect(flow.gain).toBe(0);
-      const f = fract(time / SKY_SWIRL_PERIOD + 0.3);
-      expect(run.gain).toBeCloseTo(skyWheelRunGain(f, travel, 1), 12);
+      const share = len(v) / SKY_RIVER_SPEED;
+      expect(share).toBeLessThanOrEqual(1 + 1e-12);
+      expect(run.gain).toBeCloseTo(skyWheelRunGain(fRun, travel * share, 1), 12);
+      // Never smaller than base's shrink at the same phase (Addition C).
+      const base = skySwirl(p, n, 0.3, time, undefined, 'base');
       expect(run.gain).toBeGreaterThanOrEqual(base.gain - 1e-12);
     }
-    expect(inside).toBeGreaterThan(20);
+    expect(inside).toBeGreaterThan(10);
+    expect(big).toBeGreaterThan(5);
     expect(moving).toBeGreaterThan(3000);
-    // Their loops before the travel: wheelflow is the wave's, wheelrun base's.
+    // Their loops before the travel: wheelflow is pingpong's curve, wheelrun base's.
     for (const f of [0.1, 0.3, 0.7, 0.97]) {
-      expect(skyWrapLoop('wheelflow', f, 4.1)).toEqual(skyWrapLoop('wave', f, 4.1));
+      expect(skyWrapLoop('wheelflow', f, 4.1)).toEqual(skyWrapLoop('pingpong', f, 4.1));
       expect(skyWrapLoop('wheelrun', f, 4.1)).toEqual(skyWrapLoop('base', f, 4.1));
     }
+    // A river stroke outside the kept wheels needs its baked river.
+    const off = onDome(fromAxis(SKY_RIVER_WHEELS[0], 0.3, 0));
+    expect(() => skySwirl(off, [0, -1, 0], 0, 1, undefined, 'wheelrun')).toThrow(/options.river/);
   });
 
-  test('the bound: no moved centre, widened by the kept extent, reaches a members edge it was clear of at rest, so a dome stroke overlaps a disc by at most its own half extent', () => {
+  test('the bound: no moved centre, widened by the kept extent, reaches a kept wheel members edge it was clear of at rest, so a dome stroke overlaps a disc by at most its own half extent', () => {
     const rand = mulberry32(5);
     const deg = Math.PI / 180;
     let clearAtRest = 0;
     let moved = 0;
     let closest = Number.POSITIVE_INFINITY;
     let overlapShare = 0;
+    const kept = (dir: Vec3): number[] =>
+      SKY_RIVER_WHEELS.map(
+        (w) => Math.acos(Math.min(1, Math.max(-1, dot(w.axis, dir)))) - skyWheelEdge(w),
+      );
     for (const wrap of ['wheelflow', 'wheelrun'] as const) {
       for (const kind of ['dome', 'haze'] as const) {
-        SKY_WHEELS.forEach((w) => {
+        SKY_RIVER_WHEELS.forEach((w) => {
           for (let k = 0; k < 600; k++) {
             const dir = fromAxis(w, skyWheelEdge(w) + rand() * 8 * deg, 2 * Math.PI * rand());
-            if (skyWheelAt(dir) >= 0) continue;
+            if (skyWheelAt(dir, SKY_RIVER_WHEELS) >= 0) continue;
             const p = onDome(dir);
             const n: Vec3 = [-dir[0], -dir[1], -dir[2]];
-            // Drawn half angles from none to past the largest a far-band dome stroke draws (sparse
-            // at the far floor). A dome stroke keeps none of it clear, the haze all of it.
             const h = rand() * 4 * deg;
-            const kept = kind === 'haze' ? h : 0;
-            const rest = pastEdges(dir).map((e) => e - kept);
+            const keptExtent = kind === 'haze' ? h : 0;
+            const rest = kept(dir).map((e) => e - keptExtent);
             if (rest.every((e) => e >= 0)) clearAtRest++;
             const phase = rand();
+            const river = riverAt(dir, rand);
             for (let s = 0; s <= 32; s++) {
               const time = (s / 32) * SKY_SWIRL_PERIOD + 0.0137;
               const m = skySwirl(p, n, phase, time, undefined, wrap, undefined, {
-                halfDiagonal: kept * SKY_DOME_RADIUS,
+                halfDiagonal: keptExtent * SKY_DOME_RADIUS,
+                river,
               });
               const d = sub(add(p, m.offset), PAINTER_EYE);
-              const centre = pastEdges(unit(d));
+              const centre = kept(unit(d));
               if (len(m.offset) > 1e-9) moved++;
               centre.forEach((e, j) => {
-                expect(e - kept, `${wrap} ${kind} wheel ${j}`).toBeGreaterThanOrEqual(
+                expect(e - keptExtent, `${wrap} ${kind} wheel ${j}`).toBeGreaterThanOrEqual(
                   Math.min(rest[j], 0) - 1e-12,
                 );
                 if (rest[j] < 0) return;
-                closest = Math.min(closest, e - kept);
-                // The moved quad's overlap past the edge: at most the stroke's own half extent.
+                closest = Math.min(closest, e - keptExtent);
                 const over = Math.max(0, h - e);
                 expect(over).toBeLessThanOrEqual(h + 1e-12);
                 if (kind === 'haze') expect(over).toBeLessThanOrEqual(1e-12);
@@ -839,8 +880,8 @@ describe('wheelflow and wheelrun', () => {
         });
       }
     }
-    expect(clearAtRest).toBeGreaterThan(4000);
-    expect(moved).toBeGreaterThan(100000);
+    expect(clearAtRest).toBeGreaterThan(3000);
+    expect(moved).toBeGreaterThan(70000);
     expect(closest).toBeGreaterThanOrEqual(0);
     expect(overlapShare).toBeLessThanOrEqual(1);
   });
@@ -1041,26 +1082,34 @@ describe('wheelflow and wheelrun', () => {
     const deg = Math.PI / 180;
     let compared = 0;
     let faded = 0;
-    for (const w of SKY_WHEELS) {
-      for (let k = 0; k < 1500; k++) {
-        const angle = skyWheelEdge(w) + (rand() * 9 - 0.5) * deg;
-        const dir = fromAxis(w, angle, 2 * Math.PI * rand());
-        if (SKY_WHEELS.some((o) => Math.abs(1 - dot(o.axis, dir) - 0.5 * o.radius ** 2) < 1e-7)) {
-          continue;
+    // All four wheels from index 0 (the field's velocity, as any velocity), and the river arms'
+    // kept three from SKY_RIVER_FIRST_WHEEL on, at river velocities.
+    for (const first of [0, SKY_RIVER_FIRST_WHEEL]) {
+      const wheels = SKY_WHEELS.slice(first);
+      for (const w of SKY_WHEELS) {
+        for (let k = 0; k < 1500; k++) {
+          const angle = skyWheelEdge(w) + (rand() * 9 - 0.5) * deg;
+          const dir = fromAxis(w, angle, 2 * Math.PI * rand());
+          if (SKY_WHEELS.some((o) => Math.abs(1 - dot(o.axis, dir) - 0.5 * o.radius ** 2) < 1e-7)) {
+            continue;
+          }
+          const h = rand() * 3 * deg;
+          const v = first === 0 ? skyVelocity(dir) : cross(riverAt(dir, rand).omega, dir);
+          const expected = skyWheelFlowTravel(dir, v, h, wheels);
+          const got = shader(dir, v, h, first);
+          expect(
+            got,
+            `first ${first} wheel ${SKY_WHEELS.indexOf(w)} at ${(angle / deg).toFixed(3)}°`,
+            // The river velocities come near the speed floor, where the defines' 9 significant
+            // figures differ from the mirror's float64 by a few parts in a million.
+          ).toBeCloseTo(expected, first === 0 ? 5 : 4);
+          compared++;
+          if (expected > 0.05 && expected < 0.95) faded++;
         }
-        const h = rand() * 3 * deg;
-        const expected = skyWheelFlowTravel(dir, skyVelocity(dir), h);
-        const got = shader(dir, skyVelocity(dir), h);
-        expect(got, `wheel ${SKY_WHEELS.indexOf(w)} at ${(angle / deg).toFixed(3)}°`).toBeCloseTo(
-          expected,
-          5,
-        );
-        compared++;
-        if (expected > 0.05 && expected < 0.95) faded++;
       }
     }
-    expect(compared).toBeGreaterThan(5900);
-    expect(faded).toBeGreaterThan(300);
+    expect(compared).toBeGreaterThan(11800);
+    expect(faded).toBeGreaterThan(600);
     const defines = skySwirlGlslDefines();
     expect(parseGlsl(String(defines.SKY_WHEELFLOW_SENSES))).toEqual(
       SKY_WHEELS.map((w) => Math.sign(w.rate)),
@@ -1074,32 +1123,34 @@ describe('wheelflow and wheelrun', () => {
     expect(parseGlsl(String(defines.SKY_SWIRL_HALF_PERIOD))).toBe(0.5 * SKY_SWIRL_PERIOD);
   });
 
-  test('GLSL: both skyMotion paths branch to the travel, and every wrap links the same program', () => {
-    expect(motionGlsl).toContain(
-      'if (travel < 0.0) return skyWheelMotion(d, dir, n, l, s, t, rigid);',
+  test('GLSL: both skyMotion paths call the one river motion first, the hoist included, and every wrap links the same program with the iRiver default', () => {
+    const call =
+      'if (uSkyWrap >= SKY_WRAP_WHEELFLOW) {\n    return skyRiverMotion(p, n, l, s, phase, t, flowExtent, rigid);\n  }';
+    expect(motionGlsl.split(call)).toHaveLength(3);
+    expect(motionGlsl.match(/Motion skyRiverMotion\(/g)).toHaveLength(1);
+    expect(motionGlsl.indexOf('Motion skyRiverMotion(')).toBeLessThan(
+      motionGlsl.indexOf('#ifdef VTX_HOIST\n// The `vtx` group'),
     );
-    expect(motionGlsl).toContain(
-      'float travel = skyWheelFlowTravel(dir, cross(omega, dir), flowExtent * inverseDistance);',
-    );
-    expect(motionGlsl).toContain('iSkyField.xyz * inverseDistance,');
-    expect(motionGlsl).toContain('flowExtent * inverseDistance\n    );');
     expect(motionGlsl).not.toContain('halfAngles');
-    expect(motionGlsl).toContain(
-      'return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir) * travel, t);',
-    );
-    expect(motionGlsl).toContain('amplitude *= iSkyWave.y * travel;');
-    expect(motionGlsl).toContain(
-      'return Motion(tau * cross(omega, d), tau * dot(omega, n), skyWheelRunGain(f, travel), 0.0);',
-    );
-    expect(motionGlsl).toContain(
-      'return Motion(tau * iSkyField.xyz, tau * iSkyField.w, skyWheelRunGain(f, travel), 0.0);',
-    );
     expect(motionGlsl).toContain(
       'm = skyMotion(p, n, l, s, brush, phase, t, flowExtent, rigid, stream);',
     );
     expect(motionGlsl).toContain(
       'if (layer != STROKE_LAYER_SKY || uSkyWrap == SKY_WRAP_STREAM) return 0.0;',
     );
+    expect(strokeVert).toContain('in vec4 iRiver;');
+    expect(strokeVert.indexOf('in vec4 iRiver;')).toBeLessThan(
+      strokeVert.indexOf('#ifdef VTX_HOIST'),
+    );
+    const defines = skySwirlGlslDefines();
+    expect(defines.SKY_RIVER_FIRST_WHEEL).toBe(SKY_RIVER_FIRST_WHEEL);
+    expect(Number(defines.SKY_RIVER_INV_SPEED)).toBeCloseTo(1 / SKY_RIVER_SPEED, 4);
+    expect(Number(defines.SKY_RIVER_JITTER)).toBe(SKY_RIVER_JITTER);
+    expect(SKY_RIVER_WHEELS).toEqual(SKY_WHEELS.slice(SKY_RIVER_FIRST_WHEEL));
+    const material = createStrokeMaterial(new Texture());
+    expect((material.defaultAttributeValues as Record<string, number[]>).iRiver).toEqual([
+      0, 0, 0, 0,
+    ]);
     const before = createStrokeMaterial(new Texture());
     const shaders = [before.vertexShader, before.fragmentShader, { ...before.defines }];
     try {
@@ -1176,8 +1227,8 @@ function glslWheelRunGain(): (f: number, travel: number, calm: number) => number
  * skyWheelFlowTravel from motion.glsl, transliterated to JavaScript line for line and run on the
  * material's own defines, so a test can evaluate the shader's fades rather than its text.
  */
-function glslWheelFlowTravel(): (dir: Vec3, v: Vec3, h: number) => number {
-  const head = 'float skyWheelFlowTravel(vec3 dir, vec3 v, float h) {';
+function glslWheelFlowTravel(): (dir: Vec3, v: Vec3, h: number, first: number) => number {
+  const head = 'float skyWheelFlowTravel(vec3 dir, vec3 v, float h, int first) {';
   const start = motionGlsl.indexOf(head);
   const end = motionGlsl.indexOf('\n}\n', start);
   expect(start).toBeGreaterThan(0);
@@ -1207,7 +1258,9 @@ function glslWheelFlowTravel(): (dir: Vec3, v: Vec3, h: number) => number {
     abs: Math.abs,
   };
   const names = [...Object.keys(env), ...Object.keys(math)];
-  const run = new Function(...names, 'dir', 'v', 'h', body) as (...args: unknown[]) => number;
+  const run = new Function(...names, 'dir', 'v', 'h', 'first', body) as (
+    ...args: unknown[]
+  ) => number;
   const values = [...Object.values(env), ...Object.values(math)];
-  return (dir, v, h) => run(...values, dir, v, h);
+  return (dir, v, h, first) => run(...values, dir, v, h, first);
 }

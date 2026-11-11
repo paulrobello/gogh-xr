@@ -1,0 +1,76 @@
+{
+  "about": "Paul's drawn sky flow (2026-11-10, docs/shots/sky-river-paul.webp): 7 polylines in canvas uv (u right, v UP, the canvas-camera convention), each ordered in the flow direction, the river's order 1 to 7. Registered onto the scan by NCC 0.86: scan px = -13 + 0.669 x his px and 36 + 0.669 y his px on the 1024 x 811 frame.webp, then canvas uv past its 12 px and 4 px mat inset. Read by src/motion/sky-river.ts; the bake ignores it. A path's optional sigmaDeg narrows its reach in the guide blend (default SKY_RIVER_GUIDE_SIGMA): the loop round the small right swirl reaches 1.5 degrees, so the horizon band under it keeps the river's left-to-right flow.",
+  "paths": [
+    {
+      "note": "1 upper left, down-right then right above the cypress",
+      "uv": [
+        [0.005105, 0.766864],
+        [0.02852, 0.718543],
+        [0.04859, 0.685218],
+        [0.07535, 0.672721],
+        [0.12218, 0.676887]
+      ]
+    },
+    {
+      "note": "2 from the cypress up-right along the band over the big swirl",
+      "uv": [
+        [0.232565, 0.700214],
+        [0.279395, 0.736872],
+        [0.319535, 0.760199],
+        [0.38309, 0.795191],
+        [0.42992, 0.806021],
+        [0.50351, 0.801856],
+        [0.5102, 0.781027]
+      ]
+    },
+    {
+      "note": "3 the big swirl's outer right lobe, down its right side and curling left at the bottom",
+      "uv": [
+        [0.54365, 0.770197],
+        [0.558368, 0.718543],
+        [0.562382, 0.681052],
+        [0.55703, 0.639396],
+        [0.53696, 0.618568],
+        [0.5102, 0.626899]
+      ]
+    },
+    {
+      "note": "4 the inner left lobe, hooking over its top going left",
+      "uv": [
+        [0.48344, 0.66439],
+        [0.473405, 0.691883],
+        [0.446645, 0.697715],
+        [0.42992, 0.685218],
+        [0.426575, 0.66439]
+      ]
+    },
+    {
+      "note": "5 down the inner lobe's left side",
+      "uv": [[0.41654, 0.618568], [0.42992, 0.576912], [0.4433, 0.535255], [0.460025, 0.539421]]
+    },
+    {
+      "note": "6 out along the bottom of the big swirl, right into the small right swirl",
+      "uv": [
+        [0.49682, 0.526924],
+        [0.56372, 0.550252],
+        [0.593825, 0.564415],
+        [0.63062, 0.581077],
+        [0.66407, 0.585243]
+      ]
+    },
+    {
+      "note": "7 round the small right swirl, clockwise",
+      "uv": [
+        [0.70421, 0.589408],
+        [0.74435, 0.56858],
+        [0.75104, 0.510262],
+        [0.73766, 0.481102],
+        [0.70421, 0.470271],
+        [0.67076, 0.476936],
+        [0.660725, 0.506096],
+        [0.667415, 0.522758]
+      ],
+      "sigmaDeg": 1.5
+    }
+  ]
+}

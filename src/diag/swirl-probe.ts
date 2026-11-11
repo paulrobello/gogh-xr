@@ -5,7 +5,8 @@
  * which imports regions.json.
  */
 import { SKY_MOON_RING, SKY_RINGS, skyHaloGlow, skyHaloState, skyRing } from '../motion/sky-rings';
-import { SKY_WAVE_PER_TURN, skySwirl } from '../motion/sky-swirl';
+import { SKY_RIVER_WHEELS, skyRiverGuide } from '../motion/sky-river';
+import { SKY_WAVE_PER_TURN, skySwirl, skyWheelAt } from '../motion/sky-swirl';
 import type { SkyWrap } from '../motion/variants';
 import { canvasRay, PAINTER_EYE, projectToCanvas } from '../paintings/starry-night/canvas-camera';
 import { anchorReach, SKY_DOME_RADIUS, skyAnchors } from '../world/sky';
@@ -13,7 +14,8 @@ import { anchorReach, SKY_DOME_RADIUS, skyAnchors } from '../world/sky';
 /**
  * The canvas shift, [du, dv] with v down, of the dome point at canvas (u, vDown) under the sky
  * swirl at `calm`, motion time `time`, phase `phase` and wrap variant `wrap`, under `wave` at
- * `turns` waves per turn. Null when the moved point is off the eye's front.
+ * `turns` waves per turn. Null when the moved point is off the eye's front. The river arms
+ * (`wheelrun`, `wheelflow`) need the point's baked `river`, outside the kept wheels.
  */
 export function predictSkyShift(
   u: number,
@@ -23,6 +25,7 @@ export function predictSkyShift(
   phase: number,
   wrap: SkyWrap = 'base',
   turns: number = SKY_WAVE_PER_TURN,
+  river?: { omega: [number, number, number]; phase: number },
 ): [number, number] | null {
   const ray = canvasRay(u, 1 - vDown);
   const p: [number, number, number] = [
@@ -30,7 +33,9 @@ export function predictSkyShift(
     PAINTER_EYE[1] + ray[1] * SKY_DOME_RADIUS,
     PAINTER_EYE[2] + ray[2] * SKY_DOME_RADIUS,
   ];
-  const m = skySwirl(p, [-ray[0], -ray[1], -ray[2]], phase, time, undefined, wrap, turns);
+  const m = skySwirl(p, [-ray[0], -ray[1], -ray[2]], phase, time, undefined, wrap, turns, {
+    river,
+  });
   // The wheel's rigid turn keeps its radius at every calm (motion.glsl skyWheelMotion).
   const k = m.spin ? 1 : calm;
   const uv = projectToCanvas([
@@ -138,4 +143,36 @@ export function moonDiscRim(points: number): [number, number][] | null {
     rim.push([uv[0], 1 - uv[1]]);
   }
   return rim;
+}
+
+/**
+ * e2e only (sky river, stage 2): the screen direction in pixels of a `width` × `height` capture,
+ * [dx, dy] with y down and unit length, in which the river's guide (skyRiverGuide, Paul's seven
+ * polylines and the background drift) heads at canvas (u, vDown), and whether the point is a kept
+ * wheel's member. It is scaled to pixels before it is normalised, so it compares directly with a
+ * block-matched pixel shift. The river arms move a
+ * stroke along its own painted axis with the sign this heading picks, so a block-matched shift
+ * under `wheelrun` or `wheelflow` (forward half) has a positive dot with it. Null off the front.
+ */
+export function riverHeading(
+  u: number,
+  vDown: number,
+  width: number,
+  height: number,
+): { heading: [number, number]; member: boolean } | null {
+  const ray = canvasRay(u, 1 - vDown);
+  const g = skyRiverGuide(ray).heading;
+  const step = 0.002;
+  const q: [number, number, number] = [
+    PAINTER_EYE[0] + (ray[0] + step * g[0]) * SKY_DOME_RADIUS,
+    PAINTER_EYE[1] + (ray[1] + step * g[1]) * SKY_DOME_RADIUS,
+    PAINTER_EYE[2] + (ray[2] + step * g[2]) * SKY_DOME_RADIUS,
+  ];
+  const uv = projectToCanvas(q).uv;
+  if (!uv) return null;
+  const du = (uv[0] - u) * width;
+  const dv = (1 - uv[1] - vDown) * height;
+  const l = Math.hypot(du, dv);
+  if (l === 0) return null;
+  return { heading: [du / l, dv / l], member: skyWheelAt(ray, SKY_RIVER_WHEELS) >= 0 };
 }

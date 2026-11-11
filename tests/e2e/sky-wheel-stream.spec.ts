@@ -3,13 +3,13 @@
  * wheel and stream): selected by `?wrap=` and by the A/B button, drawing the rest sky at `?noanim`,
  * stream drawing it at calm 0 and wheel holding its turned pose there; the wheel's cores advancing
  * about their centres with no reset over a full turn, across a turn boundary and across the
- * 3600 s wrap of uTime; the stream's footprint fixed while its paint moves; wheelflow and wheelrun
- * turning their discs as wheel does and, far outside them, moving the strokes exactly as wave and
- * base do; the bare share of the sky under `?coverage` beside wave and base, with the wheel's rim
+ * 3600 s wrap of uTime; the stream's footprint fixed while its paint moves; the river arms,
+ * wheelrun and wheelflow, turning the three kept discs as wheel does, moving the big swirl with
+ * the river, and moving the paint the way Paul drew it at patches on his paths; the bare share of the sky under `?coverage` beside wave and base, with the wheel's rim
  * seam measured apart; and, with SWIRL_STRIPS=1, the six-frame strips of the central swirl in
  * docs/shots.
  */
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { loadavg } from 'node:os';
 import type { Page } from '@playwright/test';
 import sharp from 'sharp';
@@ -157,17 +157,21 @@ test('wheel and stream: selected by ?wrap and by the A/B button, the rest sky at
     `[e2e] sky wheel calm 0 hold: ${differ} of ${width * height} pixels differ from calm 1 sky-only`,
   );
   expect(differ, 'calm 0 holds exactly the calm 1 pose at the pinned time').toBe(0);
-  // Wheelflow and wheelrun hold their discs at calm 0 too, the same setHoldMask, and the strokes
-  // outside them are at rest there (calm scales their travel, and wheelrun's shrink fades out with
-  // calm), so they draw exactly wheel's held frame.
-  for (const wrap of ['wheelflow', 'wheelrun']) {
+  // Wheelflow and wheelrun hold their three kept discs at calm 0 too, the same setHoldMask, and
+  // every other sky stroke, the big swirl's included, is at rest there (calm scales its travel,
+  // and wheelrun's shrink fades out with calm). So both draw one frame, which is neither the rest
+  // sky nor wheel's, whose big disc is held turned.
+  const riverHeld: Buffer[] = [];
+  for (const wrap of ['wheelrun', 'wheelflow']) {
     await bootWorld(xr, `painter&nohalo&wrap=${wrap}&calm=0&motiont=3.7`);
     await hideHud(page, xr);
     const frame = await rawPixels(page);
-    expect(frame.equals(rest), `calm 0 under ${wrap} holds its pose`).toBe(false);
-    expect(frame.equals(held), `calm 0 under ${wrap} draws wheel's held frame`).toBe(true);
+    expect(frame.equals(rest), `calm 0 under ${wrap} holds its kept discs' pose`).toBe(false);
+    expect(frame.equals(held), `calm 0 under ${wrap} leaves the big swirl at rest`).toBe(false);
     expect(((await xr.diag()).motion as { hold: number }).hold).toBeGreaterThan(0);
+    riverHeld.push(frame);
   }
+  expect(riverHeld[0].equals(riverHeld[1]), 'both river arms hold the same frame').toBe(true);
 
   await bootWorld(xr, 'painter&motiont=3.7&wrap=wave');
   const wave = await rawPixels(page);
@@ -185,8 +189,8 @@ test('wheel and stream: selected by ?wrap and by the A/B button, the rest sky at
     // Only stream streams paint.
     expect(w.streaming).toBe(wrap === 'stream' ? w.drawn : 0);
     // Wheel and stream have no arc loop: nothing shrinks and nothing turns back. Outside the
-    // wheels wheelflow runs the wave's loop (strokes turn back, at full size) and wheelrun base's
-    // (strokes shrink at the wrap, none turns back).
+    // kept wheels wheelflow runs pingpong's curve along the river (strokes turn back, at full
+    // size) and wheelrun base's one-way loop (strokes shrink at the wrap, none turns back).
     if (wrap === 'wheel' || wrap === 'stream') expect([w.small, w.returning]).toEqual([0, 0]);
     if (wrap === 'wheelflow') {
       expect(w.small).toBe(0);
@@ -203,20 +207,20 @@ test('wheel and stream: selected by ?wrap and by the A/B button, the rest sky at
   }
   console.log(`[e2e] sky wheel/stream wrap diag: ${reports.join('; ')}`);
 
-  // By the A/B button: the boot starts at the default wheelflow, one press reaches wheelrun, three
+  // By the A/B button: the boot starts at the default wheelrun, one press reaches wheelflow, three
   // wheel and four stream, from one boot.
   await bootWorld(xr, 'painter&motiont=3.7&ab=wrap');
   const ab = (await xr.diag()).ab as { variants: string[]; variant: string };
   expect(ab.variants).toEqual([
-    'wheelflow',
     'wheelrun',
+    'wheelflow',
     'wave',
     'wheel',
     'stream',
     'base',
     'pingpong',
   ]);
-  expect(ab.variant).toBe('wheelflow');
+  expect(ab.variant).toBe('wheelrun');
   const programs = (await xr.diag()).renderer.programs;
   for (const [index, variant] of ab.variants.entries()) {
     if (index > 0) await pressV(page, xr);
@@ -414,138 +418,133 @@ test('stream: every stroke keeps its footprint while its paint streams', async (
   expect(await glErrors(page)).toEqual([]);
 });
 
-test('wheelflow and wheelrun: the discs turn as under wheel, and far outside them the strokes travel exactly as under wave and base', async ({
+test('the river arms: the kept discs turn as under wheel, the big swirl travels with the river, and wheelrun moves the paint along the way Paul drew it at patches on his paths', async ({
   page,
   xr,
 }) => {
-  test.setTimeout(420_000);
+  test.setTimeout(600_000);
   const { width, height } = CAPTURE_SIZE;
   const differ = (a: Buffer, b: Buffer, i: number): boolean =>
     a[4 * i] !== b[4 * i] || a[4 * i + 1] !== b[4 * i + 1] || a[4 * i + 2] !== b[4 * i + 2];
-  // Inside each disc deeper than any moved paint reaches, both draw wheel. The bound in
-  // skyWheelFlowTravel keeps every moved dome centre outside the members' edge, so moved paint
-  // reaches at most its own half extent inside it: on seed 1 at the default level 5 the largest is
-  // 3.21° (tests/sky-wheelflow-world.test.ts), so it comes no nearer than 6.08° to the big central
-  // disc's axis (edge 9.30°). This core ends at 0.62 of the edge, about 5.77°, 0.31° (about 5 px)
-  // short of that. The three small discs (edges 2.86°, 3.87° and 4.73°) have no such region at
-  // level 5: a large outside stroke's paint can reach their axes, as resting paint already does.
-  const left = WHEELS[0];
-  const core = (x: number, y: number): boolean =>
-    Math.hypot(x - left.centre[0] * width, y - left.centre[1] * height) / width <
-    0.62 * left.radius;
-  // The band from each members' edge out by one far-band half stroke at level 5 (2.15°: the
-  // radii are the edges, 9.30°, 2.86°, 3.87° and 4.73°). Its pixels are logged against wheel's
-  // frame with no bar: under the centre bound only a 0.25-0.50° ring holds still, and on seed 1
-  // 70-99% of the strokes centred in this band move by more than a pixel over a loop.
-  const EDGE_DEG = [9.3, 2.86, 3.87, 4.73];
-  const annulus = (x: number, y: number): boolean =>
-    WHEELS.some((w, k) => {
-      const r = Math.hypot(x - w.centre[0] * width, y - w.centre[1] * height) / width;
-      return r > w.radius && r < w.radius * (1 + 2.15 / EDGE_DEG[k]);
-    });
-  // Far outside every disc each stroke travels in full: its clearance is far past the most a half
-  // loop can bring it nearer (SKY_WHEELFLOW_RAMP) and it is past the alignment ease (9.11° past
-  // the members' edge: SKY_WHEELFLOW_ALIGN_BAND 6.07° plus SKY_WHEELFLOW_ALIGN_EASE 3.04°), so its
-  // travel is exactly 1 and its motion is wave's (wheelflow) or base's (wheelrun) to the bit. A
-  // partly travelling stroke's centre lies within 9.11° of a members' edge, its quad reaches about
-  // 2.4° further at level 5 and its travel about 2° more, so each exclusion is the edge (9.30°,
-  // 2.86°, 3.87°, 4.73°) plus 15°, widened by one far-band stroke length at the default level 5
-  // (4.3°), as a multiple of the edge. That leaves 8.35% of the frame (109,863 pixels).
-  const far = [3.1, 7.8, 6.0, 5.1];
-  const sky = await painterSkyMask(width, height);
-  const outside = new Uint8Array(width * height);
-  let outsideCount = 0;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = y * width + x;
-      outside[i] =
-        sky[i] &&
-        WHEELS.every(
-          (w, k) =>
-            Math.hypot(x - w.centre[0] * width, y - w.centre[1] * height) / width >
-            far[k] * w.radius,
-        )
-          ? 1
-          : 0;
-      outsideCount += outside[i];
-    }
-  }
-  // Byte identity with wave and base needs the two shader paths to round alike; an FMA
-  // contraction at the second call site could flip a few pixels, so a count this small is allowed.
-  const farAllowed = Math.ceil(1e-4 * outsideCount);
-  console.log(
-    `[e2e] sky wheelflow: ${outsideCount} far-outside sky pixels of ${width * height}, ${farAllowed} may differ`,
-  );
-  expect(outsideCount).toBeGreaterThan(0.01 * width * height);
+  // A disc's core: within `share` of its radius about its canvas centre.
+  const inCore = (w: (typeof WHEELS)[number], share: number, x: number, y: number): boolean =>
+    Math.hypot(x - w.centre[0] * width, y - w.centre[1] * height) / width < share * w.radius;
+  // The bar is on the moon and the large star. At the far band's 1.6, 57 outside dome strokes
+  // reach the right central disc's inner half at rest (6 the moon's, none the star's: the seed-1
+  // world suite's calibration), and they travel under the river while wheel holds them, so that
+  // disc is logged with no bar.
+  const [big, right, ...kept] = WHEELS;
 
   await bootWorld(xr, 'painter&nohalo&noanim');
   await hideHud(page, xr);
   const rest = await rawPixels(page);
-  const shot = async (wrap: string, time: number): Promise<Buffer> => {
-    await bootWorld(xr, `painter&nohalo&wrap=${wrap}&motiont=${time}&motionlayers=sky`);
+  const shot = async (query: string): Promise<Buffer> => {
+    await bootWorld(xr, `painter&nohalo&motionlayers=sky&${query}`);
     await hideHud(page, xr);
     return rawPixels(page);
   };
   const reports: string[] = [];
-  for (const [wrap, alone] of [
-    ['wheelflow', 'wave'],
-    ['wheelrun', 'base'],
-  ] as const) {
+  for (const wrap of ['wheelrun', 'wheelflow']) {
     for (const time of [1.3, 3.7, 6.1]) {
-      const wheel = await shot('wheel', time);
-      const own = await shot(wrap, time);
-      const loop = await shot(alone, time);
-      let inside = 0;
-      let same = 0;
-      let turned = 0;
-      let farDiffer = 0;
-      let moved = 0;
-      let band = 0;
-      let bandDiffer = 0;
+      const wheel = await shot(`wrap=wheel&motiont=${time}`);
+      const own = await shot(`wrap=${wrap}&motiont=${time}`);
+      // The kept discs' inner half turns as under wheel. Paint travelling outside a small disc
+      // can reach into it, as resting paint does, so the bar is a share, not byte identity.
+      let keptInside = 0;
+      let keptSame = 0;
+      let rightInside = 0;
+      let rightSame = 0;
+      let bigInside = 0;
+      let bigWheel = 0;
+      let bigMoved = 0;
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const i = y * width + x;
-          if (core(x, y)) {
-            inside++;
-            if (!differ(own, wheel, i)) same++;
-            if (differ(own, rest, i)) turned++;
+          if (kept.some((w) => inCore(w, 0.5, x, y))) {
+            keptInside++;
+            if (!differ(own, wheel, i)) keptSame++;
           }
-          if (outside[i]) {
-            if (differ(own, loop, i)) farDiffer++;
-            if (differ(own, rest, i)) moved++;
+          if (inCore(right, 0.5, x, y)) {
+            rightInside++;
+            if (!differ(own, wheel, i)) rightSame++;
           }
-          if (annulus(x, y)) {
-            band++;
-            if (differ(own, wheel, i)) bandDiffer++;
+          if (inCore(big, 0.6, x, y)) {
+            bigInside++;
+            if (!differ(own, wheel, i)) bigWheel++;
+            if (differ(own, rest, i)) bigMoved++;
           }
         }
       }
       reports.push(
-        `${wrap} t ${time}: ${same} of ${inside} core pixels as wheel, ${turned} off rest; far outside ${farDiffer} differ from ${alone}, ${moved} of ${outsideCount} off rest; edge band ${bandDiffer} of ${band} differ from wheel`,
+        `${wrap} t ${time}: moon and star cores ${keptSame} of ${keptInside} as wheel, right central ${rightSame} of ${rightInside}; big swirl core ${bigWheel} of ${bigInside} as wheel, ${bigMoved} off rest`,
       );
-      expect(same, `${wrap} t ${time}: the disc core draws as under wheel`).toBe(inside);
-      expect(turned, `${wrap} t ${time}: the disc has turned`).toBeGreaterThan(0.2 * inside);
-      expect(farDiffer, `${wrap} t ${time}: far outside draws as ${alone}`).toBeLessThanOrEqual(
-        farAllowed,
+      expect(keptInside).toBeGreaterThan(500);
+      expect(keptSame / keptInside, `${wrap} t ${time}: kept discs turn as wheel`).toBeGreaterThan(
+        0.8,
       );
-      expect(moved, `${wrap} t ${time}: far outside the strokes travel`).toBeGreaterThan(
-        0.05 * outsideCount,
+      // The big swirl is no wheel under the river: its core moves, and not as wheel turns it. In
+      // its core (0.6 of its edge) 661 of 676 dome strokes have an amplitude over 0.05.
+      expect(bigMoved / bigInside, `${wrap} t ${time}: the big swirl moves`).toBeGreaterThan(0.2);
+      expect(bigWheel / bigInside, `${wrap} t ${time}: the big swirl is not wheel's`).toBeLessThan(
+        0.8,
       );
     }
   }
-  console.log(`[e2e] sky wheelflow/wheelrun: ${reports.join('; ')}`);
+  console.log(`[e2e] sky river arms: ${reports.join('; ')}`);
 
-  // The footprint moves outside the discs now, under both: the coverage mask changes over time.
-  for (const wrap of ['wheelflow', 'wheelrun']) {
-    await bootWorld(xr, `coverage&painter&wrap=${wrap}&motiont=0.3&motionlayers=sky`);
-    await hideHud(page, xr);
-    const first = (await bareMask(page)).mask;
-    await motionT(page, xr, 2.3);
-    const later = (await bareMask(page)).mask;
-    let changed = 0;
-    for (let i = 0; i < first.length; i++) if (outside[i] && first[i] !== later[i]) changed++;
-    console.log(`[e2e] sky ${wrap} footprint: ${changed} far-outside mask pixels changed`);
+  // The sign: under wheelrun with every phase pinned at 0.5 (?motionphase), f = fract(t / 8 + 0.5),
+  // so from t = 0 (tau 0) to t = 2 (tau +2 s times the travel, at full size) every stroke outside
+  // the kept discs steps forward along its river velocity. At patches on Paul's polylines the
+  // block-matched shift must point along the guide's heading there (__goghRiverHeading).
+  const paths = (
+    JSON.parse(readFileSync('assets/bake/starry-night/sky-river.json', 'utf8')) as {
+      paths: { uv: [number, number][] }[];
+    }
+  ).paths;
+  const patches: [number, number][] = [];
+  for (const { uv } of paths) {
+    for (const at of [0.35, 0.7]) {
+      const k = Math.min(uv.length - 2, Math.floor(at * (uv.length - 1)));
+      const [a, b] = [uv[k], uv[k + 1]];
+      patches.push([(a[0] + b[0]) / 2, 1 - (a[1] + b[1]) / 2]);
+    }
   }
+  const start = await shot('wrap=wheelrun&motionphase=0.5&motiont=0');
+  await motionT(page, xr, 2);
+  await hideHud(page, xr);
+  const step = await rawPixels(page);
+  const lumaStart = luma(start);
+  const lumaStep = luma(step);
+  const rows: string[] = [];
+  let measured = 0;
+  let along = 0;
+  for (const [u, v] of patches) {
+    const cx = Math.round(u * width);
+    const cy = Math.round(v * height);
+    if (cx < 40 || cy < 40 || cx > width - 40 || cy > height - 40) continue;
+    const probe = await page.evaluate(
+      ([pu, pv, w, h]) => {
+        if (!window.__goghRiverHeading) throw new Error('__goghRiverHeading is e2e-only');
+        return window.__goghRiverHeading(pu, pv, w, h);
+      },
+      [u, v, CAPTURE_SIZE.width, CAPTURE_SIZE.height] as const,
+    );
+    if (!probe || probe.member) continue;
+    const s = shiftAt(lumaStart, lumaStep, cx, cy, 10, 24);
+    const length = Math.hypot(s.dx, s.dy);
+    const cos = length > 0 ? (s.dx * probe.heading[0] + s.dy * probe.heading[1]) / length : 0;
+    rows.push(
+      `(${u.toFixed(3)}, ${v.toFixed(3)}) shift (${s.dx}, ${s.dy}) px, cos ${cos.toFixed(2)} to the heading`,
+    );
+    if (length < 2) continue;
+    measured++;
+    if (cos > 0) along++;
+  }
+  console.log(
+    `[e2e] sky river sign: ${along} of ${measured} along the heading; ${rows.join('; ')}`,
+  );
+  expect(measured, 'patches on the paths that moved').toBeGreaterThanOrEqual(6);
+  expect(along / measured, 'patches moving the way Paul drew').toBeGreaterThanOrEqual(0.8);
   expect(await glErrors(page)).toEqual([]);
 });
 
@@ -604,13 +603,13 @@ test('coverage: the bare share at 8 motion times for wave, base, wheel, stream, 
     if (!pose) throw new Error(`no "${name}" pose`);
     return pose;
   });
-  // One loop per wrap at 8 evenly spaced times: wave and base 8 s, stream its 2 s loop, and wheel,
-  // wheelflow and wheelrun a whole turn of the big central wheel (the travel's 8 s loop then falls
-  // at 8 phases spread over it).
+  // One loop per wrap at 8 evenly spaced times: wave, base and the river arms (wheelflow,
+  // wheelrun) 8 s, stream its 2 s loop, and wheel a whole turn of the big central wheel. The river
+  // arms' kept discs turn too, so their seams are counted with wheel's.
   const wheeled = (wrap: string): boolean =>
     wrap === 'wheel' || wrap === 'wheelflow' || wrap === 'wheelrun';
   const loopTimes = (wrap: string): number[] => {
-    const period = wrap === 'stream' ? 2 : wheeled(wrap) ? WHEELS[0].period : 8;
+    const period = wrap === 'stream' ? 2 : wrap === 'wheel' ? WHEELS[0].period : 8;
     return Array.from({ length: 8 }, (_, i) => ((i + 0.5) * period) / 8);
   };
   const rows: { wrap: string; view: string; shares: number[] }[] = [];

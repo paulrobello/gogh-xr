@@ -20,7 +20,12 @@ import { cypressFlameReach } from '../../motion/cypress-flame';
 import { motionGate, REACTIVE_MOTION_BIT, reactiveGate } from '../../motion/layers';
 import { REACTIVE_MAX_GAIN, REACTIVE_REACH } from '../../motion/reactive';
 import { ringOf, skyRingReach } from '../../motion/sky-rings';
-import { skySwirlReach, skyWheelReach } from '../../motion/sky-swirl';
+import {
+  SKY_RIVER_WHEELS,
+  skyRiverReach,
+  skySwirlReach,
+  skyWheelReach,
+} from '../../motion/sky-swirl';
 import { motionVariants } from '../../motion/variant-uniforms';
 import { skyWrapCode } from '../../motion/variants';
 import { drain, type Steps } from '../../util/slicer';
@@ -552,6 +557,10 @@ export interface MotionReaches {
   readonly sky: number;
   /** The sky under wheel, the haze included: `skyWheelReach`, 0 outside the wheels. */
   readonly wheel: number;
+  /** The sky outside the kept wheels under the river arms: `skyRiverReach`. */
+  readonly river: number;
+  /** The kept wheels' turn under the river arms: `skyWheelReach` over SKY_RIVER_WHEELS. */
+  readonly riverWheel: number;
   readonly star: number;
   readonly moon: number;
   readonly cypress: number;
@@ -561,7 +570,8 @@ export interface MotionReaches {
  * Per moving layer, the farthest any stroke in `buffers` (or its strokes at `indices`) moves from
  * rest at calm 1, metres, times
  * SKY_REACH_MARGIN: the largest exact `skySwirlReach` of its sky strokes and, apart, their largest
- * exact `skyWheelReach` (the haze, SKY_LIGHT_CULL_FLAG, included), `skyRingReach` of its
+ * exact `skyWheelReach` (the haze, SKY_LIGHT_CULL_FLAG, included), the river arms' bound
+ * `skyRiverReach` and their kept wheels' `skyWheelReach`, `skyRingReach` of its
  * star and moon strokes (each round the ring its phase byte names, as motion.glsl reads it) and
  * `cypressFlameReach` of its cypress strokes (from the decoded normal and the alpha byte). The
  * cull sphere of a chunk grows by calm times the largest of these whose layer's gate is open
@@ -590,6 +600,8 @@ export function* motionReachesOfSteps(
 ): Steps<MotionReaches> {
   let sky = 0;
   let wheel = 0;
+  let river = 0;
+  let riverWheel = 0;
   let star = 0;
   let moon = 0;
   let cypress = 0;
@@ -605,6 +617,8 @@ export function* motionReachesOfSteps(
     if (layer === STROKE_LAYER.sky) {
       sky = Math.max(sky, skySwirlReach(x, y, z));
       wheel = Math.max(wheel, skyWheelReach(x, y, z));
+      river = Math.max(river, skyRiverReach(x, y, z));
+      riverWheel = Math.max(riverWheel, skyWheelReach(x, y, z, SKY_RIVER_WHEELS));
     } else if (layer === STROKE_LAYER.star || layer === STROKE_LAYER.moon) {
       const isMoon = layer === STROKE_LAYER.moon;
       const reach = skyRingReach(ringOf(isMoon, buffers.meta[i * 4 + 2]), x, y, z);
@@ -621,6 +635,8 @@ export function* motionReachesOfSteps(
   return {
     sky: sky * SKY_REACH_MARGIN,
     wheel: wheel * SKY_REACH_MARGIN,
+    river: river * SKY_REACH_MARGIN,
+    riverWheel: riverWheel * SKY_REACH_MARGIN,
     star: star * SKY_REACH_MARGIN,
     moon: moon * SKY_REACH_MARGIN,
     cypress: cypress * SKY_REACH_MARGIN,
@@ -629,8 +645,8 @@ export function* motionReachesOfSteps(
 
 /** The largest of `motionReachesOf(buffers)`: the farthest any of its strokes moves at calm 1. */
 export function motionReachOf(buffers: StrokeBuffers): number {
-  const { sky, wheel, star, moon, cypress } = motionReachesOf(buffers);
-  return Math.max(sky, wheel, star, moon, cypress);
+  const { sky, wheel, river, riverWheel, star, moon, cypress } = motionReachesOf(buffers);
+  return Math.max(sky, wheel, river, riverWheel, star, moon, cypress);
 }
 
 /**
@@ -858,10 +874,12 @@ export function interleaveOrders(parts: readonly { order: Uint32Array; pinned: n
 
 /** The largest of each field over `reaches`: the reaches of their parts' union. */
 function maxReaches(reaches: readonly MotionReaches[]): MotionReaches {
-  const out = { sky: 0, wheel: 0, star: 0, moon: 0, cypress: 0 };
+  const out = { sky: 0, wheel: 0, river: 0, riverWheel: 0, star: 0, moon: 0, cypress: 0 };
   for (const r of reaches) {
     out.sky = Math.max(out.sky, r.sky);
     out.wheel = Math.max(out.wheel, r.wheel);
+    out.river = Math.max(out.river, r.river);
+    out.riverWheel = Math.max(out.riverWheel, r.riverWheel);
     out.star = Math.max(out.star, r.star);
     out.moon = Math.max(out.moon, r.moon);
     out.cypress = Math.max(out.cypress, r.cypress);
@@ -1161,9 +1179,10 @@ export function* createStrokeBatchSteps(
    * while chunk `i` carries the reactive growth, metres. Under wheel the sky's reach is the wheel's,
    * which calm never scales (a disc keeps its radius and calm only slows uTime, motion.glsl
    * skyWheelMotion), so it is added outside the calm factor, at calm 0 too, where the clock holds
-   * the sky gate open under wheel (clock.ts setHoldMask). Under wheelflow and wheelrun the strokes
-   * outside the wheels also travel along the field, at most their swirl reach, so the chunk grows
-   * by both: calm times its swirl reach plus its wheel reach.
+   * the sky gate open under wheel (clock.ts setHoldMask). Under the river arms, wheelflow and
+   * wheelrun, the kept wheels turn and the strokes outside them travel along the river, at most
+   * their river reach, so the chunk grows by both: calm times its river reach plus its kept
+   * wheels' reach.
    */
   function motionGrowth(i: number): number {
     if (motionBits === 0) return 0;
@@ -1171,11 +1190,16 @@ export function* createStrokeBatchSteps(
     let reach = 0;
     let rigid = 0;
     if (motionGate(motionBits, STROKE_LAYER.sky)) {
-      // Under wheel only the wheels move, under stream no sky stroke does, and under wheelflow
-      // and wheelrun the wheels turn and the rest travel.
-      const wheeled = motionWrap === WHEEL || motionWrap === WHEELFLOW || motionWrap === WHEELRUN;
-      if (wheeled) rigid = r.wheel;
-      if (motionWrap !== WHEEL && motionWrap !== STREAM) reach = r.sky;
+      // Under wheel only the wheels move, under stream no sky stroke does, and under the river
+      // arms the kept wheels turn and the rest travel along the river.
+      if (motionWrap === WHEELFLOW || motionWrap === WHEELRUN) {
+        rigid = r.riverWheel;
+        reach = r.river;
+      } else if (motionWrap === WHEEL) {
+        rigid = r.wheel;
+      } else if (motionWrap !== STREAM) {
+        reach = r.sky;
+      }
     }
     if (motionGate(motionBits, STROKE_LAYER.star)) reach = Math.max(reach, r.star);
     if (motionGate(motionBits, STROKE_LAYER.moon)) reach = Math.max(reach, r.moon);

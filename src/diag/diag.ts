@@ -45,7 +45,15 @@ declare global {
       phase: number,
       wrap?: SkyWrap,
       turns?: number,
+      river?: { omega: [number, number, number]; phase: number },
     ) => [number, number] | null;
+    /** e2e builds only: `riverHeading` (src/diag/swirl-probe.ts). */
+    __goghRiverHeading?: (
+      u: number,
+      vDown: number,
+      width: number,
+      height: number,
+    ) => { heading: [number, number]; member: boolean } | null;
     /** e2e builds only: `predictRingShift` (src/diag/swirl-probe.ts). */
     __goghRingShift?: (k: number, u: number, vDown: number, time: number) => RingShift | null;
     /** e2e builds only: `predictHaloGlow` (src/diag/swirl-probe.ts). */

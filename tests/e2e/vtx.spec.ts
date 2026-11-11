@@ -220,7 +220,7 @@ test.describe('the painter view', () => {
     expect(await glErrors(page)).toEqual([]);
   });
 
-  test('with the sky moving, hoist reads its rest field and draws within the tolerance of base, under the base, wheel, stream, wave and wheelrun wraps and the default wheelflow', async ({
+  test('with the sky moving, hoist reads its rest field and draws within the tolerance of base, under the base, wheel, stream, wave and wheelflow wraps and the default wheelrun', async ({
     page,
     xr,
   }) => {
@@ -236,7 +236,7 @@ test.describe('the painter view', () => {
       '&wrap=wheel',
       '&wrap=stream',
       '&wrap=wave',
-      '&wrap=wheelrun',
+      '&wrap=wheelflow',
       '',
     ]) {
       await bootWorld(
@@ -253,7 +253,7 @@ test.describe('the painter view', () => {
       const moved = pixelDiff(base, rest, HOIST_LEVELS);
       const diff = pixelDiff(hoist, base, HOIST_LEVELS);
       rows.push(
-        `wrap ${extra ? extra.slice(6) : 'wheelflow (default)'}: motion moves ${(moved.share * 100).toFixed(3)}%, hoist differs ${(diff.share * 100).toFixed(4)}% (max ${diff.max})`,
+        `wrap ${extra ? extra.slice(6) : 'wheelrun (default)'}: motion moves ${(moved.share * 100).toFixed(3)}%, hoist differs ${(diff.share * 100).toFixed(4)}% (max ${diff.max})`,
       );
       // The motion must move far more pixels than the tolerance allows, or a still sky would pass.
       expect(moved.share).toBeGreaterThan(10 * HOIST_MAX_SHARE);

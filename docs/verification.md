@@ -3396,6 +3396,8 @@ Card 01a1c279af15 (match the rustle's reach to the hand's 0.13 m paint reach). T
 
 ## Sky wrap default: wheelflow (strokes move) (2026-11-10)
 
+Superseded the same day by the sky river (Sky river field, below): `wheelrun` is now the default, and both arms move the strokes outside three kept wheels along Paul's drawn river instead of the vortex field. The measurements in this section are of the vortex-field form, and `tests/sky-wheelflow-world.test.ts` is gone.
+
 Paul: "make wheelflow the default, default fov off, wheelflow has the paint leading to the swirls textures animating, i want the actual strokes to move to the swirl". Wheelflow is now the default wrap (`DEFAULT_SKY_WRAP`). Outside the wheels the strokes travel along the field on the wave's loop, scaled by a per-stroke travel share (`skyWheelFlowTravel`). The tone scroll outside the wheels is removed. A new `wheelrun` arm (code 6) does the same on base's loop. CLAUDE.md (Motion A/B variants) has the design. Every number below is from the TS mirror or from a seed-1 `build()` in `tests/sky-wheelflow-world.test.ts`. None is from the headset.
 
 ### The guarantee (fix round 1)
@@ -3432,7 +3434,7 @@ The old wheelflow faded the 4.10° gap between the central wheels to 0 along the
 
 ### Seams and alignment
 
-- A scan at 0.02° over the central pair's region and over rings round every wheel finds no step in displacement between neighbouring points above 0.0917° (0.0352° round the rims). The largest displacement in the scan is 1.718°. The first form read 0.0935° and 0.0798°. Without the approach floor (`SKY_WHEELFLOW_APPROACH_FLOOR`, 0.25 of the arc), the share jumped by 1.0 where the flow runs along a rim.
+- A scan at 0.02° over the central pair's region and over rings round every wheel finds no step in displacement between neighbouring points above 0.0917° (0.0196° round the rims at the current `SKY_WHEELFLOW_ALIGN` 0.5, which the sky river's fix round 2 raised from 0.2, where it read 0.0352°). The largest displacement in the scan is 1.718°. The first form read 0.0935° and 0.0798°. Without the approach floor (`SKY_WHEELFLOW_APPROACH_FLOOR`, 0.25 of the arc), the share jumped by 1.0 where the flow runs along a rim.
 - The alignment fade holds still up to 29.7% of the moon's rim strokes and 25% of the large star's, where the field opposes the disc's turn.
 
 ### The wrap diag
@@ -3478,3 +3480,154 @@ The review asked for an e2e assertion that the pixels between each members' edge
 | Large star | 559 | 450 | 421 | 1.383° |
 
 What the spec asserts instead is what the bound guarantees on pixels. Inside the big central disc, within 0.62 of its edge (about 5.77°, 0.31° short of the 6.08° the largest level-5 dome stroke's paint can reach), wheelflow and wheelrun draw exactly wheel's frame at motion times 1.3, 3.7 and 6.1. The three small discs have no such region at level 5. The far-outside check widens each exclusion by one level-5 stroke length (4.3°), which leaves 8.35% of the frame, and allows `ceil(1e-4 × count)` pixels to differ from wave and base, logged.
+
+
+## Sky river field (Paul's drawn flow) (2026-11-10)
+
+Paul drew the sky's flow as seven polylines over the painting (`docs/shots/sky-river-paul.webp`, registered into `assets/bake/starry-night/sky-river.json`) and approved the stage 1 field ("Yes, wire it in") after `docs/shots/sky-river-field.png` and `sky-river-field-around.png`. Stage 2 wires it into the two river arms: `wheelrun` (code 6, the default, one way) and `wheelflow` (code 5, forward and back). Under both, every sky stroke outside three kept wheels (the right central wheel, the moon and the large star, `SKY_RIVER_WHEELS`) moves along its baked river rotation, and the big left swirl is no wheel. CLAUDE.md (Motion A/B variants, the river arms) has the design. Every number below is from the TS mirror or a seed-1 `build()` in `tests/sky-river-world.test.ts`, at load averages between 65 and 270. None is from the headset, and no e2e spec has been run.
+
+### The field (stage 1, unchanged in stage 2)
+
+Direction agreement with each polyline: the share of the sky strokes near it whose river velocity lies within 45° of its tangent, with still strokes counted as failing. Re-measured after stage 2's allocation-free `skyRiverNearest`, identical to stage 1:
+
+| Path | Inside | With the ends |
+| --- | --- | --- |
+| 1 | 249 / 249 = 1.000 | 316 / 343 = 0.921 |
+| 2 | 748 / 784 = 0.954 | 822 / 893 = 0.920 |
+| 3 | 495 / 537 = 0.922 | 568 / 667 = 0.852 |
+| 4 | 260 / 275 = 0.945 | 364 / 379 = 0.960 |
+| 5 | 314 / 314 = 1.000 | 429 / 433 = 0.991 |
+| 6 | 474 / 474 = 1.000 | 595 / 595 = 1.000 |
+| 7 | 577 / 629 = 0.917 | 694 / 763 = 0.910 |
+
+Sign coherence, the share of neighbour pairs within 1° that move opposite ways: 0.64% in the canvas view (1,572 of 247,113, where the S's two lobes meet), 0 of 260,249 in the band past the frame edge and 0 of 197,948 over the rest of the dome.
+
+### The instances
+
+`iRiver` (vec4: ω in rad/s at calm 1, and wheelflow's loop phase) on every chunk that holds a sky stroke, and on no other: 106 chunks, 313,858 sky strokes, 6,035,280 bytes. The largest difference from the CPU bake is 7.45e-9 rad/s in ω and 2.98e-8 in the phase, and the largest amplitude |ω × d̂| / `SKY_RIVER_SPEED` is 1.000001 (float32 rounding of 1). The bake took `riverMs` 450 ms in the test's build at a load average near 200, so the cost on an idle machine is not known. It runs on the world slicer in two jobs, `river-field` and `river`, so it adds to the portal entry's build wait.
+
+### The kept-wheel bound
+
+Over the 14,195 sky strokes within 10° of a kept wheel's members' edge, at far-band sizes 1.12 (max beauty), 1.6, 2.26 (the default fixed level 5) and 3.82 (the far floor under `?ab=vtx` `sparse`), the haze at its ×1.5 flight growth, under both arms at 9 times through the loop, with each stroke's own `iRiver`: 699,997 moved samples, and no moved centre, widened by the haze's kept extent, came nearer a kept edge it was clear of at rest. The closest moved haze quad is 0.0004° clear of a kept edge and the closest moved dome centre 0.0025° outside one.
+
+### Coverage estimate for wheelrun (Addition C)
+
+The painted area lost to the size envelope, (1 − (1 + gain)²) times each stroke's rest area, summed over 141,429 dome strokes outside the kept wheels (every second one) as a share of their rest area, at 32 times through the 8 s loop:
+
+| Arm | Mean | Max |
+| --- | --- | --- |
+| wheelrun | 7.196% | 7.263% |
+| base | 7.543% | 7.617% |
+
+At every time and for every stroke, wheelrun's gain is at least base's at the same phase, so wheelrun never shrinks the sky more than base, whose spot-ahead motion sweep read at worst 0.478% bare at motiont 7 (earlier in this file). This is an estimate from the mirror, not a rendered coverage sweep.
+
+### The wrap diag
+
+`skyWrapStats` at the painter view's cull, 43,220 drawn sky strokes, 529 of them in a kept wheel, at 8 times through the loop:
+
+- wheelrun: 3,358 to 3,796 strokes under 0.8 of their rest size (base's envelope before the travel scaling, so an upper bound), none returning and no counter-flow.
+- wheelflow, as first built: none small, a returning share of 0.479 to 0.489, and a counter-flow of 0.228 to 0.234. The bands were 5° wide (`SKY_RIVER_WAVELENGTH` 10°), so about a quarter of the neighbour pairs within 2° straddled a band edge, against wave's 0.034. Fix round 1 (below) blends the phase as phasors and retunes the wavelength to 30° (a median half-band of 13.5°), which brings it to 0.077 to 0.088.
+- Under both, 60.3% of the drawn sky strokes' long axes lie within 30° of the river's velocity.
+
+### Bundle
+
+tie-key 34,858 of 37,000 gzip bytes (34,402 before), the Starry Night world chunk 21,712 of 30,000, the JS total 346,579 of 375,000. After fix round 1: tie-key 34,987, the Starry Night world chunk 21,775, the JS total 346,779.
+
+### Not verified
+
+- No e2e spec was run: the sign check at patches on Paul's polylines, the kept discs against wheel, calm 0, the A/B cycle and the spot-ahead coverage at 8 times for both arms (`tests/e2e/sky-wheel-stream.spec.ts`, `ab.spec.ts`, `world-coverage.spec.ts`, `vtx.spec.ts`).
+- The turn: measured in fix round 1 (below).
+- The headset: nothing here has been seen in the headset.
+
+### Fix round 1 (review F1-F11)
+
+Measured on seed 1 with `tests/sky-river-world.test.ts` unless named, the M4 Max, 1-minute load 24 to 30.
+
+- **Band width and counter-flow (F1).** The loop phase is now −arg / 2π of the guide weights' blend of unit phasors exp(i 2π s / λ), one per path (`SkyRiverGuide.phase`), not fract(−s̄ / λ) of the blended coordinate, and λ is 30° (2π / 12). Half-band width over the canvas sky (5,292 grid points, a 0.005 uv finite difference, half a loop over the phase gradient):
+
+  | Phase | Median | p10 | p1 | Min | Under 2° | Under 1° |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | blended s, λ 10° (before) | 4.19° | 1.05° | 0.43° | 0.259° | 18.3% | 9.5% |
+  | phasors, λ 10° | 4.77° | 3.61° | 1.12° | 0.276° | 2.3% | 0.8% |
+  | phasors, λ 20° | 9.14° | 6.11° | 2.66° | 0.428° | 0.7% | 0.3% |
+  | phasors, λ 30° (shipped) | 13.51° | 8.32° | 2.05° | 0.277° | 1.0% | 0.4% |
+  | phasors, λ 40° | 18.03° | 11.87° | 3.21° | 0.315° | 0.7% | 0.2% |
+
+  The minimum sits at the windings where the phasors cancel: 6 in the canvas sky at λ 30° (a 0.005 uv grid, v 0.4 to 1), at uv (0.40, 0.45), (0.78, 0.46), (0.71, 0.52), (0.35, 0.55), (0.46, 0.60) and (0.51, 0.69) with v up. The bands meet there like spokes at full travel: unlike wave's windings (`skyWaveFade`), wheelflow has no amplitude fade at them, so neighbours round one move forward and back side by side within about half a band. Painter-view counter-flow over the 8 times: 0.208 to 0.211 with the phasors at λ 10°, 0.110 to 0.116 at 20°, 0.077 to 0.088 at 30° and 0.059 to 0.071 at 40°, with returning shares 0.473 to 0.494 at 30°. 30° is the shortest wavelength measured under the wave-like bars, which the world test and `tests/e2e/ab.spec.ts` now hold: returning share 0.3 to 0.7 and counter-flow under 0.1. The bands travel downstream at 3.75°/s.
+- **Coverage per patch (F2).** At the 24 coverage poses (1280 × 720, 70° vertical FOV) and the coverage specs' 8 times (0.5 to 7.5 s), the shrunk share of each 80 px patch's sky area, every stroke weighted by its screen area (half / its distance from the eye)², occlusion ignored. Worst patch, all sky strokes (12 or more a patch): base 79.27%, wheelrun 79.27%, both at boundary north-west, t 5.5, tile (14, 0) of 28 strokes, where a near haze stroke outweighs the rest. Dome alone (30 or more a patch): base 19.21%, wheelrun 19.21% (boundary north-west, t 7.5, tile (1, 6), 87 strokes). At spot ahead: 13.44% for both (12.76% dome only). wheelflow shrinks nothing. Wheelrun's worst is base's, never above it, because at the same phase byte no stroke's gain is below base's, so no window or depth change was made.
+- **Op count (F3).** Scalar ops per vertex in `skyRiverMotion` and what it calls, counting a dot as 5, a cross as 9, a smoothstep with constant edges as 8, a mix as 3, and a compare, min, max, sqrt, inversesqrt, divide, fract or abs as 1:
+  - the prelude (d, its inverse length, dir, v = ω × d̂, the haze extent): 22;
+  - `skyWheelFlowTravel` over the three kept wheels, all within 90° and none near: 163 (8 before the loop, about 46 per wheel, 13 after), plus about 43 for each disc whose alignment band holds the vertex;
+  - wheelrun's tail (f, tau, `skyWheelRunGain`): 33; wheelflow's (the jittered phase and pingpong's curve): 20; the returned offset and turn: 18; the dispatch compare: 1.
+  - So a moving sky vertex pays about 238 under wheelrun and 225 under wheelflow, 281 and 268 inside one disc's alignment band. Against that, `base` on the same path pays about 105 (the four-vortex sum is 56 of it).
+  - A kept wheel's member pays about 185 to 200: the prelude, the travel loop up to its wheel's return, and `skyWheelMotion` (a sine, a cosine and four quaternion rotations of about 30 each), with no vortex sum.
+- **Seams (F4).** The river field at points (`skyRiverBake` with the smoothed painted orientation), 0.02° apart on rings 0 to 4° past each kept wheel's members' edge and over a grid on the dropped big swirl's old disc plus 1° (every tenth row and column), comparing the travel share and the half-loop offset travel × 4 s × (ω × d̂) of neighbours:
+  - Rings: 71 of 47,625 pairs step the offset by more than 0.1°, none of them a reversal; the largest step is 1.8775° (the whole offset), and the travel share steps by up to 1.0.
+  - Disc: 1,924 of 214,240 pairs step by more than 0.1°, 51 of them reversals; the largest step is 3.755° (a full reversal), and 227 pairs step the travel share by more than 0.05.
+  - Causes: the guide's nearest point on a curling polyline jumps between segments, so its heading and the sign ramp's amplitude jump (1.0 to 0 in one step round the right central wheel at uv (0.65, 0.47)); and the travel share climbs from 0.07 to 0.66 over 0.16° where the flow runs along a kept rim, about 0.15° of offset a step. The test holds the measured shares (under 0.2% round the rings with no reversal, under 1% over the disc) so they cannot grow unseen. The field is not seam-free, and fixing it means changing the guide's nearest-point rule and the travel ramp, which this round did not do.
+- **Turn bound (F5).** `SKY_RIVER_MAX_TURN` = 0.5 × 8 s × `SKY_RIVER_SPEED` × `SKY_RIVER_MAX_CURVATURE` = 0.6253 rad, and the seed-1 peak of 4 |ω · d̂| is 0.6253, which the world test now bounds. The polynomial cosine and sine at 0.4, 0.625, 1.125 (with the reactive 0.5) and √3:
+
+  | Turn | Cosine error | Sine error | Turn short by | Quad scale |
+  | --- | --- | --- | --- | --- |
+  | 0.4 | −1.06e-3 | −8.5e-5 | 0.019° | 0.9990 |
+  | 0.625 | −6.29e-3 | −7.89e-4 | 0.175° | 0.9944 |
+  | 1.125 | −6.41e-2 | −1.46e-2 | 3.07° | 0.9606 |
+  | 1.732 | −3.39e-1 | −1.21e-1 | 20.8° | 1.0000 |
+
+  The cull reach (`skyRiverReach`) bounds the length of the offset tau (ω × d), the straight chord, not the arc, and the kept-wheel bound test moves each stroke by that same chord before it measures the clearance, so both hold for the displaced position.
+- **Bake steps (F9).** `RIVER_SLICE` is 256. `bun scripts/sky-river/time-bake.ts 313858 256` at a 1-minute load of 24.5: the field in 47 ms over 140 steps, the longest 2.34 ms; the bake 617 ms for 313,858 strokes (1.96 µs each), in 1,227 steps of 256 with a median of 0.47 ms, a p99 of 1.04 ms and a longest of 6.88 ms, over the slicer's 6 ms step. Two reruns at a load of 22 read 605 and 609 ms, p99 0.85 and 0.82 ms, and a longest of 2.63 and 2.25 ms, both the first step (index 0), so the 6.88 ms was one step under load, not a steady cost. No Quest figure is measured and no cache is added, so every world build pays it.
+- **Probe units (F10).** `__goghRiverHeading(u, v, width, height)` scales the heading to the capture's pixels before it normalises it, so the sign check compares it with a pixel shift directly.
+- **Code nits (F11).** `tests/motion-variants.test.ts` holds that wheelflow and wheelrun are the two highest `SKY_WRAPS` codes, which motion.glsl's single `uSkyWrap >= SKY_WRAP_WHEELFLOW` dispatch needs. The long source comment lines are wrapped. The bake and step times above come from `scripts/sky-river/time-bake.ts`, which CLAUDE.md now names where it quotes them.
+
+
+### Fix round 2 (the seams)
+
+Measured on seed 1 with `tests/sky-river-world.test.ts` unless named, the M4 Max, 1-minute load about 80. The goal was a travel field that is a continuous function of position, so no two neighbouring points reverse or jump.
+
+- **The guide (cause 1).** Each path now blends its segments softly instead of taking the nearest (`skyRiverSoft`): weights exp(−(c_i − c_min) / 2σ²) of each segment's nearest-point chord² c_i, σ `SKY_RIVER_SEGMENT_SIGMA` (1°), over the segment tangents, stream coordinates and phasors. The path weights are as before. The guide's output is the blend ḡ = Σ w t / Σ w (`SkyRiverGuide.blend`), not its unit heading, so its length is the agreement and it shrinks to 0 where guides oppose.
+- **The sign rule.** The signed speed is clamp((t̂ · ḡ) / `SKY_RIVER_SIGN_SLOPE`, −1, 1) × smoothstep(`SKY_RIVER_CORE`) of the coherence, odd and continuous in t̂ and ḡ, replacing the sign of t̂ · heading times smoothstep(`SKY_RIVER_SIGN_RAMP`) of its absolute value. The guide's own rotation, ω_guide = v (d̂ × ḡ), uses the blend too. A reversal can only happen through zero travel. `SKY_RIVER_SIGN_SLOPE` is 0.5: at 0.3 a stroke turning off the guide stepped the half-loop offset by up to 0.13° per 0.02° (over the big swirl's old disc, uv 0.455, 0.634).
+- **The coherence fade.** `SKY_RIVER_CORE` widened from [0.15, 0.4] to [0.05, 0.6]: where the river-scale coherence falls fast (top left, uv 0.103, 0.933) the narrow ramp stepped the offset by up to 0.17° per 0.02°.
+- **The edge ramp (cause 2).** The kept-wheel edge bound is unchanged. The steps were in the alignment fade: where the river runs straight at a small disc (radial share of the velocity 0.99), the cosine to the rim velocity turns about 0.013 per 0.02° round the large star, and smoothstep(0, 0.2) of it stepped the offset by up to 0.19°. `SKY_WHEELFLOW_ALIGN` is now 0.5 (shared with the vortex-field wheelflow). The kept-wheel bound still holds: over 14,195 strokes and 742,807 moved samples the closest moved haze quad is 0.0004° clear and the closest moved dome centre 0.0025° outside a kept edge. The vortex field's own seam test reads 0.0917° across the central pair (unchanged) and 0.0196° round the rims (0.0352° at 0.2), and its alignment-fade shares are unchanged (up to 29.7% of the moon's rim strokes and 25% of the large star's held still).
+- **The winding fade.** wheelflow's travel is scaled by smoothstep(0, `SKY_RIVER_PHASE_FADE` (0.5), |Σ w e^{iφ}| / Σ w), carried in `iRiver.w` as round(255 × fade) plus the phase (at most 1 − 2^-12). `fract` in the loop phase drops the level, and the shader multiplies tau by floor(iRiver.w) / 255. Float32 holds the phase to 7.63e-6 next to the level (half an ulp at 255, 2^-17), which the parity test now allows. Over 312,624 sky strokes outside the kept wheels, 2 have a fade of 0, 180 under 0.5 and 776 under 1, so the fade touches few strokes. The wrap diag's returning share and counter-flow count returning flags, and now leave out strokes with a fade of 0. At the painter view over the 8 times: returning 0.473 to 0.496 and counter-flow 0.0777 to 0.0870, as before within the reporting precision, under the bars 0.3 to 0.7 and 0.1. k = 0.5 matches the wave's sense of a fade near a winding. A wider k would move more strokes but cannot change the counter-flow, which does not weigh by amplitude.
+- **Seams.** The river field at points (`skyRiverBake` with the smoothed painted orientation), 0.02° apart, each pair at its worst phase: wheelrun at a common phase byte (|f − 0.5| = 1/2), wheelflow at its worst of 32 times through the loop with each point's own field phase and fade. A reversal is a pair whose displacements oppose while both exceed 0.05°. Pairs whose flow.png brush axis (the unsmoothed field, `buildSkyRiverField(flow, 0)`) turns by more than 30° are counted apart. Bars: no reversal and no step over 0.1°, for both classes.
+
+  | Region | Pairs | Largest step | Over 0.1° | Reversals | Brush turn > 30° (pairs, largest) |
+  | --- | --- | --- | --- | --- | --- |
+  | Canvas and edge band (az ±50°, el 0 to 60°, rows and columns 0.5° apart) | 1,103,003 | 0.0959° | 0 | 0 | 11, 0.0412° |
+  | Far sky (whole rings every 5° of elevation, 0 to 85°) | 215,142 | 0.0958° | 0 | 0 | 9, 0.0120° |
+  | Right central wheel rings (0 to 4° past the edge) | 12,878 | 0.0581° | 0 | 0 | 0 |
+  | Moon rings | 16,025 | 0.0510° | 0 | 0 | 0 |
+  | Large star rings | 18,722 | 0.0653° | 0 | 0 | 1, 0° |
+  | Big swirl's old disc plus 1° (every tenth row and column) | 214,240 | 0.0863° | 0 | 0 | 3, 0.0247° |
+
+  The five largest steps: canvas 0.0959° wheelflow at uv (0.688, 0.473), 0.0959° wheelrun at (0.900, 0.910), 0.0958° wheelrun at (0.353, 0.548), 0.0958° wheelrun at (0.907, 0.913) and 0.0958° wheelrun at (0.353, 0.548); far sky 0.0958° wheelflow, 0.0956° wheelflow, 0.0951° wheelrun, 0.0945° wheelflow and 0.0936° wheelrun, all at uv (0.727, 0.523). The steps cluster just under 0.096°, the edge bound's own slope at the approach floor (1.5 / `SKY_WHEELFLOW_RAMP` × the half-loop offset over the floor's approach, × 0.02°), so the margin under the bar is thin. Before this round the same scan of the rings and the disc read 1.8775° and 3.755° with 51 reversals.
+- **Agreement with Paul's paths.** Inside / with the ends, stage 1 then fix round 2: path 1 249/249 then 249/249, 316/343 then 317/343; path 2 748/784 then 748/784, 822/893 then 824/893; path 3 495/537 then 498/537, 568/667 then 571/667; path 4 260/275 then 260/275, 364/379 then 364/379; paths 5 and 6 unchanged (314/314, 429/433; 474/474, 595/595); path 7 577/629 then 579/629, 694/763 then 696/763. No path lost a stroke.
+- **Opposed neighbours.** In the canvas view 862 of 241,626 moving pairs within 1° still move opposite ways (0.36%, was 0.64%), 564 of them with long axes within 30° of each other. The field itself has none (the seam scan). These come from each stroke's own long axis: two neighbours whose axes straddle square to the guide take opposite signs, each at a speed proportional to its own cosine. None oppose past the edge or over the rest of the dome.
+- **Unchanged.** |ω × d̂| ≤ `SKY_RIVER_SPEED` still holds (the largest amplitude is 1.000001), so `skyRiverReach`, `SKY_RIVER_MAX_ANGLE` and `SKY_RIVER_MAX_TURN` are unchanged and the world test's turn bound passes. `docs/shots/sky-river-field.png` and `sky-river-field-around.png` are re-rendered from the new field (`bun scripts/sky-river/field.ts`, `python3 scripts/sky-river/draw.py`).
+- **Op count.** wheelflow's tail gains the fade's floor and two multiplies: a moving sky vertex pays about 228 under wheelflow (271 inside one disc's alignment band). wheelrun is unchanged at 238 (281). The soft segment blend adds an exp per segment within reach, on module scratch buffers: `bun scripts/sky-river/time-bake.ts 313858 256` at a 1-minute load of 65 read 511 ms for 313,858 strokes (1.63 µs each), a median step of 0.41 ms, a p99 of 0.70 ms and a longest of 2.56 ms, so no slower than fix round 1's 617 ms at load 24, a comparison the different loads make loose.
+- **Not verified.** No e2e spec, Playwright run or headset check.
+
+### Fix round 4 (wheelflow coverage)
+
+The MiniMac gate on c294ea9 failed `tests/e2e/sky-wheel-stream.spec.ts` coverage for wheelflow only (MAX_BARE 0.5%). With `SKY_RIVER_FLOW_SCALE` at 1, wheelflow's painter view read 0.515, 0.450, 0.432, 0.421, 0.394, 0.445, 0.479 and 0.493% at t 0.5 to 7.5, and its wheel seams 0.697, 0.385, 0.449, 0.463, 0.219, 0.458, 0.595 and 0.686%. The worst rows for the other wraps were 0.303% for wave, 0.363% for base, 0.363% for wheelrun (0.480% at the seams) and 0.271% for wheel.
+
+- **Cause, from the mirror.** Wheelflow shrinks nothing, and its phase follows the field, so a whole band of sky moves together. The gaps open where that moving paint pulls away from paint that holds still: the kept discs, the lights, the cypress and the hills. The drift between neighbouring dome strokes does not explain it. A pair-opening proxy (each pair's separation growth across stroke i's own quad at level 5) read 0.011 for wave, 0.107 for base, 0.178 for wheelrun and 0.048 to 0.059 for wheelflow, so it ranks wheelrun far above wheelflow, against the e2e. Wheelrun's phase bytes are independent, so its neighbours slide along their long axes, and its shrink keeps its bare at base's level. Round 2's `SKY_WHEELFLOW_ALIGN` change only touches strokes in a kept disc's alignment band, and it narrows their travel rather than widening it.
+- **Proxy.** The mean angular shift of the painter view's 25,853 moving dome strokes (canvas view, outside the kept wheels, not haze), at the spec's 8 times (`tests/sky-river-world.test.ts`, coverage proxy):
+  - wave: 0.496 to 0.524°;
+  - wheelrun: 0.702 to 0.709°;
+  - wheelflow at scale 1: 0.850 to 0.911°;
+  - wheelflow at 0.7: 0.595 to 0.638°.
+
+  This ranks the wraps as the e2e measured them: wave < wheelrun < wheelflow. It is calibrated by two lines through the e2e rows: the painter view through wave's worst and wheelflow's worst at 1, and the seams through wheelrun's and wheelflow's. It reproduces each wrap's worst level, but not the pattern within the loop. The proxy repeats every 4 s, where the e2e peaked at t 0.5 and 7.5.
+
+  | t | 0.5 | 1.5 | 2.5 | 3.5 | 4.5 | 5.5 | 6.5 | 7.5 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | painter, scale 1 | 0.489 | 0.482 | 0.504 | 0.515 | 0.489 | 0.482 | 0.504 | 0.515 |
+  | painter, 0.7 | 0.347 | 0.342 | 0.358 | 0.365 | 0.347 | 0.342 | 0.358 | 0.365 |
+  | seams, scale 1 | 0.647 | 0.632 | 0.675 | 0.697 | 0.647 | 0.632 | 0.675 | 0.697 |
+  | seams, 0.7 | 0.369 | 0.359 | 0.389 | 0.404 | 0.369 | 0.359 | 0.389 | 0.404 |
+
+- **Fix.** `SKY_RIVER_FLOW_SCALE` is 0.7. It multiplies wheelflow's tau in motion.glsl and in the mirror, and nothing else changes. Wheelflow's half-loop arc is 0.7 × 1.876° = 1.31° at full speed. The cull reach (`skyRiverReach`) is left at full scale, as an upper bound. The seam scan now scales wheelflow's term too, and its bars still hold: largest step 0.0959° and 0 reversals. That step is wheelrun's at the approach floor. Also unchanged or still holding:
+  - the counter-flow (0.0777 to 0.0870) and the returning share (0.473 to 0.496), which count flags;
+  - the kept-wheel bound: 742,776 moved samples, closest haze quad 0.0004° and dome centre 0.0025°.
+- **Not verified.** The e2e coverage was not rerun, and the 0.42% target is the proxy's prediction. The seams line runs through two points and extrapolates steeply (intercept −0.28%), so it is the less certain of the two.

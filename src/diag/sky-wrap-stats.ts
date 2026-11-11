@@ -2,6 +2,9 @@
  * The `wrap` diag key (main.ts, CLAUDE.md, Motion A/B variants): the drawn sky strokes of the bound
  * batch under the active wrap variant at a motion time, from the TS mirror (skyWrapPhase and
  * skyWrapLoop) at each stroke's phase byte, or at the `?motionphase` pin as the shader uses it.
+ * Under the river arms, `wheelrun` and `wheelflow`, each stroke's velocity and forward-and-back
+ * phase come from its chunk's iRiver, as the shader reads them, and the wheels are the kept three
+ * (SKY_RIVER_WHEELS).
  */
 
 import {
@@ -12,6 +15,9 @@ import {
   skyCounterFlow,
 } from '../motion/sky-counter-flow';
 import {
+  isSkyRiverWrap,
+  SKY_RIVER_JITTER,
+  SKY_RIVER_WHEELS,
   SKY_WAVE_JITTER,
   skyVelocity,
   skyWavePhase,
@@ -49,18 +55,19 @@ export interface SkyWrapStats {
    */
   readonly returning: number;
   /**
-   * Of those, the ones inside a wheel (skyWheelAt), which turn under wheel, wheelflow and wheelrun,
-   * the haze included.
+   * Of those, the ones inside a wheel (skyWheelAt), which turn under wheel, the haze included.
+   * Under wheelflow and wheelrun only the kept wheels (SKY_RIVER_WHEELS) count, since the big
+   * swirl's strokes travel along the river there.
    */
   readonly wheeled: number;
   /** Of those, the ones whose paint streams: every one under stream, none under any other wrap. */
   readonly streaming: number;
   /**
    * How the drawn sky strokes' long axes at rest lie against the swirl's flow, |cos| of the angle
-   * between the long axis and omega × d: the share within 30° of it (|cos| ≥ cos 30°), the share
-   * more than 60° off it (|cos| < ½), and the median |cos|. Under stream the paint streams along
-   * each stroke's length, so this says how much of it streams along the flow. Strokes where the
-   * flow is still count as crossways.
+   * between the long axis and omega × d (the river's iRiver omega under wheelflow and wheelrun):
+   * the share within 30° of it (|cos| ≥ cos 30°), the share more than 60° off it (|cos| < ½), and
+   * the median |cos|. Under stream the paint streams along each stroke's length, so this says how
+   * much of it streams along the flow. Strokes where the flow is still count as crossways.
    */
   readonly alignment: {
     readonly within30: number;
@@ -96,6 +103,16 @@ interface SkyStrokes {
   readonly along: Float32Array;
   /** Each stroke's wheel index (skyWheelAt), -1 outside every wheel. */
   readonly wheel: Int8Array;
+  /** Each stroke's kept wheel index (skyWheelAt over SKY_RIVER_WHEELS), -1 outside them. */
+  readonly riverWheel: Int8Array;
+  /** The river's velocity at each stroke, cross(iRiver.xyz, d̂), xyz each; 0 with no iRiver. */
+  readonly riverVelocity: Float32Array;
+  /** wheelflow's loop phase: iRiver.w plus the jitter of the phase fraction. */
+  readonly riverPhase: Float32Array;
+  /** wheelflow's winding fade, floor(iRiver.w) / 255. */
+  readonly riverFade: Float32Array;
+  /** |cos| of the angle between each stroke's long axis at rest and the river's velocity. */
+  readonly riverAlong: Float32Array;
   /** Each stroke's direction from the painter's eye and the field's velocity there, xyz each. */
   readonly directions: Float32Array;
   readonly velocity: Float32Array;
@@ -133,6 +150,11 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
   const wave = new Float32Array(total);
   const along = new Float32Array(total);
   const wheel = new Int8Array(total);
+  const riverWheel = new Int8Array(total);
+  const riverVelocity = new Float32Array(3 * total);
+  const riverPhase = new Float32Array(total);
+  const riverFade = new Float32Array(total);
+  const riverAlong = new Float32Array(total);
   const directions = new Float32Array(3 * total);
   const velocity = new Float32Array(3 * total);
   const kept = new Float32Array(total);
@@ -143,6 +165,7 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
     const normal = chunk.geometry.getAttribute('iNormal').array;
     const tangent = chunk.geometry.getAttribute('iTangent').array;
     const size = chunk.geometry.getAttribute('iSize').array;
+    const iRiver = chunk.geometry.getAttribute('iRiver')?.array;
     // snorm16 and unorm16 as the GPU reads them; a float array is already the value.
     const snorm = (x: number): number =>
       normal instanceof Int16Array ? Math.max(x / 32767, -1) : x;
@@ -172,6 +195,25 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
       const speed = Math.hypot(v[0], v[1], v[2]);
       along[s] = speed > 0 ? Math.abs(long[0] * v[0] + long[1] * v[1] + long[2] * v[2]) / speed : 0;
       wheel[s] = skyWheelAt([dx * inv, dy * inv, dz * inv]);
+      riverWheel[s] = skyWheelAt([dx * inv, dy * inv, dz * inv], SKY_RIVER_WHEELS);
+      if (iRiver) {
+        const wx = iRiver[4 * i];
+        const wy = iRiver[4 * i + 1];
+        const wz = iRiver[4 * i + 2];
+        const rv: [number, number, number] = [
+          wy * dz * inv - wz * dy * inv,
+          wz * dx * inv - wx * dz * inv,
+          wx * dy * inv - wy * dx * inv,
+        ];
+        riverVelocity[3 * s] = rv[0];
+        riverVelocity[3 * s + 1] = rv[1];
+        riverVelocity[3 * s + 2] = rv[2];
+        riverPhase[s] = iRiver[4 * i + 3] + SKY_RIVER_JITTER * (phase[s] - 0.5);
+        riverFade[s] = Math.floor(iRiver[4 * i + 3]) / 255;
+        const rs = Math.hypot(rv[0], rv[1], rv[2]);
+        riverAlong[s] =
+          rs > 0 ? Math.abs(long[0] * rv[0] + long[1] * rv[1] + long[2] * rv[2]) / rs : 0;
+      }
     });
   });
   return {
@@ -181,6 +223,11 @@ function gather(batch: StrokeBatch, pin: number | null, turns: SkyWaveTurns): Sk
     wave,
     along,
     wheel,
+    riverWheel,
+    riverVelocity,
+    riverPhase,
+    riverFade,
+    riverAlong,
     directions,
     velocity,
     kept,
@@ -207,13 +254,19 @@ export function skyWrapStats(
     cache.set(batch, entry);
   }
   const strokes = entry.strokes;
-  const loopPhase = wrap === 'wave' || wrap === 'wheelflow' ? strokes.wave : strokes.phase;
+  const river = isSkyRiverWrap(wrap);
+  const loopPhase =
+    wrap === 'wave' ? strokes.wave : wrap === 'wheelflow' ? strokes.riverPhase : strokes.phase;
+  const wheelOf = river ? strokes.riverWheel : strokes.wheel;
+  const velocity = river ? strokes.riverVelocity : strokes.velocity;
+  const alongOf = river ? strokes.riverAlong : strokes.along;
   const bandSize = (c: number): number => {
     const band = batch.chunks[c].band;
     return band ? batch.sizeMultiplier(band) : 1;
   };
-  // Under wheelflow and wheelrun a stroke in a wheel turns rigidly and has no loop along the arc.
-  const wheels = wrap === 'wheelflow' || wrap === 'wheelrun';
+  // Under wheelflow and wheelrun a stroke in a kept wheel turns rigidly and has no loop along the
+  // arc.
+  const wheels = river;
   // 255 marks a stroke not drawn this frame, which skyCounterFlow leaves out.
   const returning = new Uint8Array(strokes.phase.length).fill(255);
   const drawnIndices: number[] = [];
@@ -230,26 +283,28 @@ export function skyWrapStats(
     for (let k = 0; k < local.length && local[k] < end; k++) {
       if (local[k] < chunk.drawStart) continue;
       const s = strokes.start[c] + k;
-      const member = wheels && strokes.wheel[s] >= 0;
+      const member = wheels && wheelOf[s] >= 0;
       const loop = member ? skyWrapLoop('wheel', 0, time) : skyWrapLoop(wrap, loopPhase[s], time);
       // A stroke whose travel share is 0 holds still, so it has no way back along the arc. The
       // haze's kept extent is taken at its band's size, before fit caps and flight growth.
       const back1 =
         loop.returning &&
+        (wrap !== 'wheelflow' || strokes.riverFade[s] > 0) &&
         (!wheels ||
           skyWheelFlowTravel(
             dirAt(strokes.directions, s),
-            dirAt(strokes.velocity, s),
+            dirAt(velocity, s),
             strokes.kept[s] * bandSize(strokes.chunk[s]),
+            SKY_RIVER_WHEELS,
           ) > 0);
       returning[s] = member ? 255 : back1 ? 1 : 0;
       drawnIndices.push(s);
       if (member) members++;
       if (1 + loop.gain < 0.8) small++;
       if (back1) back++;
-      if (strokes.wheel[s] >= 0) wheeled++;
+      if (wheelOf[s] >= 0) wheeled++;
       if (wrap === 'stream') streaming++;
-      along.push(strokes.along[s]);
+      along.push(alongOf[s]);
     }
   });
   const drawn = drawnIndices.length;

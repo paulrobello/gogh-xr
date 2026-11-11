@@ -34,6 +34,9 @@ in uvec4 iMeta;
 // The depth key's top 24 bits as an exact float (tie-key.ts tieKeys), which every stroke geometry
 // carries: the size hash of a ranked stroke off the backdrop, else the position hash.
 in float iTie;
+// The sky river (sky-river.ts skyRiverInstancesSteps): xyz the stroke's rotation vector, w the
+// forward-and-back phase. Read only by the river arms; a geometry without it reads 0.
+in vec4 iRiver;
 #ifdef VTX_HOIST
 // The `hoist` arm's sky field at rest (vertex-arms.ts skyStatic): xyz omega × d and w omega · n,
 // the swirl's sweep and turn per unit of tau; and the wave wrap's loop phase and amplitude at the
@@ -150,7 +153,7 @@ void main() {
   // The haze around a disc then clears a little wider while the sky moves, rather than paying the
   // motion before the thin for every haze stroke. Two wraps differ: under stream no stroke moves,
   // so the reach is 0 and the thin is the rest thin, and under wheel (and for a haze stroke in a
-  // wheel under wheelflow and wheelrun) the haze's rigid turn runs first (motion.glsl
+  // kept wheel under the river arms) the haze's rigid turn runs first (motion.glsl
   // skyHazeWheel), so the thin is judged at the turned centre with no reach.
   // The motion gates (P4.1, P4.5): the layer's own bit, and the reactive bit with the rest centre
   // inside the reactive box. Closed, as under ?noanim or at calm 0, each is one AND and compare.
@@ -159,7 +162,7 @@ void main() {
   float thin = 1.0;
   vec3 wheel = vec3(0.0);
   bool wheelTurned = false;
-  // The extent wheelflow and wheelrun keep clear of the wheels on top of the moved centre: the
+  // The extent the river arms keep clear of the wheels on top of the moved centre: the
   // haze's full-size half diagonal, since its rest thin keeps it off the discs, and 0 otherwise.
   float flowExtent = 0.0;
   if ((iMeta.w & SKY_LIGHT_CULL_FLAG) != 0u) {
@@ -167,7 +170,7 @@ void main() {
     flowExtent = halfExtent;
     float reach = reacts ? reactiveReach() : 0.0;
     if (layerMoves) {
-      // Under wheel, and in a wheel under wheelflow and wheelrun, the haze turns with its wheel
+      // Under wheel, and in a kept wheel under the river arms, the haze turns with its wheel
       // here and is judged where the turn has carried it, thinned clear of the other wheels
       // (motion.glsl skyHazeWheel); otherwise it widens by its motion reach.
       wheelTurned = skyHazeWheel(iPosition, halfExtent, n, longAxis, shortAxis, wheel, thin);
@@ -204,8 +207,10 @@ void main() {
       flowExtent,
       stream
     );
-    // The turn is small (SKY_SWIRL_MAX_TURN plus REACTIVE_MAX_TURN), so cosine and sine are
-    // polynomials; this pair has c² + s² <= 1, so a turned quad never outgrows its rest extent.
+    // The turn is at most SKY_RIVER_MAX_TURN (0.625, the river arms; 0.4 under the vortex
+    // field's wraps) plus REACTIVE_MAX_TURN (0.5), so cosine and sine are polynomials: at 1.125
+    // the turn falls 3.1° short and the quad shrinks to 0.961. This pair has c² + s² <= 1 up to
+    // √3, so a turned quad never outgrows its rest extent.
     float a2 = m.turn * m.turn;
     float c = 1.0 - 0.5 * a2;
     float s = m.turn * (1.0 - a2 * (1.0 / 6.0));

@@ -413,7 +413,7 @@ test.describe('the painter view', () => {
   }
   // The wrap variants (src/motion/variants.ts) only show while the motion runs, so this boots with
   // a pinned ?motiont rather than ?noanim, where every variant draws the rest pose.
-  test('V cycles wrap live at a pinned motion time, each variant reports and draws its own wrap, and a full cycle back to the default wheelflow matches a fresh boot byte for byte', async ({
+  test('V cycles wrap live at a pinned motion time, each variant reports and draws its own wrap, and a full cycle back to the default wheelrun matches a fresh boot byte for byte', async ({
     page,
     xr,
   }) => {
@@ -457,26 +457,26 @@ test.describe('the painter view', () => {
 
     await bootWorld('');
     const plain = await diag();
-    // A boot with no flag draws wheelflow, the default since 2026-11-10.
-    expect(plain.variants).toEqual({ wrap: 'wheelflow' });
+    // A boot with no flag draws wheelrun, the default since the sky river (2026-11-10).
+    expect(plain.variants).toEqual({ wrap: 'wheelrun' });
     // With no wrap group or ?wrap, the wrap diag key is not registered.
     expect(plain.wrap).toBeUndefined();
     const fresh = await rawPixels(page);
 
-    // ?wrap=wheelflow at the default 2 waves per turn draws the no-flag sky byte for byte.
-    await bootWorld('&wrap=wheelflow');
+    // ?wrap=wheelrun at the default 2 waves per turn draws the no-flag sky byte for byte.
+    await bootWorld('&wrap=wheelrun');
     await hideHud();
     const explicit = await diag();
-    expect([explicit.wrap?.wrap, explicit.wrap?.waveTurns]).toEqual(['wheelflow', 2]);
-    expect((await rawPixels(page)).equals(fresh), '?wrap=wheelflow matches a no-flag boot').toBe(
+    expect([explicit.wrap?.wrap, explicit.wrap?.waveTurns]).toEqual(['wheelrun', 2]);
+    expect((await rawPixels(page)).equals(fresh), '?wrap=wheelrun matches a no-flag boot').toBe(
       true,
     );
 
     await bootWorld('&ab=wrap');
     const variants = ((await ab(xr)) as AbDiag).variants;
     expect(variants).toEqual([
-      'wheelflow',
       'wheelrun',
+      'wheelflow',
       'wave',
       'wheel',
       'stream',
@@ -484,7 +484,7 @@ test.describe('the painter view', () => {
       'pingpong',
     ]);
     await hideHud();
-    expect((await rawPixels(page)).equals(fresh), 'wrap wheelflow matches a fresh boot').toBe(true);
+    expect((await rawPixels(page)).equals(fresh), 'wrap wheelrun matches a fresh boot').toBe(true);
     const programs = (await diag()).programs;
     const timings: string[] = [];
     const reports: string[] = [];
@@ -509,19 +509,20 @@ test.describe('the painter view', () => {
       expect(w.drawn, variant).toBeGreaterThan(1000);
       reports.push(`${variant} ${JSON.stringify(w)}`);
       expect(w.forwardShare + w.returningShare, variant).toBeCloseTo(1, 9);
-      // Under wheelflow and wheelrun the shares are over the strokes outside the wheels.
+      // Under wheelflow and wheelrun the shares are over the strokes outside the kept wheels.
       const moving = ['wheelflow', 'wheelrun'].includes(variant) ? w.drawn - w.wheeled : w.drawn;
       expect(w.returningShare, variant).toBeCloseTo(w.returning / moving, 9);
       expect(w.counterFlow.radiusDeg, variant).toBeCloseTo(2, 9);
       expect(w.counterFlow.pairs, variant).toBeGreaterThan(10_000);
-      // Only stream streams paint; the wheels turn under wheel, wheelflow and wheelrun.
+      // Only stream streams paint; the wheels turn under wheel, and the kept three under the
+      // river arms, wheelflow and wheelrun.
       expect(w.streaming, variant).toBe(variant === 'stream' ? w.drawn : 0);
       if (['wheel', 'wheelflow', 'wheelrun'].includes(variant)) {
         expect(w.wheeled, variant).toBeGreaterThan(0);
       }
       if (variant === 'base' || variant === 'wheelrun') {
         // Base shrinks its wrapping strokes and never turns back, so nothing counter-flows;
-        // wheelrun runs base's loop outside its turning wheels.
+        // wheelrun runs base's one-way loop along the river outside its kept wheels.
         expect(w.small).toBeGreaterThan(0);
         expect([w.returning, w.counterFlow.opposed]).toEqual([0, 0]);
       } else if (variant === 'wheel' || variant === 'stream') {
@@ -529,11 +530,13 @@ test.describe('the painter view', () => {
         // cores turn rigidly and the stream streams inside still strokes.
         expect([w.small, w.returning, w.counterFlow.opposed]).toEqual([0, 0, 0]);
       } else if (variant === 'wheelflow') {
-        // The wave's loop outside the turning wheels: full size, forward and returning bands, and
-        // neighbours that move together. The wheels' members are left out of the shares, and a
-        // stroke with no travel never counts as returning. The TS mirror at the painter view over
-        // a loop reads a returning share of 0.416-0.567 and a counter-flow of at most 0.048,
-        // against wave's 0.040 (tests/sky-wheelflow-world.test.ts).
+        // Pingpong's curve along the river outside the kept wheels, its loop phase baked from the
+        // stream coordinate (iRiver.w): full size, forward and returning bands down the river, and
+        // neighbours that move together. The kept wheels' members are left out of the shares,
+        // and a stroke with no travel never counts as returning. The seed-1 world suite's
+        // skyWrapStats at the painter view reads 0.473-0.496 returning and a counter-flow of
+        // 0.077-0.088 over a loop (tests/sky-river-world.test.ts), with the phasor-blended phase
+        // at SKY_RIVER_WAVELENGTH 30°.
         expect(w.small).toBe(0);
         expect(w.returningShare).toBeGreaterThan(0.3);
         expect(w.returningShare).toBeLessThan(0.7);
@@ -552,11 +555,11 @@ test.describe('the painter view', () => {
         expect(w.returningShare).toBeLessThan(0.8);
         expect(w.counterFlow.share).toBeLessThan(0.15);
       }
-      if (variant !== 'wheelflow') {
+      if (variant !== 'wheelrun') {
         await hideHud();
         expect(
           (await rawPixels(page)).equals(fresh),
-          `wrap ${variant} moves the sky differently from the default wheelflow`,
+          `wrap ${variant} moves the sky differently from the default wheelrun`,
         ).toBe(false);
       }
     }
@@ -564,7 +567,7 @@ test.describe('the painter view', () => {
     console.log(`[e2e] ab wrap desktop switches: ${timings.join('; ')}`);
     await hideHud();
     const cycled = await rawPixels(page);
-    expect(cycled.equals(fresh), 'a full cycle back to wheelflow renders a fresh boot').toBe(true);
+    expect(cycled.equals(fresh), 'a full cycle back to wheelrun renders a fresh boot').toBe(true);
     expect(await glErrors(page)).toEqual([]);
 
     // ?waveturns sets a uniform: the same program count as the default wavelength, the diag's turns,
@@ -595,7 +598,7 @@ test.describe('the painter view', () => {
   // so f = t / 8, and ?motionlayers=sky stills every other motion, so two frames at different
   // pinned times differ only in the sky. At each pair the two variants compute the same tau and
   // size exactly in float (`?wrap=base` starts the group at base, which steps to pingpong, then
-  // wheelflow, wheelrun and wave):
+  // wheelrun, wheelflow and wave):
   // - pingpong at f = 0.25 and base at f = 0.5: smoothstep(0, 1, 0.5) = 0.5, so tau 0.
   // - pingpong at f = 0.125 and base at f = 0.15625: smoothstep(0, 1, 0.25) = 0.15625, so both
   //   have tau −2.75 s on base's arc, and base is past its 0.06 wrap shrink, at full size.
@@ -666,8 +669,8 @@ test.describe('the painter view', () => {
     await hideHud();
     const restBare = bareShare(await at(4));
     await cycleTo('pingpong');
-    await cycleTo('wheelflow');
     await cycleTo('wheelrun');
+    await cycleTo('wheelflow');
     await cycleTo('wave');
     // The diag follows the pinned phase, which under the wave only sets the jitter.
     const wave = await wrapDiag();

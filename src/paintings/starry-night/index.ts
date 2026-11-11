@@ -4,11 +4,17 @@
  * stroke batch over flat base meshes. The module namespace is the `WorldModule`, so the registry's
  * lazy `import()` resolves straight to it; it holds one built world at a time.
  */
-import { Color, type Group, type Scene, SRGBColorSpace } from 'three';
+import { Color, type Group, InstancedBufferAttribute, type Scene, SRGBColorSpace } from 'three';
 import { buildFlowFieldSteps } from '../../demo/canvas/field';
 import { type DiagToken, registerDiag, unregisterDiag } from '../../diag/diag';
+import {
+  buildSkyRiverFieldSteps,
+  type SkyRiverField,
+  skyRiverInstancesSteps,
+} from '../../motion/sky-river';
 import { createSkyHalo, type SkyHalo } from '../../render/sky-halo';
 import { createStrokeBatchSteps, type StrokeBatch } from '../../render/strokes/batch';
+import { STROKE_LAYER } from '../../render/strokes/instance';
 import { buildStrokeReachSteps, chunkSources } from '../../render/strokes/reach-field';
 import {
   BUILD_SHA,
@@ -18,6 +24,7 @@ import {
   shouldBypassScatterCache,
 } from '../../render/strokes/scatter-cache';
 import { skyLightConeUniforms, skyLightFeatherUniforms } from '../../render/strokes/sky-light-cull';
+import type { Steps } from '../../util/slicer';
 import { boundaryFactor } from '../../world/boundary';
 import {
   buildSteps,
@@ -66,6 +73,8 @@ export interface WorldBuildTimes {
   batchMs: number;
   /** The stroke reach field over the batch's chunks (`buildStrokeReachSteps`). */
   reachMs: number;
+  /** The sky river's field and its per-instance bake (iRiver). */
+  riverMs: number;
   /** All of the above. */
   buildMs: number;
 }
@@ -81,6 +90,40 @@ interface Built {
 let built: Built | null = null;
 /** This world's own `world` diag registration, so its dispose removes only that one. */
 let worldDiag: DiagToken | null = null;
+
+/** The sky river bake's footprint: the chunks given iRiver, their sky strokes and the bytes. */
+export interface SkyRiverStats {
+  readonly chunks: number;
+  readonly strokes: number;
+  readonly bytes: number;
+}
+
+/**
+ * Adds iRiver (sky-river.ts skyRiverInstancesSteps) to every chunk of `batch` that holds a sky
+ * stroke, SKY_RIVER_BYTES per instance of such a chunk. The other chunks never run the sky motion.
+ */
+function* addSkyRiverSteps(batch: StrokeBatch, field: SkyRiverField): Steps<SkyRiverStats> {
+  let chunks = 0;
+  let strokes = 0;
+  let bytes = 0;
+  for (const chunk of batch.chunks) {
+    const g = chunk.geometry;
+    const meta = g.getAttribute('iMeta').array;
+    const data = yield* skyRiverInstancesSteps(field, {
+      count: chunk.count,
+      position: g.getAttribute('iPosition').array,
+      normal: g.getAttribute('iNormal').array,
+      tangent: g.getAttribute('iTangent').array,
+      meta,
+    });
+    if (!data) continue;
+    g.setAttribute('iRiver', new InstancedBufferAttribute(data, 4));
+    chunks++;
+    bytes += data.byteLength;
+    for (let i = 0; i < chunk.count; i++) if (meta[i * 4 + 1] === STROKE_LAYER.sky) strokes++;
+  }
+  return { chunks, strokes, bytes };
+}
 
 export async function build(deps: WorldDeps): Promise<WorldHandle> {
   if (built) throw new Error('the Starry Night world is already built; dispose it first');
@@ -134,6 +177,11 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     material.uniforms.uSkyLightFeathers.value = featherUniforms;
   }
   const batched = performance.now();
+  // The river arms' per-instance rotation (iRiver), baked from each chunk's own arrays before the
+  // chunks first draw, so no VAO is set up without it.
+  const riverField = await run(buildSkyRiverFieldSteps(flow), 'river-field');
+  const river = await run(addSkyRiverSteps(batch, riverField), 'river');
+  const rivered = performance.now();
   // The dome and its moon and stars sit 120 m out (SKY_DOME_RADIUS), and no locomotion brings a
   // hand near them: flight stops at 55 m and 40 m up, and the ground ends at the ridge inside the
   // dome. Every other stroke, the boundary haze included, can be pushed by a hand.
@@ -150,7 +198,8 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     generateMs: generated - decoded,
     scatterMs: scattered - generated,
     batchMs: batched - scattered - atlasMs,
-    reachMs: reached - batched,
+    reachMs: reached - rivered,
+    riverMs: rivered - batched,
     buildMs: reached - start - atlasMs,
   };
 
@@ -209,6 +258,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     cache,
     strokes: batch.stats(),
     reach: strokeReach.stats,
+    river,
   }));
   registerDiag('halo', () => ({ visible: halo.mesh.visible, halos: halo.state() }));
   const { heightAt, normalAt } = world.terrain;

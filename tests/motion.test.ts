@@ -38,10 +38,10 @@ const strokeGlsl = readFileSync('src/render/strokes/stroke.vert.glsl', 'utf8');
 const mainTs = readFileSync('src/main.ts', 'utf8');
 
 describe('sky wrap boot default', () => {
-  test('main.ts sets the wheelflow wrap, DEFAULT_SKY_WRAP, unless ?wrap names another', () => {
-    expect(DEFAULT_SKY_WRAP).toBe('wheelflow');
+  test('main.ts sets the wheelrun wrap, DEFAULT_SKY_WRAP, unless ?wrap names another', () => {
+    expect(DEFAULT_SKY_WRAP).toBe('wheelrun');
     expect(mainTs).toContain('setSkyWrap(flags.wrap ?? DEFAULT_SKY_WRAP);');
-    // One setter, which also holds the sky gate open at calm 0 under wheel and wheelflow, and the
+    // One setter, which also holds the sky gate open at calm 0 under wheel and the river arms, and the
     // A/B group's setWrap is that setter.
     expect(mainTs.match(/motionVariants\.setWrap\(/g)).toHaveLength(1);
     expect(mainTs).toContain(

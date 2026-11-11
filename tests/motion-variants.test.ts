@@ -117,7 +117,7 @@ function domeCounterFlow(
 }
 
 describe('sky wrap variants', () => {
-  test('the variants are wave, wheel, stream, base, pingpong, wheelflow and wheelrun, the default wheelflow and wheelrun appended: opacity and lift are retired and dive dropped', () => {
+  test('the variants are wave, wheel, stream, base, pingpong, wheelflow and wheelrun, the default wheelrun and the river arms appended: opacity and lift are retired and dive dropped', () => {
     expect(SKY_WRAPS).toEqual([
       'wave',
       'wheel',
@@ -128,7 +128,11 @@ describe('sky wrap variants', () => {
       'wheelrun',
     ]);
     expect(skyWrapCode('wheelrun')).toBe(6);
-    expect(DEFAULT_SKY_WRAP).toBe('wheelflow');
+    // motion.glsl dispatches the river arms with one `uSkyWrap >= SKY_WRAP_WHEELFLOW`, which holds
+    // only while they are the two highest codes: a wrap appended after them must change it.
+    const river = SKY_WRAPS.filter((w) => w === 'wheelflow' || w === 'wheelrun').map(skyWrapCode);
+    expect(river).toEqual([SKY_WRAPS.length - 2, SKY_WRAPS.length - 1]);
+    expect(DEFAULT_SKY_WRAP).toBe('wheelrun');
   });
 
   test('base is the P4.2 loop exactly', () => {
@@ -201,9 +205,9 @@ describe('sky wrap variants', () => {
 
   test('the variant uniform switches live', () => {
     const variants = createMotionVariants();
-    // The default is wheelflow, code 5 (Paul, 2026-11-10).
-    expect(variants.diag()).toEqual({ wrap: 'wheelflow' });
-    expect(variants.uniforms.uSkyWrap.value).toBe(5);
+    // The default is wheelrun, code 6 (Paul, 2026-11-10).
+    expect(variants.diag()).toEqual({ wrap: 'wheelrun' });
+    expect(variants.uniforms.uSkyWrap.value).toBe(6);
     variants.setWrap('wheel');
     expect(variants.uniforms.uSkyWrap.value).toBe(1);
     expect(variants.diag()).toEqual({ wrap: 'wheel' });
@@ -513,69 +517,85 @@ describe('wave', () => {
 });
 
 describe('GLSL', () => {
-  test('uSkyWrap is read only in the sky motion and the haze thin: one compare under wave, two under base, three under pingpong, four under wheel, five under stream and six under wheelflow and wheelrun', () => {
+  test('uSkyWrap is read only in the sky motion and the haze thin: one compare under the river arms, two under wave, three under base, four under pingpong, and five under wheel and under stream', () => {
     // The default program: the vtx hoist arm's skyMotion (VTX_HOIST) stripped.
     const hoist = /#ifdef VTX_HOIST\n([\s\S]*?)\n#else\n/.exec(motionGlsl)?.[1] ?? '';
     const base = motionGlsl.replace(/#ifdef VTX_HOIST\n[\s\S]*?\n#else\n/, '');
     const sky = base.slice(base.indexOf('Motion skyMotion('), base.indexOf('Motion ringMotion('));
-    // Wave is the first compare, base the second and pingpong the third, as before the wheel and
-    // stream arms; wheel and stream pay the fourth, and the default wheelflow and wheelrun more.
+    // The river arms (wheelflow 5, wheelrun 6) come first and skip the vortex loop. Then wave,
+    // base, pingpong and wheel, and stream falls through.
+    const riverCall =
+      'if (uSkyWrap >= SKY_WRAP_WHEELFLOW) {\n    return skyRiverMotion(p, n, l, s, phase, t, flowExtent, rigid);\n  }';
+    const river = sky.indexOf(riverCall);
+    const loop = sky.indexOf('for (int i = 0; i < SKY_VORTEX_COUNT; i++) {');
     const wave = sky.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {');
     const baseWrap = sky.indexOf('if (uSkyWrap == SKY_WRAP_BASE) {');
     const pingpong = sky.indexOf(
       'if (uSkyWrap == SKY_WRAP_PINGPONG) return skyWrapMotion(d, omega, n, phase, SKY_SWIRL_PERIOD, t);',
     );
     const wheel = sky.indexOf(
-      'if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion(d, dir, n, l, s, t, rigid);',
+      'if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion(d, dir, n, l, s, t, rigid, 0);',
     );
-    expect(wave).toBeGreaterThan(0);
+    expect(river).toBeGreaterThan(0);
+    expect(loop).toBeGreaterThan(river);
+    expect(wave).toBeGreaterThan(loop);
     expect(baseWrap).toBeGreaterThan(wave);
     expect(pingpong).toBeGreaterThan(baseWrap);
     expect(wheel).toBeGreaterThan(pingpong);
-    const stream = sky.indexOf('if (uSkyWrap == SKY_WRAP_STREAM) {');
-    expect(stream).toBeGreaterThan(wheel);
     expect(sky.indexOf('stream = skyStream(cross(omega, d), l, brush, phase, t);')).toBeGreaterThan(
-      stream,
+      wheel,
     );
-    // Wheelflow and wheelrun fall through after the fifth compare: a member turns as under wheel,
-    // and the rest travel, wheelrun's base loop behind the sixth compare and wheelflow's wave loop
-    // after it, each scaled by the travel.
-    const flow = sky.indexOf(
-      'float travel = skyWheelFlowTravel(dir, cross(omega, dir), flowExtent * inverseDistance);',
-    );
-    expect(flow).toBeGreaterThan(stream);
-    expect(sky.slice(flow)).toContain(
-      'if (travel < 0.0) return skyWheelMotion(d, dir, n, l, s, t, rigid);',
-    );
-    const run = sky.indexOf('if (uSkyWrap == SKY_WRAP_WHEELRUN) {');
-    expect(run).toBeGreaterThan(flow);
-    expect(sky.slice(run)).toContain(
-      'return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir) * travel, t);',
-    );
-    expect(sky).not.toMatch(/skyStream\(v,/);
+    expect(sky).not.toMatch(/SKY_WRAP_STREAM|skyStream\(v,|skyWheelFlowTravel/);
     expect(sky).toContain('float wavePhase = skyWavePhase(dir) + SKY_WAVE_JITTER * (phase - 0.5);');
     expect(sky).toContain(
       'return skyWrapMotion(d, omega, n, wavePhase, SKY_SWIRL_PERIOD * skyWaveFade(dir), t);',
     );
     expect(sky).toContain('float tau = (f - 0.5) * SKY_SWIRL_PERIOD;');
-    // The declaration, skyMotion's six compares, skyHazeWheel's guard (wheel, wheelflow and
-    // wheelrun) and its return (a still haze stroke widens by its reach under wheelflow and
-    // wheelrun), and motionReach's one, off wheel, which zeroes the haze's thin reach under stream.
-    expect(base.replace(/\/\/.*$/gm, '').match(/uSkyWrap/g)).toHaveLength(12);
-    expect(base).toContain(
-      'if (uSkyWrap != SKY_WRAP_WHEEL && uSkyWrap != SKY_WRAP_WHEELFLOW && uSkyWrap != SKY_WRAP_WHEELRUN) {',
+    // The river: the kept wheels from SKY_RIVER_FIRST_WHEEL, the travel on the baked river
+    // velocity, wheelrun's base loop with its shrink scaled by travel times speed share, and
+    // wheelflow's pingpong curve at the baked phase. No vortex field and no wave phase.
+    const rm = base.slice(
+      base.indexOf('Motion skyRiverMotion('),
+      base.indexOf('Motion skyMotion('),
     );
+    expect(rm).toContain('vec3 v = cross(iRiver.xyz, dir);');
+    expect(rm).toContain(
+      'float travel = skyWheelFlowTravel(dir, v, flowExtent * inverseDistance, SKY_RIVER_FIRST_WHEEL);',
+    );
+    expect(rm).toContain(
+      'if (travel < 0.0) return skyWheelMotion(d, dir, n, l, s, t, rigid, SKY_RIVER_FIRST_WHEEL);',
+    );
+    expect(rm).toContain('if (uSkyWrap == SKY_WRAP_WHEELRUN) {');
+    expect(rm).toContain('gain = skyWheelRunGain(f, travel * length(v) * SKY_RIVER_INV_SPEED);');
+    expect(rm).toContain(
+      'float f = fract(t * SKY_SWIRL_INV_PERIOD + iRiver.w + SKY_RIVER_JITTER * (phase - 0.5));',
+    );
+    expect(rm).toContain(
+      'return Motion(tau * cross(iRiver.xyz, d), tau * dot(iRiver.xyz, n), gain, 0.0);',
+    );
+    expect(rm).not.toMatch(/SKY_VORTEX_AXIS|skyWavePhase|uWaveTurns|iSkyField/);
+    // The declaration, skyMotion's five compares, skyRiverMotion's one, skyHazeWheel's guard
+    // (wheel, wheelflow and wheelrun), its first wheel (all four under wheel, the kept three on the
+    // river) and its return, and motionReach's one, which zeroes the haze's thin reach under stream.
+    expect(base.replace(/\/\/.*$/gm, '').match(/uSkyWrap/g)).toHaveLength(13);
+    expect(base).toContain(
+      'uSkyWrap != SKY_WRAP_WHEEL && uSkyWrap != SKY_WRAP_WHEELFLOW && uSkyWrap != SKY_WRAP_WHEELRUN\n  ) {',
+    );
+    expect(base).toContain('int first = uSkyWrap == SKY_WRAP_WHEEL ? 0 : SKY_RIVER_FIRST_WHEEL;');
     expect(base).toContain('return member >= 0 || uSkyWrap == SKY_WRAP_WHEEL;');
     expect(base).toContain(
       'if (layer != STROKE_LAYER_SKY || uSkyWrap == SKY_WRAP_STREAM) return 0.0;',
     );
-    // uWaveTurns: the declaration and skyWavePhase's loop, which the wave and wheelflow branches
-    // call.
+    // uWaveTurns: the declaration and skyWavePhase's loop, which only the wave branch calls.
     expect(base.replace(/\/\/.*$/gm, '').match(/uWaveTurns/g)).toHaveLength(2);
-    // The hoist arm reads the rest field from its attributes: wave first, base second and
-    // pingpong third, as before, then wheel and stream, then wheelrun, and wheelflow falls through.
+    // The hoist arm calls the same river first, then reads the rest field from its attributes:
+    // wave, base, then wheel past pingpong, and stream falls through.
     expect(hoist).toContain('Motion skyMotion(');
-    expect(hoist.match(/uSkyWrap/g)).toHaveLength(6);
+    expect(hoist).toContain(riverCall);
+    expect(hoist.match(/uSkyWrap/g)).toHaveLength(5);
+    expect(hoist.indexOf(riverCall)).toBeLessThan(
+      hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {'),
+    );
     expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {')).toBeLessThan(
       hoist.indexOf('} else if (uSkyWrap == SKY_WRAP_BASE) {'),
     );
@@ -583,18 +603,11 @@ describe('GLSL', () => {
       hoist.indexOf('} else if (uSkyWrap != SKY_WRAP_PINGPONG) {'),
     );
     expect(hoist.indexOf('} else if (uSkyWrap != SKY_WRAP_PINGPONG) {')).toBeLessThan(
-      hoist.indexOf('if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion('),
+      hoist.indexOf('if (uSkyWrap == SKY_WRAP_WHEEL) {\n      return skyWheelMotion('),
     );
-    expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WHEEL) return skyWheelMotion(')).toBeLessThan(
-      hoist.indexOf('if (uSkyWrap == SKY_WRAP_STREAM) {'),
-    );
-    expect(hoist).toContain('iSkyField.xyz * inverseDistance,');
-    expect(hoist).toContain('if (travel < 0.0) return skyWheelMotion(d, dir, n, l, s, t, rigid);');
-    expect(hoist).toContain('amplitude *= iSkyWave.y * travel;');
-    expect(hoist.indexOf('if (uSkyWrap == SKY_WRAP_WAVE) {')).toBeGreaterThan(0);
-    expect(hoist).toContain('float tau = (f - 0.5) * SKY_SWIRL_PERIOD;');
     expect(hoist).toContain('stream = skyStream(iSkyField.xyz, l, brush, phase, t);');
-    expect(hoist).not.toMatch(/uWaveTurns|skyWavePhase|SKY_VORTEX/);
+    expect(hoist).toContain('float tau = (f - 0.5) * SKY_SWIRL_PERIOD;');
+    expect(hoist).not.toMatch(/uWaveTurns|skyWavePhase|SKY_VORTEX|skyWheelFlowTravel/);
     const wrap = motionGlsl.slice(
       motionGlsl.indexOf('Motion skyWrapMotion('),
       motionGlsl.indexOf('const float SKY_WHEEL_CORE['),

@@ -18,16 +18,17 @@
  * own normal by `τ (omega · n)`, so its orientation follows the flow. Near the wrap the stroke
  * shrinks to nothing and grows back (`gain`), so the jump back is never a pop. That is the `base`
  * wrap. `wave` (Paul's 2026-11-08 choice) replaces the shrink with a travel ahead and back in bands.
- * The app ships `wheelflow` as the default (src/motion/variants.ts, Paul's 2026-11-10 choice), and
- * `wheelrun`, `wave`, `wheel`, `stream`, `base` and `pingpong` are the A/B alternatives (`?wrap`,
+ * The app ships `wheelrun` as the default (src/motion/variants.ts, Paul's 2026-11-10 choice), and
+ * `wheelflow`, `wave`, `wheel`, `stream`, `base` and `pingpong` are the A/B alternatives (`?wrap`,
  * `?ab=wrap`). Two of them have no loop along the
  * arc at all (2026-11-09, after Paul rejected lift's reset): `wheel` turns each vortex's core
  * rigidly and forever about its centre direction (skyWheels) and holds every other sky stroke
  * still, and `stream` holds every sky stroke still and scrolls its brush tone along its length in
- * the fragment shader (skyStreamTone). `wheelflow` and `wheelrun` turn the wheels as `wheel` does
- * and move the strokes outside them along the field as `wave` and `base` do, each stroke's travel
- * faded by its own clearance from the wheels (skyWheelFlowTravel), so no moved centre crosses a
- * turning disc's members' edge.
+ * the fragment shader (skyStreamTone). The river arms, `wheelrun` and `wheelflow`, keep three of
+ * the wheels (SKY_RIVER_WHEELS: the big swirl's is dropped) and move every other sky stroke along
+ * Paul's drawn river instead of this field (sky-river.ts, baked per stroke into iRiver), one way
+ * with base's shrink or forward and back, each stroke's travel faded by its own clearance from the
+ * kept wheels (skyWheelFlowTravel), so no moved centre crosses a turning disc's members' edge.
  *
  * motion.glsl's `skyMotion` is the GLSL; `skySwirlGlslDefines` hands it these tables as defines, so
  * the two read one source. Change them together.
@@ -69,9 +70,11 @@ export const SKY_SWIRL_REACH: number = SKY_SWIRL_MAX_ANGLE * SKY_DOME_RADIUS;
  */
 export const SKY_SWIRL_MAX_TURN_RATE: number = 0.1;
 /**
- * Bound on a stroke's turn about its normal, radians: half a loop at SKY_SWIRL_MAX_TURN_RATE. Small
- * enough for stroke.vert.glsl's polynomial cosine and sine: at 0.4 the cosine errs by 1.06e-3 and
- * the sine by 8.5e-5, and c² + s² ≤ 1 holds up to √3, so a turn never grows the stroke.
+ * Bound on a stroke's turn about its normal under the vortex field's wraps, radians: half a loop
+ * at SKY_SWIRL_MAX_TURN_RATE. Small enough for stroke.vert.glsl's polynomial cosine and sine: at
+ * 0.4 the cosine errs by 1.06e-3 and the sine by 8.5e-5, and c² + s² ≤ 1 holds up to √3, so a
+ * turn never grows the stroke. The river arms turn further, up to SKY_RIVER_MAX_TURN (0.625,
+ * sky-river.ts), where the pair errs by 6.3e-3 and 7.9e-4.
  */
 export const SKY_SWIRL_MAX_TURN: number = 0.5 * SKY_SWIRL_PERIOD * SKY_SWIRL_MAX_TURN_RATE;
 
@@ -558,8 +561,7 @@ function skyWaveProductGlsl(splits: readonly WindingSplit[]): string {
 
 /**
  * The loop phase, in loops, that a sky stroke centred at `position` with phase fraction `phase`
- * runs under wrap `wrap`: its phase fraction, except under `wave` and `wheelflow`, where it is
- * skyWavePhase of its
+ * runs under wrap `wrap`: its phase fraction, except under `wave`, where it is skyWavePhase of its
  * direction from PAINTER_EYE plus SKY_WAVE_JITTER × (phase − ½). Matches the phase skyMotion in
  * motion.glsl passes to skyWrapMotion.
  */
@@ -569,7 +571,7 @@ export function skyWrapPhase(
   phase: number,
   poles: readonly SkyWavePole[] = SKY_WAVE_POLES,
 ): number {
-  if (wrap !== 'wave' && wrap !== 'wheelflow') return phase;
+  if (wrap !== 'wave') return phase;
   const d: Vec3 = [
     position[0] - PAINTER_EYE[0],
     position[1] - PAINTER_EYE[1],
@@ -610,11 +612,11 @@ export interface SkyWrapLoop {
  * The loop of a stroke with loop phase `phase` (skyWrapPhase) at motion time `time` under wrap
  * variant `wrap` (src/motion/variants.ts). Matches skyMotion and skyWrapMotion in motion.glsl:
  * - `base` and `wheelrun` sweep forward and shrink to nothing over the wrap window.
- * - `pingpong`, `wave` and `wheelflow` sweep forward over the first half of the loop and ease back
- *   over the second, at full size, with no jump.
+ * - `pingpong`, `wave` and `wheelflow` (at its baked river phase) sweep forward over the first
+ *   half of the loop and ease back over the second, at full size, with no jump.
  * - `wheel` and `stream` have no loop along the arc: tau is 0 (skyWheelSpin, skyStreamTone).
- * Outside the wheels `wheelflow` and `wheelrun` scale tau by skyWheelFlowTravel, and `wheelrun`'s
- * gain is skyWheelRunGain (skySwirl), so this is their loop before that scaling.
+ * Outside the kept wheels `wheelflow` and `wheelrun` scale tau by skyWheelFlowTravel, and
+ * `wheelrun`'s gain is skyWheelRunGain (skyRiverSwirl), so this is their loop before that scaling.
  */
 export function skyWrapLoop(wrap: SkyWrap, phase: number, time: number): SkyWrapLoop {
   if (wrap === 'wheel' || wrap === 'stream') {
@@ -738,6 +740,61 @@ export function skyWheels(vortices: readonly SkyVortex[] = SKY_VORTICES): readon
 }
 
 export const SKY_WHEELS: readonly SkyWheel[] = skyWheels();
+
+/**
+ * The first vortex whose wheel the river arms (`wheelrun`, `wheelflow`) keep turning. The big
+ * swirl, SKY_WHEELS[0], is dropped there, so its strokes follow Paul's drawn S (sky-river.ts).
+ * motion.glsl starts its wheel loops here under those arms.
+ */
+export const SKY_RIVER_FIRST_WHEEL = 1;
+/** The wheels the river arms keep: the small right swirl, the moon and the large star. */
+export const SKY_RIVER_WHEELS: readonly SkyWheel[] = Object.freeze(
+  SKY_WHEELS.slice(SKY_RIVER_FIRST_WHEEL),
+);
+/**
+ * The river's speed along a stroke's path, rad/s of view angle at calm 1: the small right swirl's
+ * rim speed (0.469°/s), so the paint feeding it moves at the speed its rim turns. No baked stroke
+ * moves faster (|ω × d̂| ≤ SKY_RIVER_SPEED, sky-river.ts skyRiverBake).
+ */
+export const SKY_RIVER_SPEED: number = SKY_WHEELS[SKY_RIVER_FIRST_WHEEL].rimSpeed;
+/** The phase byte's jitter on the forward-and-back river's phase, loops: a sixteenth of a band. */
+export const SKY_RIVER_JITTER: number = 1 / 32;
+/**
+ * wheelflow's travel scale on the river: its forward-and-back arc is this share of the river's
+ * half loop. Neighbouring strokes move along their own long axes, so where their axes differ they
+ * drift apart and open bare canvas at the loop's ends, which the forward-and-back arm never hides
+ * with a shrink. 0.7 (fix round 4): the MiniMac coverage spec read wheelflow's worst painter-view
+ * bare at 0.515% and at the wheel seams 0.697% (bar 0.5%), against wave's 0.303% and wheelrun's
+ * 0.363% (seams 0.480%). The world test's coverage proxy, the mean shift of the painter view's
+ * moving dome strokes, calibrated on those rows, predicts 0.373% and 0.405% at 0.7.
+ */
+export const SKY_RIVER_FLOW_SCALE: number = 0.7;
+/**
+ * The farthest angle a river arm carries a stroke outside the kept wheels at calm 1: half a loop
+ * at SKY_RIVER_SPEED, 1.876°, under SKY_SWIRL_MAX_ANGLE (1.948°), so the haze thin's motionReach
+ * bounds the river too.
+ */
+export const SKY_RIVER_MAX_ANGLE: number = 0.5 * SKY_SWIRL_PERIOD * SKY_RIVER_SPEED;
+
+/** Whether `wrap` is a river arm, which reads the baked iRiver instead of the vortex field. */
+export const isSkyRiverWrap = (wrap: SkyWrap): boolean =>
+  wrap === 'wheelflow' || wrap === 'wheelrun';
+
+/**
+ * The farthest a river arm moves a sky stroke centred at (x, y, z) outside the kept wheels at
+ * calm 1, metres: SKY_RIVER_MAX_ANGLE of its distance from PAINTER_EYE, and 0 for a kept wheel's
+ * member, whose turn skyWheelReach with SKY_RIVER_WHEELS bounds. The offset is tau (ω × d) with
+ * |tau| ≤ PERIOD / 2, so this bounds it exactly at full speed.
+ */
+export function skyRiverReach(x: number, y: number, z: number): number {
+  const dx = x - PAINTER_EYE[0];
+  const dy = y - PAINTER_EYE[1];
+  const dz = z - PAINTER_EYE[2];
+  const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (length === 0) return 0;
+  const dir: Vec3 = [dx / length, dy / length, dz / length];
+  return skyWheelAt(dir, SKY_RIVER_WHEELS) >= 0 ? 0 : SKY_RIVER_MAX_ANGLE * length;
+}
 
 /**
  * The index in `wheels` of the wheel holding unit direction `dir`, or -1: the first whose chord
@@ -954,8 +1011,11 @@ export const SKY_WHEELFLOW_ALIGN_EASE: number = 2 * SKY_WHEEL_STROKE_HALF;
 /**
  * The cosine between the field's velocity and the disc's rim velocity at and above which the
  * alignment fade keeps the full travel: it falls smoothly to 0 at a perpendicular or opposed flow.
+ * 0.5 (sky river fix round 2, was 0.2): where the river runs straight at a small disc the cosine
+ * turns fast round the rim, and at 0.2 the travel stepped the offset by up to 0.19° per 0.02°
+ * round the large star (seed 1), over the river seam test's 0.1° bar.
  */
-export const SKY_WHEELFLOW_ALIGN: number = 0.2;
+export const SKY_WHEELFLOW_ALIGN: number = 0.5;
 /**
  * The half-width, in chord past the members' edge, over which the alignment fade blends from the
  * nearest wheel's to the next nearest's, so the switch between two discs whose turns oppose (the
@@ -1023,8 +1083,9 @@ function alignFade(w: SkyWheel, dir: Vec3, velocity: Vec3, x: number): number {
 }
 
 /**
- * The `wheelflow` and `wheelrun` wraps' travel share of a sky stroke at unit direction `dir` from
- * PAINTER_EYE whose field velocity is `velocity` (omega × d̂, at unit distance), keeping an extra
+ * The river arms' travel share of a sky stroke at unit direction `dir` from PAINTER_EYE whose
+ * velocity is `velocity` (its river omega × d̂ at unit distance under `wheelflow` and `wheelrun`,
+ * which pass SKY_RIVER_WHEELS as `wheels`), keeping an extra
  * angular extent `halfAngle` clear (0 for a dome stroke, the haze's half diagonal over its distance
  * for the haze): -1 inside a wheel (skyWheelAt), which turns as under `wheel`, else a share in
  * [0, 1] of the arc its wrap sweeps, so no moved centre (widened by `halfAngle`) crosses a members'
@@ -1141,17 +1202,78 @@ export interface SkySwirlOptions {
   readonly halfDiagonal?: number;
   /** The motion calm, 0-1, which fades `wheelrun`'s shrink (skyWheelRunGain). */
   readonly calm?: number;
+  /**
+   * The stroke's baked river (stroke.vert.glsl iRiver, sky-river.ts skyRiverBake): its rotation
+   * vector, rad/s, and iRiver.w, the forward-and-back arm's winding fade level (0-255) plus its
+   * loop phase before the jitter. The river arms need it for a stroke outside the kept wheels.
+   */
+  readonly river?: { readonly omega: Vec3; readonly phase: number };
+}
+
+/**
+ * skySwirl under the river arms: a kept wheel's member turns as under `wheel`, and every other
+ * stroke travels along its baked rotation `options.river.omega`, its tau scaled by
+ * skyWheelFlowTravel against the kept wheels at the river velocity. `wheelrun` runs one way with
+ * base's loop, its shrink at the wrap scaled by its travel times its speed share
+ * |ω × d̂| / SKY_RIVER_SPEED, so a still stroke never shrinks. `wheelflow` runs pingpong's curve
+ * at the baked phase plus the phase byte's jitter. Matches skyRiverMotion in motion.glsl.
+ */
+function skyRiverSwirl(
+  d: Vec3,
+  dir: Vec3,
+  inv: number,
+  normal: Vec3,
+  phase: number,
+  time: number,
+  wheels: readonly SkyWheel[],
+  wrap: SkyWrap,
+  options: SkySwirlOptions,
+): SkySwirl {
+  const kept = skyWheelSpin(dir, time, wheels);
+  if (kept) {
+    const spin = { ...kept, wheel: kept.wheel + SKY_RIVER_FIRST_WHEEL };
+    const moved = rotateAbout(d, spin.axis, spin.angle);
+    return { offset: [moved[0] - d[0], moved[1] - d[1], moved[2] - d[2]], turn: 0, gain: 0, spin };
+  }
+  const river = options.river;
+  if (!river) throw new Error(`the ${wrap} wrap needs options.river (sky-river.ts skyRiverBake)`);
+  const omega = river.omega;
+  const v = cross(omega, dir);
+  const travel = skyWheelFlowTravel(dir, v, (options.halfDiagonal ?? 0) * inv, wheels);
+  let tau: number;
+  let gain = 0;
+  if (wrap === 'wheelrun') {
+    const f = fract(time / SKY_SWIRL_PERIOD + phase);
+    tau = (f - 0.5) * SKY_SWIRL_PERIOD * travel;
+    const share = Math.hypot(v[0], v[1], v[2]) / SKY_RIVER_SPEED;
+    gain = skyWheelRunGain(f, travel * share, options.calm);
+  } else {
+    // river.phase is iRiver.w: the winding fade's level 0-255 plus the phase (skyRiverBake).
+    const fade = Math.floor(river.phase) / 255;
+    const f = fract(time / SKY_SWIRL_PERIOD + river.phase + SKY_RIVER_JITTER * (phase - 0.5));
+    tau =
+      (smoothstep(0, 1, 1 - Math.abs(2 * f - 1)) - 0.5) *
+      SKY_SWIRL_PERIOD *
+      SKY_RIVER_FLOW_SCALE *
+      travel *
+      fade;
+  }
+  const w = cross(omega, d);
+  return {
+    offset: [tau * w[0], tau * w[1], tau * w[2]],
+    turn: tau * (omega[0] * normal[0] + omega[1] * normal[1] + omega[2] * normal[2]),
+    gain,
+    spin: null,
+  };
 }
 
 /**
  * The sky motion of a stroke centred at `position` with unit normal `normal` and phase fraction
- * `phase`, at motion time `time`, before calm, under wrap variant `wrap`, and under `wave` and
- * `wheelflow` at `turns` waves per turn, its tau scaled by skyWaveFade. Matches skyMotion in
- * motion.glsl. `wrap` defaults to `base` here, while the shader defaults to `wheelflow`
- * (DEFAULT_SKY_WRAP), so a caller mirroring the app passes the wrap explicitly. `stream` moves no
- * stroke (skyStreamTone). `wheelflow` and `wheelrun` turn the wheels as `wheel` does, and move
- * every other stroke as `wave` and `base` do, its tau scaled by skyWheelFlowTravel at
- * `options.halfDiagonal` (0 by default).
+ * `phase`, at motion time `time`, before calm, under wrap variant `wrap`, and under `wave` at
+ * `turns` waves per turn, its tau scaled by skyWaveFade. Matches skyMotion in motion.glsl. `wrap`
+ * defaults to `base` here, while the shader defaults to `wheelrun` (DEFAULT_SKY_WRAP), so a caller
+ * mirroring the app passes the wrap explicitly. `stream` moves no stroke (skyStreamTone). The
+ * river arms, `wheelrun` and `wheelflow`, read `options.river` (skyRiverSwirl).
  */
 export function skySwirl(
   position: Vec3,
@@ -1170,10 +1292,13 @@ export function skySwirl(
   ];
   const inv = 1 / Math.hypot(d[0], d[1], d[2]);
   const dir: Vec3 = [d[0] * inv, d[1] * inv, d[2] * inv];
-  const wheeled = wrap === 'wheel' || wrap === 'wheelflow' || wrap === 'wheelrun';
   const wheels = vortices === SKY_VORTICES ? SKY_WHEELS : skyWheels(vortices);
-  if (wheeled || wrap === 'stream') {
-    const spin = wheeled ? skyWheelSpin(dir, time, wheels) : null;
+  if (isSkyRiverWrap(wrap)) {
+    const kept = wheels.slice(SKY_RIVER_FIRST_WHEEL);
+    return skyRiverSwirl(d, dir, inv, normal, phase, time, kept, wrap, options);
+  }
+  if (wrap === 'wheel' || wrap === 'stream') {
+    const spin = wrap === 'wheel' ? skyWheelSpin(dir, time, wheels) : null;
     if (spin) {
       const moved = rotateAbout(d, spin.axis, spin.angle);
       return {
@@ -1183,32 +1308,22 @@ export function skySwirl(
         spin,
       };
     }
-    if (wrap === 'wheel' || wrap === 'stream') {
-      return { offset: [0, 0, 0], turn: 0, gain: 0, spin: null };
-    }
+    return { offset: [0, 0, 0], turn: 0, gain: 0, spin: null };
   }
   const omega = skyOmega(dir, vortices);
   const poles = skyWavePolesFor(turns, vortices);
   const loopPhase = skyWrapPhase(wrap, position, phase, poles);
   const loop = skyWrapLoop(wrap, loopPhase, time);
   const fade =
-    wrap === 'wave' || wrap === 'wheelflow'
+    wrap === 'wave'
       ? skyWaveFade(dir, vortices === SKY_VORTICES ? FADE_POLES : skyWaveFadePoles(vortices))
       : 1;
-  let travel = 1;
-  let gain = loop.gain;
-  if (wheeled) {
-    travel = skyWheelFlowTravel(dir, cross(omega, dir), (options.halfDiagonal ?? 0) * inv, wheels);
-    if (wrap === 'wheelrun') {
-      gain = skyWheelRunGain(fract(time / SKY_SWIRL_PERIOD + loopPhase), travel, options.calm);
-    }
-  }
-  const tau = loop.tau * fade * travel;
+  const tau = loop.tau * fade;
   const v = cross(omega, d);
   return {
     offset: [tau * v[0], tau * v[1], tau * v[2]],
     turn: tau * (omega[0] * normal[0] + omega[1] * normal[1] + omega[2] * normal[2]),
-    gain,
+    gain: loop.gain,
     spin: null,
   };
 }
@@ -1268,5 +1383,9 @@ export function skySwirlGlslDefines(
     SKY_STREAM_TONE_MEAN: glslFloat(SKY_STREAM_TONE_MEAN),
     SKY_STREAM_RHO2: `float[${SKY_STREAM_RHOS.length}](${SKY_STREAM_RHOS.map((r) => glslFloat(2 * r)).join(', ')})`,
     SKY_SWIRL_MAX_ANGLE: glslFloat(SKY_SWIRL_MAX_ANGLE),
+    SKY_RIVER_FIRST_WHEEL: SKY_RIVER_FIRST_WHEEL,
+    SKY_RIVER_INV_SPEED: glslFloat(1 / SKY_RIVER_SPEED),
+    SKY_RIVER_JITTER: glslFloat(SKY_RIVER_JITTER),
+    SKY_RIVER_FLOW_SCALE: glslFloat(SKY_RIVER_FLOW_SCALE),
   };
 }

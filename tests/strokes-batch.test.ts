@@ -22,7 +22,15 @@ import {
   reactiveTracker,
 } from '../src/motion/reactive.ts';
 import { SKY_RINGS, skyRingReach } from '../src/motion/sky-rings.ts';
-import { SKY_WHEELS, skySwirlReach, skyWheelReach } from '../src/motion/sky-swirl.ts';
+import {
+  SKY_RIVER_MAX_ANGLE,
+  SKY_RIVER_WHEELS,
+  SKY_SWIRL_MAX_ANGLE,
+  SKY_WHEELS,
+  skyRiverReach,
+  skySwirlReach,
+  skyWheelReach,
+} from '../src/motion/sky-swirl.ts';
 import { motionVariants } from '../src/motion/variant-uniforms.ts';
 import { DEFAULT_SKY_WRAP } from '../src/motion/variants.ts';
 import { BASE_MESH_RENDER_ORDER } from '../src/paintings/starry-night/base-meshes.ts';
@@ -688,7 +696,7 @@ describe('bands', () => {
     batch.dispose();
   });
 
-  test('a wheel chunk grows by its wheel reach at every calm, calm 0 held, and not under stream (F1); under wheelflow and wheelrun by its swirl reach too', () => {
+  test('a wheel chunk grows by its wheel reach at every calm, calm 0 held, and not under stream (F1); under the river arms, which drop the big swirl, by its river reach alone', () => {
     // A sky stroke on the dome half way out the left swirl's wheel, where a half turn moves it its
     // wheel reach, 2 rho.
     const w = SKY_WHEELS[0];
@@ -736,20 +744,19 @@ describe('bands', () => {
       motionClock.setCalm(1);
       motionVariants.setWrap('stream');
       expect(radius()).toBe(rest);
-      // Under wheelflow and wheelrun the wheels turn and the strokes outside them travel, so a
-      // chunk grows by both: calm times its swirl reach (wave's growth) plus its wheel reach, the
-      // wheel's alone at calm 0 under the hold.
-      motionVariants.setWrap('wave');
-      const swirl = radius() - rest;
-      expect(swirl).toBeGreaterThan(1);
+      // The river arms drop the big swirl's wheel, so this stroke travels along the river
+      // instead: calm times its river reach, half a loop at SKY_RIVER_SPEED, and nothing at calm
+      // 0 under the hold.
+      const riverReach = SKY_REACH_MARGIN * skyRiverReach(...position);
+      expect(riverReach).toBeCloseTo(SKY_REACH_MARGIN * SKY_RIVER_MAX_ANGLE * 118, 6);
       for (const wrap of ['wheelflow', 'wheelrun'] as const) {
         motionVariants.setWrap(wrap);
         for (const calm of [1, 0.5, 0.25]) {
           motionClock.setCalm(calm);
-          expect(radius(), `${wrap} calm ${calm}`).toBeCloseTo(rest + wheelReach + calm * swirl, 4);
+          expect(radius(), `${wrap} calm ${calm}`).toBeCloseTo(rest + calm * riverReach, 4);
         }
         motionClock.setCalm(0);
-        expect(radius(), `${wrap} calm 0 held`).toBeCloseTo(rest + wheelReach, 4);
+        expect(radius(), `${wrap} calm 0 held`).toBeCloseTo(rest, 4);
         motionClock.setCalm(1);
       }
     } finally {
@@ -785,6 +792,38 @@ describe('bands', () => {
     const reach = skyWheelReach(...position);
     expect(reach).toBeGreaterThan(5);
     expect(motionReachesOf(buffers).wheel).toBeCloseTo(SKY_REACH_MARGIN * reach, 4);
+  });
+
+  test('under the river arms a kept wheel member carries its kept wheel reach and no river reach, and the river bound is under the swirl bound', () => {
+    // The haze thin's motionReach (SKY_SWIRL_MAX_ANGLE of the distance) bounds the river too.
+    expect(SKY_RIVER_MAX_ANGLE).toBeLessThan(SKY_SWIRL_MAX_ANGLE);
+    expect((SKY_RIVER_MAX_ANGLE * 180) / Math.PI).toBeCloseTo(1.876, 2);
+    const w = SKY_RIVER_WHEELS[0];
+    const dir = w.axis;
+    const side: [number, number, number] = [-dir[2], 0, dir[0]];
+    const sl = Math.hypot(...side);
+    const a = 0.5 * Math.asin(w.radius / 2);
+    const d = dir.map((x, k) => Math.cos(a) * x + (Math.sin(a) * side[k]) / sl);
+    const position = PAINTER_EYE.map((e, k) => e + 118 * d[k]) as [number, number, number];
+    const buffers = createStrokeBuffers(1);
+    packInstance(buffers, 0, {
+      position,
+      normal: [-d[0], -d[1], -d[2]],
+      tangent: 0,
+      color: [255, 255, 255, 255],
+      size: [2, 1],
+      brush: 0,
+      layer: STROKE_LAYER.sky,
+      phase: 0,
+    });
+    const reaches = motionReachesOf(buffers);
+    expect(skyRiverReach(...position)).toBe(0);
+    expect(reaches.river).toBe(0);
+    expect(reaches.riverWheel).toBeCloseTo(
+      SKY_REACH_MARGIN * skyWheelReach(...position, SKY_RIVER_WHEELS),
+      4,
+    );
+    expect(reaches.riverWheel).toBeGreaterThan(1);
   });
 
   test('every chunk holding a stroke the reactive box reaches grows, at random boxes (P4.6)', () => {
