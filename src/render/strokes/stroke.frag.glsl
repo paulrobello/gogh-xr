@@ -13,15 +13,26 @@ uniform float uRelief;
 in vec2 vUv;
 flat in vec3 vColor;
 flat in vec4 vRect;
+#ifdef FILL_SHADE3
+// fill-arms.ts shade3: N·m, L·m and S·m from the vertex shader.
+flat in vec3 vMoon;
+#else
 flat in vec3 vNormal;
 flat in vec3 vLong;
 flat in vec3 vShort;
+#endif
+#ifndef FILL_NOSTREAM
 // The sky's stream wrap (stroke.vert.glsl): sign × (1 + brush + f), 0 for no stream.
 flat in float vStream;
 // Per brush, twice its tone's correlation half a stream shift along u (SKY_STREAM_RHOS).
 const float SKY_STREAM_RHO2S[BRUSH_COUNT] = SKY_STREAM_RHO2;
+#endif
 
 out vec4 fragColor;
+#ifdef FILL_MEDIUMP
+// fill-arms.ts mediump: locals only; every declaration above stays highp.
+precision mediump float;
+#endif
 
 // Height with the coverage premultiply undone (atlas quirk C8), guarded against empty texels.
 float height(vec4 texel) {
@@ -40,6 +51,7 @@ float height(vec4 texel) {
 // vStream decodes to the brush (its whole part less 1), f (its fraction) and the sign; f rounding
 // up to the next whole number at the loop's end reads the next brush's rho for that frame, where
 // wA is 0 and the gain is 1 for any rho. Two taps and about 25 ALU operations.
+#ifndef FILL_NOSTREAM
 float streamTone(float rest) {
   float packed = abs(vStream) - 1.0;
   float fA = fract(packed);
@@ -56,6 +68,7 @@ float streamTone(float rest) {
   float m = SKY_STREAM_TONE_MEAN;
   return clamp(m + (wA * (ta - m) + wB * (tb - m)) * gain, 0.0, 1.0);
 }
+#endif
 
 void main() {
   vec4 t = texture(uAtlas, vUv);
@@ -95,12 +108,23 @@ void main() {
   // Fade the relief where any tap nears the rim, so the coverage falloff never reads as an outline.
   float rim = smoothstep(0.5, 0.9, min(cov, min(tu.r, tv.r)));
   vec2 slope = vec2(height(tu) - h, height(tv) - h) * (float(RECT_TEXELS) / stepTexels) * rim;
+#ifdef FILL_SHADE3
+  // |N - r(sx L + sy S)|² = 1 + r²(sx² + sy²) for the orthonormal frame (fill-arms.ts moonPacked).
+  float nm = (vMoon.x - uRelief * (slope.x * vMoon.y + slope.y * vMoon.z)) *
+    inversesqrt(1.0 + uRelief * uRelief * dot(slope, slope));
+  float moon = nm * 0.5 + 0.5;
+#else
   vec3 n = normalize(vNormal - uRelief * (slope.x * vLong + slope.y * vShort));
 
   // Half-Lambert moonlight kept to a ±15% band so the painted colour dominates.
   float moon = dot(n, uMoonDir) * 0.5 + 0.5;
+#endif
   float shade = 0.85 + 0.3 * moon;
   // The stream wrap's tone (streamTone); every other fragment pays this one compare.
+#ifdef FILL_NOSTREAM
+  float tone = 0.75 + 0.5 * t.b;
+#else
   float tone = 0.75 + 0.5 * (vStream != 0.0 ? streamTone(t.b) : t.b);
+#endif
   fragColor = vec4(vColor * tone * shade, alpha);
 }

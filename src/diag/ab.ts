@@ -11,6 +11,7 @@
  */
 import { setTrackerTimeSource, TRACKER_TIME_SOURCES } from '../motion/tracker-time';
 import { SKY_WRAP_AB_ORDER, type SkyWrap } from '../motion/variants';
+import { FILL_ARMS, type FillArm, fillArms } from '../render/strokes/fill-arms';
 import { VTX_ARMS, type VtxArm, vertexArms } from '../render/strokes/vertex-arms';
 import { ZDIAG_MODES, type ZdiagMode } from './flags';
 
@@ -34,6 +35,8 @@ export const AB_GROUPS = {
   wrap: SKY_WRAP_AB_ORDER,
   /** Vertex cost against fill (src/render/strokes/vertex-arms.ts). No flag implies it. */
   vtx: VTX_ARMS,
+  /** Fragment cost with the same look (src/render/strokes/fill-arms.ts). No flag implies it. */
+  fill: FILL_ARMS,
   /**
    * The reactive tracker's time source (src/motion/tracker-time.ts): the XR frame's
    * predictedDisplayTime as shipped, or the callback time. No flag implies it.
@@ -45,7 +48,7 @@ export const AB_GROUPS = {
 
 export type AbGroupName = keyof typeof AB_GROUPS;
 
-type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap' | 'vtx' | 'trackertime' | 'reactive';
+type AbSetting = 'zdiag' | 'halo' | 'calm' | 'wrap' | 'vtx' | 'fill' | 'trackertime' | 'reactive';
 
 /** The setting each group drives. Two groups that drive the same setting are rivals. */
 const OWNS: Record<AbGroupName, AbSetting> = {
@@ -55,6 +58,7 @@ const OWNS: Record<AbGroupName, AbSetting> = {
   calm: 'calm',
   wrap: 'wrap',
   vtx: 'vtx',
+  fill: 'fill',
   trackertime: 'trackertime',
   reactive: 'reactive',
 };
@@ -93,7 +97,7 @@ export interface AbResolution {
 
 /** An A/B flag other than `?ab`: the setting it drives, its text and the group it implies. */
 interface ImpliedFlag {
-  readonly setting: Exclude<AbSetting, 'calm' | 'vtx' | 'trackertime' | 'reactive'>;
+  readonly setting: Exclude<AbSetting, 'calm' | 'vtx' | 'fill' | 'trackertime' | 'reactive'>;
   readonly text: string;
   readonly variant: string;
   readonly group: AbGroupName;
@@ -317,6 +321,12 @@ export function createAbGroup(
     // so no switch links a program.
     vertexArms.activate();
     return { name, variants, apply: (variant) => vertexArms.set(variant as VtxArm) };
+  }
+  if (name === 'fill') {
+    // Each stroke batch compiles every arm's program after its first frame (fill-arms.ts
+    // prepare), so no switch links a program.
+    fillArms.activate();
+    return { name, variants, apply: (variant) => fillArms.set(variant as FillArm) };
   }
   if (name === 'trackertime') {
     // A module switch trackerTime reads each frame, so there is no program to link.

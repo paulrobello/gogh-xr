@@ -3685,3 +3685,61 @@ For the CDP-read headset session: polling `__goghDiag()` every frame costs about
 Verified locally (2026-11-11): unit tests for the recorder maths (nearest-rank percentiles, the over-budget shares at 1.5 and 2.5 × the budget, the settle, windows closing on a mark and on an A/B switch with the variant each measured, the ring bound, a window's budget taken from its own frames when the live presenting state flips before the close (three sets `isPresenting` before `sessionstart` and `sessionend`), the 200-window and size bounds on storage, the reload, clear, and the hand-speed mean, sd, cv and jitter) and for the two groups' resolve, precedence and apply, in `tests/perf-recorder.test.ts` and `tests/ab.test.ts`. `make checkall` green. Bundle: index 142,973 to 143,514 gzip bytes (+541), a new `perf` chunk of 1,390, JS total 350,002 to 351,961.
 
 Not verified: `tests/e2e/perf.spec.ts` was written and not run (load ruling), and nothing has run on the headset. A boot without `?perf` or an A/B flag pays one null check per frame for the recorder (`perf?.frame`, and `if (perf)` after the tracker) and one compare in `trackerTime`; no pixel can change, but the byte-identity specs were not rerun here.
+
+## Headset data session (2026-11-11, build 1b280c5 to 91fb760)
+
+Quest 3, Quest Browser, `?perf` windows (the in-app recorder), VrApi logcat over USB. The headset's stored quality was `beauty-72` and its level 5, with foveation 0 unless a row says otherwise. Each row is a mean over one window of 15 to 60 s, with the first second dropped.
+
+**Frame time at level 5 (beauty-72, foveation 0).** Every place in the world ran at 23.7 to 27.4 fps, a mean frame of 36.6 to 42.3 ms, against the 13.9 ms budget. VrApi: app GPU 29 to 45 ms, GPU% 0.98 to 0.99, CPU% 0.12 to 0.16, so the frame is GPU-bound. The gallery ran at 71.3 fps (14.0 ms).
+
+| Painter view of the big swirl | Mean | fps |
+| --- | --- | --- |
+| beauty-72, `nowrite` (default), fov 0 | 41.0 ms | 24.4 |
+| beauty-72, `write`, fov 0 | 29.5 ms | 33.9 |
+| beauty-72, `nowrite`, fov 1 | 32.5 ms | 30.7 |
+| beauty-72, `write`, fov 1 | 25.8 ms | 38.7 |
+| adaptive-72 (`?hz=72`), `nowrite`, fov 0 | 45.2 ms | 22.1 |
+
+- The standard quality is not cheaper: its density sheds keep the painted area under the `area` law, and the frame is fill-bound, so it buys nothing.
+- `?ab=vtx` (nowrite, fov 0), per 30% cut: `fewer` (fill and vertex) 30.3 ms, `smaller` (fill only) 34.9 ms, `sparse` (vertex only) 37.0 ms, against `base` 41.0 ms. Fill is the larger share (about 6 ms per 30% of area), vertex about 4 ms.
+- `?ab=wrap`: base 39.7, wheelrun 41.3, wheelflow 42.3, wave 41.7, wheel 42.7, stream 46.6, pingpong 40.8 ms. The river costs about 1.6 ms over base.
+- `?ab=reactive` at the cypress with the hands in the paint: off 25.3 ms, on 26.4 ms.
+- `?ab=trackertime&slow=20`, right hand sweeping at about 1.6 m/s: frame-to-frame speed jitter 0.178 and 0.206 (predicted) against 0.192 (callback), so no difference.
+- The portal entry took 3.3 s, with the longest frame 68 ms in `out`.
+
+**Paul's rulings on the look.** Foveation 1 is rejected. Foveation 0.5 is much better than 1, but 0 is still much better than 0.5, so it is rejected too. `write` looks the same as `nowrite` on the swirl, but has many areas of z-fighting around the scene, so it is rejected. The defaults stay: `nowrite`, foveation 0.
+
+**Governor (Auto, beauty-72).** Paul read the HUD: the governor moved around for about a minute, then settled near level 3 at the painter's spot and near level 2 walking the village. Windows: 38.9 ms at the painter's spot, and 52.6 ms (p95 100 ms) walking. The history was lost when the level was set back to 5, because that rebuilds the machine.
+
+**Fixed the same day:** the hill crest coverage cap (58c11c7), and the wind (+2 dB, 91fb760) and crickets (+10 dB). Paul confirmed all three in the headset.
+
+## Fill arms (`?ab=fill`, 2026-11-11)
+
+Built after the headset data session of 2026-11-11 (p2-starry-night's docs/verification.md, "Headset data session"): at the painter view, beauty-72 level 5, foveation 0 and nowrite, a frame takes 41.0 ms, GPU-bound, and `?ab=vtx` puts about 6 ms on each 30% of painted area against about 4 ms of vertex work. Paul rejected foveation and the global `write` policy, so these arms aim at the fragment cost with the same look. Code: `src/render/strokes/fill-arms.ts`. Nothing here is measured on the headset yet, and `tests/e2e/fill.spec.ts` was written without being run.
+
+**Fragment shader cost per path (stroke.frag.glsl, counted by hand).** Scalar ALU ops, counting a mul, add or mad as 1, a divide as 2, a clamp as 2, a dot of n components as n, a normalize of a vec3 as 7 and a smoothstep as 7. Derivative ops are separate. Every path also pays alpha-to-coverage, which is fixed-function.
+
+| Path | Taps | Derivatives | ALU | Flat varying floats |
+| --- | --- | --- | --- | --- |
+| base, common path (no stream, under the mip 6 cap) | 3 trilinear, 2 of them dependent (relief) | 6 (8 more if `fwidth(vUv)` is not merged with the cap's `dFdx`/`dFdy`) | about 97 | 17 (vColor 3, vRect 4, vNormal, vLong, vShort 9, vStream 1), plus vUv 2 smooth |
+| base, past the coverage cap | +1 `textureLod` | same | same | same |
+| base, stream fragment | +2 | same | about +53 | same |
+| base, if the compiler flattens the stream select | +2 on every fragment | same | about +53 on every fragment | same |
+| `nostream` | 3 | 6 | about 95 | 16 |
+| `shade3` | 3 | 6 | about 85 (the relief normal and moon dot, 23 ops, become 11) | 11 (vMoon 3 replaces 9) |
+| `mediump` | 3 | 6 | about 97 at fp16 | 17 |
+| `lean` | 3 | 6 | about 83 at fp16 | 10 |
+
+The base ALU splits as: the coverage mip cap 10, the R3 alpha 10, the relief footprint and step 11, the relief tap coordinates 10, three heights 9, the rim 9, the slope 8, the relief normal 19, the moon and shade 5, the tone 2 and the colour 4. `shade3` adds 9 ALU per vertex (three dots), 4 vertices per instance.
+
+**Expected savings and why.**
+- `domewrite` cannot save fill without changing the look, so it is a measurement arm. The dome draws first, so its depth rejects only later dome fragments whose hash rank is lower than an earlier one's, and under nowrite exactly those fragments are the ones that show. With chunks in fixed order and instances in importance order, ranks are random in draw order: with k overlapping dome strokes a pixel shades about H_k fragments instead of k (2.08 instead of 4 at k = 4). Drawing the dome front to back cannot help, because its depth is the rank, not distance, and the 36° sectors barely overlap on screen. A look-preserving version would need dome depth monotonic in draw order and the dome drawn in reverse, which the 1024-rank depth budget (backdrop-depth.ts) and the importance-order density suffix rule out. On a tiler, alpha-to-coverage with shader-derived coverage can push depth writes to late-Z, so only the headset number shows what it buys. The `write` row (29.5 ms against 41.0 ms) bounds the whole depth-reject saving, world and dome together.
+- `nostream` saves about 1 op where the compiler branches on the flat `vStream`. Where it flattened the select, it saves 2 taps and about 53 ALU per fragment, roughly a third of the fragment shader. A clear gain on the headset means the shipped shader should guard the stream with a uniform-coherent branch or a define.
+- `shade3` cuts about 12 ALU per fragment (about 12%) and 6 flat varying floats per vertex. The varyings matter on a tiler, where they are stored per primitive between binning and rendering.
+- `mediump` keeps the op count but runs the locals at fp16, at up to twice the ALU rate on Adreno, and halves their register footprint, so more waves hide the three taps' latency.
+
+**Risks to the look.** `domewrite` changes which stroke wins every dome overlap whose later stroke has the lower rank, about half of them, and same-rank overlaps (about 277 strokes per rank) can flicker under head motion as in `write`. `nostream` stops the paint streaming under `?wrap=stream`. `shade3` is float rounding. `mediump` can band smooth tone and shade gradients, and the relief slope (up to RECT_TEXELS / RELIEF_MIN_TEXELS per unit of height) loses precision near 1e3. Only the headset can judge it. Not built: relief from screen derivatives of the height (one tap instead of three, with blockier relief on near strokes), and dropping the R3 sharpening or alpha-to-coverage, which change the look.
+
+**Pixel check.** `tests/e2e/fill.spec.ts` boots `?painting=starry-night&noanim&seed=1&shot&painter&nogov` at 1280 × 1028, once without a flag and once with `&ab=fill`. It checks that the group's boot matches the fresh capture byte for byte, presses V through every arm, and checks that no switch adds a program. For each arm it logs the RGB channels that differ from base by more than 8 levels, and the largest step. It expects `nostream` to differ in 0 channels, `shade3` in under 0.01%, and `domewrite` in more than 0 (the negative control). A full cycle must match the fresh capture byte for byte. Desktop GPUs run mediump as highp, so `mediump` reads near 0 there whatever it does on the Quest.
+
+**Headset protocol.** `https://gogh-xr.pardev.net/?painting=starry-night&ab=fill&nogov&hud&diag&perf` at beauty-72, level 5, foveation 0, from the painter's spot facing the big swirl. Record a `?perf` window of 30 s or more per arm, cycling with the left stick click. Take `lean` against `base` for the total, and each single arm for its own share.

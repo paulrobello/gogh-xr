@@ -52,6 +52,7 @@ import {
 } from './chunks';
 import { DEPTH_TIE_BREAK_FRONT_FLAG } from './depth-tie-break';
 import { FIT_SCALE_MASK, FIT_SCALE_SHIFT, FIT_SCALE_STEP } from './face-clamp';
+import { fillArms } from './fill-arms';
 import type { Vec3 } from './frame';
 import { importanceOrderSteps } from './importance';
 import {
@@ -297,6 +298,11 @@ export interface StrokeBatch {
   drawnFootprint(): Footprint;
   /** The chunk geometries, in chunk order. */
   geometries(): readonly InstancedBufferGeometry[];
+  /**
+   * The `fill` group's `domewrite` arm (fill-arms.ts): the dome chunks write depth while they
+   * draw (true), as the lights do, or go back to the batch default.
+   */
+  setDomeDepthWrite(on: boolean): void;
   stats(): StrokeBatchStats;
   /**
    * Only chunks below index `n` may show from the next `update` on; Infinity (the default) shows
@@ -1268,6 +1274,8 @@ export function* createStrokeBatchSteps(
   /** Chunks in [warmFrom, revealed) draw on the next `update` whatever the cull (`reveal`). */
   let warmFrom = Number.POSITIVE_INFINITY;
 
+  /** Whether the dome chunks carry the `domewrite` hooks (`setDomeDepthWrite`). */
+  let domeWrites = false;
   const batch: StrokeBatch = {
     group,
     chunks,
@@ -1292,6 +1300,11 @@ export function* createStrokeBatchSteps(
         if (vertexArms.needsPrepare(batch)) {
           queueMicrotask(() =>
             vertexArms.prepare(batch, (object) => renderer.compile(object, camera, scene)),
+          );
+        }
+        if (fillArms.needsPrepare(batch)) {
+          queueMicrotask(() =>
+            fillArms.prepare(batch, (object) => renderer.compile(object, camera, scene)),
           );
         }
       });
@@ -1487,6 +1500,20 @@ export function* createStrokeBatchSteps(
       return { areaM2, sr: srViews.reduce((a, b) => a + b, 0), srViews };
     },
     geometries: () => chunks.map((chunk) => chunk.geometry),
+    setDomeDepthWrite(on) {
+      if (on === domeWrites) return;
+      domeWrites = on;
+      for (const chunk of chunks) {
+        if (chunk.drawClass !== 'dome') continue;
+        if (on) {
+          writeDepthWhileDrawn(chunk.mesh);
+        } else {
+          // Back to Object3D's own no-op hooks.
+          delete (chunk.mesh as Partial<Mesh>).onBeforeRender;
+          delete (chunk.mesh as Partial<Mesh>).onAfterRender;
+        }
+      }
+    },
     stats() {
       const bands = {} as Record<StrokeBand, StrokeBandStats>;
       for (const band of STROKE_BANDS) {
@@ -1514,6 +1541,7 @@ export function* createStrokeBatchSteps(
     },
     dispose() {
       vertexArms.unregister(batch);
+      fillArms.unregister(batch);
       detach?.();
       detach = null;
       group.removeFromParent();
@@ -1534,5 +1562,6 @@ export function* createStrokeBatchSteps(
     },
   };
   vertexArms.register(batch);
+  fillArms.register(batch);
   return batch;
 }

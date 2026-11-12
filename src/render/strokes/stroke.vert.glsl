@@ -49,9 +49,15 @@ out vec2 vUv;
 flat out vec3 vColor;
 // Brush uv rect as (min.xy, max.xy), for clamping relief taps.
 flat out vec4 vRect;
+#ifdef FILL_SHADE3
+// fill-arms.ts shade3: the moonlight dots N·m, L·m and S·m in place of the frame.
+uniform vec3 uMoonDir;
+flat out vec3 vMoon;
+#else
 flat out vec3 vNormal;
 flat out vec3 vLong;
 flat out vec3 vShort;
+#endif
 // The sky's stream wrap (motion.glsl skyStream): sign × (1 + brush + f), with f its loop fraction,
 // the sign the way its paint streams along u and the brush the one whose tone correlation
 // stroke.frag.glsl reads. 0, no stream, for every other stroke and wrap.
@@ -259,6 +265,14 @@ void main() {
     gl_Position.z -= range * ((iMeta.w & DEPTH_TIE_BREAK_FRONT_FLAG) != 0u ? 1.0 : u);
   }
 
+#ifdef FILL_SHADE3
+  mat3 toWorldMoon = mat3(modelMatrix);
+  vMoon = vec3(
+    dot(normalize(toWorldMoon * n), uMoonDir),
+    dot(normalize(toWorldMoon * longAxis), uMoonDir),
+    dot(normalize(toWorldMoon * shortAxis), uMoonDir)
+  );
+#else
 #ifdef VTX_HOIST
   // A chunk mesh's model matrix is the identity, and the axes are unit to within rounding, or
   // within a sub-percent length change under the motion turn's polynomial cosine and sine.
@@ -270,6 +284,7 @@ void main() {
   vNormal = normalize(toWorld * n);
   vLong = normalize(toWorld * longAxis);
   vShort = normalize(toWorld * shortAxis);
+#endif
 #endif
 
   vec4 rect = uBrushRects[min(iMeta.x, uint(BRUSH_COUNT - 1))];

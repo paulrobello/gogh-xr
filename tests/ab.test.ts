@@ -53,9 +53,11 @@ describe('AB_GROUPS', () => {
       'calm',
       'wrap',
       'vtx',
+      'fill',
       'trackertime',
       'reactive',
     ]);
+    expect(AB_GROUPS.fill).toEqual(['base', 'domewrite', 'nostream', 'shade3', 'mediump', 'lean']);
   });
 });
 
