@@ -1378,7 +1378,8 @@ describe('the wait keeps the view moving', () => {
     // Looking left and down when the trigger fires.
     r.camera.quaternion.setFromEuler(new Euler(-0.4, 0.6, 0, 'YXZ'));
     r.camera.position.set(0, 1.6, 0);
-    r.gates.set('starry-night', new Promise<void>((resolve) => setTimeout(resolve, 200)));
+    let open!: () => void;
+    r.gates.set('starry-night', new Promise<void>((resolve) => (open = resolve)));
     r.switcher.go('starry-night', 'api');
     const mesh = () => meshOf(r, 'portal-fly');
     const view: { phase: string; at: Float32Array }[] = [];
@@ -1403,6 +1404,7 @@ describe('the wait keeps the view moving', () => {
           at.set([p.x, p.y, p.z], k);
         }
         view.push({ phase: frame.phase, at });
+        if (view.length === 12) open();
       }
       await new Promise((resolve) => setTimeout(resolve, 0));
     }

@@ -60,6 +60,7 @@ import { drain, type Steps } from '../../util/slicer';
 import { CYPRESS_HEIGHT_ATTRIBUTE, CYPRESS_LOBE_ATTRIBUTE } from '../../world/cypress';
 import { DEPTH_BACKDROP_FLAG } from './backdrop-depth';
 import { BRUSHES, type BrushKind } from './brush-atlas-data';
+import { brushMaskCovered } from './brush-masks';
 import { DEPTH_RANKED_FLAG, DEPTH_TIE_BREAK_FRONT_FLAG, sizeShare } from './depth-tie-break';
 import {
   BRUSH_FOOTPRINT,
@@ -71,7 +72,14 @@ import {
   fitStrokeToFace,
 } from './face-clamp';
 import { strokeAxes, surfaceBasis, type Vec3 } from './frame';
-import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instance';
+import {
+  appendStrokesSteps,
+  createStrokeBuffers,
+  packInstance,
+  type StrokeBuffers,
+  type StrokeInstance,
+  unpackInstance,
+} from './instance';
 
 /**
  * Bump when the scatter's output changes for the same inputs; part of the cache key. 13 is a
@@ -87,9 +95,11 @@ import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instanc
  * half (`triangleSample`), so every face-clamped layer's strokes move, with the same counts. 18:
  * the window panes are outlined too (OUTLINED_LAYERS), corner to corner
  * (CORNER_OUTLINED_LAYERS), which covers their corners. 19: a window face's triangles share one
- * lattice (FACE_LATTICE_LAYERS), so the pane fill is seamless across its diagonal.
+ * lattice (FACE_LATTICE_LAYERS), so the pane fill is seamless across its diagonal. 20: a window
+ * face's interior holes get fill strokes from its own stream (`holeFillSteps`), appended after
+ * every other stroke, which is unchanged.
  */
-export const SCATTER_VERSION: number = 19;
+export const SCATTER_VERSION: number = 20;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -989,6 +999,8 @@ export function* scatterSurfacesSteps(
     : null;
   yield;
   const buffers = createStrokeBuffers(total);
+  // FACE_LATTICE_LAYERS hole fills, appended after every surface (`holeFillSteps`).
+  const holeFills: StrokeInstance[] = [];
   let index = 0;
   let sliceStart = 0;
   for (const surface of surfaces) {
@@ -1012,6 +1024,7 @@ export function* scatterSurfacesSteps(
     const faceLattices: FaceLattices | null =
       faces && FACE_LATTICE_LAYERS.includes(layer) ? createFaceLattices(faces, counts) : null;
     yield;
+    const surfaceStart = index;
     sliceStart = index;
     for (let t = 0; t < counts.length; t++) {
       if (counts[t] === 0) continue;
@@ -1153,8 +1166,20 @@ export function* scatterSurfacesSteps(
       );
       sliceStart = index;
     }
+    if (faces && FACE_LATTICE_LAYERS.includes(layer)) {
+      yield* holeFillSteps(
+        buffers,
+        surfaceStart,
+        index,
+        surface,
+        faces,
+        options.seed,
+        emissive,
+        holeFills,
+      );
+    }
   }
-  return buffers;
+  return holeFills.length > 0 ? yield* appendStrokesSteps(buffers, holeFills) : buffers;
 }
 
 /**
@@ -1282,4 +1307,280 @@ function* placeOutlinesSteps(
     }
   }
   return index;
+}
+
+/** Side of a hole-fill raster cell, m. */
+const HOLE_CELL = 0.004;
+/** A FACE_LATTICE_LAYERS face's interior hole of at least this area, m², gets a fill stroke. */
+export const HOLE_FILL_MIN_AREA: number = 0.5e-4;
+/** Rasterise-and-fill rounds per face; each round fills every hole still over the area. */
+const HOLE_FILL_ROUNDS = 4;
+/** Brush, size and angle candidates tried per hole; the one that covers most of it is placed. */
+const HOLE_FILL_TRIES = 12;
+/** Strokes unpacked or checked for coplanarity between yields. */
+const HOLE_SCAN_SLICE = 2048;
+/** Coplanar brush masks rasterised between yields. */
+const HOLE_STAMP_SLICE = 16;
+
+interface HoleGrid {
+  readonly face: FacePolygon;
+  readonly x0: number;
+  readonly y0: number;
+  readonly cols: number;
+  readonly rows: number;
+  /** 0 outside the face, 1 bare, 2 covered. */
+  readonly cells: Uint8Array;
+}
+
+/**
+ * Counts bare cells covered by the stroke's conservative brush mask. When scoring candidates,
+ * leave the hole cells intact for the next candidate.
+ */
+function stampStroke(grid: HoleGrid, s: StrokeInstance, cells: Uint8Array, mark = true): number {
+  const { face, x0, y0, cols, rows } = grid;
+  const { long, short } = strokeAxes(s.normal, s.tangent);
+  const [length, width] = s.size;
+  const r = sub(s.position, face.origin);
+  const along = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cx = along(r, face.e1);
+  const cy = along(r, face.e2);
+  // A cell's offset from the stroke centre, d = dx e1 + dy e2 - r3 n, projected on the stroke axes.
+  const [l1, l2, ln] = [along(long, face.e1), along(long, face.e2), along(long, face.normal)];
+  const [s1, s2, sn] = [along(short, face.e1), along(short, face.e2), along(short, face.normal)];
+  const r3 = along(r, face.normal);
+  const longOffset = r3 * ln;
+  const shortOffset = r3 * sn;
+  // Invert the two UV projections to bound the rotated brush quad in the face grid.
+  const det = l1 * s2 - l2 * s1;
+  const midX = cx + (s2 * longOffset - l2 * shortOffset) / det;
+  const midY = cy + (l1 * shortOffset - s1 * longOffset) / det;
+  const reachX = (Math.abs(s2) * length + Math.abs(l2) * width) / (2 * Math.abs(det));
+  const reachY = (Math.abs(s1) * length + Math.abs(l1) * width) / (2 * Math.abs(det));
+  const i0 = Math.max(0, Math.floor((midX - reachX - x0) / HOLE_CELL));
+  const i1 = Math.min(cols - 1, Math.floor((midX + reachX - x0) / HOLE_CELL));
+  const j0 = Math.max(0, Math.floor((midY - reachY - y0) / HOLE_CELL));
+  const j1 = Math.min(rows - 1, Math.floor((midY + reachY - y0) / HOLE_CELL));
+  let hits = 0;
+  for (let j = j0; j <= j1; j++) {
+    const dy = y0 + (j + 0.5) * HOLE_CELL - cy;
+    const longY = dy * l2;
+    const shortY = dy * s2;
+    for (let i = i0; i <= i1; i++) {
+      const at = j * cols + i;
+      if (cells[at] !== 1) continue;
+      const dx = x0 + (i + 0.5) * HOLE_CELL - cx;
+      const u = (dx * l1 + longY - longOffset) / length + 0.5;
+      const v = (dx * s1 + shortY - shortOffset) / width + 0.5;
+      if (!brushMaskCovered(s.brush, u, v)) continue;
+      hits++;
+      if (mark) cells[at] = 2;
+    }
+  }
+  return hits;
+}
+
+/** The grid's interior bare components: those touching neither its edge nor a cell outside the face. */
+function interiorHoles(grid: HoleGrid): number[][] {
+  const { cols, rows, cells } = grid;
+  const seen = new Uint8Array(cells.length);
+  const holes: number[][] = [];
+  const stack: number[] = [];
+  for (let start = 0; start < cells.length; start++) {
+    if (cells[start] !== 1 || seen[start]) continue;
+    const hole: number[] = [];
+    let rim = false;
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length > 0) {
+      const at = stack.pop() as number;
+      hole.push(at);
+      const i = at % cols;
+      const j = (at - i) / cols;
+      if (i === 0 || j === 0 || i === cols - 1 || j === rows - 1) rim = true;
+      const next = [i > 0 ? at - 1 : -1, i < cols - 1 ? at + 1 : -1, at - cols, at + cols];
+      for (const n of next) {
+        if (n < 0 || n >= cells.length) continue;
+        if (cells[n] === 0) rim = true;
+        else if (cells[n] === 1 && !seen[n]) {
+          seen[n] = 1;
+          stack.push(n);
+        }
+      }
+    }
+    if (!rim) holes.push(hole);
+  }
+  return holes;
+}
+
+/** A stroke as the GPU reads it, after packing's quantisation. */
+function packedRoundTrip(s: StrokeInstance): StrokeInstance {
+  const one = createStrokeBuffers(1);
+  packInstance(one, 0, s);
+  return unpackInstance(one, 0);
+}
+
+/**
+ * Fills a FACE_LATTICE_LAYERS surface's interior holes, from its fill stream (stream 5). Each face's
+ * strokes (those placed in [from, to) that lie in its plane, fill and outline) are rasterised by
+ * their brush masks on a HOLE_CELL grid. Each interior bare component of at least
+ * HOLE_FILL_MIN_AREA gets one stroke at its cell nearest its centroid: of HOLE_FILL_TRIES brush,
+ * size and angle candidates, sized and fitted like the face's fill, the one that covers most of the
+ * hole. That repeats for up to HOLE_FILL_ROUNDS rounds. The holes come from the brushes' shapes and
+ * angles, which no placement lattice rules out. The strokes go to `out`; no other stream is drawn,
+ * so every other stroke is unchanged. Only an emissive surface is filled, in its emissive colour.
+ */
+function* holeFillSteps(
+  buffers: StrokeBuffers,
+  from: number,
+  to: number,
+  surface: Surface,
+  faces: FaceSet,
+  seed: number,
+  emissive: Vec3 | null,
+  out: StrokeInstance[],
+): Steps<void> {
+  if (!emissive) return;
+  const { layer, layerIndex, meshIndex, size, caps } = surface;
+  const rand = mulberry32(streamSeed(seed, layerIndex, meshIndex, 5));
+  const style = REGION_STYLES[LAYER_REGION[layer]];
+  const faceTriangle = new Int32Array(faces.faces.length).fill(-1);
+  faces.faceOf.forEach((f, t) => {
+    if (f >= 0 && faceTriangle[f] < 0) faceTriangle[f] = t;
+  });
+  const placed: StrokeInstance[] = [];
+  for (let i = from; i < to; i++) {
+    if ((i - from) % HOLE_SCAN_SLICE === 0) yield;
+    placed.push(unpackInstance(buffers, i));
+  }
+  const minCells = HOLE_FILL_MIN_AREA / (HOLE_CELL * HOLE_CELL);
+  for (const [f, face] of faces.faces.entries()) {
+    yield;
+    const xs = face.vertices.map((p) => p[0]);
+    const ys = face.vertices.map((p) => p[1]);
+    const x0 = Math.min(...xs);
+    const y0 = Math.min(...ys);
+    const cols = Math.max(1, Math.ceil((Math.max(...xs) - x0) / HOLE_CELL));
+    const rows = Math.max(1, Math.ceil((Math.max(...ys) - y0) / HOLE_CELL));
+    const cells = new Uint8Array(cols * rows);
+    const sides = face.edges.slice(0, face.vertices.length);
+    for (let j = 0; j < rows; j++) {
+      const y = y0 + (j + 0.5) * HOLE_CELL;
+      for (let i = 0; i < cols; i++) {
+        const x = x0 + (i + 0.5) * HOLE_CELL;
+        if (sides.every((e) => e.nx * x + e.ny * y <= e.d + 1e-9)) cells[j * cols + i] = 1;
+      }
+    }
+    const grid: HoleGrid = { face, x0, y0, cols, rows, cells };
+    let stamped = 0;
+    for (let i = 0; i < placed.length; i++) {
+      if (i % HOLE_SCAN_SLICE === 0) yield;
+      const s = placed[i];
+      const n = s.normal;
+      if (n[0] * face.normal[0] + n[1] * face.normal[1] + n[2] * face.normal[2] < 0.999) continue;
+      const r = sub(s.position, face.origin);
+      const off = r[0] * face.normal[0] + r[1] * face.normal[1] + r[2] * face.normal[2];
+      if (Math.abs(off) > 0.05) continue;
+      stampStroke(grid, s, cells);
+      if (++stamped % HOLE_STAMP_SLICE === 0) yield;
+    }
+    yield;
+    const t = faceTriangle[f];
+    const decoded = decodedNormal(face.normal);
+    const { b1, b2 } = surfaceBasis(decoded);
+    const shade = strokeShade(decoded);
+    for (let round = 0; round < HOLE_FILL_ROUNDS; round++) {
+      const holes = interiorHoles(grid).filter((h) => h.length >= minCells);
+      if (holes.length === 0) break;
+      for (const hole of holes) {
+        let mx = 0;
+        let my = 0;
+        for (const at of hole) {
+          mx += at % cols;
+          my += Math.floor(at / cols);
+        }
+        mx /= hole.length;
+        my /= hole.length;
+        let centreCell = hole[0];
+        let nearest = Number.POSITIVE_INFINITY;
+        for (const at of hole) {
+          const d = ((at % cols) - mx) ** 2 + (Math.floor(at / cols) - my) ** 2;
+          if (d < nearest) {
+            nearest = d;
+            centreCell = at;
+          }
+        }
+        const point = facePoint(face, [
+          x0 + ((centreCell % cols) + 0.5) * HOLE_CELL,
+          y0 + (Math.floor(centreCell / cols) + 0.5) * HOLE_CELL,
+        ]);
+        const graded = strokeSizeAt(size, eyeDistance(point), t >= 0 ? caps?.[t] : undefined);
+        const holeCells = new Uint8Array(cells.length);
+        for (const at of hole) holeCells[at] = 1;
+        let pick: StrokeInstance | null = null;
+        let pickHits = 0;
+        for (let k = 0; k < HOLE_FILL_TRIES && pickHits < hole.length; k++) {
+          const brush = style.brushes[Math.floor(rand() * style.brushes.length)];
+          const strokeLength = graded * (1 + (2 * rand() - 1) * SCATTER_SIZE_JITTER);
+          const theta = 2 * Math.PI * rand();
+          const phase = Math.floor(rand() * 256);
+          const foot = BRUSH_FOOTPRINT[BRUSHES[brush].kind];
+          const quad: [number, number] = [strokeLength, strokeLength * BRUSHES[brush].aspect];
+          const length = quad[0] * foot.length;
+          const width = quad[1] * foot.width;
+          const c = Math.cos(theta);
+          const sn = Math.sin(theta);
+          const long: Vec3 = [
+            c * face.e1[0] + sn * face.e2[0],
+            c * face.e1[1] + sn * face.e2[1],
+            c * face.e1[2] + sn * face.e2[2],
+          ];
+          const fitted = fitStrokeToFace(
+            face,
+            { centre: point, long, length, width },
+            FACE_CLAMP_MARGIN,
+          );
+          const [x, y, z] = fitted.long;
+          const fillSize: [number, number] = [
+            fitted.length === length ? quad[0] : fitted.length / foot.length,
+            fitted.width === width ? quad[1] : fitted.width / foot.width,
+          ];
+          const lift =
+            SCATTER_DEPTH_JITTER *
+            graded *
+            sizeShare(Math.fround(fillSize[0]), Math.fround(fillSize[1]));
+          const candidate = packedRoundTrip({
+            position: [
+              fitted.centre[0] + face.normal[0] * lift,
+              fitted.centre[1] + face.normal[1] * lift,
+              fitted.centre[2] + face.normal[2] * lift,
+            ],
+            normal: face.normal,
+            tangent: Math.atan2(
+              x * b2[0] + y * b2[1] + z * b2[2],
+              x * b1[0] + y * b1[1] + z * b1[2],
+            ),
+            color: [
+              emissive[0] / shade,
+              emissive[1] / shade,
+              emissive[2] / shade,
+              CYPRESS_FLAME_NONE,
+            ],
+            size: fillSize,
+            brush,
+            layer: style.layer,
+            phase,
+            flags: DEPTH_TIE_BREAK_FRONT_FLAG | DEPTH_RANKED_FLAG | encodeFitScale(fitted.fitScale),
+          });
+          const hits = stampStroke(grid, candidate, holeCells, false);
+          if (hits > pickHits) {
+            pickHits = hits;
+            pick = candidate;
+          }
+        }
+        if (!pick) continue;
+        out.push(pick);
+        stampStroke(grid, pick, cells);
+      }
+    }
+  }
 }

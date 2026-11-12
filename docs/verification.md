@@ -2748,6 +2748,16 @@ House 7's hole was a seam, not brush shape: each of a pane's two triangles had i
 
 MiniMac, 643e9b1, load under 5: `make checkall`, gitleaks, `bun audit`, `make asset-check`, panes.spec and `make e2e` (158 passed, 7 skipped) all pass. On the 0.25-0.6 m, ±5 cm near sweep the worst cell is 0.196% (house 0 at 0.25 m), where 67bfd5b read 0.626% (house 7). House 7 now reads at most 0.005%. House 0 reads 0.000% on 67bfd5b and up to 0.196% here: the face lattice moved one of its brush-shape holes into view. Every other pane is at most 0.043%.
 
+#### Fill interior window pane holes (SCATTER_VERSION 20, card 01a1d18370b0, 2026-11-12)
+
+The window scatter rasterises each lit face on a 4 mm grid using committed 32 × 32 coverage masks from the default brush atlas. It fits strokes over interior gaps from a separate random stream and appends them after the existing strokes. Seed 1 gains 29 building strokes (555,476 total). All six packed attributes of the first 555,447 strokes match v19 byte for byte, with hash `17b760ed`. The world and slicer identity tests pin the output.
+
+The 400-column seed-1 coverage test measures 0.00 cm² for the largest interior hole, down from 12.74 cm². The worst seam band stays at 0.439% bare. The default-mode world test draws at most 321,667 strokes across 29 fixed poses (village uphill) and 279,325 in the flight-cap sweep, both within 325,000. In 225 near-view samples on MiniMac (Chromium with ANGLE Metal on Apple M4), house 0 drops from 0.196% to 0.000% bare. The new worst sample is 0.043% (house 14 at 0.30 m, offset 5 cm).
+
+On MiniMac, six Bun runs per version of the real seed-1 `scatterWorldSteps` raised median total scatter time from 405 to 598 ms. The longest individual step across the runs moved from 3.59 to 3.73 ms. Raster work yields between batches of strokes to keep it within the slicer's frame budget. The 1-minute load was 1.31 to 1.66. These timings cover CPU scatter on MiniMac.
+
+MiniMac's full Metal browser suite passed 158 tests with 7 skipped. The cold desktop portal run measured a 4.2 ms longest scatter step and a 16.8 ms longest frame. The focused pane suite passed both tests.
+
 ## Portal entry: build from the trigger, reveal on a time budget (card 01a1b83d2e2c, 2026-11-09)
 
 Measured with `tests/e2e/entry-time.ts` against a production build (`vite build`, `vite preview --port 4334`). The tool runs three round trips in one browser context, so the first entry misses the scatter cache and the later two hit it. The setup was an M4 Max, headless Chromium on ANGLE Metal at 60 Hz, 1280 × 720. Phases are the summed frame intervals of `__goghDiag().portal.frames`, and the entry time is `durationMs`, from the trigger to idle. Before is a30c919.

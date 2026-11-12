@@ -9,8 +9,10 @@
  *   (FACE_LATTICE_LAYERS) removes it: the worst pane's band went from 2.12% bare (house 6 window
  *   21) to 0.44% (house 13 window 40), what the brushes' own shapes leave near the diagonal.
  * - The largest interior hole (touching no pane edge) stays under MAX_INTERIOR_HOLE_CM2. Such holes
- *   come from the brushes' shapes and angles, which no lattice spacing rules out (card
- *   01a1d18370b0, a fill-in pass from the brush masks); the bar keeps them from growing.
+ *   come from the brushes' shapes and angles, which no lattice spacing rules out: 12.74 cm² on
+ *   house 16 window 53 under SCATTER_VERSION 19. The hole fill (`holeFillSteps`, card
+ *   01a1d18370b0) places a stroke in each hole of at least HOLE_FILL_MIN_AREA by the committed brush
+ *   masks, which leaves none.
  */
 import { BufferAttribute } from 'three';
 import { beforeAll, describe, expect, test } from 'vitest';
@@ -41,7 +43,7 @@ import {
 const GRID = 400;
 const SEAM_BAND_M = 0.04;
 const MAX_SEAM_BARE_SHARE = 0.006;
-const MAX_INTERIOR_HOLE_CM2 = 13;
+const MAX_INTERIOR_HOLE_CM2 = 2;
 
 const dot = (a: readonly number[], b: readonly number[]): number =>
   a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
