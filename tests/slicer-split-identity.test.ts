@@ -41,9 +41,9 @@ import { createSlicer, type Steps } from '../src/util/slicer.ts';
  */
 const UNSPLIT: Readonly<Record<string, string>> = {
   geometry: '535afd02',
-  scattered: '8c82a731',
-  assembled: '4f743749',
-  batch: '8ccf366f',
+  scattered: '1986b462',
+  assembled: '885e4b8e',
+  batch: '0e0d1ba3',
   base: '1a18b3f6',
   gallery: '6f6580f0',
   galleryBatch: 'be87405e',

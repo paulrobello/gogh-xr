@@ -86,9 +86,10 @@ import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instanc
  * square's upper half onto the triangle; each stroke takes the next R2 point inside the triangle's
  * half (`triangleSample`), so every face-clamped layer's strokes move, with the same counts. 18:
  * the window panes are outlined too (OUTLINED_LAYERS), corner to corner
- * (CORNER_OUTLINED_LAYERS), which covers their corners.
+ * (CORNER_OUTLINED_LAYERS), which covers their corners. 19: a window face's triangles share one
+ * lattice (FACE_LATTICE_LAYERS), so the pane fill is seamless across its diagonal.
  */
-export const SCATTER_VERSION: number = 18;
+export const SCATTER_VERSION: number = 19;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -280,6 +281,137 @@ export function triangleSample(
     r1 = Math.max(0, mirrored);
   }
   return [1 - r1 - r2, r1, r2];
+}
+
+/**
+ * Layers whose faces share one placement lattice across their triangles (`faceLatticeSample`). With
+ * a lattice per triangle the two halves of a lit window pane were placed independently, their
+ * spacings fell out of step along the shared diagonal, and house 7's pane at seed 1 left a 5 × 3 cm
+ * hole beside it (0.62% of the frame 0.25 m off).
+ */
+const FACE_LATTICE_LAYERS: readonly WorldLayer[] = Object.freeze(['window'] as const);
+
+type Vec2 = readonly [number, number];
+
+/** A FACE_LATTICE_LAYERS face's lattice: the shifted R2 sequence over the face's bounding box. */
+export interface FaceLattice {
+  readonly shift: Vec2;
+  /** Bounding box of the face's hull in its (e1, e2) frame. */
+  readonly min: Vec2;
+  readonly extent: Vec2;
+  /** Lattice spacing, sqrt(face area / the face's stroke count), metres. */
+  readonly spacing: number;
+}
+
+/** One triangle's walk along its face's lattice: it takes the points that fall inside it. */
+export interface FaceLatticeCursor {
+  readonly lattice: FaceLattice;
+  readonly face: FacePolygon;
+  /** The triangle's corners in the face frame. */
+  readonly a: Vec2;
+  readonly ab: Vec2;
+  readonly ac: Vec2;
+  next: number;
+}
+
+/** Past this many lattice points with none inside its triangle, a sliver falls back to uniform draws. */
+const FACE_LATTICE_MAX_TRIES = 1 << 16;
+
+/** `p` in the barycentrics (r1, r2) of the cursor's triangle. */
+function cursorBarycentric(c: FaceLatticeCursor, x: number, y: number): [number, number] {
+  const px = x - c.a[0];
+  const py = y - c.a[1];
+  const det = c.ab[0] * c.ac[1] - c.ab[1] * c.ac[0];
+  return [(px * c.ac[1] - py * c.ac[0]) / det, (c.ab[0] * py - c.ab[1] * px) / det];
+}
+
+/**
+ * The barycentrics (r0, r1, r2) of the cursor's triangle's next stroke. Every triangle of a face
+ * walks the same sequence and keeps the points inside it, so the face's strokes are the first points
+ * of one lattice over the whole face, seamless across its diagonals, because each triangle's count
+ * follows its area. The point is jittered by ± FACE_PLACEMENT_JITTER of the spacing and kept
+ * unjittered when the jitter would leave the face. A jittered point may cross into the neighbouring
+ * triangle: its barycentrics then go negative, and it still lies on the face's plane.
+ */
+export function faceLatticeSample(
+  cursor: FaceLatticeCursor,
+  u1: number,
+  u2: number,
+): [number, number, number] {
+  const { lattice, face } = cursor;
+  for (let tries = 0; tries < FACE_LATTICE_MAX_TRIES; tries++) {
+    const x = lattice.min[0] + frac(lattice.shift[0] + cursor.next * R2_A1) * lattice.extent[0];
+    const y = lattice.min[1] + frac(lattice.shift[1] + cursor.next * R2_A2) * lattice.extent[1];
+    cursor.next++;
+    const [r1, r2] = cursorBarycentric(cursor, x, y);
+    if (r1 < -1e-9 || r2 < -1e-9 || r1 + r2 > 1 + 1e-9) continue;
+    const jitter = FACE_PLACEMENT_JITTER * lattice.spacing;
+    const jx = x + (u1 - 0.5) * jitter;
+    const jy = y + (u2 - 0.5) * jitter;
+    const inside = face.edges.every((e) => e.nx * jx + e.ny * jy <= e.d + 1e-9);
+    const [s1, s2] = inside ? cursorBarycentric(cursor, jx, jy) : [r1, r2];
+    return [1 - s1 - s2, s1, s2];
+  }
+  return triangleSample(null, u1, u2);
+}
+
+/** A mesh's face lattices, made at each face's first triangle from that triangle's shift. */
+interface FaceLattices {
+  /** Strokes per face: the sum of its triangles' counts. */
+  readonly counts: Uint32Array;
+  readonly lattices: Map<number, FaceLattice>;
+}
+
+function createFaceLattices(faces: FaceSet, counts: Uint32Array): FaceLattices {
+  const perFace = new Uint32Array(faces.faces.length);
+  for (let t = 0; t < counts.length; t++) {
+    const f = faces.faceOf[t];
+    if (f >= 0) perFace[f] += counts[t];
+  }
+  return { counts: perFace, lattices: new Map() };
+}
+
+/** Triangle `t`'s cursor on its face's lattice, or null for a triangle on no face. */
+function faceCursor(
+  faces: FaceSet,
+  set: FaceLattices,
+  t: number,
+  shift: Vec2,
+  a: Vec3,
+  ab: Vec3,
+  ac: Vec3,
+): FaceLatticeCursor | null {
+  const f = faces.faceOf[t];
+  if (f < 0) return null;
+  const face = faces.faces[f];
+  let lattice = set.lattices.get(f);
+  if (!lattice) {
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [x, y] of face.vertices) {
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
+    }
+    lattice = {
+      shift,
+      min: [x0, y0],
+      extent: [x1 - x0, y1 - y0],
+      spacing: Math.sqrt(face.area / Math.max(1, set.counts[f])),
+    };
+    set.lattices.set(f, lattice);
+  }
+  const { origin, e1, e2 } = face;
+  const d = sub(a, origin);
+  const dot2 = (v: Vec3, e: Vec3): number => v[0] * e[0] + v[1] * e[1] + v[2] * e[2];
+  return {
+    lattice,
+    face,
+    a: [dot2(d, e1), dot2(d, e2)],
+    ab: [dot2(ab, e1), dot2(ab, e2)],
+    ac: [dot2(ac, e1), dot2(ac, e2)],
+    next: 0,
+  };
 }
 
 /** Stroke length varies uniformly by ± this share of the graded size. */
@@ -877,6 +1009,8 @@ export function* scatterSurfacesSteps(
     const heightAttr = geometry.getAttribute(CYPRESS_HEIGHT_ATTRIBUTE) as Attribute | undefined;
     const lobeAttr = geometry.getAttribute(CYPRESS_LOBE_ATTRIBUTE) as Attribute | undefined;
     const flame = heightAttr && lobeAttr ? { height: heightAttr, lobe: lobeAttr } : null;
+    const faceLattices: FaceLattices | null =
+      faces && FACE_LATTICE_LAYERS.includes(layer) ? createFaceLattices(faces, counts) : null;
     yield;
     sliceStart = index;
     for (let t = 0; t < counts.length; t++) {
@@ -896,13 +1030,19 @@ export function* scatterSurfacesSteps(
       const na = normalAttr ? read(normalAttr, ia) : null;
       const nb = normalAttr ? read(normalAttr, ib) : null;
       const nc = normalAttr ? read(normalAttr, ic) : null;
-      const lattice: TriangleLattice | null = faces
-        ? { shift: [rand(), rand()], step: 1 / Math.sqrt(counts[t]), next: 0 }
-        : null;
+      const shift: [number, number] | null = faces ? [rand(), rand()] : null;
+      const cursor =
+        faceLattices && faces && shift
+          ? faceCursor(faces, faceLattices, t, shift, a, ab, ac)
+          : null;
+      const lattice: TriangleLattice | null =
+        faces && shift && !cursor ? { shift, step: 1 / Math.sqrt(counts[t]), next: 0 } : null;
       for (let k = 0; k < counts[t]; k++) {
         const u1 = rand();
         const u2 = rand();
-        const [r0, r1, r2] = triangleSample(lattice, u1, u2);
+        const [r0, r1, r2] = cursor
+          ? faceLatticeSample(cursor, u1, u2)
+          : triangleSample(lattice, u1, u2);
         // The cypress flame's lobe and height (P4.4), from the mesh's own attributes: no draw.
         const alpha = flame
           ? flameByteAt(flame.height, flame.lobe, [ia, ib, ic], [r0, r1, r2])
