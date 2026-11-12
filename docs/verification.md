@@ -3743,3 +3743,20 @@ The base ALU splits as: the coverage mip cap 10, the R3 alpha 10, the relief foo
 **Pixel check.** `tests/e2e/fill.spec.ts` boots `?painting=starry-night&noanim&seed=1&shot&painter&nogov` at 1280 × 1028, once without a flag and once with `&ab=fill`. It checks that the group's boot matches the fresh capture byte for byte, presses V through every arm, and checks that no switch adds a program. For each arm it logs the RGB channels that differ from base by more than 8 levels, and the largest step. It expects `nostream` to differ in 0 channels, `shade3` in under 0.01%, and `domewrite` in more than 0 (the negative control). A full cycle must match the fresh capture byte for byte. Desktop GPUs run mediump as highp, so `mediump` reads near 0 there whatever it does on the Quest.
 
 **Headset protocol.** `https://gogh-xr.pardev.net/?painting=starry-night&ab=fill&nogov&hud&diag&perf` at beauty-72, level 5, foveation 0, from the painter's spot facing the big swirl. Record a `?perf` window of 30 s or more per arm, cycling with the left stick click. Take `lean` against `base` for the total, and each single arm for its own share.
+
+**Headset result (2026-11-12 02:20Z, build 8ff88de9cebe at 493f14d, beauty-72, level 5, foveation 0, `?perf` windows of 16.5 to 21 s).** Paul cycled every arm twice: the first pass at the painter's spot, the second at a ground view in the village. Means in ms, with p95 in brackets:
+
+| Arm | Painter's spot | Village ground |
+| --- | --- | --- |
+| `base` | 47.93 (49.8) | 38.82 (41.9) |
+| `domewrite` | 42.46 (45.6) | 34.29 (36.0) |
+| `nostream` | 47.51 (49.4) | 38.66 (40.3) |
+| `shade3` | 47.54 (49.5) | 38.45 (40.1) |
+| `mediump` | 47.57 (49.2) | 38.87 (40.8) |
+| `lean` | 45.87 (47.5) | 38.18 (39.6) |
+
+The three look-preserving arms each move the frame by under 0.5 ms, which is within window-to-window spread. `lean` reads 2.1 ms faster at the painter's spot and 0.6 ms at the ground view, more than the three parts summed, so most of it is spread too. The fragment shader's ALU, its stream taps and its precision are not what bounds the frame: the compiler did not pay the stream's taps on every fragment, and fp16 buys nothing measurable. `domewrite` buys 5.5 ms (11%) at the painter's spot and 4.5 ms (12%) at the ground view. The cost is the number of dome fragments drawn, through rasterisation, blending and coverage, not the work each one does. The painter's spot base here (47.9 ms) reads higher than the 41.0 ms of the 2026-11-11 session. The pose differed, and the comparison holds only within one pass.
+
+**Paul's look ruling (2026-11-12).** All six arms looked the same as `base` in the headset, `domewrite` and `mediump` included. `domewrite` is therefore the one same-look saving found, about 5 ms (11 to 12%) at both views.
+
+**Dome depth write is the default (2026-11-12).** On Paul's ruling the batch's dome chunks write depth while they draw (`DOME_DEPTH_WRITE` in batch.ts), and the `fill` group's `domewrite` arm became `domenowrite`, the old dome, for A/B against the new default.

@@ -1405,7 +1405,7 @@ describe('draw classes', () => {
     batch.dispose();
   });
 
-  test('a lights chunk writes depth for its own draw only, and puts the material back', () => {
+  test('a lights or dome chunk writes depth for its own draw only, and puts the material back', () => {
     const batch = createStrokeBatch(mixed(80), { cellSize: 4, createAtlas: tinyAtlas });
     for (const chunk of batch.chunks) {
       const { mesh } = chunk;
@@ -1415,7 +1415,8 @@ describe('draw classes', () => {
         typeof mesh.onBeforeRender
       >;
       mesh.onBeforeRender(...args);
-      expect(material.depthWrite, chunk.drawClass).toBe(chunk.drawClass === 'lights');
+      const writes = chunk.drawClass === 'lights' || chunk.drawClass === 'dome';
+      expect(material.depthWrite, chunk.drawClass).toBe(writes);
       mesh.onAfterRender(...args);
       expect(material.depthWrite).toBe(false);
     }

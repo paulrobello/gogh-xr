@@ -161,6 +161,14 @@ export const STROKES_AFTER_BASE = 2_000_000;
 export const BATCH_DEPTH_WRITE = false;
 
 /**
+ * Whether the `dome` draw class writes depth while it draws, on top of BATCH_DEPTH_WRITE. It does
+ * (Paul's headset A/B, 2026-11-12, docs/verification.md, fill arms): the dome's depth then rejects
+ * its later, lower-ranked overlapping fragments, about 5 ms a frame on the Quest 3 at the painter
+ * view and in the village, with no visible change. `?ab=fill` keeps the old dome as `domenowrite`.
+ */
+export const DOME_DEPTH_WRITE = true;
+
+/**
  * The policy a batch starts with: after the base meshes, class by class, back to front within
  * each class, so with no stroke depth writes a nearer chunk paints over a farther one.
  */
@@ -299,8 +307,8 @@ export interface StrokeBatch {
   /** The chunk geometries, in chunk order. */
   geometries(): readonly InstancedBufferGeometry[];
   /**
-   * The `fill` group's `domewrite` arm (fill-arms.ts): the dome chunks write depth while they
-   * draw (true), as the lights do, or go back to the batch default.
+   * Whether the dome chunks write depth while they draw, as the lights do. They start at
+   * DOME_DEPTH_WRITE; the `fill` group's `domenowrite` arm (fill-arms.ts) turns it off.
    */
   setDomeDepthWrite(on: boolean): void;
   stats(): StrokeBatchStats;
@@ -1132,7 +1140,13 @@ export function* createStrokeBatchSteps(
     const index = chunks.length;
     mesh.renderOrder = index;
     classRank[index] = STROKE_DRAW_CLASSES.indexOf(drawClass);
-    if (drawClass === 'lights' || drawClass === 'cypress') writeDepthWhileDrawn(mesh);
+    if (
+      drawClass === 'lights' ||
+      drawClass === 'cypress' ||
+      (drawClass === 'dome' && DOME_DEPTH_WRITE)
+    ) {
+      writeDepthWhileDrawn(mesh);
+    }
     group.add(mesh);
     const count = data.count;
     bandOf.push(null);
@@ -1274,8 +1288,8 @@ export function* createStrokeBatchSteps(
   /** Chunks in [warmFrom, revealed) draw on the next `update` whatever the cull (`reveal`). */
   let warmFrom = Number.POSITIVE_INFINITY;
 
-  /** Whether the dome chunks carry the `domewrite` hooks (`setDomeDepthWrite`). */
-  let domeWrites = false;
+  /** Whether the dome chunks carry the depth-write hooks (`setDomeDepthWrite`). */
+  let domeWrites = DOME_DEPTH_WRITE;
   const batch: StrokeBatch = {
     group,
     chunks,

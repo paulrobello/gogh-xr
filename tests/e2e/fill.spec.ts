@@ -13,7 +13,7 @@ import { CAPTURE_SIZE } from '../../scripts/fidelity-io.ts';
 import { expect, glErrors, test, type Xr } from './fixtures';
 
 /** FILL_ARMS (fill-arms.ts), which Playwright cannot import through batch.ts's bake outputs. */
-const FILL_ARMS = ['base', 'domewrite', 'nostream', 'shade3', 'mediump', 'lean'];
+const FILL_ARMS = ['base', 'domenowrite', 'nostream', 'shade3', 'mediump', 'lean'];
 /** The per-channel difference that counts as moved. */
 const MOVED_LEVELS = 8;
 
@@ -102,7 +102,7 @@ test.describe('the painter view', () => {
       await pressV(page, xr);
       const fill = (await xr.diag()).fill as FillDiag;
       expect(fill.arm).toBe(arm);
-      expect(fill.domeWrite).toBe(arm === 'domewrite');
+      expect(fill.domeWrite).toBe(arm !== 'domenowrite');
       expect((await xr.diag()).renderer.programs, `${arm} linked no new program`).toBe(programs);
       await hideHud();
       const pixels = await rawPixels(page);
@@ -118,8 +118,8 @@ test.describe('the painter view', () => {
     expect(diffs.nostream.channels, 'nostream draws as base').toBe(0);
     // shade3 changes the moonlight by float rounding only.
     expect(diffs.shade3.share, 'shade3 is float rounding').toBeLessThan(1e-4);
-    // domewrite resolves dome overlaps by rank, not draw order: the negative control.
-    expect(diffs.domewrite.channels, 'domewrite changes the dome').toBeGreaterThan(0);
+    // domenowrite resolves dome overlaps by draw order, not rank: the negative control.
+    expect(diffs.domenowrite.channels, 'domenowrite changes the dome').toBeGreaterThan(0);
     // The cycle ended on base.
     expect(diffs.base.channels).toBe(0);
     const cycled = await rawPixels(page);

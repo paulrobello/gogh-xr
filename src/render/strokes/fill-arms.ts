@@ -4,10 +4,10 @@
  * docs/verification.md (fill arms) has the per-path op counts.
  *
  * - `base`: the batch as shipped.
- * - `domewrite`: the `dome` draw class writes depth while it draws (render state, no program).
- *   A measurement arm, not a candidate: the dome draws first, so its depth rejects only later
- *   dome fragments of a lower rank, which under nowrite are exactly the ones that show. Every
- *   fragment it saves is a pixel whose overlap winner changed, from draw order to hash rank.
+ * - `domenowrite`: the `dome` draw class stops writing depth while it draws (render state, no
+ *   program), the dome as it shipped before 2026-11-12. The batch's dome writes depth
+ *   (DOME_DEPTH_WRITE, batch.ts) since the `domewrite` arm of this group measured about 5 ms a
+ *   frame on the headset and Paul saw no change in the look, so this arm is the old default.
  * - `nostream`: `FILL_NOSTREAM` compiles the stream wrap's tone out. At every wrap but `stream`
  *   no stroke streams, so it draws byte for byte as base, and it shows whether the compiler
  *   flattened the branch into a select that pays the stream's two taps on every fragment.
@@ -30,7 +30,7 @@ import type { StrokeBand } from './bands';
 import type { StrokeMaterial } from './material';
 
 /** The `fill` arms, base first. */
-export const FILL_ARMS = ['base', 'domewrite', 'nostream', 'shade3', 'mediump', 'lean'] as const;
+export const FILL_ARMS = ['base', 'domenowrite', 'nostream', 'shade3', 'mediump', 'lean'] as const;
 export type FillArm = (typeof FILL_ARMS)[number];
 
 export const FILL_NOSTREAM = 'FILL_NOSTREAM';
@@ -42,7 +42,7 @@ export const FILL_DEFINES = [FILL_NOSTREAM, FILL_SHADE3, FILL_MEDIUMP] as const;
 /** Each arm's program defines. */
 export const FILL_ARM_DEFINES: Readonly<Record<FillArm, readonly string[]>> = {
   base: [],
-  domewrite: [],
+  domenowrite: [],
   nostream: [FILL_NOSTREAM],
   shade3: [FILL_SHADE3],
   mediump: [FILL_MEDIUMP],
@@ -110,6 +110,15 @@ export function setFillDefines(material: StrokeMaterial, defines: readonly strin
   return changed;
 }
 
+/**
+ * Whether the dome writes depth under `arm`: every arm but `domenowrite` keeps the batch's dome
+ * depth writes on. This assumes DOME_DEPTH_WRITE (batch.ts, which imports this module) is true,
+ * which tests/strokes-fill-arms.test.ts pins.
+ */
+export function domeWriteFor(arm: FillArm): boolean {
+  return arm !== 'domenowrite';
+}
+
 export function createFillArms(): FillArms {
   const batches = new Set<FillBatch>();
   const prepared = new WeakSet<FillBatch>();
@@ -119,7 +128,7 @@ export function createFillArms(): FillArms {
   const apply = (batch: FillBatch): void => {
     const defines = prepared.has(batch) ? FILL_ARM_DEFINES[current] : [];
     for (const material of Object.values(batch.materials)) setFillDefines(material, defines);
-    batch.setDomeDepthWrite(current === 'domewrite');
+    batch.setDomeDepthWrite(domeWriteFor(current));
   };
   const arms: FillArms = {
     arm: () => current,
@@ -164,7 +173,7 @@ export function createFillArms(): FillArms {
         if (!prepared.has(batch)) ready = false;
         defines = FILL_DEFINES.filter((name) => name in batch.materials.near.defines);
       }
-      return { arm: current, defines, domeWrite: current === 'domewrite', prepared: ready };
+      return { arm: current, defines, domeWrite: domeWriteFor(current), prepared: ready };
     },
   };
   return arms;

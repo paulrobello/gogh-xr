@@ -4,7 +4,7 @@ import { createAbGroup, resolveAb } from '../src/diag/ab.ts';
 import { parseFlags } from '../src/diag/flags.ts';
 import { DEPTH_BACKDROP_FLAG } from '../src/render/strokes/backdrop-depth.ts';
 import { STROKE_BANDS } from '../src/render/strokes/bands.ts';
-import { createStrokeBatch } from '../src/render/strokes/batch.ts';
+import { createStrokeBatch, DOME_DEPTH_WRITE } from '../src/render/strokes/batch.ts';
 import {
   createFillArms,
   FILL_ARM_DEFINES,
@@ -82,9 +82,9 @@ describe('createFillArms', () => {
   test('the arms and their programs', () => {
     expect(FILL_ARMS[0]).toBe('base');
     expect(FILL_ARM_DEFINES.base).toEqual([]);
-    expect(FILL_ARM_DEFINES.domewrite).toEqual([]);
+    expect(FILL_ARM_DEFINES.domenowrite).toEqual([]);
     expect(FILL_ARM_DEFINES.lean).toEqual([FILL_NOSTREAM, FILL_SHADE3, FILL_MEDIUMP]);
-    // base (shared with domewrite), nostream, shade3, mediump and lean.
+    // base (shared with domenowrite), nostream, shade3, mediump and lean.
     expect(FILL_PROGRAMS.map((d) => d.join('+'))).toEqual([
       '',
       FILL_NOSTREAM,
@@ -135,11 +135,11 @@ describe('createFillArms', () => {
       for (const band of STROKE_BANDS) {
         expect(fillDefines(batch.materials[band]), arm).toEqual([...FILL_ARM_DEFINES[arm]]);
       }
-      expect(batch.domeWrite.at(-1), arm).toBe(arm === 'domewrite');
+      expect(batch.domeWrite.at(-1), arm).toBe(arm !== 'domenowrite');
       expect(arms.diag()).toMatchObject({
         arm,
         defines: [...FILL_ARM_DEFINES[arm]],
-        domeWrite: arm === 'domewrite',
+        domeWrite: arm !== 'domenowrite',
         prepared: true,
       });
     }
@@ -170,8 +170,8 @@ describe('the fill A/B group', () => {
     };
     const group = createAbGroup('fill', deps);
     expect(fillArms.active()).toBe(true);
-    group.apply('domewrite');
-    expect(fillArms.arm()).toBe('domewrite');
+    group.apply('domenowrite');
+    expect(fillArms.arm()).toBe('domenowrite');
     group.apply('base');
     expect(fillArms.arm()).toBe('base');
     expect(deps.zdiag.prepare).not.toHaveBeenCalled();
@@ -200,7 +200,9 @@ function domeAndGround(): ReturnType<typeof createStrokeBuffers> {
 }
 
 describe('the stroke batch under the fill arms', () => {
-  test('a default batch carries no FILL define and no dome hook; domewrite hooks the dome only', () => {
+  test('a default batch carries no FILL define and hooks the dome only; domenowrite unhooks it', () => {
+    // fill-arms.ts's domeWriteFor assumes the dome writes depth by default.
+    expect(DOME_DEPTH_WRITE).toBe(true);
     const batch = createStrokeBatch(domeAndGround(), { createAtlas: tinyAtlas });
     for (const band of STROKE_BANDS) expect(fillDefines(batch.materials[band])).toEqual([]);
     expect(fillDefines(createStrokeMaterial(tinyAtlas()))).toEqual([]);
@@ -209,9 +211,6 @@ describe('the stroke batch under the fill arms', () => {
     expect(dome.length).toBeGreaterThan(0);
     expect(ground.length).toBeGreaterThan(0);
     const own = (c: (typeof dome)[number]): boolean => Object.hasOwn(c.mesh, 'onBeforeRender');
-    expect(batch.chunks.some(own)).toBe(false);
-
-    batch.setDomeDepthWrite(true);
     expect(dome.every(own)).toBe(true);
     expect(ground.some(own)).toBe(false);
     const material = batch.materials.far;
@@ -225,6 +224,9 @@ describe('the stroke batch under the fill arms', () => {
 
     batch.setDomeDepthWrite(false);
     expect(batch.chunks.some(own)).toBe(false);
+    batch.setDomeDepthWrite(true);
+    expect(dome.every(own)).toBe(true);
+    expect(ground.some(own)).toBe(false);
     batch.dispose();
   });
 });

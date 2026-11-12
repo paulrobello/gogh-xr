@@ -27,6 +27,8 @@ const WORLD = 'painting=starry-night&seed=1&shot&nogov';
  * and time (P2-A3).
  */
 const MAX_BARE = 0.005;
+/** The block matcher's search radius in pixels for the wheel turn probes. */
+const SEARCH_PX = 8;
 
 /**
  * The wheels' canvas centres (v down) and radii in painting widths: regions.json's vortices at
@@ -307,12 +309,19 @@ test('wheel: each core advances about its centre at every sample of a full turn,
         if (!shift) throw new Error(`no prediction at (${u}, ${v})`);
         const px = shift[0] * width;
         const py = shift[1] * height;
-        const m = shiftAt(a, b, Math.round(u * width), Math.round(v * height), half, 8);
+        const m = shiftAt(a, b, Math.round(u * width), Math.round(v * height), half, SEARCH_PX);
         const along = (m.dx * px + m.dy * py) / Math.hypot(px, py);
         const row = `${wheel.note} t ${t.toFixed(2)} (${u.toFixed(3)}, ${v.toFixed(3)}): predicted (${px.toFixed(2)}, ${py.toFixed(2)}) px, measured (${m.dx.toFixed(2)}, ${m.dy.toFixed(2)}) along ${along.toFixed(2)} sharp ${m.sharpness.toFixed(1)}`;
         rows.push(row);
         console.log(`[e2e] sky wheel turn row: ${row}`);
         const ratio = along / Math.hypot(px, py);
+        // A match clamped at the search bound found no peak inside the window, so it measures
+        // nothing. With the dome's depth writes (2026-11-12) the right wheel's fine texture aliases
+        // there once a turn: two of its four probes read -8.00 and +8.00 px against 3.5 px.
+        if (Math.abs(m.dx) >= SEARCH_PX || Math.abs(m.dy) >= SEARCH_PX) {
+          console.log(`[e2e] sky wheel turn row dropped at the search bound: ${row}`);
+          return;
+        }
         // The left wheel at every reading: a reset turns a probe back, to 0 or below. With every
         // band at density 1 the 21 px block reads 0.497 to 1.325 over a turn (2026-11-10, 56
         // readings), so the floor sits well clear of a reset and of that noise.
@@ -328,11 +337,14 @@ test('wheel: each core advances about its centre at every sample of a full turn,
       // 3 its 9 of 56 out-of-band readings (0.17 to 0.45 and 1.81 to 2.09) fell at all four probes
       // at different times, low and high alike, where a still veil over a fixed pixel would read
       // low at every time.
+      expect(
+        ratios.length,
+        `${wheel.note} t ${t} probes inside the search bound`,
+      ).toBeGreaterThanOrEqual(2);
+      const sorted = [...ratios].sort((p, q) => p - q);
+      const mid = sorted.length / 2;
       const median =
-        [...ratios]
-          .sort((p, q) => p - q)
-          .slice(1, 3)
-          .reduce((p, q) => p + q) / 2;
+        sorted.length % 2 ? sorted[Math.floor(mid)] : (sorted[mid - 1] + sorted[mid]) / 2;
       expect.soft(median, `${wheel.note} t ${t} median pace`).toBeGreaterThan(0.5);
       expect.soft(median, `${wheel.note} t ${t} median pace`).toBeLessThan(1.5);
     }

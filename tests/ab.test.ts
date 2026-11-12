@@ -57,7 +57,14 @@ describe('AB_GROUPS', () => {
       'trackertime',
       'reactive',
     ]);
-    expect(AB_GROUPS.fill).toEqual(['base', 'domewrite', 'nostream', 'shade3', 'mediump', 'lean']);
+    expect(AB_GROUPS.fill).toEqual([
+      'base',
+      'domenowrite',
+      'nostream',
+      'shade3',
+      'mediump',
+      'lean',
+    ]);
   });
 });
 
