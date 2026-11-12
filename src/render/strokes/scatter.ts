@@ -97,9 +97,9 @@ import {
  * (CORNER_OUTLINED_LAYERS), which covers their corners. 19: a window face's triangles share one
  * lattice (FACE_LATTICE_LAYERS), so the pane fill is seamless across its diagonal. 20: a window
  * face's interior holes get fill strokes from its own stream (`holeFillSteps`), appended after
- * every other stroke, which is unchanged.
+ * every other stroke, which is unchanged. 21: lit window outlines match the pane fill colour.
  */
-export const SCATTER_VERSION: number = 20;
+export const SCATTER_VERSION: number = 21;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -1186,9 +1186,8 @@ export function* scatterSurfacesSteps(
  * Places a surface's outline strokes, from its outline stream: along each face side, evenly with
  * jitter (on CORNER_OUTLINED_LAYERS evenly from corner to corner, unjittered),
  * the long axis along the side, fitted flush inside it (`fitStrokeToFace`), coloured from
- * the canvas at the edge darkened by OUTLINE_DARKEN (on a tagged mesh, `outlinePaint`'s trim; on an
- * emissive mesh, its emissive colour darkened the same way, with DEPTH_TIE_BREAK_FRONT_FLAG as its
- * fill), and lifted by the share of its quad size (`sizeShare`) like every other ranked stroke. Returns the
+ * the darkened canvas sample, the tagged mesh's trim, or the window's emissive fill. The outlines
+ * share the fill's depth flags and lift based on quad size (`sizeShare`). Returns the
  * next free index. It yields before a face once SCATTER_SLICE strokes are placed since the last.
  */
 function* placeOutlinesSteps(
@@ -1284,7 +1283,8 @@ function* placeOutlinesSteps(
         const paint =
           emissive ??
           (tint ? outlinePaint(sample, tint, point, face.normal, tintRand) : sample.rgb);
-        const rgb = paint.map((c) => (c * (tint ? 1 : OUTLINE_DARKEN)) / shade);
+        const gain = tint || (layer === 'window' && emissive) ? 1 : OUTLINE_DARKEN;
+        const rgb = paint.map((c) => (c * gain) / shade);
         packInstance(buffers, index++, {
           position: [
             centre[0] + face.normal[0] * lift,

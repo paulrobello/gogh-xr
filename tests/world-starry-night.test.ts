@@ -942,9 +942,6 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       total: scattered.count,
       layers: strokeLayerCounts(scattered),
       hash: hashStrokeBuffers(scattered),
-      // The window hole fills (SCATTER_VERSION 20) are appended after every other stroke, so the
-      // strokes before them hash as SCATTER_VERSION 19 did: no other stroke moved.
-      beforeHoleFills: hashStrokeBuffers(strokeRange(scattered, 0, 555_447)),
       opaqueHash: hashStrokeBuffers({
         ...scattered,
         color: scattered.color.map((c, i) => (i % 4 === 3 ? 255 : c)),
@@ -967,9 +964,8 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
         ground: 129_925,
         building: 104_615,
       },
-      hash: '58e0720d',
-      beforeHoleFills: '17b760ed',
-      opaqueHash: '86052219',
+      hash: '615f89b3',
+      opaqueHash: 'a8e7edef',
       lights: 4_960,
       lightsHash: '8553acd9',
       haze: 30_000,

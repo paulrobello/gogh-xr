@@ -497,7 +497,7 @@ test('the scatter lift share equals the vertex shader share, read from its depth
   }
 });
 
-test('window strokes keep the emissive warm colour, sRGB encoded', () => {
+test('window fill and outline strokes share the emissive warm colour, sRGB encoded', () => {
   const glass = wall(3, 2, [0, 2, -15], 'window');
   glass.userData.emissive = true;
   glass.userData.color = WINDOW_COLOR;
@@ -510,25 +510,14 @@ test('window strokes keep the emissive warm colour, sRGB encoded', () => {
   const srgb = WINDOW_COLOR.map((c) =>
     c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055,
   );
-  // The fill keeps the emissive colour, and the pane's outline (OUTLINED_LAYERS) is
-  // OUTLINE_DARKEN of it.
-  let outlines = 0;
   for (let i = 0; i < buffers.count; i++) {
     const s = unpackInstance(buffers, i);
     const shade = strokeShade(s.normal);
-    const off = (gain: number) =>
-      Math.max(
-        ...[0, 1, 2].map((k) =>
-          Math.abs(s.color[k] - Math.min(255, (srgb[k] * 255 * gain) / shade)),
-        ),
-      );
-    const outline = off(OUTLINE_DARKEN) <= 1;
-    if (outline) outlines++;
-    expect(outline || off(1) <= 1).toBe(true);
+    for (let k = 0; k < 3; k++) {
+      expect(Math.abs(s.color[k] - Math.min(255, (srgb[k] * 255) / shade))).toBeLessThanOrEqual(1);
+    }
     expect(s.layer).toBe(STROKE_LAYER.building);
   }
-  expect(outlines).toBeGreaterThan(0);
-  expect(outlines).toBeLessThanOrEqual(OUTLINE_SHARE * buffers.count);
 });
 
 test('faceWidth is the narrowest width of a face hull', () => {

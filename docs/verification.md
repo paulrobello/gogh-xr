@@ -2758,6 +2758,10 @@ On MiniMac, six Bun runs per version of the real seed-1 `scatterWorldSteps` rais
 
 MiniMac's full Metal browser suite passed 158 tests with 7 skipped. The cold desktop portal run measured a 4.2 ms longest scatter step and a 16.8 ms longest frame. The focused pane suite passed both tests.
 
+#### Match the outline to the lit pane (SCATTER_VERSION 21, 2026-11-12)
+
+Paul's Quest 3 check found the v20 portal entry smooth and the pane interiors covered. His screenshot showed dark gold strokes across the bright panes and at their corners. The window outlines now use the same emissive paint as the fill, with their corner reach intact. Comparing v20 and v21 at seed 1 found 613 lightened window strokes out of 555,476. All other colors and all packed positions, normals, tangents, sizes and metadata match byte for byte. The coverage raster still reads 0.00 cm² for the largest interior hole and 0.439% for the worst seam band.
+
 ## Portal entry: build from the trigger, reveal on a time budget (card 01a1b83d2e2c, 2026-11-09)
 
 Measured with `tests/e2e/entry-time.ts` against a production build (`vite build`, `vite preview --port 4334`). The tool runs three round trips in one browser context, so the first entry misses the scatter cache and the later two hit it. The setup was an M4 Max, headless Chromium on ANGLE Metal at 60 Hz, 1280 × 720. Phases are the summed frame intervals of `__goghDiag().portal.frames`, and the entry time is `durationMs`, from the trigger to idle. Before is a30c919.
