@@ -169,7 +169,7 @@ describe('gain routing', () => {
     await mixer.load();
     mixer.setAmbience(starry);
     await settle();
-    expect(WIND_HILL_GAIN).toBeCloseTo(10 ** (4 / 20), 9);
+    expect(WIND_HILL_GAIN).toBeCloseTo(10 ** (2 / 20), 9);
     expect(CRICKETS_GAIN).toBeCloseTo(0.6 * 10 ** (10 / 20), 9);
     expect(CUE_SPATIAL['wind-hill']?.gain).toBe(WIND_HILL_GAIN);
     expect(CUE_SPATIAL.crickets?.gain).toBe(CRICKETS_GAIN);

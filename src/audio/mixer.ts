@@ -81,11 +81,11 @@ const dbToGain = (db: number): number => 10 ** (db / 20);
 /**
  * Runtime trims on the mastered beds (Paul, headset, 2026-11-11), applied to each voice's own gain
  * so the files, which `make asset-check` byte-checks against their loudness targets, stay as they
- * are. Wind is +4 dB over its old gain of 1. Crickets are +10 dB over their old 0.6, a gain and
+ * are. Wind is +2 dB over its old gain of 1 (+4 dB read a bit too loud on the headset). Crickets are +10 dB over their old 0.6, a gain and
  * not a closer panner, because a smaller refDistance or rolloff would also change how fast the
  * five voices fade as the viewer walks away, where Paul asked only for a louder bed.
  */
-export const WIND_HILL_GAIN_DB = 4;
+export const WIND_HILL_GAIN_DB = 2;
 export const CRICKETS_GAIN_DB = 10;
 export const WIND_HILL_GAIN = dbToGain(WIND_HILL_GAIN_DB);
 export const CRICKETS_BASE_GAIN = 0.6;
