@@ -2740,6 +2740,14 @@ Steps, each measured on MiniMac with the near and far probe (load under 3):
 
 On 67bfd5b the far panes read 0.000% at every level, the spec passes, and the canvas shots of houses 1, 7 and 15 show no bare corner. House 7's remaining 0.434% at 0.3 m is the interior lattice hole alone (0.624% at 0.25 m, 0.106% at 0.6 m). Every other pane is at most 0.07% at 0.3 m. Level 16 is the near band's last shed (density 0.25), card 01a1ced1847c.
 
+#### One lattice per window face (SCATTER_VERSION 19, card 01a1ced16612, 2026-11-12)
+
+House 7's hole was a seam, not brush shape: each of a pane's two triangles had its own R2 lattice and random shift, so the halves fell out of step along the shared diagonal. `FACE_LATTICE_LAYERS` (`window`) gives each face one lattice over its bounding box in the face frame, with spacing sqrt(face area / face count), and each triangle walks it and keeps the points inside itself (`faceLatticeSample`). Each triangle still draws its own two random numbers, so every other layer is byte-identical and the stroke counts do not change: seed 1 is still 555,447 (building 104,586), and the scatter and opaque hashes move to `17b760ed` and `05216d51`.
+
+`tests/strokes-window-coverage.test.ts` rasterises every seed-1 pane from the real default-seed brush masks at the near band's size. The worst pane's bare share within 4 cm of its diagonal falls from 2.12% (house 6 window 21) to 0.44% (house 13 window 40), against a 0.6% bar. The largest interior hole falls from 30.96 to 12.74 cm² (house 16 window 53), against a 13 cm² bar. Those holes come from the brushes' shapes and angles, and no jitter removes them (0 to 0.75 of the spacing leaves 9 to 28 cm²). Card 01a1d18370b0 fills them from the brush masks.
+
+MiniMac, 643e9b1, load under 5: `make checkall`, gitleaks, `bun audit`, `make asset-check`, panes.spec and `make e2e` (158 passed, 7 skipped) all pass. On the 0.25-0.6 m, ±5 cm near sweep the worst cell is 0.196% (house 0 at 0.25 m), where 67bfd5b read 0.626% (house 7). House 7 now reads at most 0.005%. House 0 reads 0.000% on 67bfd5b and up to 0.196% here: the face lattice moved one of its brush-shape holes into view. Every other pane is at most 0.043%.
+
 ## Portal entry: build from the trigger, reveal on a time budget (card 01a1b83d2e2c, 2026-11-09)
 
 Measured with `tests/e2e/entry-time.ts` against a production build (`vite build`, `vite preview --port 4334`). The tool runs three round trips in one browser context, so the first entry misses the scatter cache and the later two hit it. The setup was an M4 Max, headless Chromium on ANGLE Metal at 60 Hz, 1280 × 720. Phases are the summed frame intervals of `__goghDiag().portal.frames`, and the entry time is `durationMs`, from the trigger to idle. Before is a30c919.
