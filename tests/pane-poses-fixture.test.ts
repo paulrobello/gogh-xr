@@ -21,6 +21,34 @@ import {
 
 const FILE = 'tests/fixtures/pane-poses.json';
 
+/** libm's atan2 and friends differ in the last bit between macOS and Linux, so numbers match to 1e-9. */
+function expectClose(actual: unknown, expected: unknown, path = '$'): void {
+  if (typeof expected === 'number') {
+    expect(typeof actual, path).toBe('number');
+    expect(Math.abs((actual as number) - expected), path).toBeLessThanOrEqual(
+      1e-9 * Math.max(1, Math.abs(expected)),
+    );
+    return;
+  }
+  if (Array.isArray(expected)) {
+    expect(Array.isArray(actual), path).toBe(true);
+    expect((actual as unknown[]).length, path).toBe(expected.length);
+    expected.forEach((value, i) => {
+      expectClose((actual as unknown[])[i], value, `${path}[${i}]`);
+    });
+    return;
+  }
+  if (expected !== null && typeof expected === 'object') {
+    expect(actual !== null && typeof actual === 'object', path).toBe(true);
+    const record = actual as Record<string, unknown>;
+    expect(Object.keys(record).sort(), path).toEqual(Object.keys(expected).sort());
+    for (const [key, value] of Object.entries(expected))
+      expectClose(record[key], value, `${path}.${key}`);
+    return;
+  }
+  expect(actual, path).toEqual(expected);
+}
+
 function computeFixture() {
   const world = createWorldGeometry(worldSeeds(1));
   const sight = sightTest(world);
@@ -47,7 +75,7 @@ describe('pane probe fixture', () => {
     if (process.env.UPDATE_PANE_POSES === '1') {
       writeFileSync(FILE, `${JSON.stringify(fixture, null, 2)}\n`);
     }
-    expect(JSON.parse(readFileSync(FILE, 'utf8'))).toEqual(fixture);
+    expectClose(JSON.parse(readFileSync(FILE, 'utf8')), fixture);
     expect(fixture.panes).toHaveLength(15);
   }, 120_000);
 });
