@@ -45,6 +45,7 @@ import {
   LAYER_DENSITY,
   LAYER_SIZE,
   OUTLINE_DARKEN,
+  OUTLINE_SHARE,
   SCATTER_DEPTH_JITTER,
   SCATTER_SIZE_JITTER,
   scatterDensityAt,
@@ -509,15 +510,25 @@ test('window strokes keep the emissive warm colour, sRGB encoded', () => {
   const srgb = WINDOW_COLOR.map((c) =>
     c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055,
   );
+  // The fill keeps the emissive colour, and the pane's outline (OUTLINED_LAYERS) is
+  // OUTLINE_DARKEN of it.
+  let outlines = 0;
   for (let i = 0; i < buffers.count; i++) {
     const s = unpackInstance(buffers, i);
     const shade = strokeShade(s.normal);
-    for (let k = 0; k < 3; k++) {
-      const expected = Math.min(255, (srgb[k] * 255) / shade);
-      expect(Math.abs(s.color[k] - expected)).toBeLessThanOrEqual(1);
-    }
+    const off = (gain: number) =>
+      Math.max(
+        ...[0, 1, 2].map((k) =>
+          Math.abs(s.color[k] - Math.min(255, (srgb[k] * 255 * gain) / shade)),
+        ),
+      );
+    const outline = off(OUTLINE_DARKEN) <= 1;
+    if (outline) outlines++;
+    expect(outline || off(1) <= 1).toBe(true);
     expect(s.layer).toBe(STROKE_LAYER.building);
   }
+  expect(outlines).toBeGreaterThan(0);
+  expect(outlines).toBeLessThanOrEqual(OUTLINE_SHARE * buffers.count);
 });
 
 test('faceWidth is the narrowest width of a face hull', () => {
@@ -546,11 +557,13 @@ test('a clamped face caps the graded size at FACE_SIZE_SHARE of its width, and t
   const expected = 0.63 * 1000 * (0.2 / cap) ** 2;
   expect(buffers.count).toBeGreaterThan(expected * 0.9);
   expect(buffers.count).toBeLessThan(expected * 1.1);
+  // The fill is capped. Only the pane's outline strokes (OUTLINED_LAYERS), which keep the uncapped
+  // graded size, may be longer.
+  let over = 0;
   for (let i = 0; i < buffers.count; i++) {
-    expect(unpackInstance(buffers, i).size[0]).toBeLessThanOrEqual(
-      cap * (1 + SCATTER_SIZE_JITTER) + 1e-6,
-    );
+    if (unpackInstance(buffers, i).size[0] > cap * (1 + SCATTER_SIZE_JITTER) + 1e-6) over++;
   }
+  expect(over).toBeLessThanOrEqual(OUTLINE_SHARE * buffers.count);
   // A face wider than size / FACE_SIZE_SHARE is not capped: 1000 × (0.2 / 0.6)² per m².
   expect(scatterSurfaces([wall(4, 3, [0, 2, -15], 'window')], MIXED, options).count).toBeLessThan(
     ((12 * 1000) / 9) * 1.1,

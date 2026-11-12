@@ -56,7 +56,7 @@ test('the handle boundary factor is 0 at the spot and 1 past the edge', () => {
 test('the built batch carries the eave underside copies, each facing down', () => {
   // No scattered village stroke faces down (walls are vertical, roofs face up), so the
   // downward-facing building strokes in the app's chunks are exactly the eave copies that
-  // `assembleWorldStrokes` adds (pinned at 10,053 in tests/world-starry-night.test.ts).
+  // `assembleWorldStrokes` adds (pinned at 10,098 in tests/world-starry-night.test.ts).
   const SNORM16 = 32767;
   let down = 0;
   for (const chunk of handle.batch.chunks) {
@@ -71,7 +71,7 @@ test('the built batch carries the eave underside copies, each facing down', () =
       if (n[1] < -0.3) down++;
     }
   }
-  expect(down).toBe(10_053);
+  expect(down).toBe(10_098);
 });
 
 test('the handle blocks the seed-1 village’s houses and church, and not the painter’s spot', () => {

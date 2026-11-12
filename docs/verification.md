@@ -43,7 +43,7 @@ Evidence for the Phase 2 criteria from [PRD.md](../PRD.md), gathered on branch `
 
 | ID | Criterion | Evidence | Status |
 | --- | --- | --- | --- |
-| P2-A1 | Generators are deterministic for a given seed (unit snapshot of vertex and stroke counts and bounds). | 2026-11-06, commit 4768e33. `tests/world-starry-night.test.ts` pins the seed-1 world as literals, over the real `CanvasSource` (frame.webp, regions.png and flow.png decoded with sharp). Generators: vertex and triangle counts and axis-aligned bounds rounded to 1 mm for the terrain (16,384 vertices, 32,258 triangles), ridge, houses, roofs, windows, church, cypress and sky dome. Scatter: the `scatterWorld` total (535,011), the per-layer counts and its `hashStrokeBuffers` (`9724bad8`, then `480f43d7`: SCATTER_VERSION 3 sets the lit-window depth flag in the spare meta byte, with the counts unchanged; then `51173374`: SCATTER_VERSION 6, see [Shared lift share](#shared-lift-share-walking-reorder); then `5b9be613`: SCATTER_VERSION 7 adds the village colours, see [Village house colours](#village-house-colours); then `6ed76c8a` on 46eb08f's base: SCATTER_VERSION 8 raises the dark house-wall strokes and darkens the church trim, see [Upper walls and church trim](#upper-walls-and-church-trim); then `696165d1`: SCATTER_VERSION 10 keeps the cypress in its own palette, see [Cypress blue patches](#cypress-blue-patches); then `cf326988`: SCATTER_VERSION 11 is the wall raise with the trim on every structure, on the cypress fix and the moon and stars, see [Trim on every structure](#trim-on-every-structure-ruling-q31); the versions after 11 are recorded in their own sections; now `38922948`, total 554,834: SCATTER_VERSION 16, the one canvas uv extent with the face-clamped placement and size cap, see [One canvas uv extent](#one-canvas-uv-extent-2026-11-09-card-01a1b27d2184)). Haze: 30,000 strokes, hash `49bf0339`, now `01933fb0`. Both tests pass inside `make checkall`. A scatter pin change requires a `SCATTER_VERSION` bump. A generator pin change does not, because the cache key carries the build SHA. | Met |
+| P2-A1 | Generators are deterministic for a given seed (unit snapshot of vertex and stroke counts and bounds). | 2026-11-06, commit 4768e33. `tests/world-starry-night.test.ts` pins the seed-1 world as literals, over the real `CanvasSource` (frame.webp, regions.png and flow.png decoded with sharp). Generators: vertex and triangle counts and axis-aligned bounds rounded to 1 mm for the terrain (16,384 vertices, 32,258 triangles), ridge, houses, roofs, windows, church, cypress and sky dome. Scatter: the `scatterWorld` total (535,011), the per-layer counts and its `hashStrokeBuffers` (`9724bad8`, then `480f43d7`: SCATTER_VERSION 3 sets the lit-window depth flag in the spare meta byte, with the counts unchanged; then `51173374`: SCATTER_VERSION 6, see [Shared lift share](#shared-lift-share-walking-reorder); then `5b9be613`: SCATTER_VERSION 7 adds the village colours, see [Village house colours](#village-house-colours); then `6ed76c8a` on 46eb08f's base: SCATTER_VERSION 8 raises the dark house-wall strokes and darkens the church trim, see [Upper walls and church trim](#upper-walls-and-church-trim); then `696165d1`: SCATTER_VERSION 10 keeps the cypress in its own palette, see [Cypress blue patches](#cypress-blue-patches); then `cf326988`: SCATTER_VERSION 11 is the wall raise with the trim on every structure, on the cypress fix and the moon and stars, see [Trim on every structure](#trim-on-every-structure-ruling-q31); the versions after 11 are recorded in their own sections; then `38922948`, total 554,834: SCATTER_VERSION 16, the one canvas uv extent with the face-clamped placement and size cap, see [One canvas uv extent](#one-canvas-uv-extent-2026-11-09-card-01a1b27d2184); now `08faf9b9`, total unchanged: SCATTER_VERSION 17, see [Face-clamped lattice without the fold](#face-clamped-lattice-without-the-fold-scatter_version-17)). Haze: 30,000 strokes, hash `49bf0339`, now `01933fb0`. Both tests pass inside `make checkall`. A scatter pin change requires a `SCATTER_VERSION` bump. A generator pin change does not, because the cache key carries the build SHA. | Met |
 | P2-A2 | The painter's spot screenshot (`?shot`, `?noanim`, fixed seed) is compared to the reference scan with the downscaled perceptual metric defined in the P2 plan, and its threshold is set and recorded here. | 2026-11-06, commit bf9d9a9, production build served by `vite preview`. URL `/?painting=starry-night&diag&shot&noanim&seed=1&painter` (`?painter` puts the desktop camera on the painter camera, so the frame is exactly canvas uv [0, 1]²). Captured at 1280 × 1014 (the canvas aspect) with `bun scripts/fidelity.ts --url "<url>" --capture docs/shots/p2-painter-spot.png`, which runs `scripts/capture-shot.ts --size 1280x1014 --wait world` (headless Chromium, ANGLE Metal). Metric (`scripts/fidelity-lib.ts`): the scan `assets/scans/starry-night.jpg` is inset past its mat by the colour-sampling inset (45 px at the sides, 15 px at top and bottom), and both images go to 256 × 203 with sharp Lanczos in sRGB. SSIM is Wang et al. 2004 on Rec. 709 luma of the gamma-encoded sRGB values (11 × 11 Gaussian, σ 1.5, K1 0.01, K2 0.03, L 255, valid windows). ΔE is the mean CIEDE2000 over 16 × 12 block-mean colours averaged in linear light, CIELAB under D65. Measured **SSIM 0.2943** and **mean ΔE2000 5.6961**. The e2e build gives the same values to 4 decimals. The worst blocks (column, row from the top-left) are (14, 2) 51.4, (11, 11) 43.2, (15, 2) 35.3, (14, 1) 33.5 and (5, 6) 30.9: the moon three times, one near lit window, and the large star left of the swirl. Margin rule: the measured values are rounded to 4 decimals, then SSIM threshold = measured − 0.03 and ΔE threshold = measured + 1.5, giving **SSIM ≥ 0.2643** and **mean ΔE2000 ≤ 7.1961**. They are the exported constants `SSIM_THRESHOLD` and `DELTA_E_THRESHOLD`, and `tests/e2e/fidelity.spec.ts` asserts both. Determinism: a second capture was byte-identical (SHA-256 `960a0b8e…ba57`). A framing check found the capture's best shift against the scan at (0, 0) of a ±3 px search at 64 px wide. The thresholds are Paul accepted them on 2026-11-06 as the regression floor. He judges the look itself in the headset at P2.9 (P2-A4). Moved on 2026-11-09, when canvas uv became the painted canvas past the mat for every source and the reference became 256 × 206 and the capture 1280 × 1028: the accepted anchor keeps its headroom and moves by that change's measured delta. Its base 5171098 read SSIM 0.3474 and ΔE 5.2419 on the old reference and capture, and the change reads 0.3599 and 5.1701 on the new ones, so the anchor is 0.2943 + 0.0125 = 0.3068 and 5.6961 − 0.0718 = 5.6243, and by the same margins the thresholds are **SSIM ≥ 0.2768** and **mean ΔE2000 ≤ 7.1243** (`ACCEPTED_*` and `UV_CHANGE_*` in `scripts/fidelity-lib.ts`; see [One canvas uv extent](#one-canvas-uv-extent-2026-11-09-card-01a1b27d2184)). | Met |
 | P2-A3 | Every world surface is stroke-covered, with no bare mesh visible from any point inside the boundary, checked by an e2e sweep of sample poses that counts background-colour pixels. | `tests/e2e/world-coverage.spec.ts` renders 24 poses with `?painting=starry-night&noanim&seed=1&shot&coverage` at 1280 × 720 and fails a pose over 0.5% bare. Maximum binary bare share 0.442% at hill west. The sweep renders through the 70° vertical desktop camera, which is narrower than the Quest 3's roughly 96° vertical view, so the edges of a headset view are not checked here. Widening the sweep is deferred, and the gap is recorded here. The coverage-weighted share, which also counts MSAA rims, peaks at 0.591% at hill west and is logged as telemetry only (ruling P21). The same figures came out of the P2.8 `make e2e` run on 2026-11-06. Since the one canvas uv extent (2026-11-09, SCATTER_VERSION 16): maximum bare 0.466% and weighted 0.621%, both at hill west (5171098 read 0.460% at village uphill and 0.602% at hill west), see [One canvas uv extent](#one-canvas-uv-extent-2026-11-09-card-01a1b27d2184). | Met |
 
@@ -2625,7 +2625,7 @@ Window pane coverage (fix round 1). At SCATTER_VERSION 15, `reactive.spec.ts` R-
 
 The fix is two rules in `src/render/strokes/scatter.ts` for every FACE_CLAMPED_LAYERS face, with `SCATTER_VERSION` 16:
 
-1. A triangle's strokes are placed along a randomly shifted R2 lattice (Roberts' plastic-number sequence), each jittered by ± `FACE_PLACEMENT_JITTER` (0.5) of the lattice step, in place of independent uniform draws. On its own this took the near panes to 0.07-0.10% (the guard's house 0.101%), but left the far panes up to 3.98%.
+1. A triangle's strokes are placed along a randomly shifted R2 lattice (Roberts' plastic-number sequence), each jittered over a span of `FACE_PLACEMENT_JITTER` (0.5) of the lattice step (± 0.25 of it), in place of independent uniform draws. On its own this took the near panes to 0.07-0.10% (the guard's house 0.101%), but left the far panes up to 3.98%.
 2. A stroke's graded size is capped at `FACE_SIZE_SHARE` (0.5) of its face's narrowest width (`faceWidth`), and the count follows the capped size the way it follows the graded one, so a small face keeps the layer's overdraw. On a window pane the cap is 0.35 m.
 
 With both rules, the 15 panes read at most 0.317% at 0.3 m and 0.194% at 0.6 m. The guard's house reads 0.149% and 0.148%.
@@ -2644,6 +2644,101 @@ Notes on the two rules (fix round 2, seed-1 output unchanged):
 - The fidelity delta in `UV_CHANGE_*` is measured on the final build, so it carries this fix as well as the uv change.
 
 R-P4o now passes, with every motion layer open and the head pushing. The village rows read 0.000% at 0.3 m (parked and held), 0.064% parked at 0.4 m, and 0.155% parked and 0.019% held at 0.6 m, at both motion times. The cypress rows read at most 0.168% parked and 0.361% held. Load was 8.21 before and 8.60 after.
+
+### Face-clamped lattice without the fold (SCATTER_VERSION 17)
+
+Review finding N1: rule 1 above took each triangle's jittered R2 point in the unit square of barycentrics and reflected the square's upper half (r1 + r2 > 1) onto the lower half. That laid the lattice over itself. About 9% of the strokes had a neighbour within a quarter of the lattice spacing, so parts of a triangle drew at half the lattice density.
+
+The fix (`triangleSample` in `src/render/strokes/scatter.ts`, `SCATTER_VERSION` 17) walks the same shifted R2 sequence and gives each stroke the next point that lies inside the triangle's half of the square, skipping the points past the diagonal. Half the square's points are used, so the jitter is scaled by 1/sqrt(2) to stay at the same share of the triangle's spacing. A jitter that crosses an edge is mirrored back over that edge, which moves the point by at most the jitter. The count and the two placement draws per stroke are unchanged. Everything that depends on a stroke's position (its colour sample, face clamp and tie-break key) follows the new positions. Only the face-clamped layers (building, roof, window and church) move. The other layers keep the reflection of independent uniform draws, so their output is byte for byte as before.
+
+Heitz's square-to-triangle map was tried first. It also removes the coincidence, but on the quad at 117 strokes per triangle its largest hole over 400 shifts was 2.496 spacings, against 2.359 for the fold. Over 2000 shifts it beat the fold everywhere, but by less than the kept-point walk.
+
+The statistic (`tests/strokes-triangle-lattice.test.ts`) is the largest hole: the farthest any point of a barycentric grid over the pane lies from the nearest stroke centre, in units of the lattice spacing sqrt(triangle area / count). It is taken per random shift on a 0.7 × 0.9 m pane triangle and on the pane's quad (both triangles), at the seed-1 window counts per triangle (21 on the far capped panes, 31, 52, and 117 on the nearest), over 300 shifts. Fold against the new walk:
+
+| Shape | Strokes per triangle | Fold p95 | Fold max | New p95 | New max |
+| --- | --- | --- | --- | --- | --- |
+| triangle | 21 | 2.370 | 3.345 | 2.138 | 2.581 |
+| triangle | 31 | 2.400 | 3.653 | 2.132 | 2.615 |
+| triangle | 52 | 2.450 | 3.269 | 2.222 | 3.031 |
+| triangle | 117 | 2.582 | 3.074 | 2.222 | 2.754 |
+| quad | 21 | 1.828 | 2.237 | 1.678 | 1.929 |
+| quad | 31 | 1.785 | 2.148 | 1.735 | 1.925 |
+| quad | 52 | 1.953 | 2.375 | 1.675 | 2.102 |
+| quad | 117 | 1.916 | 2.446 | 1.721 | 1.966 |
+
+The share of strokes with a neighbour within a quarter spacing falls from 8.6-9.8% to 0.05-0.64%. The test asserts that the new p95 and max beat the fold's at every row, and holds them under fixed bounds about 5% over the largest measured value (triangle p95 2.35 and max 3.2, quad p95 1.83 and max 2.22). A single triangle's hole is dominated by its corners, which the quad's neighbour triangle helps fill.
+
+Seed-1 output: the scatter total stays 554,834 and every layer count is unchanged. The scatter hash moves from `38922948` to `08faf9b9` (opaque hash `042e07fd`), and the eave underside copies from 10,053 to 10,098, because more roof strokes now reach past the wall line. Drawn in the default budget: village uphill 321,040 (320,993 before), spot ahead 318,003 (317,959), crest from behind, grazing 318,098, all within 325k.
+
+The coverage sweep, the fidelity metric and R-P4o passed in the full e2e run on this version (MiniMac, gx-int30, 59b0290). The pane probe below did not.
+
+#### Pane probe under density sheds (`tests/e2e/panes.spec.ts`)
+
+Review finding N3: under the default `area` law a density shed grows the band's survivors by sqrt(from / to), and a face-clamped pane stroke already at its size cap is held there by its fit cap, so a shed could reopen the far-pane rim and corner loss.
+
+Method, shared by both tests: the panes are the first window of each of the 15 seed-1 houses whose window faces the painter (`tests/pane-poses.ts`), rendered with `?painting=starry-night&seed=1&shot&coverage&nogov&motionlayers=`. The bands come from the fixed quality ladder (`createGovernor({ mode: 'default', targetHz: 72, fixedLevel })`) through `window.__goghBands`, at levels 0, 4, 5 (the default), 8, 13 and 16. Bare means the world-coverage count of mostly magenta pixels. Levels 0 (the control) and 4 are asserted at 0.5% per pane, and the rest are logged only.
+
+Level 4 sheds only the far band (far density 0.4 to 0.28, far size 1.6 to 1.91), and level 5 sheds it again (0.196, 2.29). The first near shed is level 13 (density 0.7, size 1.195) and the last is level 16 (0.25, size 2), pinned in `tests/governor-fixed.test.ts`.
+
+Far poses, the card's risk. Each pose is the eye where the pane's overlay chunk is in the far band, chosen by `farPose`. The search covers eyes within ±75° of the pane's outward normal in 5° steps, at 0.5 m steps of distance, standing (eye 1.6 m above `heightAt`) or, failing that, at 4, 8, 14 or 20 m. The eye stays inside 44 m of the origin. Its estimated chunk band distance must be past MID_BAND_MAX_M plus the hysteresis plus 1.5 m. The segments to the pane's centre and four corners must clear the other buildings' volumes (0.3 m margin), the pane's own house at its bare walls, the cypress crowns as columns up to the tree top, and the terrain. Of those, the pose with the largest projected pane wins. `tests/world-starry-night.test.ts` checks every far pose against the real batch: from the painter spot it updates the band, jumps to the pose, and finds every overlay chunk that holds the pane is `far`. It also checks the line of sight, the boundary, and that the probe's projection matches three's camera. The far test renders at 3200 × 1800, about Quest pixel density, and counts bare pixels inside the pane's projected quad, inset by 1 px. A pane under 400 px on screen is skipped and logged.
+
+| House | Eye (x, y, z) | Distance to pane | Eye height | Pane on screen | Judged |
+| --- | --- | --- | --- | --- | --- |
+| 4 | (-36.92, 5.04, -5.89) | 33.6 m | 1.6 m | 305 px | skipped |
+| 5 | (14.46, 15.47, -10.42) | 38.9 m | 20 m | 386 px | skipped |
+| 7 | (-21.84, 0.71, 13.20) | 32.2 m | 1.6 m | 762 px | yes |
+| 8 | (5.57, -0.48, 2.16) | 30.6 m | 1.6 m | 1107 px | yes |
+| 9 | (20.00, 9.48, -13.62) | 31.5 m | 14 m | 840 px | yes |
+| 10 | (-42.05, 5.87, -12.73) | 46.3 m | 4 m | 239 px | skipped |
+| 11 | (-17.35, 4.91, 28.86) | 51.5 m | 1.6 m | 375 px | skipped |
+| 15 | (37.89, 5.27, -2.36) | 38.8 m | 1.6 m | 175 px | skipped |
+| 16 | (-17.54, -1.94, 3.96) | 27.5 m | 1.6 m | 1054 px | yes |
+| 17 | (42.82, 5.83, -8.55) | 32.0 m | 1.6 m | 925 px | yes |
+| 19 | (33.22, 4.41, 7.10) | 32.7 m | 1.6 m | 949 px | yes |
+
+Houses 0, 1, 12 and 14 have no far pose that sees the whole pane inside 44 m. All 11 posed panes are in the far band. So the far assertion judges six panes (7, 8, 9, 16, 17 and 19).
+
+Near poses: the eye stands 0.3 m out from the pane's centre along its normal, the pane 0.27 m above the eye, facing it at pitch 0, at 1280 × 720, with the whole frame counted. These panes are near band, which only levels 13 and 16 shed.
+
+Results, MiniMac (M4, ANGLE Metal), 59b0290, 2026-11-12, in the full e2e run gx-int30 (load under 4):
+
+| Level | Far: worst judged pane | Far: over 0.5% | Near: worst pane | Near: over 0.5% |
+| --- | --- | --- | --- | --- |
+| 0 | 0.000% | 0 of 6 | 0.515% (house 7) | 1 of 15 |
+| 4 | 0.000% | 0 of 6 | 0.515% (house 7) | 1 of 15 |
+| 5 | 0.000% | 0 of 6 | 0.515% (house 7) | 1 of 15 |
+| 8 | 0.000% | 0 of 6 | 0.515% (house 7) | 1 of 15 |
+| 13 | 0.000% | 0 of 6 | 1.766% | 5 of 15 |
+| 16 | 0.000% | 0 of 6 | 13.762% | 14 of 15 |
+
+The far sheds the card worried about leave every judged pane covered: the fit cap holds. The near test fails by one pane at the asserted levels, house 7 at 0.515%, so the card's criterion 2 is not met.
+
+The same probe on the SCATTER_VERSION 16 scatter (scatter.ts from fb7a8f9^ swapped into the same tree, MiniMac, same run) fails too: house 10 reads 0.585% at 0.3 m. Across the 15 panes at 0.3 m dead on, v17 averages 0.200% and v16 0.230%. A sweep of 0.25, 0.3, 0.35, 0.4 and 0.6 m, each at 0 and ±5 cm sideways, puts v17's worst cell at 0.651% (house 7, 0.25 m) and v16's at 0.585% (house 10, 0.3 m). The lattice is not the regression. The "at most 0.317% at 0.3 m" of fix round 1 above came from an earlier ad hoc probe and does not reproduce under `nearPose`.
+
+Two defects make up the bare share, seen in canvas shots of houses 1, 7 and 15 under both versions:
+
+- Every pane leaves its bottom corners bare, about 1 × 1.5 cm each (about 0.15-0.2% of the frame at 0.3 m), in v16 and v17 alike. A clamped stroke's rounded end cannot reach a square corner, and window panes are the one clamped layer without outline strokes (`OUTLINED_LAYERS`). This is systematic.
+- One interior hole on house 7 under v17, about 0.3% of the frame, where the lattice draw leaves a gap at that pane's stroke count. Which pane draws such a hole varies with the scatter (house 10 under v16).
+
+Either fix alone clears house 7. The corner fix changes the windows' look (an outline or corner strokes), so it waits on Paul.
+
+Command: `bunx playwright test tests/e2e/panes.spec.ts --project=e2e`.
+
+#### Pane corner outlines (SCATTER_VERSION 18, card 01a1ced16612, 2026-11-12)
+
+Paul chose the outline (2026-11-12): `window` joins `OUTLINED_LAYERS`, so each pane gets a darker gold rim at `OUTLINE_DARKEN` in its own emissive colour, with the front tie-break flag like its fill. Window panes are the one `CORNER_OUTLINED_LAYERS` layer: their outline strokes run corner to corner (the first and last of each side sit on the corners, at least two per side), and those two end strokes reach past the corner by `CORNER_OUTLINE_REACH` (half the stroke width) along the side, so the rounded caps cover the square corner. The pane fill is unchanged, so the interior lattice hole on house 7 stays.
+
+Seed-1 output: the scatter total is 555,447 (building 104,586), scatter hash `79fb2f98`, opaque hash `c6ae7d44`, eave copies 10,098. Drawn in the default budget: village uphill 321,639, spot ahead 318,555, within 325k.
+
+Steps, each measured on MiniMac with the near and far probe (load under 3):
+
+| Commit | Change | Near worst, levels 0-8 | Level 13 | Level 16 |
+| --- | --- | --- | --- | --- |
+| b0d1fd4 | outline spread along each side | 0.515% (house 7) | 0.680% | 20.35% |
+| df148bd | corner to corner | 0.501% (house 7) | 0.621% | 7.94% |
+| 67bfd5b | corner strokes reach half a width past | 0.434% (house 7) | 0.462% (0 of 15 over) | 10.45% (14 of 15 over) |
+
+On 67bfd5b the far panes read 0.000% at every level, the spec passes, and the canvas shots of houses 1, 7 and 15 show no bare corner. House 7's remaining 0.434% at 0.3 m is the interior lattice hole alone (0.624% at 0.25 m, 0.106% at 0.6 m). Every other pane is at most 0.07% at 0.3 m. Level 16 is the near band's last shed (density 0.25), card 01a1ced1847c.
 
 ## Portal entry: build from the trigger, reveal on a time budget (card 01a1b83d2e2c, 2026-11-09)
 

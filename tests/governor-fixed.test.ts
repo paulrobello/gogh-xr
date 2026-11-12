@@ -174,4 +174,21 @@ describe('a fixed level', () => {
   test('an adaptive machine reports fixedLevel null', () => {
     expect(createGovernor({ mode: 'default', targetHz: 72 }).snapshot().fixedLevel).toBeNull();
   });
+
+  test('the pane probe bands (tests/e2e/panes.spec.ts): level 4 sheds far only, 13 the first near', () => {
+    const at = (fixedLevel: number) =>
+      createGovernor({ mode: 'default', targetHz: 72, fixedLevel }).levels;
+    const four = at(4);
+    expect(four.density.near).toBe(DEFAULT_BAND_DENSITY.near);
+    expect(four.density.mid).toBe(DEFAULT_BAND_DENSITY.mid);
+    expect(four.size.near).toBe(DEFAULT_BAND_SIZE.near);
+    expect(four.size.mid).toBe(DEFAULT_BAND_SIZE.mid);
+    expect(four.density.far).toBeCloseTo(0.28, 12);
+    expect(four.size.far).toBeCloseTo(1.6 * Math.sqrt(0.4 / 0.28), 12);
+    expect(at(12).density.near).toBe(DEFAULT_BAND_DENSITY.near);
+    expect(at(13).density.near).toBeCloseTo(0.7, 12);
+    expect(at(13).size.near).toBeCloseTo(Math.sqrt(1 / 0.7), 12);
+    expect(at(16).density.near).toBeCloseTo(0.25, 12);
+    expect(at(16).size.near).toBeCloseTo(2, 12);
+  });
 });

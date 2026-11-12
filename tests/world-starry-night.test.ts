@@ -102,6 +102,7 @@ import {
   unpackInstance,
 } from '../src/render/strokes/instance.ts';
 import {
+  CORNER_OUTLINE_REACH,
   FACE_CLAMPED_LAYERS,
   LAYER_DENSITY,
   LAYER_SIZE,
@@ -114,6 +115,15 @@ import { boundaryFactor } from '../src/world/boundary.ts';
 import { CYPRESS_OUTLINE } from '../src/world/cypress.ts';
 import { gableSlopeNormal, toLocal, toWorld } from '../src/world/house-geometry.ts';
 import { WINDOW_COLOR } from '../src/world/village.ts';
+import {
+  FAR_MAX_RADIUS_M,
+  farPose,
+  PROBE_FOV_DEG,
+  PROBE_VIEW,
+  panes,
+  project,
+  sightTest,
+} from './pane-poses.ts';
 import { COVERAGE_POSES, CREST_POSES } from './world-poses.ts';
 
 /** Painted footprint area into and out of the face fit, per world layer, while `on`. */
@@ -945,24 +955,24 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       eavesHash: hashStrokeBuffers(eaves),
     };
     expect(pins).toEqual({
-      total: 554_834,
+      total: 555_447,
       layers: {
         sky: 283_858,
         star: 0,
         moon: 0,
         cypress: 37_078,
         ground: 129_925,
-        building: 103_973,
+        building: 104_586,
       },
-      hash: '38922948',
-      opaqueHash: 'd46272d4',
+      hash: '79fb2f98',
+      opaqueHash: 'c6ae7d44',
       lights: 4_960,
       lightsHash: '8553acd9',
       haze: 30_000,
       hazeUnflagged: 0,
       hazeHash: '01933fb0',
-      eaves: 10_053,
-      eavesHash: '6b13c209',
+      eaves: 10_098,
+      eavesHash: '4c6abbb3',
     });
   });
 
@@ -993,7 +1003,7 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     expect(flagged).toBe(sky + star + moon);
   });
 
-  test('village and church strokes stay inside their host face plus 10% of their width', () => {
+  test('village and church strokes stay inside their host face plus 10% of their width (pane corners CORNER_OUTLINE_REACH more)', () => {
     // Independent of the scatter's own face grouping: the village triangles are grouped into planes
     // by normal and offset, panes apart from the rest, and a stroke's hosts are the planes it faces,
     // lies within its lift in front of, and whose triangles hold its centre. A window stroke (the
@@ -1032,6 +1042,7 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
     const scales = { near: 1, mid: DEFAULT_BAND_SIZE.mid, far: DEFAULT_BAND_SIZE.far };
     const worst = { near: 0, mid: 0, far: 0, cap: 0 };
     const over = { near: 0, mid: 0, far: 0, cap: 0 };
+    const worstExcess = { near: -1, mid: -1, far: -1, cap: -1 };
     let checked = 0;
     let panes = 0;
     let unmatched = 0;
@@ -1080,17 +1091,20 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
         }
         const ratio = least / (s.size[1] * k * BRUSH_FOOTPRINT[BRUSHES[s.brush].kind].width);
         worst[band] = Math.max(worst[band], ratio);
-        if (ratio > FACE_CLAMP_MARGIN + 1e-3) over[band]++;
+        // A pane's corner outline strokes reach past the corner along their side by design.
+        const allowed = FACE_CLAMP_MARGIN + (pane ? CORNER_OUTLINE_REACH : 0);
+        worstExcess[band] = Math.max(worstExcess[band], ratio - allowed);
+        if (ratio > allowed + 1e-3) over[band]++;
       }
     }
     console.log(
-      `[world] village overhang / footprint width over ${checked} strokes (${panes} on panes, ${unmatched} unmatched): max ${JSON.stringify(worst)}, over 10% ${JSON.stringify(over)}`,
+      `[world] village overhang / footprint width over ${checked} strokes (${panes} on panes, ${unmatched} unmatched): max ${JSON.stringify(worst)}, over the limit ${JSON.stringify(over)}`,
     );
     expect(unmatched).toBe(0);
     expect(checked).toBeGreaterThan(50_000);
     expect(panes).toBeGreaterThan(4000);
     for (const band of bands) {
-      expect(worst[band], band).toBeLessThanOrEqual(FACE_CLAMP_MARGIN + 1e-3);
+      expect(worstExcess[band], band).toBeLessThanOrEqual(1e-3);
     }
   });
 
@@ -1276,6 +1290,56 @@ describe('the default-mode budget at the painter spot and the 24 poses', () => {
       expect(n, name).toBeLessThanOrEqual(STROKE_BUDGET.default.max);
       expect(n, name).toBeGreaterThan(0);
     }
+  });
+
+  test('the pane probe far poses see their pane, inside the boundary, from the far band', () => {
+    const camera = new PerspectiveCamera(
+      PROBE_FOV_DEG,
+      PROBE_VIEW.width / PROBE_VIEW.height,
+      0.1,
+      1000,
+    );
+    camera.rotation.order = 'YXZ';
+    const sight = sightTest(WORLD);
+    const all = panes(WORLD);
+    expect(all).toHaveLength(15);
+    const found: number[] = [];
+    for (const pane of all) {
+      const pose = farPose(WORLD, pane, sight);
+      if (!pose) continue;
+      found.push(pane.house);
+      expect(Math.hypot(pose.eye[0], pose.eye[2])).toBeLessThanOrEqual(FAR_MAX_RADIUS_M);
+      for (const p of [pane.window.center, ...pane.corners]) {
+        expect(sight.clear(pose.eye, p, pane.house), `house ${pane.house}`).toBe(true);
+      }
+      // The e2e boots at the painter spot, then jumps to the pose.
+      for (const [position, yaw, pitch] of [
+        [[0, 1.6, 0], 0, 0],
+        [pose.eye, pose.yaw, pose.pitch],
+      ] as const) {
+        camera.position.set(...(position as [number, number, number]));
+        camera.rotation.set(pitch, yaw, 0);
+        camera.updateMatrixWorld();
+        batch.update(camera);
+      }
+      // The probe's own projection agrees with the camera's.
+      const quad = project(pose, pane.corners);
+      expect(quad).not.toBeNull();
+      pane.corners.forEach((corner, k) => {
+        const ndc = new Vector3(...corner).project(camera);
+        const [x, y] = quad?.[k] ?? [Number.NaN, Number.NaN];
+        expect(x).toBeCloseTo(((ndc.x + 1) / 2) * PROBE_VIEW.width, 3);
+        expect(y).toBeCloseTo(((1 - ndc.y) / 2) * PROBE_VIEW.height, 3);
+      });
+      const centre = new Vector3(...pane.window.center);
+      const chunks = batch.chunks.filter(
+        (c) => c.drawClass === 'overlay' && c.bounds.distanceToPoint(centre) <= 0,
+      );
+      expect(chunks.length, `house ${pane.house}`).toBeGreaterThan(0);
+      for (const c of chunks) expect(c.band, `house ${pane.house}: ${c.mesh.name}`).toBe('far');
+    }
+    // Seed 1: houses 0, 1, 12 and 14 have no far pose that sees the whole pane inside 44 m.
+    expect(found).toEqual([4, 5, 7, 8, 9, 10, 11, 15, 16, 17, 19]);
   });
 
   test('the dome merges by sky sector and the lights into one chunk, every other part alone', () => {

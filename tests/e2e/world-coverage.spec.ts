@@ -121,7 +121,7 @@ test('?painting=starry-night boots the world at the painter eye with no errors',
   expect(stats.counts.moon).toBe(265);
   expect(stats.counts.star).toBe(4_695);
   // The eave underside copies (src/paintings/starry-night/eave-undersides.ts), as the unit pin.
-  expect(stats.counts.eaves).toBe(10_053);
+  expect(stats.counts.eaves).toBe(10_098);
   // e2e builds always bypass the scatter cache.
   expect(stats.cache).toBe('bypass');
   expect((diag.world as WorldDiag).strokes.visible).toBeGreaterThan(0);

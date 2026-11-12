@@ -36,13 +36,14 @@ import { createSlicer, type Steps } from '../src/util/slicer.ts';
  * scattered, assembled and batch literals again for the face-clamped placement and size cap
  * (SCATTER_VERSION 16), and geometry once more when its village and cypress records were hashed at
  * float32 (`text32`), and assembled and batch once more when the moon strokes' phase bytes took
- * their still tag or shimmer phase; the gallery literals are still the d2d3e84 values.
+ * their still tag or shimmer phase, and scattered, assembled and batch again for the reflection-free
+ * lattice placement (SCATTER_VERSION 17); the gallery literals are still the d2d3e84 values.
  */
 const UNSPLIT: Readonly<Record<string, string>> = {
   geometry: '535afd02',
-  scattered: 'f0a8f167',
-  assembled: 'c8603701',
-  batch: '87bac0a8',
+  scattered: '8c82a731',
+  assembled: '4f743749',
+  batch: '8ccf366f',
   base: '1a18b3f6',
   gallery: '6f6580f0',
   galleryBatch: 'be87405e',

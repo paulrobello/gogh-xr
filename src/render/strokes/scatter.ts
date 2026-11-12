@@ -82,9 +82,13 @@ import { createStrokeBuffers, packInstance, type StrokeBuffers } from './instanc
  * became the painted canvas past the mat for every source (regions, flow, regions.json and
  * CANVAS_ASPECT), so the same inputs scatter differently. 16: face-clamped strokes are placed along
  * a jittered R2 lattice (FACE_PLACEMENT_JITTER) and capped at FACE_SIZE_SHARE of their face's
- * narrowest width, which covers the lit window panes.
+ * narrowest width, which covers the lit window panes. 17: the lattice no longer folds the unit
+ * square's upper half onto the triangle; each stroke takes the next R2 point inside the triangle's
+ * half (`triangleSample`), so every face-clamped layer's strokes move, with the same counts. 18:
+ * the window panes are outlined too (OUTLINED_LAYERS), corner to corner
+ * (CORNER_OUTLINED_LAYERS), which covers their corners.
  */
-export const SCATTER_VERSION: number = 16;
+export const SCATTER_VERSION: number = 18;
 
 /** The fixed processing order of the layers. */
 export const WORLD_LAYERS: readonly WorldLayer[] = Object.freeze([
@@ -159,15 +163,30 @@ export const FACE_CLAMPED_LAYERS: readonly WorldLayer[] = Object.freeze([
 ] as const);
 
 /**
- * Layers whose face sides get a row of outline strokes: the walls, roofs and church, not the window
- * panes. A clamped stroke's rounded ends keep its paint off the edges, and the base mesh showed
- * through along them; Van Gogh draws the village in dark contours, which also cover that rim.
+ * Layers whose face sides get a row of outline strokes: every face-clamped layer. A clamped
+ * stroke's rounded ends keep its paint off the edges and out of the corners, and the base mesh
+ * showed through there; Van Gogh draws the village in dark contours, which also cover that rim. The
+ * lit window panes left their corners bare at 0.3 m until they were outlined (Paul, 2026-11-12).
  */
 export const OUTLINED_LAYERS: readonly WorldLayer[] = Object.freeze([
   'building',
   'roof',
+  'window',
   'church',
 ] as const);
+
+/**
+ * Layers whose outlines run corner to corner: each side's first and last outline stroke is centred
+ * on a corner, fitted in, then moved back out along the side by CORNER_OUTLINE_REACH of its painted width, so its
+ * straight body covers the corner and its rounded end lies past it, and every side gets at least
+ * two. Elsewhere a side's
+ * strokes sit inside its segments, and a brush's rounded ends left the lit window panes' corners
+ * bare at 0.3 m.
+ */
+const CORNER_OUTLINED_LAYERS: readonly WorldLayer[] = Object.freeze(['window'] as const);
+
+/** How far a CORNER_OUTLINED_LAYERS corner stroke reaches past its corner, a share of its width. */
+export const CORNER_OUTLINE_REACH: number = 0.5;
 
 /** Outline strokes come to at most this share of the FACE_CLAMPED_LAYERS strokes. */
 export const OUTLINE_SHARE: number = 0.05;
@@ -183,8 +202,8 @@ const OUTLINE_KINDS: readonly BrushKind[] = ['ridge', 'bristle'];
 
 /**
  * On FACE_CLAMPED_LAYERS a triangle's strokes are placed along a randomly shifted R2 sequence
- * (Roberts' plastic-number lattice), each jittered by ± this share of the lattice step, rather
- * than independently at random. Independent draws clump and leave holes a face-clamped pane cannot
+ * (Roberts' plastic-number lattice, `triangleSample`), each jittered over a span of this share of
+ * the lattice step (± half of it), rather than independently at random. Independent draws clump and leave holes a face-clamped pane cannot
  * fill from its neighbours: lit windows read up to 1.9% bare 0.3 m off. The lattice spreads the
  * same count evenly, and the jitter keeps it from reading as a grid.
  */
@@ -197,15 +216,71 @@ export const FACE_PLACEMENT_JITTER: number = 0.5;
  * never goes below the layer's near size (`faceSizeCaps`), so a sliver face cannot multiply its
  * count without bound.
  *
- * It is also a budget lever: at 0.5 the seed-1 scatter totals 554,834 and the tightest pose of the
- * 325k default budget, village uphill, draws 320,993 (about 4.0k, 1.2%, of headroom; spot ahead
- * 317,959). At 0.4 village uphill drew 325,953, over the budget.
+ * It is also a budget lever: at 0.5 the seed-1 scatter totals 555,447 and the tightest pose of the
+ * 325k default budget, village uphill, draws 321,639 at SCATTER_VERSION 18 (about 3.4k, 1.1%, of
+ * headroom; spot ahead 318,555). At 0.4 village uphill drew 325,953, over the budget.
  */
 export const FACE_SIZE_SHARE: number = 0.5;
 const R2_G = 1.324717957244746;
 const R2_A1 = 1 / R2_G;
 const R2_A2 = 1 / (R2_G * R2_G);
 const frac = (x: number): number => x - Math.floor(x);
+
+/**
+ * A FACE_CLAMPED_LAYERS triangle's placement lattice: the shifted R2 sequence over the unit square
+ * of barycentrics (r1, r2), of which only the points in the lower half (r1 + r2 <= 1) are used.
+ * `step` is 1 / sqrt(count), the lattice spacing in the triangle, and `next` the sequence index the
+ * next stroke tries first.
+ */
+export interface TriangleLattice {
+  readonly shift: readonly [number, number];
+  readonly step: number;
+  next: number;
+}
+
+/**
+ * The barycentrics (r0, r1, r2) of a triangle's next stroke from its two draws `u1` and `u2`.
+ *
+ * With a lattice the stroke takes the next R2 point in the triangle's half of the square, skipping
+ * the points past the diagonal, and is jittered by ± FACE_PLACEMENT_JITTER of the spacing. Those
+ * are half the square's points, so the square's spacing is `step / sqrt(2)`. A jitter that leaves
+ * the triangle is mirrored back over the edge it crossed, which moves it at most the jitter. The
+ * count and the two draws per stroke are unchanged. Reflecting the upper half onto the lower half
+ * instead laid the lattice over itself: about 9% of the strokes had a neighbour within a quarter
+ * spacing, and the triangle's largest hole was wider (tests/strokes-triangle-lattice.test.ts).
+ *
+ * With no lattice (every other layer) the draws are uniform and keep the reflection, so those
+ * layers' strokes stay where they were.
+ */
+export function triangleSample(
+  lattice: TriangleLattice | null,
+  u1: number,
+  u2: number,
+): [number, number, number] {
+  if (!lattice) {
+    const flip = u1 + u2 > 1;
+    const r1 = flip ? 1 - u1 : u1;
+    const r2 = flip ? 1 - u2 : u2;
+    return [1 - r1 - r2, r1, r2];
+  }
+  const { shift } = lattice;
+  let s1: number;
+  let s2: number;
+  do {
+    s1 = frac(shift[0] + lattice.next * R2_A1);
+    s2 = frac(shift[1] + lattice.next * R2_A2);
+    lattice.next++;
+  } while (s1 + s2 > 1);
+  const jitter = (FACE_PLACEMENT_JITTER * lattice.step) / Math.SQRT2;
+  let r1 = Math.abs(s1 + (u1 - 0.5) * jitter);
+  let r2 = Math.abs(s2 + (u2 - 0.5) * jitter);
+  if (r1 + r2 > 1) {
+    const mirrored = 1 - r2;
+    r2 = Math.max(0, 1 - r1);
+    r1 = Math.max(0, mirrored);
+  }
+  return [1 - r1 - r2, r1, r2];
+}
 
 /** Stroke length varies uniformly by ± this share of the graded size. */
 export const SCATTER_SIZE_JITTER: number = 0.15;
@@ -649,13 +724,15 @@ function facePoint(face: FacePolygon, p: readonly [number, number]): Vec3 {
 
 /**
  * Outline strokes per side: one per OUTLINE_SPACING of the graded stroke length at the side's
- * midpoint, at least one per side, all thinned evenly until they fit `budget`. None when the budget
- * cannot give every side one.
+ * midpoint, at least one per side (two on CORNER_OUTLINED_LAYERS), all thinned evenly until they
+ * fit `budget`. None when the budget cannot give every side its least.
  */
 function planOutlines(surfaces: readonly Surface[], budget: number): void {
   const raw: number[] = [];
-  for (const { faces, size, outline } of surfaces) {
+  const least: number[] = [];
+  for (const { faces, size, outline, layer } of surfaces) {
     if (!faces || !outline) continue;
+    const min = CORNER_OUTLINED_LAYERS.includes(layer) ? 2 : 1;
     for (const face of faces.faces) {
       const n = face.vertices.length;
       for (let i = 0; i < n; i++) {
@@ -665,16 +742,18 @@ function planOutlines(surfaces: readonly Surface[], budget: number): void {
         const span = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
         // Uncapped, unlike the fill (FACE_SIZE_SHARE): see placeOutlinesSteps.
         raw.push(span / (OUTLINE_SPACING * strokeSizeAt(size, eyeDistance(mid))));
+        least.push(min);
       }
     }
   }
   const counts = new Uint32Array(raw.length);
-  if (raw.length > 0 && budget >= raw.length) {
+  const floor = least.reduce((sum, m) => sum + m, 0);
+  if (raw.length > 0 && budget >= floor) {
     let scale = Math.max(1, raw.reduce((sum, r) => sum + r, 0) / budget);
     for (;;) {
       let total = 0;
       for (let i = 0; i < raw.length; i++) {
-        counts[i] = Math.max(1, Math.round(raw[i] / scale));
+        counts[i] = Math.max(least[i], Math.round(raw[i] / scale));
         total += counts[i];
       }
       if (total <= budget) break;
@@ -817,20 +896,13 @@ export function* scatterSurfacesSteps(
       const na = normalAttr ? read(normalAttr, ia) : null;
       const nb = normalAttr ? read(normalAttr, ib) : null;
       const nc = normalAttr ? read(normalAttr, ic) : null;
-      const shift = faces ? [rand(), rand()] : null;
-      const step = 1 / Math.sqrt(counts[t]);
+      const lattice: TriangleLattice | null = faces
+        ? { shift: [rand(), rand()], step: 1 / Math.sqrt(counts[t]), next: 0 }
+        : null;
       for (let k = 0; k < counts[t]; k++) {
-        let r1 = rand();
-        let r2 = rand();
-        if (shift) {
-          r1 = frac(shift[0] + k * R2_A1 + (r1 - 0.5) * FACE_PLACEMENT_JITTER * step);
-          r2 = frac(shift[1] + k * R2_A2 + (r2 - 0.5) * FACE_PLACEMENT_JITTER * step);
-        }
-        if (r1 + r2 > 1) {
-          r1 = 1 - r1;
-          r2 = 1 - r2;
-        }
-        const r0 = 1 - r1 - r2;
+        const u1 = rand();
+        const u2 = rand();
+        const [r0, r1, r2] = triangleSample(lattice, u1, u2);
         // The cypress flame's lobe and height (P4.4), from the mesh's own attributes: no draw.
         const alpha = flame
           ? flameByteAt(flame.height, flame.lobe, [ia, ib, ic], [r0, r1, r2])
@@ -937,6 +1009,7 @@ export function* scatterSurfacesSteps(
         source,
         options.seed,
         tintOf,
+        emissive,
       );
       sliceStart = index;
     }
@@ -946,9 +1019,11 @@ export function* scatterSurfacesSteps(
 
 /**
  * Places a surface's outline strokes, from its outline stream: along each face side, evenly with
- * jitter, the long axis along the side, fitted flush inside it (`fitStrokeToFace`), coloured from
- * the canvas at the edge darkened by OUTLINE_DARKEN (on a tagged mesh, `outlinePaint`'s trim), and
- * lifted by the share of its quad size (`sizeShare`) like every other ranked stroke. Returns the
+ * jitter (on CORNER_OUTLINED_LAYERS evenly from corner to corner, unjittered),
+ * the long axis along the side, fitted flush inside it (`fitStrokeToFace`), coloured from
+ * the canvas at the edge darkened by OUTLINE_DARKEN (on a tagged mesh, `outlinePaint`'s trim; on an
+ * emissive mesh, its emissive colour darkened the same way, with DEPTH_TIE_BREAK_FRONT_FLAG as its
+ * fill), and lifted by the share of its quad size (`sizeShare`) like every other ranked stroke. Returns the
  * next free index. It yields before a face once SCATTER_SLICE strokes are placed since the last.
  */
 function* placeOutlinesSteps(
@@ -959,6 +1034,7 @@ function* placeOutlinesSteps(
   source: CanvasSource,
   seed: number,
   tintOf: ((triangle: number) => VillagePaint) | null,
+  emissive: Vec3 | null,
 ): Steps<number> {
   const { layer, layerIndex, meshIndex, size } = surface;
   const outline = surface.outline;
@@ -973,6 +1049,7 @@ function* placeOutlinesSteps(
   const style = REGION_STYLES[LAYER_REGION[layer]];
   const straight = style.brushes.filter((b) => OUTLINE_KINDS.includes(BRUSHES[b].kind));
   const brushes = straight.length > 0 ? straight : style.brushes;
+  const corners = CORNER_OUTLINED_LAYERS.includes(layer);
   let index = start;
   let sliceStart = start;
   let k = 0;
@@ -992,7 +1069,8 @@ function* placeOutlinesSteps(
       const span = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
       const along: Vec3 = [(b[0] - a[0]) / span, (b[1] - a[1]) / span, (b[2] - a[2]) / span];
       for (let j = 0; j < outline[k]; j++) {
-        const at = (j + 0.25 + 0.5 * rand()) / outline[k];
+        const spread = (j + 0.25 + 0.5 * rand()) / outline[k];
+        const at = corners && outline[k] > 1 ? j / (outline[k] - 1) : spread;
         const point: Vec3 = [
           a[0] + at * (b[0] - a[0]),
           a[1] + at * (b[1] - a[1]),
@@ -1018,6 +1096,17 @@ function* placeOutlinesSteps(
           { centre: point, long, length, width },
           FACE_CLAMP_MARGIN,
         );
+        // A corner stroke's rounded end leaves the corner bare, so it reaches past the corner
+        // along its side by CORNER_OUTLINE_REACH of its painted width, onto the wall round the pane.
+        const reach =
+          corners && outline[k] > 1 && (j === 0 || j === outline[k] - 1)
+            ? (j === 0 ? -1 : 1) * CORNER_OUTLINE_REACH * fitted.width
+            : 0;
+        const centre: Vec3 = [
+          fitted.centre[0] + along[0] * reach,
+          fitted.centre[1] + along[1] * reach,
+          fitted.centre[2] + along[2] * reach,
+        ];
         const [x, y, z] = fitted.long;
         const outlineSize: [number, number] = [
           fitted.length === length ? quad[0] : fitted.length / foot.length,
@@ -1027,13 +1116,15 @@ function* placeOutlinesSteps(
           SCATTER_DEPTH_JITTER *
           graded *
           sizeShare(Math.fround(outlineSize[0]), Math.fround(outlineSize[1]));
-        const paint = tint ? outlinePaint(sample, tint, point, face.normal, tintRand) : sample.rgb;
+        const paint =
+          emissive ??
+          (tint ? outlinePaint(sample, tint, point, face.normal, tintRand) : sample.rgb);
         const rgb = paint.map((c) => (c * (tint ? 1 : OUTLINE_DARKEN)) / shade);
         packInstance(buffers, index++, {
           position: [
-            fitted.centre[0] + face.normal[0] * lift,
-            fitted.centre[1] + face.normal[1] * lift,
-            fitted.centre[2] + face.normal[2] * lift,
+            centre[0] + face.normal[0] * lift,
+            centre[1] + face.normal[1] * lift,
+            centre[2] + face.normal[2] * lift,
           ],
           normal: face.normal,
           tangent: Math.atan2(x * b2[0] + y * b2[1] + z * b2[2], x * b1[0] + y * b1[1] + z * b1[2]),
@@ -1042,7 +1133,10 @@ function* placeOutlinesSteps(
           brush,
           layer: style.layer,
           phase,
-          flags: DEPTH_RANKED_FLAG | encodeFitScale(fitted.fitScale),
+          flags:
+            (emissive ? DEPTH_TIE_BREAK_FRONT_FLAG : 0) |
+            DEPTH_RANKED_FLAG |
+            encodeFitScale(fitted.fitScale),
         });
       }
     }
