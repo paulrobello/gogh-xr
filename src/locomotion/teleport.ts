@@ -141,7 +141,7 @@ function noLanding(out: ArcResult): void {
 }
 
 /** The landing's validity: the boundary first, then a footprint, a tree crown, then the slope. */
-function landingReason(world: LandingWorld, hit: Vec3, normal: Vec3): LandingReason {
+export function landingReason(world: LandingWorld, hit: Vec3, normal: Vec3): LandingReason {
   if (world.boundaryFactor && world.boundaryFactor(hit) > BOUNDARY_LIMIT) return 'boundary';
   if (world.blocked?.(hit[0], hit[2])) return 'footprint';
   if (world.treeBlocked?.(hit[0], hit[2])) return 'tree';

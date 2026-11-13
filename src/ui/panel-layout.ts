@@ -39,6 +39,8 @@ export interface ControlDef {
   /** Shown but never operable: the P6 volumes. */
   readonly disabled?: string;
   readonly column: 0 | 1;
+  /** Offsets a toggle and its label from the left edge of a shared row, in metres. */
+  readonly inset?: number;
   readonly row: number;
 }
 
@@ -240,6 +242,16 @@ export const CONTROLS: readonly ControlDef[] = [
     row: 4,
   },
   {
+    id: 'findPainterSpot',
+    kind: 'toggle',
+    label: 'Find the painter’s spot',
+    field: 'findPainterSpot',
+    help: 'On your next Starry Night entry, find the view that matches the painting. Press Y in VR or J on desktop for a hint',
+    column: 0,
+    inset: 0.09,
+    row: 6,
+  },
+  {
     id: 'recenter',
     kind: 'button',
     label: 'Recenter',
@@ -301,9 +313,11 @@ function layoutControl(def: ControlDef): ControlLayout {
   const labelAt: [number, number] = [left, top];
   const valueAt: [number, number] = [left + COLUMN_W, top];
   if (def.kind === 'toggle') {
+    const toggleLeft = left + (def.inset ?? 0);
+    labelAt[0] = toggleLeft;
     return {
       def,
-      rect: { x: left + TOGGLE_W / 2, y, w: TOGGLE_W, h: CONTROL_H },
+      rect: { x: toggleLeft + TOGGLE_W / 2, y, w: TOGGLE_W, h: CONTROL_H },
       segments: [],
       labelAt,
       valueAt,

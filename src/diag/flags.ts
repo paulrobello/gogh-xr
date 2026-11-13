@@ -73,6 +73,8 @@ export interface Flags {
   readonly coverage: boolean;
   /** `?painter`, with `?diag` and a world only: the desktop camera becomes the painter camera. */
   readonly painter: boolean;
+  /** With ?diag, override the painter’s-spot challenge completion threshold, in percent. */
+  readonly findthreshold: number | null;
   /**
    * `?seated`: seated mode, calibrated from the head height on the first XR frame. Like `?hud`,
    * `?seated=0` is false, which turns a stored true off, and absent is null.
@@ -260,6 +262,7 @@ export function parseFlags(search: string): Flags {
   const params = new URLSearchParams(search);
   const bench = params.get('bench')?.trim();
   const size = parseNumber(params.get('size'));
+  const threshold = parseNumber(params.get('findthreshold'));
   return Object.freeze({
     seed: parseNumber(params.get('seed')),
     noanim: parseBool(params, 'noanim'),
@@ -291,6 +294,7 @@ export function parseFlags(search: string): Flags {
     bare: parseBool(params, 'bare'),
     coverage: parseBool(params, 'coverage'),
     painter: parseBool(params, 'painter'),
+    findthreshold: threshold !== null && threshold >= 1 && threshold <= 100 ? threshold : null,
     seated: parseOnOff(params, 'seated'),
     turn: parseTurn(params.get('turn')),
     zdiag: parseZdiag(params.get('zdiag')),

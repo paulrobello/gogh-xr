@@ -99,6 +99,7 @@ test('round trip: a saved settings object loads back equal', () => {
     qualityLevel: 7,
     foveation: 0.5,
     hud: true,
+    findPainterSpot: true,
     handOrbs: false,
     musicVolume: 0.3,
     sfxVolume: 0.9,

@@ -318,7 +318,7 @@ export function painterCamera(): PainterCamera {
   };
 }
 
-/** A viewer starts at the painter's spot (a random spawn is roadmap mode RM1). */
+/** The default start is the painter’s spot. */
 export function spawnPose(): WorldPose {
   return painterSpot();
 }

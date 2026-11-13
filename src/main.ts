@@ -7,7 +7,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { createAudioHost } from './audio/audio';
-import { BUTTON_X, leftButtonPressed } from './bench/stick';
+import { BUTTON_X, BUTTON_Y, leftButtonPressed } from './bench/stick';
 import { bootWorld, GALLERY_WORLD, resolveBootMode } from './boot-mode';
 import { bootWorldWithFallback } from './boot-world';
 import { installDesktopControls, releaseLock } from './desktop/controls';
@@ -33,6 +33,12 @@ import { SKY_WAVE_PER_TURN } from './motion/sky-swirl';
 import { trackerTime } from './motion/tracker-time';
 import { motionVariants } from './motion/variant-uniforms';
 import { DEFAULT_SKY_WRAP, type SkyWrap } from './motion/variants';
+import {
+  createPainterSpotRound,
+  findPainterStart,
+  PAINTER_MATCH_THRESHOLD,
+  type PainterSpotRound,
+} from './paintings/find-painter-spot';
 import { type HandRipple, type HandRippleFrame, rippleAmplitude } from './paintings/hand-ripple';
 import { livePainting, logRegistryProblems, PAINTINGS } from './paintings/registry';
 import {
@@ -41,6 +47,7 @@ import {
   type WorldDeps,
   type WorldHandle,
   type WorldModule,
+  type WorldPose,
 } from './paintings/world-module';
 import { SKY_VEIL_COLOR } from './portal/night-sky';
 import { createSwitcher, GALLERY_ID, type LiveWorld } from './portal/switcher';
@@ -71,6 +78,7 @@ import {
   worldFailedText,
 } from './ui/notice-queue';
 import { createNotices, raiseRateFallback } from './ui/notices';
+import type { PainterSpotHud } from './ui/painter-spot-hud';
 import { clearPanelPose } from './ui/panel-pose';
 import {
   createPanelToggle,
@@ -607,6 +615,57 @@ let lastTime = 0;
 let drawCalls = 0;
 /** The world's spawn yaw: recenter turns the view back to it. The bare scene faces -Z. */
 let spawnYaw = 0;
+const painterSpotThreshold = (flags.diag ? flags.findthreshold : null) ?? PAINTER_MATCH_THRESHOLD;
+let painterSpotRound: PainterSpotRound | null = null;
+let painterSpotHud: PainterSpotHud | null = null;
+let painterSpotHudRequested = false;
+let hintButtonDown = false;
+
+function placeWorldSpawn(pose: WorldPose, { id, module, handle }: LiveWorld): void {
+  const challenge =
+    id === 'starry-night' && settingsStore.effective.findPainterSpot
+      ? findPainterStart(module.painterSpot(), handle)
+      : null;
+  const { position, yaw } = challenge ?? pose;
+  spawnYaw = yaw;
+  locomotion.spawn(position[0], position[1], position[2], yaw);
+  painterSpotRound = challenge
+    ? createPainterSpotRound(module.painterCamera(), painterSpotThreshold)
+    : null;
+}
+
+function framePainterSpot(presenting: boolean): void {
+  const round = painterSpotRound;
+  if (!round) return;
+  if (switcher.busy) {
+    painterSpotHud?.show(null);
+    return;
+  }
+  const display = round.frame(presenting ? renderer.xr.getCamera() : camera, performance.now());
+  if (painterSpotHud) {
+    painterSpotHud.show(display);
+  } else if (display && !painterSpotHudRequested) {
+    const painting = livePainting('starry-night');
+    if (!painting) return;
+    painterSpotHudRequested = true;
+    void import('./ui/painter-spot-hud')
+      .then(({ createPainterSpotHud }) => {
+        if (painterSpotRound !== round) return;
+        painterSpotHud = createPainterSpotHud(
+          camera,
+          `${import.meta.env.BASE_URL}${painting.frameImage}`,
+        );
+      })
+      .catch((error: unknown) => console.warn('painter’s spot HUD failed to start', error));
+  }
+}
+
+function clearPainterSpotRound(): void {
+  painterSpotRound = null;
+  painterSpotHud?.dispose();
+  painterSpotHud = null;
+  painterSpotHudRequested = false;
+}
 /**
  * The HUD's live visibility for the settings panels. Left X and H toggle it for the session only:
  * the panel's HUD toggle is the one owner of the stored setting.
@@ -700,6 +759,7 @@ renderer.xr.addEventListener('sessionstart', () => {
 renderer.xr.addEventListener('sessionend', () => {
   panel?.sessionEnd();
   audio?.sessionEnd();
+  hintButtonDown = false;
 });
 /** A frame with no movement, turn, aim or toggle: what locomotion reads during a transition. */
 function frozenActions(a: Actions): Actions {
@@ -814,6 +874,12 @@ function renderFrame(time: number, frame?: XRFrame): void {
     abSwitchStart = null;
   }
   hud?.frame(time, leftButtonPressed(sources, BUTTON_X));
+  if (painterSpotRound || settingsStore.effective.findPainterSpot) {
+    const hintDown = leftButtonPressed(sources, BUTTON_Y);
+    if (hintDown && !hintButtonDown && !switcher.busy) painterSpotRound?.toggleHint();
+    hintButtonDown = hintDown;
+    framePainterSpot(renderer.xr.isPresenting);
+  }
   if (runLocomotion) switcher.endFrame(performance.now() - workStart, renderMs);
 }
 renderer.setAnimationLoop(renderFrame);
@@ -1034,6 +1100,7 @@ function bindWorld({ id, module, handle }: LiveWorld): void {
 
 /** Releases every binding to the active world, before its module disposes it. */
 function unbindWorld(): void {
+  clearPainterSpotRound();
   registerGalleryReturn(null);
   audio?.clearWorld();
   if (strokes.batch) void strokes.bind(null);
@@ -1071,10 +1138,7 @@ const switcher = createSwitcher({
   },
   bind: bindWorld,
   unbind: unbindWorld,
-  spawn: ({ position, yaw }) => {
-    spawnYaw = yaw;
-    locomotion.spawn(position[0], position[1], position[2], yaw);
-  },
+  spawn: placeWorldSpawn,
   loadFailed: (id, reason) => {
     const text = worldFailedText(worldName(id), reason);
     if (notices) notices.raise('world-failed', text);
@@ -1097,6 +1161,18 @@ const switcher = createSwitcher({
 if (flags.diag) {
   registerDiag('painting', () => switcher.active?.id ?? null);
   registerDiag('portal', () => switcher.diag());
+  registerDiag('painterSpot', () => {
+    const round = painterSpotRound;
+    return round
+      ? {
+          match: round.match,
+          found: round.found,
+          hint: round.hint,
+          threshold: painterSpotThreshold,
+          hud: painterSpotHud?.diag() ?? null,
+        }
+      : null;
+  });
   window.__goghPortal = (id: string) => switcher.go(id, 'api');
   if (import.meta.env.MODE === 'e2e') {
     // Lets a spec draw the veil's sphere and the painted sky once, so their geometries upload
@@ -1119,9 +1195,9 @@ if (import.meta.env.MODE === 'e2e') {
 }
 // G returns to the gallery from a world on the desktop, as the panel's button does (P5.5).
 window.addEventListener('keydown', (event) => {
-  if (event.code === 'KeyG' && !event.repeat && !renderer.xr.isPresenting) {
-    galleryReturnCallback()?.();
-  }
+  if (event.repeat || renderer.xr.isPresenting) return;
+  if (event.code === 'KeyG') galleryReturnCallback()?.();
+  if (event.code === 'KeyJ' && !switcher.busy) painterSpotRound?.toggleHint();
 });
 
 if (worldEntry) {
@@ -1146,7 +1222,15 @@ if (worldEntry) {
       }
       try {
         const handle = await module.build(worldDeps(false, loadRaster));
-        switcher.adopt({ id: boot.id, module, handle });
+        const live = { id: boot.id, module, handle };
+        if (
+          boot.id === 'starry-night' &&
+          settingsStore.effective.findPainterSpot &&
+          !(flags.diag && flags.painter)
+        ) {
+          placeWorldSpawn(module.spawnPose(), live);
+        }
+        switcher.adopt(live);
       } catch (error) {
         // One world at a time: a half-built world goes before the gallery builds.
         try {

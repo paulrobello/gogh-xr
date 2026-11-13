@@ -238,7 +238,7 @@ export interface SwitcherDeps {
    * Places the rig origin on a pose. Not the head: in XR a physical offset from the local-floor
    * origin moves the head off it, and turns the view off its heading by the head yaw.
    */
-  spawn(pose: WorldPose): void;
+  spawn(pose: WorldPose, world: LiveWorld): void;
   /**
    * A world failed to load during a transition, before the fallback runs: `stall` when the
    * watchdog gave up on a fetch, `loading` when a retry was refused because a build given up on
@@ -879,7 +879,7 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
     // The rig stands in the new world before the strokes' targets are sampled from its view.
     const eyeBefore = eye();
     turn.copy(deps.camera.quaternion).invert();
-    deps.spawn(arrivalPose(world, previous));
+    deps.spawn(arrivalPose(world, previous), world);
     // A desktop spawn also resets the look, which turns the camera in the rig: the strokes turn
     // with it, so the field holds still in view. In XR the head pose overwrites the camera at the
     // next render, so the reset never shows there and the strokes stay put.

@@ -357,8 +357,6 @@ describe('the Foveation row', () => {
     expect(def.options?.map((o) => o.value)).toEqual(['auto', 0, 0.5, 1]);
     const ids = CONTROLS.map((c) => c.id);
     expect(ids.indexOf('foveation')).toBe(ids.indexOf('qualityLevel') + 1);
-    const taken = CONTROLS.filter((c) => c.kind !== 'button').map((c) => `${c.column}:${c.row}`);
-    expect(new Set(taken).size).toBe(taken.length);
     const layout = controlLayout('foveation');
     if (!layout) throw new Error('no layout');
     expect(layout.segments).toHaveLength(4);

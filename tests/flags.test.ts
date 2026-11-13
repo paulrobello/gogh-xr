@@ -33,6 +33,7 @@ test('defaults when search is empty', () => {
     bare: false,
     coverage: false,
     painter: false,
+    findthreshold: null,
     seated: null,
     turn: null,
     zdiag: null,
@@ -48,7 +49,7 @@ test('defaults when search is empty', () => {
 
 test('parses every flag', () => {
   const f = parseFlags(
-    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&perf&update&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20&densitylaw=%20Count&fov=0.5&mute',
+    '?seed=42&noanim&calm=0.25&motiont=3612.5&motionphase=1.25&shot&diag&hud&iwer&bench=strokes&mode=blend&size=32&order=random&hz=120&strokesTest&demo=canvas&beauty&slow=14&nogov&perf&update&count=325000&nocache&cache&painting=starry-night&bare&coverage&painter&findthreshold=95.5&seated&turn=smooth&zdiag=nosort&motionlayers=sky,%20Moon&nohalo&scene=%20Bare&ab=%20Shimmer%20&wrap=%20Wave&waveturns=%203%20&densitylaw=%20Count&fov=0.5&mute',
   );
   expect(f).toEqual({
     seed: 42,
@@ -81,6 +82,7 @@ test('parses every flag', () => {
     bare: true,
     coverage: true,
     painter: true,
+    findthreshold: 95.5,
     seated: true,
     turn: 'smooth',
     zdiag: 'nosort',

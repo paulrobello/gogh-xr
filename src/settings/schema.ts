@@ -73,11 +73,13 @@ export interface Settings {
   readonly foveation: FoveationSetting;
   /** The perf HUD's starting visibility. */
   readonly hud: boolean;
+  /** Start the next Starry Night visit with the painter’s-spot challenge. */
+  readonly findPainterSpot: boolean;
   /** A small glowing orb at each tracked hand in XR. */
   readonly handOrbs: boolean;
-  /** 0-1. Stored for P6; nothing consumes it yet. */
+  /** Music bus gain, 0-1. */
   readonly musicVolume: number;
-  /** 0-1. Stored for P6; nothing consumes it yet. */
+  /** Sound-effects bus gain, 0-1. */
   readonly sfxVolume: number;
 }
 
@@ -93,6 +95,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   qualityLevel: 5,
   foveation: 0,
   hud: false,
+  findPainterSpot: false,
   handOrbs: true,
   musicVolume: 0.7,
   sfxVolume: 0.7,
@@ -193,6 +196,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     qualityLevel: qualityLevel(r.qualityLevel, d.qualityLevel),
     foveation: foveation(r.foveation, d.foveation),
     hud: bool(r.hud, d.hud),
+    findPainterSpot: bool(r.findPainterSpot, d.findPainterSpot),
     handOrbs: bool(r.handOrbs, d.handOrbs),
     musicVolume: unit(r.musicVolume, d.musicVolume),
     sfxVolume: unit(r.sfxVolume, d.sfxVolume),

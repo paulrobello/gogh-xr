@@ -127,6 +127,27 @@ test('every hit target is at least 2.5 cm in both directions, and rows leave 6 m
   expect(ROW_PITCH - 0.056 - 0.002).toBeGreaterThanOrEqual(0.004);
 });
 
+test('setting controls have disjoint hit targets, including controls in a shared row', () => {
+  const controls = LAYOUT.filter(({ def }) => def.kind !== 'button');
+  for (const [i, { def, rect }] of controls.entries()) {
+    for (const other of controls.slice(i + 1)) {
+      const r = other.rect;
+      const overlaps =
+        Math.abs(r.x - rect.x) < (r.w + rect.w) / 2 && Math.abs(r.y - rect.y) < (r.h + rect.h) / 2;
+      expect(overlaps, `${def.id} and ${other.def.id}`).toBe(false);
+    }
+  }
+});
+
+test('the painter’s-spot toggle fits beside Hand orbs without overlapping it', () => {
+  const orbs = controlLayout('handOrbs')?.rect;
+  const challenge = controlLayout('findPainterSpot')?.rect;
+  if (!orbs || !challenge) throw new Error('missing toggle layout');
+  expect(challenge.y).toBe(orbs.y);
+  expect(challenge.x - challenge.w / 2).toBeGreaterThan(orbs.x + orbs.w / 2);
+  expect(challenge.x + challenge.w / 2).toBeLessThan(0);
+});
+
 test('quality shows three segments, adaptive-72 first, each label inside its segment', () => {
   const quality = controlLayout('quality');
   expect(quality?.def.options?.map((o) => o.value)).toEqual([

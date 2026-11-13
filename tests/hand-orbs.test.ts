@@ -303,8 +303,6 @@ describe('the Hand orbs toggle', () => {
       expect(Math.abs(r.x) + r.w / 2).toBeLessThanOrEqual(PANEL_W / 2);
       expect(Math.abs(r.y) + r.h / 2).toBeLessThanOrEqual(PANEL_H / 2);
     }
-    const taken = CONTROLS.filter((c) => c.kind !== 'button').map((c) => `${c.column}:${c.row}`);
-    expect(new Set(taken).size).toBe(taken.length);
   });
 
   test('flips the stored setting and saves it', () => {
