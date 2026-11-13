@@ -2,6 +2,50 @@
 
 Device: Meta Quest 3, Quest Browser. Build: `https://gogh-xr.pardev.net` at fd7a1ab. Run by Paul on 2026-11-05 (results stamped 2026-11-06 04:45–04:50Z, 8:45–8:50 PM PST). The 72 Hz fill-in run (blend 325,000 to 475,000 and a2c 425,000 to 525,000, foveation 0) was recorded 2026-11-06 05:35–05:38Z (9:35–9:38 PM PST), the 80 Hz fill-in run (blend 375,000 to 400,000 and a2c 375,000 to 475,000) at 05:46–05:48Z (9:46–9:48 PM PST), and the 120 Hz a2c run (200,000 to 250,000) at 05:49Z (9:49 PM PST). The a2c 400,000 and 475,000 rows at 80 Hz are from that later run, which replaced the earlier records of the same settings, and the a2c 225,000 row at 120 Hz is from the 120 Hz run for the same reason. Results were read from the headset's localStorage over adb and the DevTools protocol, not transcribed by hand.
 
+## SC1 release-candidate route (P7.2, 2026-11-13)
+
+Paul ran the marked Quest 3 route from 12:42:59 to 12:46:47 PM PST. Build
+`37cd4e6/1beef9b9c4e1`, Quest Browser immersive VR, Adaptive-72 at fixed quality level 5,
+foveation Off. The captured run had audio enabled. The marked window spanned 228.18 s
+including the recorder's one-second settling period and ended back in the gallery.
+It aggregates gallery, portal and painting frames. The two button marks delimit the run
+and provide no separate timings for the walk and flight.
+
+| Measurement | Result |
+| --- | --- |
+| App frame callbacks | 6,899 frames in 227.18 s after settling, 30.37 fps mean |
+| App frame intervals | 37.59 ms median (26.60 fps equivalent), 42.28 ms p95, 44.13 ms p99 |
+| App intervals over the recorder's 72 Hz missed-vsync threshold (20.83 ms) | 84.36% |
+| Quest Browser VrApi, one-second samples | 228 samples, 26 fps median, 31.19 fps mean, 23–71 fps range |
+| Quest Browser VrApi samples below 24 fps | 2 of 228, both 23 fps (12:46:31 and 12:46:40 PM PST) |
+
+The median cleared the 24 fps floor. Two one-second samples fell below it, and the
+marked route ended before the required five minutes. P7.2 remains open for a full
+capture and owner sign-off. The in-app intervals and Quest Browser VrApi readings
+measure different things and are reported separately.
+
+### Full repeat, same build and settings
+
+The repeat ran from 12:50:24 to 12:56:06 PM PST, 341.90 s between marks, and ended in
+the gallery. Spot checks confirmed Starry Night and movement through the village.
+The recording combines both portal transitions and the rest of the route in one window.
+Audio was enabled.
+
+| Measurement | Result |
+| --- | --- |
+| App frame callbacks | 10,894 frames in 340.90 s after settling, 31.96 fps mean |
+| App frame intervals | 34.25 ms median (29.20 fps equivalent), 42.71 ms p95, 46.00 ms p99 |
+| App intervals over the recorder's 72 Hz missed-vsync threshold (20.83 ms) | 77.57% |
+| Quest Browser VrApi, one-second samples | 342 samples, 28 fps median, 32.59 fps mean, 22–72 fps range |
+| Quest Browser VrApi samples below 24 fps | 14 of 342 (4.1%), at 22–23 fps |
+| Quest Browser app GPU time | 30.80 ms median, 48.98 ms maximum |
+
+The below-floor samples occurred at 12:54:28–12:54:30 and 12:54:48–12:54:58 PM PST.
+There are no segment marks to tie those dips to a specific view or movement mode.
+The full repeat meets the duration and clears 24 fps on median. It does not establish
+a sustained 24 fps floor. P7.2 remains open pending resolution of those dips and owner
+sign-off.
+
 ## Full-sphere stroke budget
 
 Strokes fill a full sphere around the viewer, uniform per solid angle, so any view direction is the worst case. About half the strokes are on screen in any view, and every stroke runs through the vertex shader. Size is 24 px. a2c draws in random order, and blend draws sorted far to near.
