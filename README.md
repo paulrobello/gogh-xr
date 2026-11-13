@@ -84,18 +84,18 @@ These override the stored setting for the session and are never written back. Th
 
 ## Status
 
-Every phase is built and gated by unit tests and the e2e suite. The owner headset checks are the open part: P0 is signed off (see [docs/perf.md](docs/perf.md)), and the checks for P1.8 through P7.4 are pending owner sign-off. A phase is not final until its headset check passes. The measurements and evidence are in [docs/verification.md](docs/verification.md).
+Paul approved the live Quest 3 release on November 13, 2026. The [performance report](docs/perf.md#sc1-release-candidate-route-p72-2026-11-13) records the Quest run, and [final release acceptance](docs/verification.md#p74-final-release-acceptance-2026-11-13) tracks the release gates.
 
 | Phase | What | Built | Headset check | PRD | Plan |
 | --- | --- | --- | --- | --- | --- |
 | P0 | Foundation and feasibility | Yes | Signed off | [P0](PRD.md#p0--foundation-and-feasibility) | [plan](plans/phase-0-foundation.md) |
-| P1 | Stroke engine | Yes | Pending | [P1](PRD.md#p1--stroke-engine) | [plan](plans/phase-1-stroke-engine.md) |
-| P2 | Starry Night world | Yes | Pending | [P2](PRD.md#p2--starry-night-world) | [plan](plans/phase-2-starry-night-world.md) |
-| P3 | Locomotion and comfort | Yes | Pending | [P3](PRD.md#p3--locomotion-and-comfort-parallel-with-p4) | [plan](plans/phase-3-locomotion-comfort.md) |
-| P4 | Living paint | Yes | Pending | [P4](PRD.md#p4--living-paint-parallel-with-p3) | [plan](plans/phase-4-living-paint.md) |
-| P5 | Gallery, portal and settings | Yes | Pending | [P5](PRD.md#p5--gallery-portal-and-settings) | [plan](plans/phase-5-gallery-portal-settings.md) |
-| P6 | Audio | Yes | Pending | [P6](PRD.md#p6--audio) | [plan](plans/phase-6-audio.md) |
-| P7 | Release | Update polling and this README are done. The perf pass and final acceptance are open | Pending | [P7](PRD.md#p7--release) | [plan](plans/phase-7-release.md) |
+| P1 | Stroke engine | Yes | Signed off | [P1](PRD.md#p1--stroke-engine) | [plan](plans/phase-1-stroke-engine.md) |
+| P2 | Starry Night world | Yes | Signed off | [P2](PRD.md#p2--starry-night-world) | [plan](plans/phase-2-starry-night-world.md) |
+| P3 | Locomotion and comfort | Yes | Signed off | [P3](PRD.md#p3--locomotion-and-comfort-parallel-with-p4) | [plan](plans/phase-3-locomotion-comfort.md) |
+| P4 | Living paint | Yes | Signed off | [P4](PRD.md#p4--living-paint-parallel-with-p3) | [plan](plans/phase-4-living-paint.md) |
+| P5 | Gallery, portal and settings | Yes | Signed off | [P5](PRD.md#p5--gallery-portal-and-settings) | [plan](plans/phase-5-gallery-portal-settings.md) |
+| P6 | Audio | Yes | Signed off | [P6](PRD.md#p6--audio) | [plan](plans/phase-6-audio.md) |
+| P7 | Release | Update polling, documentation and the Quest performance pass are complete. Full release browser gate pending | Signed off | [P7](PRD.md#p7--release) | [plan](plans/phase-7-release.md) |
 
 ## Credits and provenance
 
