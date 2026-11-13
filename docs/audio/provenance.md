@@ -25,8 +25,8 @@ These four statuses are tracked separately, per the Suno guide.
 | Status | score-night | score-gallery |
 | --- | --- | --- |
 | Source selection | Done. Paul generated and delivered the take | Done. Paul generated and delivered the take |
-| Technical preparation (seamless loop, runtime encode) | P6.4: 141.000 s loop, Opus and MP3 in `public/audio/`. `make asset-check` passes. See [derivatives.md](derivatives.md). Done except browser decode and runtime load (P6.5, P6.6). | P6.4: 120.080 s loop, Opus and MP3 in `public/audio/`. `make asset-check` passes. See [derivatives.md](derivatives.md). Done except browser decode and runtime load (P6.5, P6.6). |
-| Creative acceptance in the headset mix | Not started | Not started |
+| Technical preparation (seamless loop, runtime encode) | P6.4: 141.000 s loop in Opus and MP3. Asset checks pass, and the browser integration test plays the score after portal entry (P6.6). See [derivatives.md](derivatives.md). | P6.4: 120.080 s loop in Opus and MP3. Asset checks pass, and the browser integration test plays the score after the first gesture (P6.6). See [derivatives.md](derivatives.md). |
+| Creative acceptance in the headset mix | Paul approved on Quest 3, 2026-11-12 (P6-A3) | Paul approved on Quest 3, 2026-11-12 (P6-A3) |
 | Release rights | Paid-plan output. Check the current Suno terms before release (P7) | Paid-plan output. Check the current Suno terms before release (P7) |
 
 ## ElevenLabs SFX
@@ -36,6 +36,8 @@ The source rows (prompts, settings, hashes) are in [assets/PROVENANCE.md](../../
 | Status | wind-hill | crickets | church-bell | portal-whoosh | stroke-rustle |
 | --- | --- | --- | --- | --- | --- |
 | Source selection | Done. Paul picked take 2 | Done. Paul picked take 6 | Done. Paul picked take 2 | Done. Paul picked take 1 | Done. Paul picked take 1 |
-| Technical preparation | Deviation, pending owner decision (P6.4): 23.000 s mono loop. Linear gain to the -2 dBTP ceiling stops near -29.4 LUFS, so the shipping file uses about 5 dB of peak limiting to reach -24 LUFS. Paul picks the limited or the linear take: `make audio-audition` writes both to `build/audio/audition/` | P6.4: 23.500 s mono loop. Done except browser decode and runtime load (P6.5, P6.6). | P6.4: 10.000 s mono one-shot. Done except browser decode and runtime load (P6.5, P6.6). | Deviation, pending owner decision (P6.4): 2.000 s mono one-shot. The 0.5L + 0.5R fold of the stereo source loses 2.48 dB, against the 2 dB limit. Paul accepts the mono fold or asks for another take | P6.4: 0.900 s mono one-shot, +26.33 dB of gain. Done except browser decode and runtime load (P6.5, P6.6). |
-| Creative acceptance in the headset mix | Not started | Not started | Not started | Not started | Not started |
+| Technical preparation | Deviation, pending owner decision (P6.4): 23.000 s mono loop. The shipped version uses about 5 dB of peak limiting to reach -24 LUFS. | P6.4: 23.500 s mono loop. | P6.4: 10.000 s mono one-shot. | Deviation, pending owner decision (P6.4): 2.000 s mono one-shot. The stereo-to-mono fold loses 2.48 dB and the validator allows up to 2.6 dB for this source. | P6.4: 0.900 s mono one-shot, +26.33 dB of gain. |
+| Creative acceptance in the headset mix | Approved on Quest 3, 2026-11-12 | Approved on Quest 3, 2026-11-12 | Approved on Quest 3, 2026-11-12 | Approved on Quest 3, 2026-11-12 | Approved on Quest 3, 2026-11-12 |
 | Release rights | Not verified. Check the ElevenLabs terms before release (P7) | Not verified (P7) | Not verified (P7) | Not verified (P7) | Not verified (P7) |
+
+The P6.6 browser integration test loaded and decoded all five shipped effects without warnings. Paul's headset approval covers the shipped mix, including the limited wind and mono portal whoosh. The mastering contract records technical deviations separately from creative acceptance.

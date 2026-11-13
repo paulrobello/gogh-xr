@@ -31,15 +31,16 @@
  * it runs in exactly the reverse order back to the exact start levels.
  *
  * No-gain rule. A shed that buys no time costs quality for nothing: a density step that keeps the
- * painted area, or a framebuffer scale the runtime ignores. So the first window after a shed is
- * compared with the window that triggered it. If it still overruns and its mean interval is not at
- * least `NO_GAIN_SHARE` lower, the step is undone at once (a 'no-gain' event, back to the exact
+ * painted area, or a framebuffer scale the runtime ignores. The window after a shed is compared
+ * with the window that triggered it. When the intervals span different vsync slots, the comparison
+ * uses up to four seconds on each side, with a smaller minimum gain. If the window still overruns
+ * and the gain misses the threshold, the step is undone (a 'no-gain' event, back to the exact
  * level it shed from) and that step is held: it is not shed again until the reported frame rate
  * changes, the session is interrupted or restarted (the runtime then builds a new machine), or the
  * hold lapses, so a scene change can re-earn it. The first hold of a step lasts `NO_GAIN_HOLD_MS`
  * (30 s), and each further hold of that step doubles, capped at `MAX_HOLD_MS` (30, 60, 120, 240,
- * then 300 s), so a step that never pays stops flipping strokes every 30 s. A frame-rate change or
- * a new session restarts the doubling, and a shed that pays restarts it for that step. The holds
+ * then 300 s). A mixed-vsync check near the frame budget starts with a longer hold. A frame-rate
+ * change, a new session, or a shed that pays resets the doubling. The holds
  * are per step, with two exceptions (`holdOf`). The two foveation steps hold apart ('foveation' to
  * 0.5, 'foveation-max' to 1), so a 0.5 step that reads as no-gain under window noise does not block
  * 1. Under the `area` density law the bands share one hold ('density'): under the sqrt size law
@@ -121,6 +122,16 @@ export const NO_GAIN_SHARE = 0.03;
  * change. Each further no-gain hold of the same step doubles it, up to `MAX_HOLD_MS`.
  */
 export const NO_GAIN_HOLD_MS = 30_000;
+/** A window spanning different vsync slots needs more samples to measure a small gain. */
+const MIXED_VSYNC_WINDOW_MS = 4000;
+const MIXED_VSYNC_GAIN = 0.015;
+const MIXED_VSYNC_HOLD_MS = 120_000;
+/** Keep the shorter retry while frames are far enough over budget to need further exploration. */
+const MIXED_VSYNC_HOLD_LIMIT = 1.4;
+/** Close the remaining budget gap after a shed has shown a gain in mixed-vsync timing. */
+const RESPONSIVE_OVERRUN_TOLERANCE = 1.01;
+/** A brief run of on-time vsyncs can hide a steady trickle of missed frames. */
+const MIXED_VSYNC_RESTORE_HOLD_MS = 12_000;
 /** Cap on the doubling no-gain and recovery holds: 30, 60, 120, 240, then 300 s. */
 export const MAX_HOLD_MS = 300_000;
 /** Overrun with nothing left to shed before each recovery restore. */
@@ -312,6 +323,7 @@ type ShedEntry = LadderStep;
 interface PendingCheck {
   readonly entry: ShedEntry;
   readonly triggerMs: number;
+  readonly mixedVsync: boolean;
 }
 
 /** A recovery restore under check: the stretch's baseline and the frames judged since. */
@@ -360,6 +372,8 @@ export function createGovernor(config: GovernorConfig): Governor {
   let windowStart: number | null = null;
   let sum = 0;
   let count = 0;
+  let minInterval = Infinity;
+  let maxInterval = 0;
   let gpuSum = 0;
   let gpuCount = 0;
 
@@ -375,6 +389,8 @@ export function createGovernor(config: GovernorConfig): Governor {
   let probeWaitMs = RESTORE_HOLD_MS;
   let lastFailureAt = Number.NEGATIVE_INFINITY;
   let pending: PendingCheck | null = null;
+  let shedImprovedTiming = false;
+  let mixedVsyncUntil = 0;
   let recovering: RecoveryCheck | null = null;
   /** Start of the overrun stretch with nothing left to shed: a change ends it, clean time not. */
   let stuckSince: number | null = null;
@@ -408,14 +424,21 @@ export function createGovernor(config: GovernorConfig): Governor {
     if (resetBackoff) strikes.clear();
     pending = null;
     recovering = null;
+    shedImprovedTiming = false;
+    mixedVsyncUntil = 0;
   }
 
-  /** Holds `step` in `holds` for 30 s, doubled per hold since the last reset, up to 5 min. */
-  function hold(holds: Map<GovernorHold, number>, step: GovernorStep, t: number): void {
+  /** Doubles each step's hold since the last reset, up to five minutes. */
+  function hold(
+    holds: Map<GovernorHold, number>,
+    step: GovernorStep,
+    t: number,
+    base = NO_GAIN_HOLD_MS,
+  ): void {
     const key = holdKey(step);
     const n = strikes.get(key) ?? 0;
     strikes.set(key, n + 1);
-    holds.set(key, t + Math.min(NO_GAIN_HOLD_MS * 2 ** n, MAX_HOLD_MS));
+    holds.set(key, t + Math.min(base * 2 ** n, MAX_HOLD_MS));
   }
 
   /** Starts a fresh window and hold after a change, so only post-change frames are judged. */
@@ -544,10 +567,11 @@ export function createGovernor(config: GovernorConfig): Governor {
     t: number,
     start: number,
     drawn: Readonly<Record<StrokeBand, number>>,
+    mixedVsync: boolean,
   ): GovernorEvent | null {
     const budgetNow = budgetMs();
     const mean = meanMs ?? 0;
-    overrun = mean > budgetNow * OVERRUN_TOLERANCE;
+    overrun = mean > shedThreshold(mixedVsync);
     for (const holds of [heldUntil, recoverHeldUntil]) {
       for (const [step, until] of holds) if (t >= until) holds.delete(step);
     }
@@ -555,17 +579,28 @@ export function createGovernor(config: GovernorConfig): Governor {
     // Nothing changes the stack between a shed and this window, so the checked entry is its top.
     const check = pending;
     pending = null;
-    if (check && overrun && mean > check.triggerMs * (1 - NO_GAIN_SHARE)) {
+    const gained =
+      check &&
+      mean <= check.triggerMs * (1 - (check.mixedVsync ? MIXED_VSYNC_GAIN : NO_GAIN_SHARE));
+    if (check && overrun && !gained) {
       stack.pop();
       apply(check.entry, true);
-      hold(heldUntil, check.entry.step, t);
+      const baseHold =
+        check.mixedVsync && mean <= budgetNow * MIXED_VSYNC_HOLD_LIMIT
+          ? MIXED_VSYNC_HOLD_MS
+          : NO_GAIN_HOLD_MS;
+      hold(heldUntil, check.entry.step, t, baseHold);
+      shedImprovedTiming = false;
       densityMin = nextDensityShed(drawn) === null;
       changed();
       const { step, from, to } = check.entry;
       return record({ t, action: 'no-gain', step, from: to, to: from });
     }
-    // The shed paid for itself: its next no-gain hold starts from 30 s again.
-    if (check) strikes.delete(holdKey(check.entry.step));
+    // A kept shed clears the previous back-off for that step.
+    if (check) {
+      shedImprovedTiming ||= check.mixedVsync && gained === true;
+      strikes.delete(holdKey(check.entry.step));
+    }
     // A recovery check spans RECOVER_CHECK_MS of windows and nothing else changes meanwhile, so
     // the restored entry goes back on top if it is shed back.
     const restored = recovering;
@@ -611,7 +646,7 @@ export function createGovernor(config: GovernorConfig): Governor {
       if (entry) {
         stack.push(entry);
         apply(entry, false);
-        pending = { entry, triggerMs: mean };
+        pending = { entry, triggerMs: mean, mixedVsync };
         changed();
         return record({ t, action: 'shed', step: entry.step, from: entry.from, to: entry.to });
       }
@@ -639,12 +674,20 @@ export function createGovernor(config: GovernorConfig): Governor {
     const headroom = gpuMs === null || gpuMs <= budgetNow * GPU_HEADROOM;
     const top = stack.at(-1);
     // A frame at the shed line mixes clean and overrun windows: recovery keeps its stretch.
-    if (!top || !headroom || t - cleanSince < probeWaitMs) return recover(t);
+    const wait =
+      t < mixedVsyncUntil ? Math.max(probeWaitMs, MIXED_VSYNC_RESTORE_HOLD_MS) : probeWaitMs;
+    if (!top || !headroom || t - cleanSince < wait) return recover(t);
     stack.pop();
     apply(top, true);
     probe = top;
     changed();
     return record({ t, action: 'restore', step: top.step, from: top.to, to: top.from });
+  }
+
+  function shedThreshold(mixedVsync: boolean): number {
+    const tolerance =
+      shedImprovedTiming && mixedVsync ? RESPONSIVE_OVERRUN_TOLERANCE : OVERRUN_TOLERANCE;
+    return budgetMs() * tolerance;
   }
 
   const fixed = config.fixedLevel ?? null;
@@ -672,21 +715,31 @@ export function createGovernor(config: GovernorConfig): Governor {
         windowStart = s.t - s.intervalMs;
         sum = 0;
         count = 0;
+        minInterval = Infinity;
+        maxInterval = 0;
         gpuSum = 0;
         gpuCount = 0;
       }
       sum += s.intervalMs;
       count++;
+      minInterval = Math.min(minInterval, s.intervalMs);
+      maxInterval = Math.max(maxInterval, s.intervalMs);
       if (typeof s.gpuMs === 'number' && Number.isFinite(s.gpuMs)) {
         gpuSum += s.gpuMs;
         gpuCount++;
       }
-      if (s.t - windowStart < SHED_WINDOW_MS) return null;
+      const mixedVsync = maxInterval - minInterval >= budgetMs() / 2;
+      if (mixedVsync) mixedVsyncUntil = s.t + MIXED_VSYNC_WINDOW_MS;
+      const extendedCheck =
+        !recovering &&
+        !probe &&
+        (pending?.mixedVsync || (mixedVsync && sum / count > shedThreshold(mixedVsync)));
+      if (s.t - windowStart < (extendedCheck ? MIXED_VSYNC_WINDOW_MS : SHED_WINDOW_MS)) return null;
       const start = windowStart;
       windowStart = null;
       meanMs = sum / count;
       gpuMs = gpuCount > 0 ? gpuSum / gpuCount : null;
-      return judge(s.t, start, s.drawn);
+      return judge(s.t, start, s.drawn, mixedVsync);
     },
     setFrameRate(hz: number) {
       if (!(hz > 0) || hz === frameRate) return;

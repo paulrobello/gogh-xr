@@ -80,7 +80,7 @@ export interface VtxBatch {
   /** Views the last cull covered: 2 for the XR ArrayCamera, 1 on the desktop. */
   views(): number;
   drawnFootprint(): Footprint;
-  setDensity(band: StrokeBand, d: number): void;
+  setDensity(band: StrokeBand, d: number, preserveNearPanes?: boolean): void;
   setSizeMultiplier(band: StrokeBand, m: number): void;
   readonly materials: Readonly<Record<StrokeBand, StrokeMaterial>>;
   /** Chunk geometries, which `skyStatic` attributes are added to. */
@@ -327,7 +327,7 @@ export function createVertexArms(): VertexArms {
     setBands({ density, size }) {
       for (const batch of batches) {
         for (const band of Object.keys(density) as StrokeBand[]) {
-          batch.setDensity(band, density[band]);
+          batch.setDensity(band, density[band], true);
           batch.setSizeMultiplier(band, size[band]);
         }
       }

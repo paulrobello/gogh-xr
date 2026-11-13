@@ -2762,6 +2762,14 @@ MiniMac's full Metal browser suite passed 158 tests with 7 skipped. The cold des
 
 Paul's Quest 3 check found the v20 portal entry smooth and the pane interiors covered. His screenshot showed dark gold strokes across the bright panes and at their corners. The window outlines now use the same emissive paint as the fill, with their corner reach intact. Comparing v20 and v21 at seed 1 found 613 lightened window strokes out of 555,476. All other colors and all packed positions, normals, tangents, sizes and metadata match byte for byte. The coverage raster still reads 0.00 cm² for the largest interior hole and 0.439% for the worst seam band.
 
+Paul confirmed the revised window appearance on Quest 3 after v21 shipped.
+
+#### Near-pane coverage under quality sheds (card 01a1ced1847c)
+
+Governor quality settings keep the near band's lit-window instances at full density. The fit cap prevents larger surviving strokes from covering the holes left by a deep shed. Distant window chunks still follow their band density, and the portal fade can still thin nearby windows. The seed-1 Quest-frustum test draws 321,667 strokes at village uphill against the 325,000 default budget.
+
+On MiniMac (Chromium on ANGLE Metal, Apple M4), the worst of 15 panes at 0.3 m fell from 0.411% to 0.042% bare at level 13 and from 15.329% to 0.042% at level 16. The regression test now asserts the 0.5% limit at every tested near level. The six measurable far panes remained at 0.000% bare through level 16. The 1-minute load was 1.26–1.27 for the baseline and 1.27–1.30 for the corrected run.
+
 ## Portal entry: build from the trigger, reveal on a time budget (card 01a1b83d2e2c, 2026-11-09)
 
 Measured with `tests/e2e/entry-time.ts` against a production build (`vite build`, `vite preview --port 4334`). The tool runs three round trips in one browser context, so the first entry misses the scatter cache and the later two hit it. The setup was an M4 Max, headless Chromium on ANGLE Metal at 60 Hz, 1280 × 720. Phases are the summed frame intervals of `__goghDiag().portal.frames`, and the entry time is `durationMs`, from the trigger to idle. Before is a30c919.
@@ -3829,6 +3837,23 @@ Quest 3, Quest Browser, `?perf` windows (the in-app recorder), VrApi logcat over
 **Governor (Auto, beauty-72).** Paul read the HUD: the governor moved around for about a minute, then settled near level 3 at the painter's spot and near level 2 walking the village. Windows: 38.9 ms at the painter's spot, and 52.6 ms (p95 100 ms) walking. The history was lost when the level was set back to 5, because that rebuilds the machine.
 
 **Fixed the same day:** the hill crest coverage cap (58c11c7), and the wind (+2 dB, 91fb760) and crickets (+10 dB). Paul confirmed all three in the headset.
+
+## P6.6 audio acceptance (2026-11-12)
+
+- **P6-A2:** MiniMac Metal Chromium verified that the first gesture unlocks a running audio context, all seven shipped cues load, and the gallery and night scores both play without decode warnings. The full browser suite passed 159 tests with 7 skipped.
+- **P6-A3:** Paul approved all audio and effects on Quest 3, covering the mix, positional effects, loop seams and portal crossfade. [Audio provenance](audio/provenance.md) records the approval for both scores and all five effects.
+
+## Quest 3 phase sign-offs (2026-11-12)
+
+Paul approved the Starry Night world (P2.9), locomotion and comfort (P3.7), living paint (P4.7), and gallery and portal (P5.8). The world and living-paint frame-time evidence is in the November 11 headset data session above. No locomotion default changes or wake-texture issues were requested with this approval. The gallery sign-off covers the phase's plaque readability check at normal distance and at oblique angles. The approval did not include individual plaque measurements.
+
+## Auto governor under variable vsync timing (card 01a1b35d299e)
+
+On deployed `d24716a/bc555279d679`, Quest 3 at the painter's spot in Beauty-72 Auto with foveation off recorded 129.5 s at 23.64 fps, with a mean interval of 42.29 ms and p95 of 45.39 ms. Four far-density reductions were reversed after roughly one half-second window. The card holds the raw event history. The capture does not isolate each shed's cost.
+
+When frame intervals span multiple vsync slots, Auto extends the overrun and gain checks to four seconds, and extends the initial no-gain hold to two minutes when the overrun is below 40%. Larger overruns keep the shorter retry. A measured improvement lets the governor work closer to the nominal frame budget, and mixed-vsync timing delays restore probes. Stable frame timing uses the original checks.
+
+In the eight-seed, 120 s CPU-bound simulations, sheds per minute went from 6.31 to 2.25, 6.44 to 2.50, and 6.31 to 2.81 for miss rates of 31%, 15%, and 6%. Mean levels over the last 90 s fell from 0.615 to 0.300, 0.760 to 0.417, and 0.737 to 0.695. In the reachable 72 Hz GPU model (18–19 ms starting work, 5% savings per shed, seeded ±6.5% work variation), every seed finished the steady-state sample with modeled mean work below 13.89 ms and a mean sampled frame interval within 1% of budget. Worst modeled mean work was 13.63 ms. Both GPU cases and all three CPU cases fail their regression checks on `d24716a`. The original GPU trace with the drawn-stroke floor is still exercised as an overloaded case. Quest 3 frame-time improvement on the tuned build remains unmeasured.
 
 ## Fill arms (`?ab=fill`, 2026-11-11)
 

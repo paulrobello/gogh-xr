@@ -6,7 +6,7 @@ This session collects the headset numbers that the open cards need. Each test is
 
 - Plug the Quest into the Mac by USB.
 - Open the Quest Browser. When I'm told you're ready, I start the VrApi log capture and the browser connection (`adb forward tcp:9222 localabstract:chrome_devtools_remote`).
-- Leave the quality settings as they are: level 5, foveation Off. T7 changes the level, and its last step changes it back.
+- Start at quality level 5 with foveation Off. T7 changes the level to Auto. Restore level 5 after the governor history is captured.
 - **Segment button:** a single left stick click, released. With `?perf`, every click ends the current segment and starts the next one.
   - On an `?ab=` URL the click also switches the variant.
   - A segment shorter than 1 s is dropped, so never double-click.
@@ -81,7 +81,7 @@ Use the same URL as T5, with the volume up.
 1. Open the panel (right A) and set Quality level all the way left, to **Auto**. Close the panel. Click.
 2. Stand at the painter's spot and look around for 2 minutes. Say whether the strokes jump. Click.
 3. Walk and teleport around the village for 2 minutes. Click.
-4. Open the panel and set Quality level back to **5**. Stay on this page: the governor history lives only in the open page, so I read it before anything reloads.
+4. Leave the page open with **Auto** still selected. Switching quality levels clears the governor history. Restore level 5 after the history is captured.
 
 ## When you're done
 

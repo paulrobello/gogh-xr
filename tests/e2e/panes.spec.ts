@@ -18,8 +18,8 @@
  *   own projected quad, inset by 1 px. A pane under MIN_PANE_PX on screen is skipped and logged.
  *   Asserted at 0.5% at levels 0 (control) and 4.
  * - Near poses: 0.3 m out, the pane 0.27 m above the eye, as the R-P4o guard stands, at 1280 ×
- *   720, the whole frame counted. Asserted at 0.5% at levels 0 and 4. A pane this near is in the
- *   near band, which only levels 13 and 16 shed.
+ *   720, the whole frame counted. Asserted at 0.5% at every tested level, including 13 and 16,
+ *   which shed the near band.
  */
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
@@ -30,7 +30,7 @@ import { expect, glErrors, test, type Xr } from './fixtures';
 const MAX_BARE = 0.005;
 const QUERY = 'painting=starry-night&seed=1&shot&coverage&nogov&motionlayers=';
 const LEVELS = [0, 4, 5, 8, 13, 16] as const;
-const ASSERTED = new Set<number>([0, 4]);
+const ASSERTED_FAR = new Set<number>([0, 4]);
 const NEAR_VIEW = { width: 1280, height: 720 };
 
 interface PanePose {
@@ -196,7 +196,7 @@ test.describe('window panes under density sheds', () => {
         console.log(
           `[e2e] panes far level ${level} house ${pane.house} eye (${eye}): bare ${(bare * 100).toFixed(3)}% of ${pixels} px`,
         );
-        if (ASSERTED.has(level) && bare > MAX_BARE) {
+        if (ASSERTED_FAR.has(level) && bare > MAX_BARE) {
           failures.push(`level ${level} house ${pane.house}: ${(bare * 100).toFixed(3)}%`);
         }
       }
@@ -208,7 +208,7 @@ test.describe('window panes under density sheds', () => {
     expect(await glErrors(page)).toEqual([]);
   });
 
-  test('every near pane stays covered at 0.3 m at levels 0 and 4', async ({ page, xr }) => {
+  test('every near pane stays covered at 0.3 m through level 16', async ({ page, xr }) => {
     expect(PANES).toHaveLength(15);
     await page.setViewportSize(NEAR_VIEW);
     await boot(xr);
@@ -223,7 +223,7 @@ test.describe('window panes under density sheds', () => {
         console.log(
           `[e2e] panes near level ${level} house ${pane.house}: bare ${(bare * 100).toFixed(3)}%`,
         );
-        if (ASSERTED.has(level) && bare > MAX_BARE) {
+        if (bare > MAX_BARE) {
           failures.push(`level ${level} house ${pane.house}: ${(bare * 100).toFixed(3)}%`);
         }
       }

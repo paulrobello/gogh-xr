@@ -1375,6 +1375,32 @@ describe('draw classes', () => {
     ]);
   });
 
+  test('quality sheds keep the near window instances until a distance change or a fade', () => {
+    const batch = createStrokeBatch(mixed(80), { cellSize: 4, createAtlas: tinyAtlas });
+    const window = batch.chunks.find((chunk) => chunk.drawClass === 'overlay');
+    const world = batch.chunks.find((chunk) => chunk.drawClass === 'world');
+    const camera = originCamera();
+    batch.setDensity('near', 0.25, true);
+    batch.update(camera);
+    expect(window?.band).toBe('near');
+    expect(window?.drawCount).toBe(20);
+    expect(world?.drawCount).toBe(5);
+
+    camera.position.z = 30;
+    camera.updateMatrixWorld();
+    batch.update(camera);
+    expect(window?.band).toBe('far');
+    expect(window?.drawCount).toBe(8);
+
+    camera.position.z = 0;
+    camera.updateMatrixWorld();
+    batch.update(camera);
+    expect(window?.drawCount).toBe(20);
+    batch.setDensity('near', 0);
+    expect(window?.drawCount).toBe(0);
+    batch.dispose();
+  });
+
   test('a cell holding every class becomes one chunk per class, each class in its own block', () => {
     const buffers = mixed(80);
     const batch = createStrokeBatch(buffers, { cellSize: 4, createAtlas: tinyAtlas });

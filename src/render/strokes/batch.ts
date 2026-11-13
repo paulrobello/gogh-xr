@@ -269,10 +269,10 @@ export interface StrokeBatch {
   /**
    * Sets a band's density, clamped to [0, 1]: each of its chunks draws
    * `pinned + bandDrawCount(d, count - pinned)` instances from now on, a suffix or a prefix
-   * (`StrokeChunk.drawStart`). Only instance counts and offsets change. Throws RangeError on a
-   * non-finite `d`.
+   * (`StrokeChunk.drawStart`). Pass `preserveNearPanes` for quality levels so the near band's
+   * face-clamped window strokes keep their coverage. Throws RangeError on a non-finite `d`.
    */
-  setDensity(band: StrokeBand, d: number): void;
+  setDensity(band: StrokeBand, d: number, preserveNearPanes?: boolean): void;
   density(band: StrokeBand): number;
   /** Sets a band's stroke-size multiplier, a finite number above 0, else RangeError. */
   setSizeMultiplier(band: StrokeBand, m: number): void;
@@ -938,6 +938,7 @@ export function* createStrokeBatchSteps(
   const defaultOrder = depthWrite ? WRITE_ORDER_POLICY : DEFAULT_ORDER_POLICY;
   const densities: Record<StrokeBand, number> = { ...DEFAULT_BAND_DENSITY };
   const sizes: Record<StrokeBand, number> = { ...DEFAULT_BAND_SIZE };
+  let preserveNearPanes = false;
   const materials = {} as Record<StrokeBand, StrokeMaterial>;
   for (const band of STROKE_BANDS) {
     materials[band] = createStrokeMaterial(
@@ -1188,9 +1189,11 @@ export function* createStrokeBatchSteps(
 
   /** Under the `vtx` arm `fewer` (vertex-arms.ts), the band density times its keep share. */
   function applyDensity(i: number, band: StrokeBand): void {
-    const { count, pinned } = chunks[i];
+    const { count, pinned, drawClass } = chunks[i];
     const keep = vertexArms.keep();
-    const d = keep === 1 ? densities[band] : densities[band] * keep;
+    const density =
+      preserveNearPanes && band === 'near' && drawClass === 'overlay' ? 1 : densities[band];
+    const d = density * keep;
     chunks[i].setDrawCount(pinned + bandDrawCount(d, count - pinned));
   }
 
@@ -1414,10 +1417,11 @@ export function* createStrokeBatchSteps(
       frozenRank.fill(-1);
       frozenOnce = false;
     },
-    setDensity(band: StrokeBand, d: number) {
+    setDensity(band: StrokeBand, d: number, preservePanes = false) {
       checkBand(band);
       if (!Number.isFinite(d)) throw new RangeError(`density ${d} must be a finite number`);
       densities[band] = Math.min(1, Math.max(0, d));
+      if (band === 'near') preserveNearPanes = preservePanes;
       bandOf.forEach((b, i) => {
         if (b === band) applyDensity(i, band);
       });

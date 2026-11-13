@@ -192,7 +192,7 @@ describe('createVertexArms', () => {
     expect(walk).toHaveBeenCalledTimes(2);
   });
 
-  test('setBands sets every band density and size multiplier on every batch', () => {
+  test('setBands applies governor density and size settings on every batch', () => {
     const arms = createVertexArms();
     const batch = fakeBatch();
     arms.register(batch);
@@ -200,7 +200,7 @@ describe('createVertexArms', () => {
     const size = { near: 1.2, mid: 1.3, far: 1.4 };
     arms.setBands({ density, size });
     for (const band of STROKE_BANDS) {
-      expect(batch.setDensity).toHaveBeenCalledWith(band, density[band]);
+      expect(batch.setDensity).toHaveBeenCalledWith(band, density[band], true);
       expect(batch.setSizeMultiplier).toHaveBeenCalledWith(band, size[band]);
     }
   });

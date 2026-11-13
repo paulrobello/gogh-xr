@@ -2,19 +2,17 @@
  * The audio unlock (P6.5): no AudioContext before a gesture, a running one after the first click
  * or the Enter VR button, a silent, error-free boot with no audio files present, none at all in
  * the bench, and the desktop panel's volume sliders driving the buses live and across a reload.
- * P6.6 extends this once P6.4's files ship.
+ * P6.6 also exercises both shipped scores and checks cue loading and decoding.
  */
 import type { Page } from '@playwright/test';
+import { CUE_IDS } from '../../src/audio/cues';
+import type { MixerDiag } from '../../src/audio/mixer';
 import { expect, test, type Xr } from './fixtures';
 import { SETTINGS_KEY, settings } from './helpers';
 
-interface AudioDiag {
-  state: string;
+interface AudioDiag
+  extends Pick<MixerDiag, 'state' | 'manifest' | 'buses' | 'score' | 'voices' | 'cues'> {
   unlocked: boolean;
-  manifest: string;
-  buses: { music: number; sfx: number };
-  score: { target: string | null; playing: string | null; crossfading: boolean };
-  voices: { music: number; sfx: number; max: number; dropped: number };
 }
 
 const audio = async (xr: Xr): Promise<AudioDiag> => (await xr.diag()).audio as AudioDiag;
@@ -43,6 +41,7 @@ test('the first desktop click unlocks a running context, and missing files run s
   xr,
 }) => {
   await countContexts(page);
+  await page.route('**/audio/manifest.json', (route) => route.fulfill({ status: 404 }));
   await xr.boot('noanim');
   await expect.poll(async () => (await xr.diag()).painting).toBe('gallery');
   await xr.waitFrames(3);
@@ -53,12 +52,46 @@ test('the first desktop click unlocks a running context, and missing files run s
   await page.locator('canvas').click();
   await expect.poll(async () => (await audio(xr)).unlocked).toBe(true);
   await expect.poll(async () => (await audio(xr)).state).toBe('running');
-  await expect.poll(async () => (await audio(xr)).manifest).not.toBe('pending');
-  const after = await audio(xr);
-  expect(after.score.target).toBe('score-gallery');
-  expect(after.voices.dropped).toBe(0);
+  await expect.poll(async () => (await audio(xr)).manifest).toBe('missing');
+  expect(await audio(xr)).toMatchObject({
+    score: { target: 'score-gallery', playing: null },
+    voices: { music: 0, dropped: 0 },
+  });
   await page.locator('canvas').click();
   expect(await contexts(page)).toBe(1);
+});
+
+test('the first gesture plays the shipped gallery score and portal entry plays the night score', async ({
+  page,
+  xr,
+}) => {
+  const decodeErrors: string[] = [];
+  page.on('console', (message) => {
+    const text = message.text();
+    if (text.startsWith('audio:') && text.includes('failed to decode')) decodeErrors.push(text);
+  });
+  await xr.boot('noanim');
+  await expect.poll(async () => (await audio(xr)).score.target).toBe('score-gallery');
+  expect(await audio(xr)).toMatchObject({ unlocked: false, state: 'none' });
+  await page.locator('canvas').click();
+  await expect
+    .poll(() => audio(xr), { timeout: 15_000 })
+    .toMatchObject({
+      unlocked: true,
+      state: 'running',
+      manifest: 'loaded',
+      score: { playing: 'score-gallery' },
+      cues: Object.fromEntries(CUE_IDS.map((id) => [id, 'loaded'])),
+    });
+
+  expect(await page.evaluate(() => window.__goghPortal?.('starry-night'))).toBe(true);
+  await expect
+    .poll(() => audio(xr), { timeout: 45_000 })
+    .toMatchObject({
+      state: 'running',
+      score: { target: 'score-night', playing: 'score-night' },
+    });
+  expect(decodeErrors).toEqual([]);
 });
 
 test('Enter VR unlocks the context', async ({ xr }) => {

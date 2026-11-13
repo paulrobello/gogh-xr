@@ -834,6 +834,9 @@ describe('governor overrun recovery (ruling Q26)', () => {
     meanLevel: number;
     /** The lowest level seen from 30 s on: 0 once every stuck step has come back. */
     minLevel: number;
+    /** Mean sampled frame interval and underlying GPU work after warm-up, when modeled. */
+    meanInterval: number;
+    meanWork: number;
   }
 
   /**
@@ -842,52 +845,75 @@ describe('governor overrun recovery (ruling Q26)', () => {
    * half-second window means vary by 4-7%, more than the 3% bar, so useless sheds stick by chance
    * (governor review I1).
    */
-  function vsyncTrace(miss: (level: number) => number, seed: number, ms: number): Run {
+  function vsyncTrace(
+    seed: number,
+    ms: number,
+    frame: (level: number, t: number, rand: () => number) => { interval: number; work?: number },
+  ): Run {
     const gov = createGovernor({ mode: 'default', targetHz: 72 });
     const rand = mulberry32(seed);
     const events: GovernorEvent[] = [];
     let t = 0;
     let levelTime = 0;
     let total = 0;
+    let frames = 0;
+    let workTime = 0;
     let minLevel = Number.POSITIVE_INFINITY;
     while (t < ms) {
-      const interval = rand() < miss(gov.snapshot().level) ? 2 * VSYNC : VSYNC;
+      const level = gov.snapshot().level;
+      const { interval, work = 0 } = frame(level, t, rand);
       t += interval;
       const event = gov.sample({ t, intervalMs: interval, drawn: splitDrawn(gov.levels) });
       if (event) events.push(event);
       if (t >= 30_000) {
-        const level = gov.snapshot().level;
         total += interval;
+        frames++;
+        workTime += work * interval;
         levelTime += interval * level;
         minLevel = Math.min(minLevel, level);
       }
     }
-    return { gov, events, meanLevel: levelTime / total, minLevel };
+    return {
+      gov,
+      events,
+      meanLevel: levelTime / total,
+      minLevel,
+      meanInterval: total / frames,
+      meanWork: workTime / total,
+    };
   }
+
+  const randomMisses =
+    (miss: (level: number) => number) => (level: number, _t: number, rand: () => number) => ({
+      interval: rand() < miss(level) ? 2 * VSYNC : VSYNC,
+    });
 
   const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
 
-  test.each([0.31, 0.15, 0.06])(
-    'CPU-bound at miss rate %s with window noise: stuck sheds come back, no ratchet',
-    (miss) => {
+  // Full-session shed counts and 30–120 s time-weighted levels on d24716a, same seeds and trace.
+  test.each([
+    [0.31, 6.3125, 0.6151],
+    [0.15, 6.4375, 0.7605],
+    [0.06, 6.3125, 0.7368],
+  ])(
+    'CPU-bound at miss rate %s: sheds at most half as often without lowering mean quality',
+    (miss, baselinePerMinute, baselineLevel) => {
       const meanLevels: number[] = [];
+      let sheds = 0;
       for (const seed of SEEDS) {
-        const { events, meanLevel, minLevel } = vsyncTrace(() => miss, seed, 120_000);
-        // Some useless sheds stick by chance; recovery restores them.
-        expect(
-          events.some((e) => e.action === 'recover'),
-          `seed ${seed}`,
-        ).toBe(true);
-        // Back at or next to the start levels after 30 s, and on average within three steps
-        // (worst measured 2.88: seed 3 at miss rate 0.06).
+        const { events, meanLevel, minLevel } = vsyncTrace(
+          seed,
+          120_000,
+          randomMisses(() => miss),
+        );
+        sheds += events.filter((event) => event.action === 'shed').length;
         expect(minLevel, `seed ${seed} lowest level after 30 s`).toBeLessThanOrEqual(1);
         expect(meanLevel, `seed ${seed} mean level, 30-120 s`).toBeLessThan(3);
         meanLevels.push(meanLevel);
       }
-      // Without recovery the same traces stick at a median of 4 steps (governor review I1).
+      expect(sheds / (SEEDS.length * 2)).toBeLessThanOrEqual(baselinePerMinute / 2);
       const mean = meanLevels.reduce((a, b) => a + b, 0) / meanLevels.length;
-      // Worst measured 0.76 (miss rate 0.15).
-      expect(mean).toBeLessThan(2);
+      expect(mean).toBeLessThanOrEqual(baselineLevel);
     },
   );
 
@@ -897,7 +923,14 @@ describe('governor overrun recovery (ruling Q26)', () => {
       // The recovery-hold doubling never resets on a CPU-bound frame (the rate never changes), so
       // a chance recover-back holds its step from recovery for ever longer. These bounds track
       // the measured worst case over 30-600 s (mean 0.66, worst seed 1.79), not a target.
-      const means = SEEDS.map((seed) => vsyncTrace(() => miss, seed, 600_000).meanLevel);
+      const means = SEEDS.map(
+        (seed) =>
+          vsyncTrace(
+            seed,
+            600_000,
+            randomMisses(() => miss),
+          ).meanLevel,
+      );
       const mean = means.reduce((a, b) => a + b, 0) / means.length;
       expect(mean, `mean over seeds ${JSON.stringify(means)}`).toBeLessThan(1);
       expect(Math.max(...means), 'worst seed').toBeLessThan(3.5);
@@ -909,7 +942,7 @@ describe('governor overrun recovery (ruling Q26)', () => {
     // quality, and still over the 72 Hz budget at the 150k floor.
     const miss = (level: number) => Math.max(0.1, 0.9 - 0.08 * level);
     for (const seed of [1, 2, 3, 4]) {
-      const { events, meanLevel } = vsyncTrace(miss, seed, 120_000);
+      const { events, meanLevel } = vsyncTrace(seed, 120_000, randomMisses(miss));
       const recovers = events.filter((e) => e.action === 'recover').length;
       const backs = events.filter((e) => e.action === 'recover-back').length;
       expect(recovers, `seed ${seed}`).toBeGreaterThan(0);
@@ -920,6 +953,39 @@ describe('governor overrun recovery (ruling Q26)', () => {
       expect(meanLevel, `seed ${seed} mean level, 30-120 s`).toBeGreaterThan(2.2);
     }
   });
+
+  test.each([18, 19])(
+    'GPU work starting at %s ms reaches the 72 Hz budget with noisy vsyncs',
+    (startMs) => {
+      const budgetLevel = Math.log(VSYNC / startMs) / Math.log(SHED_GAIN);
+      const runs = SEEDS.map((seed) => {
+        let window = -1;
+        let drift = 0;
+        let debt = 0;
+        return vsyncTrace(seed, 240_000, (level, t, rand) => {
+          const nextWindow = Math.floor(t / 500);
+          if (nextWindow !== window) {
+            window = nextWindow;
+            drift = (2 * rand() - 1) * 0.065;
+          }
+          const work = startMs * SHED_GAIN ** level * (1 + drift);
+          debt += work - VSYNC;
+          if (debt <= 0) {
+            debt = Math.max(debt, -VSYNC);
+            return { interval: VSYNC, work };
+          }
+          debt -= VSYNC;
+          return { interval: 2 * VSYNC, work };
+        });
+      });
+      // Unquantized work must fit on every seed. The measured interval allows rare missed vsyncs.
+      for (const { meanLevel, meanWork, meanInterval } of runs) {
+        expect(meanLevel).toBeGreaterThanOrEqual(budgetLevel);
+        expect(meanWork).toBeLessThan(VSYNC);
+        expect(meanInterval).toBeLessThanOrEqual(VSYNC * 1.01);
+      }
+    },
+  );
 
   test('a deterministic GPU-bound frame: every restore is reverted and held for 30 s', () => {
     const gov = createGovernor({ mode: 'default', targetHz: 90 });

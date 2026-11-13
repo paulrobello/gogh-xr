@@ -153,14 +153,13 @@ test('the HUD matches diag within one update while the governor sheds, and leave
   await useAutoQuality(page);
   const requests: string[] = [];
   page.on('request', (request) => requests.push(request.url()));
-  // ?hz=90 selects adaptive-90, whose 72 Hz fallback brings the notice this test needs.
-  await bootHud(page, xr, '&hz=90');
+  // The CPU delay guarantees overrun even when the headless compositor delivers frames faster
+  // than its nominal vsync. Adaptive-90 has the 72 Hz fallback this test observes.
+  await bootHud(page, xr, '&hz=90&slow=40');
   await xr.enterXR();
 
-  // Headless Chromium's 60 Hz vsync overruns the 90 Hz budget, so the governor moves. Vsync fixes
-  // the interval, so each shed buys nothing and is undone as no-gain a window later. A shed level
-  // lasts one 0.5 s window, about two HUD updates, so step through the updates until one lands
-  // while a step is shed: that sample proves the HUD shows a level other than 0.
+  // A shed stays applied through its gain check. Read the HUD during one of those steps to prove
+  // it displays an active level above zero.
   let first = await alignedSample(page);
   const deadline = Date.now() + 20_000;
   while (!(first.governor?.judging && first.governor.level > 0) && Date.now() < deadline) {
@@ -188,7 +187,9 @@ test('the HUD matches diag within one update while the governor sheds, and leave
         seenAt = (diag.hud as HudDiag).updatedAt;
         return (diag.governor as GovernorDiag).notice;
       },
-      { timeout: 30_000 },
+      // Several mixed-vsync gain checks can take four seconds each before the three-second
+      // fallback delay starts.
+      { timeout: 45_000 },
     )
     .toMatch(/72 Hz/);
   const noticed = await alignedSample(page, seenAt);

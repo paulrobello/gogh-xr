@@ -152,7 +152,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
   function applyLevels(): void {
     const { density, size } = governor.levels;
     for (const band of STROKE_BANDS) {
-      batch.setDensity(band, density[band]);
+      batch.setDensity(band, density[band], true);
       batch.setSizeMultiplier(band, size[band]);
     }
     if (scaler) scaler.scale = governor.levels.fbScale;
@@ -198,7 +198,7 @@ export function startGovernor(deps: GovernorRuntimeDeps): GovernorRuntime {
     const levels = governor.levels;
     const band = densityBand(event.step);
     if (band) {
-      batch.setDensity(band, levels.density[band]);
+      batch.setDensity(band, levels.density[band], true);
       batch.setSizeMultiplier(band, levels.size[band]);
     } else if (event.step === 'fb-scale') {
       if (scaler) scaler.scale = levels.fbScale;
