@@ -24,11 +24,11 @@ PRD: [P7](../PRD.md#p7--release). P7.1 can start as soon as P0.2 is done, becaus
 ### P7.2: Performance pass against SC1
 - **Depends on:** P3.7, P4.7, P5.8, P6.6.
 - **Steps:**
-  - Paul runs the SC1 session on the Quest 3 with OVR Metrics: 5 minutes covering the whole diorama, the boundary in flight, the cypress walk-through, and the portal both ways.
-  - If more than 1% of frames go over budget, profile with RenderDoc for Oculus. Retune the per-band budgets and the governor thresholds, then measure again.
+  - Paul runs the SC1 session at the shipped default (fixed level 5) on Quest 3 with OVR Metrics: 5 minutes covering the whole diorama, the boundary in flight, the cypress walk-through, and the portal both ways.
+  - If the default falls below the 24 fps floor, profile the failing segment and repeat the route after any tuning. For a 72 Hz Auto run, record the median and the share of frames over 13.9 ms separately.
   - Record every result in `docs/perf.md` with the build id.
 - **Verify:**
-  - `docs/perf.md` shows the median frame rate and the share of frames over budget for the release candidate. The median must be at least 90 fps and the over-budget share under 1%.
+  - `docs/perf.md` shows the median frame rate and the share of frames over budget for the release candidate. The shipped default must meet the 24 fps floor. Any 90 Hz measurements are diagnostic only.
   - **The card stays open until Paul signs off.**
 
 ### P7.3: README and docs
@@ -50,7 +50,7 @@ PRD: [P7](../PRD.md#p7--release). P7.1 can start as soon as P0.2 is done, becaus
 - **Depends on:** P7.1, P7.2, P7.3.
 - **Steps:**
   - Run `make checkall-ci` and `make e2e` on the release commit.
-  - With Paul's approval, push and deploy.
+  - Push and deploy under Paul’s standing approval for gogh-xr.
   - Do a live render check of `https://gogh-xr.pardev.net`.
   - Paul does the final headset acceptance on the live URL, from the gallery through to Starry Night and back, covering every motion, locomotion mode and comfort option.
 - **Verify:**

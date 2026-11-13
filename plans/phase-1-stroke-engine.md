@@ -134,7 +134,7 @@ Distance bands are Near (0–6 m), Mid (6–25 m) and Far (25 m to the boundary)
     - Record the stroke-look verdict.
   - **Frame times at the default budget:** `?demo=canvas&hud&count=325000`.
     - This draws about 325k strokes, the P0-measured budget, with the P1 stroke material.
-    - Record the OVR Metrics frame times at 90 Hz.
+    - Record the headset frame times at the default quality. A 90 Hz run is optional diagnostic evidence.
   - **Max-beauty spot check:** `?demo=canvas&hud&beauty&count=500000`.
     - This targets 72 Hz with about 500k strokes.
     - Record the OVR Metrics frame times and the look.

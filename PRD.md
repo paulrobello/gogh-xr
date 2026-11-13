@@ -14,7 +14,7 @@
 
 Gogh XR is a Meta Quest 3 WebXR experience. You start in a small gallery room and step through the frame of *The Starry Night* (1889) into a walkable 3D version of the painting. The hills, village, church and cypress are built from simple procedural forms. More than a million GPU-instanced brushstrokes cover them, with colors and directions sampled from a public-domain scan of the canvas. Shaders animate those strokes, so the sky swirls, the stars and moon pulse, the cypress flickers like a flame, and strokes part around your head and hands as you move through them.
 
-The visual target is to use as much of the Quest 3's capacity as possible, sustained at the target frame rate: 72 Hz by default (`adaptive-72`, since 2026-11-07), or 90 Hz as an option (`adaptive-90`). An adaptive quality governor protects that frame rate, and an optional 72 Hz max-beauty mode trades refresh rate for stroke density.
+The visual target is to preserve the painting's appearance on Quest 3. The shipped quality requests 72 Hz at fixed level 5. Auto can trade stroke density for frame rate. The 90 Hz adaptive preset remains available as an optional refresh-rate request.
 
 The gallery has seven frames. *The Starry Night* is live. Six more hang as "coming soon": *Chestnut Trees in Blossom*, *Les Alyscamps*, *Café Terrace at Night*, *The Bedroom*, *Wheatfield with Crows* and *Starry Night Over the Rhône*. Each painting is a registry entry, so a later painting needs only a new world module.
 
@@ -22,14 +22,14 @@ The gallery has seven frames. *The Starry Night* is live. Six more hang as "comi
 
 1. **Presence inside the painting.** At the painter's spot on the hilltop, the headset view reads as *The Starry Night*: same composition, palette and stroke direction. Moving away from that spot reveals a coherent 3D world painted in the same strokes.
 2. **Living paint.** All four motions ship in v1: the sky swirl and wind currents, pulsing star and moon halos, the flame-like cypress, and strokes that react to the head and both controllers.
-3. **Use the headset's full capacity without dropping frames.** Hold the target frame rate on Quest 3 (72 Hz by default since 2026-11-07, 90 Hz with the `adaptive-90` option) with the stroke density the device can sustain. The density is measured on the device, not guessed. The governor degrades quality before frames drop.
+3. **Measure sustained performance on Quest 3.** Preserve the approved stroke density and validate the shipped quality against SC1. Measure Auto against its 72 Hz target at quality levels that fit the frame budget.
 4. **Free, comfortable movement.** Room-scale walking, teleport, smooth stick movement and flight, plus snap or smooth turn, a tunnel vignette, seated mode and a calm-motion slider.
 5. **Extensible gallery.** Painting selection uses a data-driven registry and a gallery portal, so adding a painting is a world module plus a registry entry.
 6. **Agent-operable and verifiable.** A desktop preview, IWER-emulated XR tests and in-app diagnostics let agents build and check almost everything without the headset. The owner's per-phase headset check covers what emulation cannot: comfort, sustained frame rate and look.
 
 ### Success criteria (v1)
 
-- **SC1.** (Paul, 2026-11-09: quality over frame rate. The default is a fixed quality level 5, not Auto, and the 72 fps bar below applies to Auto and to levels that fit the budget, not to the default. Paul, 2026-11-10: the frame-rate floor for the default is 24 fps, which still reads as smooth; measured on Quest 3 the default level 5 runs at about 42 fps at the painter's spot.) Starry Night holds a median of 72 fps on Quest 3 in the default mode (`adaptive-72`, since 2026-11-07), measured with OVR Metrics Tool. In a 5-minute session that walks the whole diorama and flies the boundary, fewer than 1% of frames exceed the 13.9 ms budget. The `adaptive-90` option holds 90 fps against the 11.1 ms budget under the same rule.
+- **SC1.** Run a five-minute Quest 3 session with OVR Metrics at the shipped default (fixed quality level 5). Walk the diorama and fly the boundary. The default has a 24 fps floor, with visual quality taking precedence. For 72 Hz Auto and quality levels that fit that budget, the target remains a 72 fps median with fewer than 1% of frames over 13.9 ms. The 90 Hz option is a best-effort refresh-rate request and carries no release acceptance threshold. Paul superseded the 90 fps requirement on 2026-11-13.
 - **SC2.** A screenshot from the painter's spot matches the reference canvas closely enough that the owner accepts it side by side. The phase 2 plan sets the measured check.
 - **SC3.** The owner accepts all four locomotion modes and all four comfort options on the headset, with no comfort complaints in a 15-minute session.
 - **SC4.** The owner accepts the gallery-to-painting portal and the return path on the headset.
@@ -216,7 +216,7 @@ Acceptance:
 - **P1-A1.** Unit tests cover flow-field orientation on synthetic images, stroke placement density per band, and the governor's state machine.
 - **P1-A2.** A test canvas (the scan on a plane, painted in strokes) is recognizably the painting in the desktop preview, captured with `?shot`.
 - **P1-A3.** The governor's degradation order and the 72 Hz fallback are verified by unit tests and by an IWER e2e run with a forced slow-frame flag.
-- **P1-A4.** Headset check. The owner confirms the stroke look, and OVR Metrics shows 90 Hz held at the P0-measured budget.
+- **P1-A4.** Headset check. The owner confirms the stroke look, and the headset frame times at the default budget are recorded in `docs/verification.md`.
 
 ### P2 — Starry Night world
 
