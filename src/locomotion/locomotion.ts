@@ -15,9 +15,11 @@ import { comfortFactor, easeVignette } from '../ui/vignette-alpha';
 import { MAX_DT } from '../xr/input';
 import { boundaryExcess, enterFlight, exitFlight, type FlightInput, fly } from './flight';
 import type { LocomotionSettings, TurnMode } from './settings';
+import { constrainSolidMovement } from './solid-movement';
 import {
   calibrateSeated,
   createLocomotionState,
+  effectiveOffset,
   FLAT_GROUND,
   type Ground,
   type LocomotionMode,
@@ -240,6 +242,10 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
   const aimOrigin: [number, number, number] = [0, 0, 0];
   const aimDirection: [number, number, number] = [0, 0, 0];
   const eye: [number, number, number] = [0, 0, 0];
+  const lastBody: [number, number, number] = [0, 0, 0];
+  const body: [number, number, number] = [0, 0, 0];
+  const dropStart: [number, number, number] = [0, 0, 0];
+  let bodyAtJump = -1;
   const scratch = new Vector3();
   const head = { x: 0, y: 0, z: 0, yaw: 0 };
   /** The head's pitch, radians, positive up: flight flies along it. */
@@ -287,6 +293,30 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     out[0] = state.position[0] + cos * head.x + sin * head.z;
     out[1] = y;
     out[2] = state.position[2] - sin * head.x + cos * head.z;
+  }
+
+  function bodyWorld(out: [number, number, number]): void {
+    headWorld(out, state.position[1] - effectiveOffset(state, settings, head.y));
+  }
+
+  function constrainBody(): void {
+    const volumes = landing.volumes;
+    if (!volumes || ground === null) return;
+    bodyWorld(body);
+    const [x, y, z] = body;
+    if (state.dropping) {
+      // A drop follows the terrain, so keep its path clear at ground level from the start.
+      dropStart[0] = lastBody[0];
+      dropStart[1] = ground.heightAt(lastBody[0], lastBody[2]);
+      dropStart[2] = lastBody[2];
+      body[1] = ground.heightAt(x, z);
+      constrainSolidMovement(volumes, dropStart, body);
+    } else {
+      constrainSolidMovement(volumes, lastBody, body);
+      state.position[1] += body[1] - y;
+    }
+    state.position[0] += body[0] - x;
+    state.position[2] += body[2] - z;
   }
 
   function jump(hit: Vec3): void {
@@ -374,7 +404,9 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       aimActive = false;
       arc?.hide();
     } else {
-      exitFlight(state);
+      bodyWorld(body);
+      // The ground-follow drop needs clear terrain beneath the player.
+      if (!landing.volumes || !landing.blocked?.(body[0], body[2])) exitFlight(state);
     }
   }
 
@@ -383,6 +415,7 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
     if (haze !== 0) landing.setHaze?.(0);
     haze = 0;
     landing = next;
+    bodyAtJump = -1;
   }
 
   /** Eases the haze thickening toward its target and hands it to the world when it changes. */
@@ -412,6 +445,10 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
         calibrated = false;
         state.seatedOffset = 0;
       }
+      const constrain = landing.volumes && ground !== null ? constrainBody : undefined;
+      if (constrain && (bodyAtJump !== headJumps || presenting !== isPresenting)) {
+        bodyWorld(lastBody);
+      }
       presenting = isPresenting;
       if (!actions.teleportAim) aimBlocked = false;
       // Teleport is a walk-mode action: this is the one check flight, its exit drop and an aim held
@@ -421,15 +458,19 @@ export function createLocomotion(deps: LocomotionDeps): Locomotion {
       // A held aim never turns the rig, even pushed diagonally across the snap threshold.
       if (turn(state, aiming ? NO_TURN : actions, settings, actions.dt, head)) discontinuities += 1;
       if (state.mode === 'fly' && ground !== null) {
-        fly(state, actions, ground, landing, settings, actions.dt, head, headPitch);
+        fly(state, actions, ground, landing, settings, actions.dt, head, headPitch, constrain);
       } else {
-        step(state, actions, ground, settings, actions.dt, head);
+        step(state, actions, ground, settings, actions.dt, head, constrain);
       }
       // A placed pose (`__goghPose`, `?painter`) stays where it was put until the next movement.
       if (landing.walkBounds && !state.held) clampToWalkBounds(state, head, landing.walkBounds);
       teleport(actions, aiming, allowed, isPresenting);
       // The toggle takes effect from the next frame: the exit drop's 0.5 s starts at this one.
       if (actions.flightToggle) toggleFlight();
+      if (constrain) {
+        bodyWorld(lastBody);
+        bodyAtJump = headJumps;
+      }
       writeRig();
       easeHaze(actions.dt);
       // XR only: the desktop preview and its captures never show the vignette, even fading out.

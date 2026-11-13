@@ -1,6 +1,6 @@
-import { Euler, Quaternion, Vector3 } from 'three';
+import { Vector3 } from 'three';
 import { CANVAS_PITCH } from '../../src/paintings/starry-night/canvas-camera';
-import { expect, type Quat, test, type Xr } from './fixtures';
+import { expect, test, type Xr } from './fixtures';
 import { aim, controlPoint, panel, portal, settings, settled } from './helpers';
 
 interface Round {
@@ -112,17 +112,12 @@ test('XR settings opt into portal entry and hints follow the rendered head pose'
   await xr.press('left', 'y-button');
   await expect.poll(async () => (await round(xr))?.hud).toBeNull();
 
-  const [x, , z] = await rigPosition(xr);
-  // The spawn rig faces back toward town. Invert that yaw to express the target head pose locally.
-  const inverseYaw = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), -Math.PI);
-  const orientation = new Quaternion()
-    .setFromEuler(new Euler(CANVAS_PITCH, 0, 0))
-    .premultiply(inverseYaw);
-  const targetHead = new Vector3(-x, 1.6, -z).applyQuaternion(inverseYaw);
+  // Place the rig at the target without simulating a 43 m room-scale jump through town.
+  await page.evaluate((pitch) => window.__goghPose?.(0, 1.6, 0, 0, pitch), CANVAS_PITCH);
   await xr.setPose({
     head: {
-      position: targetHead.toArray(),
-      quaternion: orientation.toArray() as Quat,
+      position: [0, 1.6, 0],
+      quaternion: [Math.sin(CANVAS_PITCH / 2), 0, 0, Math.cos(CANVAS_PITCH / 2)],
     },
   });
   await expect.poll(async () => (await round(xr))?.found).toBe(true);

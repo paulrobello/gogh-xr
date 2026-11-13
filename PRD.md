@@ -43,7 +43,7 @@ The gallery has seven frames. *The Starry Night* is live. Six more hang as "comi
 - **A native APK** (Unity, Godot or Unreal) is excluded. The runtime is WebXR in Quest Browser.
 - **Gaussian splats** were considered and rejected. Sorting cost in stereo on Quest is a risk, and no splat source exists for a painting.
 - **Full-screen post-processing** is excluded. It disables fixed foveation and MSAA on Quest, per Meta's FFR guidance. Glow comes from additive halo strokes.
-- **A physics engine** is excluded. Collision is only ground-following on the terrain heightfield. Buildings and trees are non-solid, and their strokes part around you.
+- **A physics engine** is excluded. Locomotion follows the terrain heightfield and uses building volumes to block movement through houses and the church. Trees remain passable and their strokes part around you.
 - **Worlds for the six other paintings.** They are "coming soon" frames in v1. Each one is a separate later project or phase.
 - **Multiview** (`OCULUS_multiview` / `OVR_multiview2`) is excluded from v1. See Architecture Direction, decision D3.
 - **WebGPU/TSL** is excluded. WebGPU does not reliably bind to immersive WebXR sessions in Quest Browser.

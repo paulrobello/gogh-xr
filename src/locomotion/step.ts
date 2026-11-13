@@ -191,6 +191,7 @@ export function step(
   settings: LocomotionSettings,
   dt: number,
   head: HeadPose,
+  constrain?: () => void,
 ): void {
   const t = dt > 0 ? Math.min(dt, MAX_DT) : 0;
   const position = state.position;
@@ -214,6 +215,7 @@ export function step(
     position[2] += (-sin * mx - cos * my) * k;
   }
 
+  if (!state.held) constrain?.();
   // The head's world XZ: the rig position plus the head offset turned by the rig yaw.
   const sin = Math.sin(state.yaw);
   const cos = Math.cos(state.yaw);

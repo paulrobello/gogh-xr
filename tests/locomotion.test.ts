@@ -12,6 +12,7 @@ import {
   LAUNCH_SPEED,
   type LandingWorld,
 } from '../src/locomotion/teleport';
+import { createFootprintTest, createVolumes } from '../src/paintings/starry-night/footprints';
 import type { Vec3 } from '../src/render/strokes/frame';
 
 const IDLE: FrameActions = {
@@ -749,5 +750,84 @@ describe('flight', () => {
     locomotion.setWorld(null);
     expect(hazes.at(-1)).toBe(0);
     expect(locomotion.diag().haze).toBe(0);
+  });
+});
+
+describe('solid structures', () => {
+  const village = {
+    houses: [{ center: [0, 0, -4], yaw: 0, width: 4, depth: 2, eaveHeight: 3, ridgeHeight: 4 }],
+    church: {
+      center: [0, 0, -10],
+      naveRidge: 5,
+      steepleTip: [0, 9, -8],
+      walls: [
+        [
+          [-1, -10],
+          [1, -10],
+          [1, -8],
+          [-1, -8],
+        ],
+        [
+          [-3, -14],
+          [3, -14],
+          [3, -9],
+          [-3, -9],
+        ],
+      ],
+    },
+  } as const;
+
+  function solidWorld() {
+    return {
+      ground: { heightAt: () => 0, normalAt: (): Vec3 => [0, 1, 0] },
+      blocked: createFootprintTest(village),
+      volumes: createVolumes(village),
+    };
+  }
+
+  it('stops desktop walking at a wall and lets the player slide along it', () => {
+    const { locomotion, desktopFrame, eye } = setup();
+    locomotion.setWorld(solidWorld());
+    for (let i = 0; i < 50; i += 1) desktopFrame(FORWARD);
+    expect(eye()[2]).toBeCloseTo(-2.7, 3);
+    const diagonal = { ...FORWARD, move: { x: 1, y: 1 } };
+    for (let i = 0; i < 10; i += 1) desktopFrame(diagonal);
+    expect(eye()[0]).toBeGreaterThan(0.65);
+    expect(eye()[2]).toBeCloseTo(-2.7, 3);
+  });
+
+  it('stops room-scale XR movement at the church, even across a whole wall in one sample', () => {
+    const { locomotion, xrFrame, eye } = setup();
+    locomotion.setWorld(solidWorld());
+    locomotion.spawn(0, 0, -7, 0);
+    xrFrame(IDLE, new Vector3(0, 1.6, 0));
+    xrFrame(IDLE, new Vector3(0, 1.6, -9));
+    expect(eye()[2]).toBeCloseTo(-7.7, 2);
+    xrFrame(IDLE, new Vector3(0, 1.6, -8.5));
+    expect(eye()[2]).toBeCloseTo(-7.2, 2);
+  });
+
+  it('stops flight at a roof, clears it at altitude, and only drops over open ground', () => {
+    const { locomotion, desktopFrame, eye } = setup();
+    locomotion.setWorld(solidWorld());
+    const toggle = { ...IDLE, flightToggle: true };
+    desktopFrame(toggle);
+    for (let i = 0; i < 50; i += 1) desktopFrame(FORWARD);
+    expect(eye()[2]).toBeCloseTo(-2.7, 3);
+    const climb = { ...IDLE, vertical: 1 };
+    for (let i = 0; i < 60; i += 1) desktopFrame(climb);
+    for (let i = 0; i < 13; i += 1) desktopFrame(FORWARD);
+    expect(eye()[2]).toBeCloseTo(-4, 3);
+    desktopFrame(toggle);
+    expect(locomotion.diag().mode).toBe('fly');
+    const descend = { ...IDLE, vertical: -1 };
+    for (let i = 0; i < 40; i += 1) desktopFrame(descend);
+    expect(eye()[1]).toBeCloseTo(4 + EYE_HEIGHT, 3);
+    for (let i = 0; i < 20; i += 1) desktopFrame(FORWARD);
+    expect(eye()[2]).toBeCloseTo(-6, 3);
+    desktopFrame(toggle);
+    for (let i = 0; i < 12; i += 1) desktopFrame(IDLE);
+    expect(locomotion.diag().mode).toBe('walk');
+    expect(eye()[1]).toBeCloseTo(EYE_HEIGHT, 3);
   });
 });

@@ -90,8 +90,8 @@ test('the Hand orbs toggle shows and hides one orb per hand in XR only, and pers
 }) => {
   test.setTimeout(120_000);
   await xr.boot('noanim&shot&scene=bare');
-  // On by default, and never drawn on the desktop.
-  expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [false, false] });
+  // The first animation frame copies the default setting into the orbs.
+  await expect.poll(() => orbs(xr)).toMatchObject({ enabled: true, visible: [false, false] });
   await xr.enterXR();
   await restHands(xr);
   expect(await orbs(xr)).toMatchObject({ enabled: true, visible: [true, true] });

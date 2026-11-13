@@ -167,6 +167,10 @@ Parsed in `src/diag/flags.ts`.
 
 - The camera sits in a rig, a three.js `Group` in the scene that carries the position and the rig yaw. XR's local-floor head pose and the desktop look stay inside it, so physical walking still works. `src/locomotion/step.ts` is the pure core and `src/locomotion/locomotion.ts` the wiring. XR and desktop share it. The bench never runs it, so its rig stays at the origin.
 - Smooth movement: 2.0 m/s at full stick (`LocomotionSettings.moveSpeed`, clamped to 1.0-3.0) along the head yaw projected onto the ground, rig yaw included. Shift doubles it, capped at 3.0 m/s.
+- Starry Night houses and the church are solid for walking and flight. Movement sweeps the player's
+  position at foot height against the same 0.3 m-grown volumes as teleport. The rig stops at a wall
+  and can move along it. Flight clears the buildings above their roofs, and toggling flight off
+  requires clear ground below. Trees remain passable while walking and flying.
 - Ground follow: the rig's y eases toward `WorldHandle.ground.heightAt` of the head's world XZ with an 80 ms time constant. With no world the floor is flat y = 0. While a world is loading the rig's y holds (not grounded) until its ground binds, so a spawn above y = 0 does not sink during the build. The desktop eye is 1.6 m above the rig.
 - Seated mode adds its offset to the rig's y only, so physical head movement maps one to one into the world.
 - Turning (`src/locomotion/turn.ts`, P3.3) rotates the rig yaw about the head's world XZ, not the rig origin, and re-solves the rig position so the head stays put. In XR the head is three's XR camera inside the rig, and on the desktop it is the eye, directly over the rig origin. Right is negative yaw. Snap mode (default) turns `snapAngleDeg` (30 or 45, default 30) once per `turn.snap`, at most once per 250 ms, and a request inside the cooldown is dropped. Smooth mode turns at `smoothTurnDegPerSec` (default 90, clamped to 30-180) times `turn.x`, and ignores `turn.snap`. The desktop Q and E keys feed the same `turn` action, so they snap too.

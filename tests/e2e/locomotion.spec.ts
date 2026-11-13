@@ -631,6 +631,44 @@ test('desktop T aimed past 45 m from the painter is rejected as a boundary, and 
   expect(after.position[2]).toBeCloseTo(aimed.position[2], 6);
 });
 
+test('WASD and XR stick movement stop at a real village house', async ({ page, xr }) => {
+  test.setTimeout(180_000);
+  const { eye, target } = houseApproach();
+  const yaw = yawToward(eye[0], eye[1], target[0], target[1]);
+  const approach = ([x, , z]: Vec3): number =>
+    (eye[0] - x) * Math.sin(yaw) + (eye[1] - z) * Math.cos(yaw);
+  const walkingAt = async (): Promise<number> => approach((await rig(xr)).position);
+
+  await bootWorld(xr, WORLD);
+  await placeEye(page, eye[0], eye[1], yaw);
+  await page.keyboard.down('KeyW');
+  await expect.poll(walkingAt, { timeout: 15_000 }).toBeGreaterThan(3);
+  await expect
+    .poll(
+      async () => {
+        const before = await walkingAt();
+        await xr.waitFrames(8);
+        return (await walkingAt()) - before;
+      },
+      { timeout: 20_000 },
+    )
+    .toBeLessThan(0.01);
+  await page.keyboard.up('KeyW');
+  const stop = await walkingAt();
+  const [x, , z] = (await rig(xr)).position;
+  expect(blocked(x, z)).toBe(false);
+  expect(blocked(x - Math.sin(yaw) * 0.05, z - Math.cos(yaw) * 0.05)).toBe(true);
+
+  await placeEye(page, eye[0], eye[1], yaw);
+  await xr.enterXR();
+  await xr.setPose({ head: { position: [0, 1.6, 0], quaternion: [0, 0, 0, 1] } });
+  await xr.stick('left', 0, -1);
+  await expect.poll(walkingAt, { timeout: 20_000 }).toBeGreaterThan(stop - 0.12);
+  await xr.waitFrames(12);
+  expect(await walkingAt()).toBeLessThan(stop + 0.12);
+  await xr.stick('left', 0, 0);
+});
+
 test('a right-stick aim at a house in XR is rejected and the release leaves the rig put', async ({
   page,
   xr,

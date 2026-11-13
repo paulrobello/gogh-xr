@@ -102,6 +102,7 @@ export function fly(
   head: HeadPose,
   /** The head's pitch, radians, positive up. */
   pitch: number,
+  constrain?: () => void,
 ): void {
   const t = dt > 0 ? Math.min(dt, MAX_DT) : 0;
   const position = state.position;
@@ -152,6 +153,7 @@ export function fly(
   position[0] += vx * t;
   position[1] += vy * t;
   position[2] += vz * t;
+  constrain?.();
 
   sin = Math.sin(state.yaw);
   cos = Math.cos(state.yaw);

@@ -21,7 +21,7 @@ const POSE_KEY = 'gogh-xr.panel.v1';
 
 // No test here enters a painting's world, so the page always hides Return to gallery and centres
 // Recenter. The layout module mirrors that, so `controlPoint` aims where the page draws.
-setControlHidden('gallery', true);
+test.beforeEach(() => setControlHidden('gallery', true));
 
 test('right A opens the panel; grip on a slider changes nothing; the trigger sets the vignette, which applies and persists', async ({
   page,
@@ -129,8 +129,12 @@ test('right A opens the panel; grip on a slider changes nothing; the trigger set
   expect(await page.evaluate((k) => localStorage.getItem(k), POSE_KEY)).not.toBeNull();
 
   // The trigger that presses Recenter stays out of `select` while it is held.
-  const recenterAt = controlPoint(await panel(xr), 'recenter');
-  await aim(xr, recenterAt.clone().add(new Vector3(0.04, -0.1, 0.35)), recenterAt);
+  const releasedPanel = await panel(xr);
+  const recenterAt = controlPoint(releasedPanel, 'recenter');
+  const faceOffset = new Vector3(0, 0, 0.35).applyQuaternion(
+    new Quaternion(...(releasedPanel.pose?.quaternion ?? [0, 0, 0, 1])),
+  );
+  await aim(xr, recenterAt.clone().add(faceOffset), recenterAt);
   await expect.poll(async () => (await panel(xr)).hover?.right).toBe('recenter');
   await setButton(page, 'trigger', 1);
   await xr.waitFrames(4);
