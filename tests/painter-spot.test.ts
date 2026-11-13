@@ -1,8 +1,14 @@
 import { Object3D } from 'three';
 import { expect, test } from 'vitest';
 import { parseFlags } from '../src/diag/flags';
-import type { LandingWorld } from '../src/locomotion/teleport';
+import { type LandingWorld, landingReason } from '../src/locomotion/teleport';
 import { createPainterSpotRound, findPainterStart } from '../src/paintings/find-painter-spot';
+import { createCrownTest, createFootprintTest } from '../src/paintings/starry-night/footprints';
+import { mulberry32 } from '../src/util/prng';
+import { boundaryFactor } from '../src/world/boundary';
+import { createCypress } from '../src/world/cypress';
+import { createTerrain } from '../src/world/terrain';
+import { createVillage } from '../src/world/village';
 
 const view = { eye: [0, 1.6, 0], yaw: 0, pitch: 0.25, fovYDeg: 60, aspect: 1.25 } as const;
 const spot = { position: [0, 0, 0], yaw: 0 } as const;
@@ -12,12 +18,40 @@ test('random starts use ground height and skip unsafe positions', () => {
     ground: { heightAt: (x) => x / 5, normalAt: () => [0, 1, 0] },
     blocked: (x) => x > 7,
   };
-  const draws = [0.25, 0, 0.75, 0];
+  const draws = [0.99, 0, 0, 0];
   const first = findPainterStart(spot, world, () => draws.shift() ?? 0);
-  expect(first?.position[0]).toBeCloseTo(-8);
-  expect(first?.position[1]).toBeCloseTo(-1.6);
-  expect(findPainterStart(spot, world, () => 0)?.position).toEqual([0, 0, 8]);
-  expect(findPainterStart(spot, world, () => 0.25)).toBeNull();
+  expect(first).toEqual({ position: [-8, -1.6, -43], yaw: Math.PI });
+  expect(findPainterStart(spot, world, () => 0.5)?.position).toEqual([0, 0, -43.5]);
+  expect(findPainterStart(spot, world, () => 0.99)).toBeNull();
+});
+
+test('the far-side strip has safe starts beyond the houses across representative world seeds', () => {
+  for (const seed of [1, 2, 7, 20, 30, 69, 100]) {
+    const ground = createTerrain(seed);
+    const village = createVillage(seed, ground);
+    const cypress = createCypress(seed, ground);
+    const world = {
+      ground,
+      boundaryFactor,
+      blocked: createFootprintTest(village),
+      treeBlocked: createCrownTest(cypress, ground.heightAt),
+    };
+    const farHouseEdge = Math.min(
+      ...village.houses.flatMap((house) => house.outline.map((p) => p[1])),
+    );
+    const random = mulberry32(seed);
+    for (let round = 0; round < 10; round++) {
+      const start = findPainterStart(spot, world, random);
+      if (!start) throw new Error(`no safe start for seed ${seed}, round ${round}`);
+      const [x, , z] = start.position;
+      expect(z).toBeLessThan(farHouseEdge);
+      expect(landingReason(world, start.position, ground.normalAt(x, z))).toBe('ok');
+    }
+    ground.geometry.dispose();
+    ground.ridge.dispose();
+    cypress.geometry.dispose();
+    for (const geometry of Object.values(village.geometries)) geometry.dispose();
+  }
 });
 
 test('the match uses world position and orientation, and completion is latched', () => {

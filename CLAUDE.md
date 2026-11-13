@@ -206,9 +206,9 @@ Parsed in `src/diag/flags.ts`.
 ### Find the painter’s spot (RM1)
 
 **Settings → Find the painter’s spot** opts into a new round on each Starry Night entry,
-including from the gallery. Off is the default. The start is sampled 8–18 m from the spot on
-ground that passes the teleport landing checks. Press left Y in XR or J on desktop to show or
-hide the reference painting, live match and direction. The match compares the rendered eye
+including from the gallery. Off is the default. The player starts facing town from safe ground
+beyond the houses, 43–44 m down the valley from the spot and up to 8 m to either side. Press left Y
+in XR or J on desktop to show or hide the reference painting, live match and direction. The match compares the rendered eye
 position and rotation to the authored painter camera, with full error at 10 m or 90° and the
 errors combined by Euclidean distance. Reaching 90% ends the round and shows a brief
 confirmation without moving the view. There is no timer or score. Returning to the gallery

@@ -4,8 +4,11 @@ import type { Vec3 } from '../render/strokes/frame';
 import type { PainterCamera, WorldPose } from './world-module';
 
 export const PAINTER_MATCH_THRESHOLD = 90;
-const INNER_RADIUS = 8;
-const OUTER_RADIUS = 18;
+// Starry Night's village sits ahead of the painter. This strip is past its houses,
+// just inside the boundary haze. The landing check handles the church and terrain.
+const START_DEPTH = 43;
+const START_DEPTH_RANGE = 1;
+const START_HALF_WIDTH = 8;
 const MAX_SAMPLES = 64;
 const POSITION_RANGE = 10;
 const ANGLE_RANGE = Math.PI / 2;
@@ -14,24 +17,24 @@ const MATCH_EPSILON = 1e-7;
 const HINT_UPDATE_MS = 250;
 const FOUND_DISPLAY_MS = 4000;
 
-/** Sample a ring by area, applying the same terrain, footprint and tree checks as teleport. */
+/** Sample the far side of the village with the same landing checks as teleport. */
 export function findPainterStart(
   spot: WorldPose,
   world: LandingWorld,
   random: () => number = Math.random,
 ): WorldPose | null {
+  const sin = Math.sin(spot.yaw);
+  const cos = Math.cos(spot.yaw);
   for (let i = 0; i < MAX_SAMPLES; i += 1) {
-    const angle = random() * 2 * Math.PI;
-    const radius = Math.sqrt(
-      INNER_RADIUS ** 2 + random() * (OUTER_RADIUS ** 2 - INNER_RADIUS ** 2),
-    );
-    const x = spot.position[0] + radius * Math.sin(angle);
-    const z = spot.position[2] + radius * Math.cos(angle);
+    const across = (2 * random() - 1) * START_HALF_WIDTH;
+    const depth = START_DEPTH + random() * START_DEPTH_RANGE;
+    const x = spot.position[0] + across * cos - depth * sin;
+    const z = spot.position[2] - across * sin - depth * cos;
     const y = world.ground.heightAt(x, z);
     if (!Number.isFinite(y)) continue;
     const position: Vec3 = [x, y, z];
     if (landingReason(world, position, world.ground.normalAt(x, z)) === 'ok') {
-      return { position, yaw: spot.yaw };
+      return { position, yaw: spot.yaw + Math.PI };
     }
   }
   return null;

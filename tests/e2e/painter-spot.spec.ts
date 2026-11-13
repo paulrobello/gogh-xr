@@ -21,8 +21,10 @@ async function rigPosition(xr: Xr): Promise<number[]> {
 
 async function expectRandomStart(xr: Xr): Promise<void> {
   const [x, , z] = await rigPosition(xr);
-  expect(Math.hypot(x, z)).toBeGreaterThanOrEqual(8);
-  expect(Math.hypot(x, z)).toBeLessThanOrEqual(18);
+  expect(Math.abs(x)).toBeLessThanOrEqual(8);
+  expect(z).toBeGreaterThanOrEqual(-44);
+  expect(z).toBeLessThanOrEqual(-43);
+  expect(Math.hypot(x, z)).toBeLessThan(45);
   expect(await round(xr)).toMatchObject({ found: false, hint: false, hud: null });
 }
 
@@ -111,10 +113,15 @@ test('XR settings opt into portal entry and hints follow the rendered head pose'
   await expect.poll(async () => (await round(xr))?.hud).toBeNull();
 
   const [x, , z] = await rigPosition(xr);
-  const orientation = new Quaternion().setFromEuler(new Euler(CANVAS_PITCH, 0, 0));
+  // The spawn rig faces back toward town. Invert that yaw to express the target head pose locally.
+  const inverseYaw = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), -Math.PI);
+  const orientation = new Quaternion()
+    .setFromEuler(new Euler(CANVAS_PITCH, 0, 0))
+    .premultiply(inverseYaw);
+  const targetHead = new Vector3(-x, 1.6, -z).applyQuaternion(inverseYaw);
   await xr.setPose({
     head: {
-      position: [-x, 1.6, -z],
+      position: targetHead.toArray(),
       quaternion: orientation.toArray() as Quat,
     },
   });
