@@ -95,7 +95,7 @@ Paul approved the live Quest 3 release on November 13, 2026. The [performance re
 | P4 | Living paint | Yes | Signed off | [P4](PRD.md#p4--living-paint-parallel-with-p3) | [plan](plans/phase-4-living-paint.md) |
 | P5 | Gallery, portal and settings | Yes | Signed off | [P5](PRD.md#p5--gallery-portal-and-settings) | [plan](plans/phase-5-gallery-portal-settings.md) |
 | P6 | Audio | Yes | Signed off | [P6](PRD.md#p6--audio) | [plan](plans/phase-6-audio.md) |
-| P7 | Release | Update polling, documentation and the Quest performance pass are complete. Full release browser gate pending | Signed off | [P7](PRD.md#p7--release) | [plan](plans/phase-7-release.md) |
+| P7 | Release | Release gates and Quest performance pass complete | Signed off | [P7](PRD.md#p7--release) | [plan](plans/phase-7-release.md) |
 
 ## Credits and provenance
 

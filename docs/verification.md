@@ -9,15 +9,15 @@ candidate was commit `896a0f5`, build `7548d7394727`. The measured Quest run use
 | Criterion | Evidence |
 | --- | --- |
 | SC1 — Quest 3 performance | The marked route ran for 5 min 42 s at Adaptive-72, fixed level 5, and foveation Off. All 342 one-second Quest Browser samples met the owner-approved 22 fps floor. Median 28 fps, minimum 22 fps. [Performance report](perf.md#full-repeat-same-build-and-settings) |
-| SC2 — Painter’s-spot fidelity | The [side-by-side capture](#p2-a2-shot) and the painter-camera fidelity test provide the visual comparison. The Metal run on `8a5be2b` measured SSIM 0.3152 (limit 0.2768) and mean ΔE2000 5.7646 (limit 7.1243). Paul approved the Starry Night world in the [Quest phase sign-offs](#quest-3-phase-sign-offs-2026-11-12). |
+| SC2 — Painter’s-spot fidelity | The [side-by-side capture](#p2-a2-shot) and the painter-camera fidelity test provide the visual comparison. The final Metal run on `a77e531` measured SSIM 0.3152 (limit 0.2768) and mean ΔE2000 5.7646 (limit 7.1243). Paul approved the Starry Night world in the [Quest phase sign-offs](#quest-3-phase-sign-offs-2026-11-12). |
 | SC3 — Locomotion and comfort | Paul approved locomotion and comfort in the [Quest phase sign-offs](#quest-3-phase-sign-offs-2026-11-12) and confirmed the live solid-structure update worked. The approval is the owner evidence. A separately timed 15-minute comfort session is not documented. |
 | SC4 — Gallery and portal | Paul approved both directions on Quest 3 in the [Quest phase sign-offs](#quest-3-phase-sign-offs-2026-11-12). The marked SC1 repeat also returned from Starry Night to the gallery. |
-| SC5 — Release gates | `make checkall-ci` passed 1,850 tests for the `896a0f5` change. The full muted ANGLE Metal browser gate for the release candidate is pending. Focused collision, teleport, flight, painter’s-spot and panel browser checks passed on `8a5be2b`. |
+| SC5 — Release gates | On `a77e531`, `make checkall-ci` passed 1,850 tests. The full muted Playwright suite on Apple M4 with ANGLE Metal and IWER passed 162 tests with 7 opt-in tests skipped, including the serial portal timing checks. The one-minute host load was 2.95 at launch and 2.16 at completion. |
 | SC6 — Live WebXR | The published `896a0f5` gallery rendered in muted Chromium with 20 draw calls and an Enter VR control. The live Quest Browser SC1 recording confirmed immersive VR on the preceding documentation revision with the same runtime source. |
 
 [GitHub CI](https://github.com/paulrobello/gogh-xr/actions/runs/43508056372)
 and [Pages](https://github.com/paulrobello/gogh-xr/actions/runs/43508056365)
-both passed on `896a0f5`. The [served A-to-B update check](#p7-a1-served-update-check-2026-11-08-on-791893f)
+both passed on `896a0f5`. The approval record shipped on `a77e531/0be7f59a693e` with [GitHub CI](https://github.com/paulrobello/gogh-xr/actions/runs/43511260166) and [Pages](https://github.com/paulrobello/gogh-xr/actions/runs/43511260559) green. The [served A-to-B update check](#p7-a1-served-update-check-2026-11-08-on-791893f)
 records P7-A1.
 
 Phase 0 acceptance criteria from [PRD.md](../PRD.md), with the evidence gathered on 2026-11-05 on branch `p0-foundation` (macOS, Apple M4 Max, Metal GPU backend).
