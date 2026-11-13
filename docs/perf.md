@@ -19,9 +19,8 @@ and provide no separate timings for the walk and flight.
 | Quest Browser VrApi, one-second samples | 228 samples, 26 fps median, 31.19 fps mean, 23–71 fps range |
 | Quest Browser VrApi samples below 24 fps | 2 of 228, both 23 fps (12:46:31 and 12:46:40 PM PST) |
 
-The median cleared the 24 fps floor. Two one-second samples fell below it, and the
-marked route ended before the required five minutes. P7.2 remains open for a full
-capture and owner sign-off. The in-app intervals and Quest Browser VrApi readings
+The median cleared the floor in effect at the time (24 fps). Two one-second samples
+fell below that floor, and the marked route ended before the required five minutes. The in-app intervals and Quest Browser VrApi readings
 measure different things and are reported separately.
 
 ### Full repeat, same build and settings
@@ -40,11 +39,11 @@ Audio was enabled.
 | Quest Browser VrApi samples below 24 fps | 14 of 342 (4.1%), at 22–23 fps |
 | Quest Browser app GPU time | 30.80 ms median, 48.98 ms maximum |
 
-The below-floor samples occurred at 12:54:28–12:54:30 and 12:54:48–12:54:58 PM PST.
+The samples below the former 24 fps floor occurred at 12:54:28–12:54:30 and 12:54:48–12:54:58 PM PST.
 There are no segment marks to tie those dips to a specific view or movement mode.
-The full repeat meets the duration and clears 24 fps on median. It does not establish
-a sustained 24 fps floor. P7.2 remains open pending resolution of those dips and owner
-sign-off.
+Paul set the default floor to 22 fps and approved closing P7.2 on 2026-11-13. The
+full repeat meets the five-minute duration, and all 342 one-second Quest Browser
+VrApi samples met the revised floor. The lowest sample was 22 fps.
 
 ## Full-sphere stroke budget
 

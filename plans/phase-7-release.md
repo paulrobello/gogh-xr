@@ -25,10 +25,10 @@ PRD: [P7](../PRD.md#p7--release). P7.1 can start as soon as P0.2 is done, becaus
 - **Depends on:** P3.7, P4.7, P5.8, P6.6.
 - **Steps:**
   - Paul runs the SC1 session at the shipped default (fixed level 5) on Quest 3 with OVR Metrics: 5 minutes covering the whole diorama, the boundary in flight, the cypress walk-through, and the portal both ways.
-  - If the default falls below the 24 fps floor, profile the failing segment and repeat the route after any tuning. For a 72 Hz Auto run, record the median and the share of frames over 13.9 ms separately.
+  - If the default falls below the 22 fps floor, profile the failing segment and repeat the route after any tuning. For a 72 Hz Auto run, record the median and the share of frames over 13.9 ms separately.
   - Record every result in `docs/perf.md` with the build id.
 - **Verify:**
-  - `docs/perf.md` shows the median frame rate and the share of frames over budget for the release candidate. The shipped default must meet the 24 fps floor. Any 90 Hz measurements are diagnostic only.
+  - `docs/perf.md` shows the median frame rate and the share of frames over budget for the release candidate. Every one-second Quest Browser VrApi sample in the marked route must meet the 22 fps floor at the shipped default. Any 90 Hz measurements are diagnostic only.
   - **The card stays open until Paul signs off.**
 
 ### P7.3: README and docs

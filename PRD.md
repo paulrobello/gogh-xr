@@ -29,7 +29,7 @@ The gallery has seven frames. *The Starry Night* is live. Six more hang as "comi
 
 ### Success criteria (v1)
 
-- **SC1.** Run a five-minute Quest 3 session with OVR Metrics at the shipped default (fixed quality level 5). Walk the diorama and fly the boundary. The default has a 24 fps floor, with visual quality taking precedence. For 72 Hz Auto and quality levels that fit that budget, the target remains a 72 fps median with fewer than 1% of frames over 13.9 ms. The 90 Hz option is a best-effort refresh-rate request and carries no release acceptance threshold. Paul superseded the 90 fps requirement on 2026-11-13.
+- **SC1.** Run a five-minute Quest 3 session with OVR Metrics at the shipped default (fixed quality level 5). Walk the diorama and fly the boundary. The default has a 22 fps floor in the one-second Quest Browser VrApi samples, with visual quality taking precedence (Paul, 2026-11-13). For 72 Hz Auto and quality levels that fit that budget, the target remains a 72 fps median with fewer than 1% of frames over 13.9 ms. The 90 Hz option is a best-effort refresh-rate request and carries no release acceptance threshold. Paul superseded the 90 fps requirement on 2026-11-13.
 - **SC2.** A screenshot from the painter's spot matches the reference canvas closely enough that the owner accepts it side by side. The phase 2 plan sets the measured check.
 - **SC3.** The owner accepts all four locomotion modes and all four comfort options on the headset, with no comfort complaints in a 15-minute session.
 - **SC4.** The owner accepts the gallery-to-painting portal and the return path on the headset.
