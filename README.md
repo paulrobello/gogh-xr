@@ -36,6 +36,8 @@ All of these are in the settings panel (grab it with a grip to move it, with two
 
 ## Development
 
+For new paintings, see the [painting world guide](docs/painting-world-guide.md) for design, integration, and verification.
+
 Requires [bun](https://bun.sh), and ffmpeg 9.0.2 for the audio checks.
 
 ```sh
@@ -56,7 +58,7 @@ Make targets:
 
 ### Testing on the headset
 
-Not yet verified on a device. The plan, from [PRD.md](PRD.md) decision D16, is to run the dev server and forward it over USB, which Quest Browser treats as a secure context, so no certificates are needed:
+For local Quest Browser testing, run the dev server and forward it over USB as described in [PRD.md](PRD.md) decision D16. Quest Browser treats localhost as a secure context, so no certificates are needed. The shipped Starry Night Quest 3 results are in [final release acceptance](docs/verification.md#p74-final-release-acceptance-2026-11-13).
 
 1. Enable developer mode on the Quest 3 and connect it with USB, then accept the debugging prompt in the headset.
 2. Run `make dev`.

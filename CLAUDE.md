@@ -2,6 +2,8 @@
 
 A Meta Quest 3 WebXR experience built with three.js, Vite and bun. Requirements live in [PRD.md](PRD.md) and the phase plans in [plans/](plans/).
 
+When planning or building a painting, start with the [painting world guide](docs/painting-world-guide.md).
+
 ## Make targets
 
 `install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check audio audio-audition bake e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit`
