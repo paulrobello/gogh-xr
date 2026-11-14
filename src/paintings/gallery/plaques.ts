@@ -1,7 +1,7 @@
 /**
  * The gallery's plaques (P5.4): a dark card edged in the moulding's gold beside each frame at 1.3 m,
  * with the title, the year and the museum in troika SDF text from the local NotoSans-Regular, plus
- * "Coming soon" in the wheat's gold on the six paintings without a world. Hierarchy comes from size
+ * "Coming soon" in the wheat's gold on the paintings without a world. Hierarchy comes from size
  * and colour, since the one font has one weight. The detail block sits a fixed gap under the
  * title's typeset bottom, and the two are centred on the card as one block. The seven cards and
  * their edges are one merged mesh (one draw call) and each plaque two text meshes, the title and

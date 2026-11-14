@@ -1,5 +1,5 @@
 /**
- * The painting registry (PRD D14, P5.1): the live Starry Night and the six coming-soon paintings.
+ * The painting registry (PRD D14, P5.1): the seven gallery paintings and their world loaders.
  * `validateRegistry` checks it at boot (structure) and in tests (structure, frame files and
  * PROVENANCE.md keys).
  */
@@ -76,7 +76,8 @@ export const PAINTINGS: readonly PaintingEntry[] = Object.freeze(
         widthCm: 65.5,
         heightCm: 81,
         sizeSource: `${COMMONS} (Yorck file page): 81 x 65.5 cm (h x w)`,
-        status: 'coming-soon',
+        status: 'live',
+        world: () => import('./cafe-terrace-at-night/index'),
       },
       {
         id: 'bedroom',

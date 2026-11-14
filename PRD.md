@@ -16,7 +16,7 @@ Gogh XR is a Meta Quest 3 WebXR experience. You start in a small gallery room an
 
 The visual target is to preserve the painting's appearance on Quest 3. The shipped quality requests 72 Hz at fixed level 5. Auto can trade stroke density for frame rate. The 90 Hz adaptive preset remains available as an optional refresh-rate request.
 
-The gallery has seven frames. *The Starry Night* is live. Six more hang as "coming soon": *Chestnut Trees in Blossom*, *Les Alyscamps*, *Café Terrace at Night*, *The Bedroom*, *Wheatfield with Crows* and *Starry Night Over the Rhône*. Each painting is a registry entry, so a later painting needs only a new world module.
+The gallery has seven frames. *The Starry Night* and the first playable version of *Café Terrace at Night* are available through their gallery frames. Five more hang as "coming soon": *Chestnut Trees in Blossom*, *Les Alyscamps*, *The Bedroom*, *Wheatfield with Crows* and *Starry Night Over the Rhône*. Each painting is a registry entry that can load its own world module.
 
 ## Goals
 

@@ -1,6 +1,6 @@
 /**
  * The hand ripple contract: a world whose painting ripples where a hand orb touches it (the
- * gallery's live scan, src/paintings/gallery/ripple.ts). main.ts drives it every frame with the
+ * gallery's live scans, src/paintings/gallery/ripple.ts). main.ts drives it every frame with the
  * reactive tracker's hand disturbers, so it lives apart from the gallery chunk.
  */
 import type { Vector4 } from 'three';
@@ -44,10 +44,9 @@ export interface HandRipple {
   /**
    * e2e only: forces one contact at canvas uv (u, v), v up, at `strength` (0-1), with no ease and
    * no XR or orb gating; null releases it at once. The amplitude still applies, and a portal
-   * transition eases it out.
+   * transition eases it out. Defaults to the first live scan; returns false for an unavailable id.
    */
-  force(u: number, v: number, strength: number | null): void;
-  diag(): HandRippleDiag;
+  force(u: number, v: number, strength: number | null, painting?: string): boolean;
 }
 
 /**

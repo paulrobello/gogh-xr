@@ -136,7 +136,7 @@ test('the default boot is the gallery: no errors, seven scans loaded, the spawn 
 
   expect(world.plaques.state).toBe('built');
   expect(world.plaques.lines).toBe(14);
-  expect(world.plaques.texts.filter((t) => t.endsWith('\nComing soon'))).toHaveLength(6);
+  expect(world.plaques.texts.filter((t) => t.endsWith('\nComing soon'))).toHaveLength(5);
 
   // The spawn: the eye 4 m from the Starry Night wall, facing -Z with no pitch or roll.
   expect(diag.camera.position).toEqual([0, 1.6, 0]);

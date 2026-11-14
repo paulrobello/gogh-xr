@@ -1,6 +1,6 @@
 # Gogh XR
 
-A Meta Quest 3 WebXR experience. You start in a small gallery of seven Van Gogh paintings, step through the frame of *The Starry Night* and walk inside it. The world is painted in hundreds of thousands of animated GPU brushstrokes that follow the flow of the original paint, with a swirling sky, pulsing stars, a flickering cypress and paint that parts around your head and hands.
+A Meta Quest 3 WebXR experience. You start in a small gallery of seven Van Gogh paintings, and can step through the frames of *The Starry Night* and *Café Terrace at Night*. *The Starry Night* is painted in hundreds of thousands of animated GPU brushstrokes that follow the flow of the original paint, with a swirling sky, pulsing stars, a flickering cypress and paint that parts around your head and hands.
 
 Live: <https://gogh-xr.pardev.net>. Open it in Quest Browser and press Enter VR. It also runs on a desktop browser with keyboard and mouse.
 
@@ -20,7 +20,7 @@ Built with three.js, raw GLSL, Vite and bun. Requirements are in [PRD.md](PRD.md
 | Return to the gallery | The panel's button | G |
 | Performance HUD | Left X | H |
 
-Click the page once to take pointer lock on the desktop. Walking into the Starry Night frame in the gallery, or teleporting onto its threshold, enters the painting.
+Click the page once to take pointer lock on the desktop. Walk into either playable frame or teleport onto its threshold to enter the painting. In VR, touch its canvas with a hand orb to see it ripple.
 
 ## Comfort options
 

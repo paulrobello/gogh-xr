@@ -26,10 +26,10 @@ const plane = starry.centre[2];
 const head = (x: number, d: number): [number, number, number] => [x, 1.6, plane + d];
 const still = { teleportTo: null, jumped: false };
 
-test('only live frames with a world are portals: Starry Night alone', () => {
-  expect(livePortals().map((p) => p.id)).toEqual(['starry-night']);
+test('only live frames with a world are portals', () => {
+  expect(livePortals().map((p) => p.id)).toEqual(['starry-night', 'cafe-terrace-at-night']);
   const soon = HANGINGS.filter((h) => h.painting.status === 'coming-soon');
-  expect(soon.length).toBe(6);
+  expect(soon.length).toBe(5);
   for (const h of soon) expect(livePortals().some((p) => p.id === h.painting.id)).toBe(false);
 });
 

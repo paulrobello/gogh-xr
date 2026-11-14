@@ -304,6 +304,7 @@ export function applyRippleWarp(material: MeshBasicMaterial, uniforms: RippleUni
 
 export interface GalleryRipple extends HandRipple {
   readonly uniforms: RippleUniforms;
+  diag(): HandRippleDiag;
 }
 
 /** The ripple of the scan of `h`, cropped by `crop`, drawn by `material`. */
@@ -408,6 +409,7 @@ export function createGalleryRipple(
           strength: Math.min(Math.max(strength, 0), 1),
         };
       }
+      return true;
     },
     diag(): HandRippleDiag {
       const contact = (slot: 0 | 1): HandRippleContact | null => {

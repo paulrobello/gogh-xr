@@ -1187,11 +1187,8 @@ if (flags.diag) {
 }
 if (import.meta.env.MODE === 'e2e') {
   // One forced ripple contact for desktop shots and specs, on whichever world is bound.
-  window.__goghRipple = (u, v, strength) => {
-    if (!handRipple) return false;
-    handRipple.force(u, v, strength);
-    return true;
-  };
+  window.__goghRipple = (u, v, strength, painting) =>
+    handRipple?.force(u, v, strength, painting) ?? false;
 }
 // G returns to the gallery from a world on the desktop, as the panel's button does (P5.5).
 window.addEventListener('keydown', (event) => {

@@ -61,7 +61,7 @@ export function portalOf(h: Hanging): Portal {
   });
 }
 
-/** The portals of every live hanging with a world: Starry Night alone, today. */
+/** The portals of every live hanging with a world. */
 export function livePortals(hangings: readonly Hanging[] = HANGINGS): Portal[] {
   return hangings
     .filter((h) => h.painting.status === 'live' && h.painting.world !== undefined)

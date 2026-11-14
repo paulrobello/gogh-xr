@@ -54,6 +54,8 @@ import { VIGNETTE_RENDER_ORDER } from '../src/ui/vignette.ts';
 import { createSlicer } from '../src/util/slicer.ts';
 
 const FRAME_MS = 1000 / 60;
+const STARRY_SCAN = 'paintings/starry-night/frame.webp';
+const CAFE_SCAN = 'paintings/cafe-terrace-at-night/frame.webp';
 
 function must<T>(value: T | undefined | null): T {
   if (value === undefined || value === null) throw new Error('missing');
@@ -368,16 +370,16 @@ describe('createSwitcher', () => {
 
   test('the gallery starts loading every live scan when it binds, before any trigger', async () => {
     const r = setup();
-    expect(r.loadRaster).toHaveBeenCalledTimes(1);
-    const h = must(HANGINGS.find((x) => x.painting.id === 'starry-night'));
-    expect(r.loadRaster).toHaveBeenCalledWith(expect.stringContaining(h.painting.frameImage));
+    expect(r.loadRaster).toHaveBeenCalledTimes(2);
+    expect(r.loadRaster).toHaveBeenCalledWith(expect.stringContaining(STARRY_SCAN));
+    expect(r.loadRaster).toHaveBeenCalledWith(expect.stringContaining(CAFE_SCAN));
     // The trigger finds it ready: the strokes leave the frame on the first frame.
     r.switcher.go('starry-night', 'api');
     await Promise.resolve();
     await Promise.resolve();
     r.switcher.frame(FRAME_MS);
     expect(r.switcher.diag().cue).toBe('swirl');
-    expect(r.loadRaster).toHaveBeenCalledTimes(1);
+    expect(r.loadRaster).toHaveBeenCalledTimes(2);
   });
 
   test('fly: builds the new world from the trigger behind the old one, hidden, and moves the rig only once the old one is disposed', async () => {
@@ -737,8 +739,8 @@ describe('createSwitcher', () => {
     // 0.3 s out and 0.3 s in, plus the wait's few frames for the build, upload and show.
     expect(frames * FRAME_MS).toBeGreaterThan(600);
     expect(frames * FRAME_MS).toBeLessThan(800);
-    // The gallery's prefetch is the only load: the fade needs no scan.
-    expect(r.loadRaster).toHaveBeenCalledTimes(1);
+    // The gallery's prefetch supplies the only loads: the fade needs no scan.
+    expect(r.loadRaster).toHaveBeenCalledTimes(2);
     expect(r.rig.children.some((c) => c.name === 'portal-fly')).toBe(false);
   });
 
@@ -882,7 +884,9 @@ describe('createSwitcher', () => {
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // The gallery's prefetch fails, and is not kept.
-    const r = setup({ loadRaster: offline });
+    const r = setup({
+      loadRaster: (url) => (url.endsWith(STARRY_SCAN) ? offline() : Promise.resolve(raster())),
+    });
     expect(offline).toHaveBeenCalledTimes(1);
     // Out of the gallery the strokes leave the frame: the first leg needs the scan.
     r.switcher.go('starry-night', 'api');
@@ -1064,7 +1068,7 @@ describe('createSwitcher', () => {
   });
 
   test('the live portals are the frames with a world', () => {
-    expect(livePortals().map((p) => p.id)).toEqual(['starry-night']);
+    expect(livePortals().map((p) => p.id)).toEqual(['starry-night', 'cafe-terrace-at-night']);
   });
 });
 
@@ -1679,7 +1683,9 @@ describe('a fetch that never lands (N1)', () => {
     // The gallery's prefetch never lands: the strokes cannot leave the frame (no first leg), and
     // back in the gallery the second leg waits on the same load.
     const stalled = vi.fn(() => never<Raster>());
-    const r = setup({ loadRaster: stalled });
+    const r = setup({
+      loadRaster: (url) => (url.endsWith(STARRY_SCAN) ? stalled() : Promise.resolve(raster())),
+    });
     r.switcher.go('starry-night', 'api');
     await run(r);
     expect(r.switcher.active?.id).toBe('starry-night');
@@ -1799,7 +1805,9 @@ describe('a fetch that never lands (N1)', () => {
   test('a stalled scan is evicted when the first leg gives up on it (F5)', async () => {
     // The gallery's prefetch never lands.
     const stalled = vi.fn(() => never<Raster>());
-    const r = setup({ loadRaster: stalled });
+    const r = setup({
+      loadRaster: (url) => (url.endsWith(STARRY_SCAN) ? stalled() : Promise.resolve(raster())),
+    });
     let land = (): void => {};
     r.gates.set('starry-night', new Promise<void>((resolve) => (land = resolve)));
     // A long build that keeps the slicer busy, so only the first leg's wait is given up.
@@ -1841,7 +1849,9 @@ describe('a fetch that never lands (N1)', () => {
     // The gallery's prefetch of the Starry Night scan stalls, then the raster bound aborts it.
     let abort = (_error: Error): void => {};
     const stalled = vi.fn(() => new Promise<Raster>((_resolve, reject) => (abort = reject)));
-    const r = setup({ loadRaster: stalled });
+    const r = setup({
+      loadRaster: (url) => (url.endsWith(STARRY_SCAN) ? stalled() : Promise.resolve(raster())),
+    });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // An entry whose build takes 10 s, under the timeout: it ends with its first leg still waiting.
     let land = (): void => {};

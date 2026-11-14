@@ -22,6 +22,7 @@ import {
 import { type DiagToken, registerDiag, unregisterDiag } from '../../diag/diag';
 import { createStrokeBatchSteps, type StrokeBatch } from '../../render/strokes/batch';
 import type { Vec3 } from '../../render/strokes/frame';
+import type { HandRipple } from '../hand-ripple';
 import {
   buildSteps,
   type PainterCamera,
@@ -117,6 +118,7 @@ let built: Built | null = null;
 let worldDiag: DiagToken | null = null;
 /** Its `galleryRipple` diag registration, likewise. */
 let rippleDiag: DiagToken | null = null;
+let ripplesDiag: DiagToken | null = null;
 
 /** A plane at the painting's true size showing `crop` of its texture. */
 function scanGeometry(h: Hanging, crop: UvCrop): PlaneGeometry {
@@ -246,8 +248,7 @@ async function assemble(deps: WorldDeps, owned: Owned): Promise<WorldHandle> {
 
   const frames: FrameDiag[] = [];
   const scans: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
-  /** The live painting's scan ripples where a hand orb touches it; coming-soon scans never do. */
-  let ripple: GalleryRipple | null = null;
+  const ripples = new Map<string, GalleryRipple>();
   HANGINGS.forEach((h, i) => {
     const texture = textures[i];
     const image = texture?.image as ImageBitmap | undefined;
@@ -276,8 +277,8 @@ async function assemble(deps: WorldDeps, owned: Owned): Promise<WorldHandle> {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: SCAN_DEPTH_UNITS,
     });
-    if (!ripple && h.painting.status === 'live' && texture && debug !== 'bare') {
-      ripple = createGalleryRipple(h, crop, material);
+    if (h.painting.status === 'live' && h.painting.world && texture && debug !== 'bare') {
+      ripples.set(h.painting.id, createGalleryRipple(h, crop, material));
     }
     const mesh = new Mesh(scanGeometry(h, crop), material);
     mesh.name = `scan-${h.painting.id}`;
@@ -360,8 +361,23 @@ async function assemble(deps: WorldDeps, owned: Owned): Promise<WorldHandle> {
     },
   }));
 
-  const handRipple = ripple as GalleryRipple | null;
-  if (handRipple) rippleDiag = registerDiag('galleryRipple', () => handRipple.diag());
+  let handRipple: HandRipple | undefined;
+  const primary = ripples.values().next().value;
+  if (primary) {
+    handRipple = {
+      frame(state) {
+        for (const ripple of ripples.values()) ripple.frame(state);
+      },
+      force(u, v, strength, painting) {
+        const ripple = painting === undefined ? primary : ripples.get(painting);
+        return ripple?.force(u, v, strength) ?? false;
+      },
+    };
+    rippleDiag = registerDiag('galleryRipple', () => primary.diag());
+    ripplesDiag = registerDiag('galleryRipples', () =>
+      Object.fromEntries([...ripples].map(([id, ripple]) => [id, ripple.diag()])),
+    );
+  }
 
   return {
     batch,
@@ -389,6 +405,8 @@ export function dispose(): void {
   worldDiag = null;
   if (rippleDiag) unregisterDiag('galleryRipple', rippleDiag);
   rippleDiag = null;
+  if (ripplesDiag) unregisterDiag('galleryRipples', ripplesDiag);
+  ripplesDiag = null;
   built.disposed = true;
   built.plaques?.dispose();
   built.batch.dispose();

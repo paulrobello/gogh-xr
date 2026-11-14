@@ -20,7 +20,7 @@ const checks = {
   provenanceKeys: provenanceKeys(),
 };
 
-test('the registry holds Starry Night live and six coming-soon paintings', () => {
+test('the registry holds two playable paintings and five coming-soon paintings', () => {
   expect(PAINTINGS).toHaveLength(7);
   const entry = PAINTINGS[0];
   expect(entry.id).toBe('starry-night');
@@ -30,7 +30,13 @@ test('the registry holds Starry Night live and six coming-soon paintings', () =>
   expect(typeof entry.world).toBe('function');
   expect(entry.heightCm).toBe(73.7);
   expect(entry.widthCm).toBe(92.1);
-  expect(PAINTINGS.slice(1).every((p) => p.status === 'coming-soon' && !p.world)).toBe(true);
+  expect(PAINTINGS.filter((p) => p.status === 'live').map((p) => p.id)).toEqual([
+    'starry-night',
+    'cafe-terrace-at-night',
+  ]);
+  expect(PAINTINGS.every((p) => (p.status === 'live') === (typeof p.world === 'function'))).toBe(
+    true,
+  );
 });
 
 test('the real registry has no problems, frames and provenance keys included', () => {

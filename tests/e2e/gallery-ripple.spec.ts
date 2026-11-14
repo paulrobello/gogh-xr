@@ -29,7 +29,8 @@ interface RippleDiag {
   amplitude: number;
 }
 
-const ripple = async (xr: Xr): Promise<RippleDiag> => (await xr.diag()).galleryRipple as RippleDiag;
+const ripple = async (xr: Xr, id = 'starry-night'): Promise<RippleDiag> =>
+  ((await xr.diag()).galleryRipples as Record<string, RippleDiag>)[id];
 const calls = async (xr: Xr): Promise<number> =>
   ((await xr.diag()).draw as { calls: number }).calls;
 
@@ -279,73 +280,81 @@ async function touchDistance(xr: Xr, p: ReturnType<typeof poses>): Promise<Vec3>
 test.describe('gallery ripple', () => {
   test.use({ viewport: CAPTURE_SIZE });
 
-  test('a controller at Starry Night ripples the scan inside the frame and settles back', async ({
-    page,
-    xr,
-  }) => {
-    test.setTimeout(180_000);
-    await bootGallery(xr);
-    const p = poses('starry-night', 0.05);
-    await place(page, xr, p.view, p.hover);
-    await page.waitForTimeout(1000);
-    await xr.waitFrames(6);
-    expect(await ripple(xr)).toEqual({ contacts: [null, null], amplitude: 1 });
-    const hover = await canvasPixels(page);
-    const hoverCalls = await calls(xr);
-    const hoverHand = await rightHand(xr);
-
-    await place(page, xr, p.view, touchGrip(p, hoverHand));
-    await page.waitForTimeout(500);
-    await xr.waitFrames(6);
-    await touchDistance(xr, p);
-    const touching = await ripple(xr);
-    const touch = await canvasPixels(page);
-    const touchCalls = await calls(xr);
-    const touchHand = await rightHand(xr);
-    console.log(`[e2e] gallery ripple contact ${JSON.stringify(touching.contacts)}`);
-    expect(touching.contacts[0]).toBeNull();
-    const right = touching.contacts[1];
-    expect(right).not.toBeNull();
-    expect(right?.strength ?? 0).toBeGreaterThan(0.5);
-    // The target ray sits a few centimetres off the IWER grip pose.
-    expect(Math.abs((right?.uv[0] ?? 0) - 0.5)).toBeLessThan(0.1);
-    expect(Math.abs((right?.uv[1] ?? 0) - (0.5 + 0.05 / 0.737))).toBeLessThan(0.15);
-    // No new draw call, and the hand never opens the portal.
-    expect(touchCalls).toBe(hoverCalls);
-    expect((await portal(xr)).state).toBe('idle');
-    expect((await xr.diag()).painting).toBe('gallery');
-
-    const d = await diff(
+  for (const [id, height] of [
+    ['starry-night', 0.737],
+    ['cafe-terrace-at-night', 0.81],
+  ] as const) {
+    test(`a controller at ${id} ripples the scan inside the frame and settles back`, async ({
       page,
-      hover.data,
-      touch.data,
-      touch.width,
-      touch.height,
-      p.view,
-      touchHand,
-      [hoverHand, touchHand],
-      p.corners,
-    );
-    console.log(
-      `[e2e] gallery ripple: annulus ${(d.annulus * 100).toFixed(1)}% changed, ${d.beyondOrbs} px beyond the orbs, ${d.outsideScan} px outside the scan, ${d.changed} px in all`,
-    );
-    expect(d.annulus).toBeGreaterThan(0.1);
-    expect(d.outsideScan).toBe(0);
+      xr,
+    }) => {
+      test.setTimeout(180_000);
+      await bootGallery(xr);
+      const p = poses(id, 0.05);
+      await place(page, xr, p.view, p.hover);
+      await page.waitForTimeout(1000);
+      await xr.waitFrames(6);
+      expect(await ripple(xr, id)).toEqual({ contacts: [null, null], amplitude: 1 });
+      const hover = await canvasPixels(page);
+      const hoverCalls = await calls(xr);
+      const hoverHand = await rightHand(xr);
 
-    // Away again: the strength eases to exactly 0 within 0.8 s and the frame is the hover frame.
-    await place(page, xr, p.view, p.hover);
-    await page.waitForTimeout(1500);
-    await xr.waitFrames(6);
-    expect((await ripple(xr)).contacts).toEqual([null, null]);
-    const back = await canvasPixels(page);
-    expect(back.data.equals(hover.data)).toBe(true);
-    expect(await glErrors(page)).toEqual([]);
-  });
+      await place(page, xr, p.view, touchGrip(p, hoverHand));
+      await page.waitForTimeout(500);
+      await xr.waitFrames(6);
+      await touchDistance(xr, p);
+      const touching = await ripple(xr, id);
+      const touch = await canvasPixels(page);
+      const touchCalls = await calls(xr);
+      const touchHand = await rightHand(xr);
+      console.log(`[e2e] gallery ripple contact ${JSON.stringify(touching.contacts)}`);
+      expect(touching.contacts[0]).toBeNull();
+      const other = id === 'starry-night' ? 'cafe-terrace-at-night' : 'starry-night';
+      expect((await ripple(xr, other)).contacts).toEqual([null, null]);
+      const right = touching.contacts[1];
+      expect(right).not.toBeNull();
+      expect(right?.strength ?? 0).toBeGreaterThan(0.5);
+      // The target ray sits a few centimetres off the IWER grip pose.
+      expect(Math.abs((right?.uv[0] ?? 0) - 0.5)).toBeLessThan(0.1);
+      expect(Math.abs((right?.uv[1] ?? 0) - (0.5 + 0.05 / height))).toBeLessThan(0.15);
+      // No new draw call, and the hand never opens the portal.
+      expect(touchCalls).toBe(hoverCalls);
+      expect((await portal(xr)).state).toBe('idle');
+      expect((await xr.diag()).painting).toBe('gallery');
+
+      const d = await diff(
+        page,
+        hover.data,
+        touch.data,
+        touch.width,
+        touch.height,
+        p.view,
+        touchHand,
+        [hoverHand, touchHand],
+        p.corners,
+      );
+      console.log(
+        `[e2e] gallery ripple: annulus ${(d.annulus * 100).toFixed(1)}% changed, ${d.beyondOrbs} px beyond the orbs, ${d.outsideScan} px outside the scan, ${d.changed} px in all`,
+      );
+      expect(d.annulus).toBeGreaterThan(0.1);
+      expect(d.outsideScan).toBe(0);
+
+      // Away again: the strength eases to exactly 0 within 0.8 s and the frame is the hover frame.
+      await place(page, xr, p.view, p.hover);
+      await page.waitForTimeout(1500);
+      await xr.waitFrames(6);
+      expect((await ripple(xr, id)).contacts).toEqual([null, null]);
+      const back = await canvasPixels(page);
+      expect(back.data.equals(hover.data)).toBe(true);
+      expect(await glErrors(page)).toEqual([]);
+    });
+  }
 
   test('a controller at a coming-soon frame changes nothing but its orb', async ({ page, xr }) => {
     test.setTimeout(180_000);
     await bootGallery(xr);
     const p = poses('chestnut-trees-in-blossom', 0.05);
+    expect((await xr.diag()).galleryRipples).not.toHaveProperty('chestnut-trees-in-blossom');
     await place(page, xr, p.view, p.hover);
     await page.waitForTimeout(1000);
     await xr.waitFrames(6);
