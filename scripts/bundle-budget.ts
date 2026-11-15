@@ -30,7 +30,7 @@ export const CHUNK_BUDGETS: readonly ChunkBudget[] = [
 ];
 /** Applies to every chunk no pattern above matches, new chunks included. */
 export const DEFAULT_CHUNK_BUDGET_BYTES = 30_000;
-export const TOTAL_BUDGET_BYTES = 377_000;
+export const TOTAL_BUDGET_BYTES = 388_000;
 
 export type BudgetRow = { name: string; gzipBytes: number; budget: number; over: boolean };
 export type BudgetResult = {

@@ -4,6 +4,7 @@ import {
   CatmullRomCurve3,
   CylinderGeometry,
   DataTexture,
+  DoubleSide,
   Group,
   Matrix4,
   Mesh,
@@ -29,7 +30,6 @@ import { rasterizeIds } from './id-map';
 import {
   AWNING,
   CHAIRS,
-  cafeSet,
   ID,
   LAMP,
   PEOPLE,
@@ -40,24 +40,40 @@ import {
   TABLES,
   TRUNK,
 } from './layout';
-import { createPaintMaterial, paintBuilder } from './paint-material';
+import {
+  createPaintMaterial,
+  type Paint,
+  type PaintBuilder,
+  paintBuilder,
+  painterView,
+  type Swatch,
+} from './paint';
 import { createPeople } from './people';
 import { scanSampler } from './scan';
+import { buildSet } from './set';
 import { solidBox } from './street';
 
 /** The painter's id map, texels. The scan's aspect, tall enough to keep a chair leg. */
 const ID_HEIGHT = 1024;
 const ID_WIDTH = Math.round(ID_HEIGHT * CANVAS_ASPECT);
 const SKY_RADIUS = 120;
-/** Leaves tried over the canopy's canvas outline; those that land on painted foliage stay. */
-const LEAF_TRIES = 5200;
+/** Leaves tried through the crown; those that land on painted foliage stay. */
+const LEAF_TRIES = 9000;
 const CROWN_FORK = 3.2;
+/** The crown's middle and half extents, metres: leaves stay inside it. */
+const CROWN: Vec3 = [4.6, 5.9, -9.4];
+const CROWN_REACH: Vec3 = [3.8, 3.1, 3.3];
 
 const TABLETOP = 0xb7be97;
 const IRON = 0x313c37;
 const CANE = 0xa9743a;
-const BARK = 0x2a3a4a;
+const BARK = 0x1c2a36;
 const LANTERN = 0xf5cd60;
+
+/** A prop's paint: its own id, and its far side in its near side's colours. */
+function prop(id: number, tint: number, more: Partial<Paint> = {}): Paint {
+  return { id, swatch: SWATCH.plaster, tint, round: true, ...more };
+}
 /** Coat, hat, skin and accent for each outfit, for the sides the painter never saw. */
 const CLOTHES = [
   [0x434846, 0x302e31, 0xb58e65, 0x7e7658],
@@ -72,7 +88,6 @@ const CLOTHES = [
 ] as const;
 
 export interface CafeCounts {
-  readonly surfaces: number;
   readonly tables: number;
   readonly chairs: number;
   readonly people: number;
@@ -180,21 +195,18 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     const placed = (at: Vec3, size: Vec3, yaw = 0): Matrix4 =>
       transform.compose(new Vector3(...at), turn.setFromAxisAngle(UP, yaw), scale.set(...size));
 
-    const set = paintBuilder();
-    const surfaces = cafeSet();
-    for (const surface of surfaces) set.surface(surface);
+    const patches: Swatch[] = [];
+    const set = paintBuilder(patches);
+    yield* buildSet(set, mulberry32(seed + 7));
+    yield;
     const cylinder = new CylinderGeometry(1, 1, 1, 14);
     const bark = new CylinderGeometry(0.68, 1, 1, 9);
-    set.mesh(
-      bark,
-      placed([TRUNK[0], CROWN_FORK / 2, TRUNK[2]], [0.2, CROWN_FORK, 0.2]),
-      ID.trunk,
-      BARK,
-    );
+    const trunk = prop(ID.trunk, BARK);
+    set.mesh(bark, placed([TRUNK[0], CROWN_FORK / 2, TRUNK[2]], [0.2, CROWN_FORK, 0.2]), trunk);
     yield;
 
     // One id each, so a table's paint never lands on the chair behind it.
-    const props = paintBuilder();
+    const props = paintBuilder(patches);
     let id: number = ID.props;
     const table = tableFrame();
     const chair = chairFrame();
@@ -203,20 +215,18 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
       props.mesh(
         cylinder,
         placed([x, TABLE_HEIGHT - 0.02, z], [radius, 0.04, radius]),
-        id,
-        TABLETOP,
+        prop(id, TABLETOP),
       );
-      props.mesh(table, placed([x, 0, z], [radius, TABLE_HEIGHT, radius]), id, IRON);
+      props.mesh(table, placed([x, 0, z], [radius, TABLE_HEIGHT, radius]), prop(id, IRON));
       solids.push(solidBox([x, TABLE_HEIGHT / 2, z], [radius * 1.8, TABLE_HEIGHT, radius * 1.8]));
       id++;
     }
     const seat = (at: Vec3, yaw: number): void => {
-      props.mesh(chair, placed([at[0], 0, at[2]], [1, 1, 1], yaw), id, CANE);
+      props.mesh(chair, placed([at[0], 0, at[2]], [1, 1, 1], yaw), prop(id, CANE));
       props.mesh(
         cylinder,
         placed([at[0], SEAT_HEIGHT - 0.015, at[2]], [0.16, 0.03, 0.16]),
-        id,
-        CANE,
+        prop(id, CANE),
       );
       solids.push(solidBox([at[0], 0.42, at[2]], [0.45, 0.84, 0.45]));
       id++;
@@ -244,7 +254,7 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
         });
         person.updateMatrix();
         const body = (person.children[0] as Mesh).geometry;
-        props.mesh(body, person.matrix, id++, null);
+        props.mesh(body, person.matrix, prop(id++, 0x555555), { own: true });
         body.dispose();
         if (pose !== 'seated') {
           solids.push(solidBox([at[0], height / 2, at[2]], [0.39, height, 0.28]));
@@ -256,8 +266,9 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
       stock.dispose();
     }
 
-    // A leaf stays only where the scan shows foliage, so the crown takes the painted outline.
-    const crown = paintBuilder();
+    // A leaf stays only where the scan shows foliage, so the crown takes the painted outline, and
+    // only inside the crown's own round, so it is a tree from every side.
+    const crown = paintBuilder(patches);
     const random = mulberry32(seed + 31);
     const sample = scanSampler(raster);
     const leaf = new PlaneGeometry(0.36, 0.13);
@@ -265,25 +276,38 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     const tilt = new Vector3();
     let leaves = 0;
     for (let i = 0; i < LEAF_TRIES; i++) {
-      const u = 0.7 + random() * 0.55;
-      const v = -0.05 + random() * 0.49;
-      const z = TRUNK[2] + (random() - 0.5) * 2.6;
+      const u = 0.7 + random() * 0.6;
+      const v = -0.02 + random() * 0.46;
+      const z = CROWN[2] + (random() - 0.5) * 2 * CROWN_REACH[2];
       const turnZ = (random() - 0.3) * 1.5;
-      tilt.set((random() - 0.5) * 0.8, (random() - 0.5) * 1.2, turnZ);
+      tilt.set((random() - 0.5) * 0.8, (random() - 0.5) * 2.4, turnZ);
       const [r, g, b] = sample(u, v);
-      if (!(g > 38 && g > b * 1.02 && g > r * 0.92)) continue;
+      // Foliage only: the scan's blue-green walls and sky pass a looser test and leave stray leaves.
+      if (!(g > 38 && g > b * 1.12 && g > r * 1.02 && g - Math.max(r, b) > 10)) continue;
       const at = onFrontal(u, v, z);
+      const round =
+        ((at[0] - CROWN[0]) / CROWN_REACH[0]) ** 2 +
+        ((at[1] - CROWN[1]) / CROWN_REACH[1]) ** 2 +
+        ((at[2] - CROWN[2]) / CROWN_REACH[2]) ** 2;
+      if (round > 1) continue;
       lean
         .setFromAxisAngle(UP, tilt.y)
         .multiply(turn.setFromAxisAngle(new Vector3(1, 0, 0), tilt.x));
       lean.multiply(turn.setFromAxisAngle(new Vector3(0, 0, 1), tilt.z));
-      crown.mesh(
-        leaf,
-        transform.compose(new Vector3(...at), lean, scale.set(1, 1, 1)),
-        ID.canopy,
-        0xffffff,
-        SWATCH.foliage,
-      );
+      // Each leaf is one dab of the scan's green, darker toward the back of the crown.
+      const depth =
+        0.78 + 0.22 * Math.min(1, Math.max(0, (at[2] - CROWN[2]) / CROWN_REACH[2] + 0.5));
+      const tint =
+        (Math.round(Math.min(255, r * depth)) << 16) |
+        (Math.round(Math.min(255, g * depth)) << 8) |
+        Math.round(Math.min(255, b * depth));
+      crown.mesh(leaf, transform.compose(new Vector3(...at), lean, scale.set(1, 1, 1)), {
+        id: ID.canopy,
+        swatch: SWATCH.foliage,
+        tint,
+        painted: false,
+        lit: true,
+      });
       leaves++;
       if (i % 800 === 799) yield;
     }
@@ -292,6 +316,8 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
       [-1.5, 1.6, 0.2],
       [-0.5, 2.3, -0.6],
       [0.5, 1.5, 0.5],
+      [1.6, 2, -1.2],
+      [0.9, 2.4, 1.4],
     ]) {
       const reach = new Vector3(dx, dy, dz);
       const length = reach.length();
@@ -302,15 +328,31 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
           lean.setFromUnitVectors(UP, reach.normalize()),
           scale.set(0.09, length, 0.09),
         ),
-        ID.trunk,
-        BARK,
+        trunk,
       );
     }
     yield;
 
-    const lamp = paintBuilder();
-    lamp.mesh(cylinder, placed(LAMP, [0.16, 0.42, 0.16]), ID.lamp, LANTERN);
-    lamp.mesh(bark, placed([LAMP[0], LAMP[1] + 0.27, LAMP[2]], [0.21, 0.12, 0.21]), ID.lamp, CANE);
+    // The lantern: six lit panes in an iron cage, hung from the awning's frame.
+    const lamp = paintBuilder(patches);
+    const glass = new CylinderGeometry(0.2, 0.15, 0.42, 6);
+    const cap = new CylinderGeometry(0.04, 0.25, 0.16, 6);
+    const lit = prop(ID.lamp, LANTERN, { lit: true });
+    const cage = prop(ID.lamp, IRON);
+    lamp.mesh(glass, placed(LAMP, [1, 1, 1]), lit);
+    lamp.mesh(cap, placed([LAMP[0], LAMP[1] + 0.29, LAMP[2]], [1, 1, 1]), cage);
+    lamp.mesh(cap, placed([LAMP[0], LAMP[1] - 0.25, LAMP[2]], [0.7, -0.5, 0.7]), cage);
+    for (let i = 0; i < 6; i++) {
+      const a = (i * Math.PI) / 3 + Math.PI / 6;
+      lamp.mesh(
+        cylinder,
+        placed(
+          [LAMP[0] + 0.185 * Math.cos(a), LAMP[1], LAMP[2] + 0.185 * Math.sin(a)],
+          [0.012, 0.44, 0.012],
+        ),
+        cage,
+      );
+    }
     // The rod reaches the awning, which falls from the wall to its outer edge.
     const [nearWall, nearOuter] = AWNING;
     const fall = (LAMP[0] - nearWall[0]) / (nearOuter[0] - nearWall[0]);
@@ -319,14 +361,19 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     lamp.mesh(
       cylinder,
       placed([LAMP[0], LAMP[1] + 0.3 + rod / 2, LAMP[2]], [0.012, Math.max(0.1, rod - 0.3), 0.012]),
-      ID.lamp,
-      IRON,
+      cage,
     );
 
-    const sky = paintBuilder();
+    const sky = paintBuilder(patches);
     const dome = new SphereGeometry(SKY_RADIUS, 48, 24);
-    sky.mesh(dome, placed(PAINTER_EYE, [1, 1, 1]), ID.sky, 0xffffff, SWATCH.sky, [24, 12]);
-    for (const geometry of [cylinder, bark, table, chair, leaf, dome]) geometry.dispose();
+    sky.mesh(
+      dome,
+      placed(PAINTER_EYE, [1, 1, 1]),
+      { id: ID.sky, swatch: SWATCH.sky, tint: 0x173a7c, raw: true },
+      { uvScale: [24, 12] },
+    );
+    for (const geometry of [cylinder, bark, table, chair, leaf, dome, glass, cap])
+      geometry.dispose();
     yield;
 
     const parts = [set, props, crown, lamp];
@@ -335,9 +382,15 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     const owners = new Uint8Array(total / 3);
     let offset = 0;
     for (const part of parts) {
-      positions.set(part.positions, offset);
-      owners.set(part.ids, offset / 3);
-      offset += part.positions.length;
+      // In slices: one part holds most of the set's triangles.
+      const { positions: from, ids: named } = part;
+      for (let i = 0; i < from.length; i++) {
+        positions[offset + i] = from[i];
+        if (i % 3 === 0) owners[(offset + i) / 3] = named[i / 3];
+        if (i % 150_000 === 149_999) yield;
+      }
+      offset += from.length;
+      yield;
     }
     const map = yield* rasterizeIds(positions, owners, ID_WIDTH, ID_HEIGHT, ID.sky);
     const ids = new DataTexture(map, ID_WIDTH, ID_HEIGHT, RedFormat, UnsignedByteType);
@@ -347,11 +400,15 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     ids.needsUpdate = true;
     textures.add(ids);
 
-    const material = createPaintMaterial(scan, ids, ID_WIDTH, ID_HEIGHT);
-    const glow = material.clone();
-    materials.add(material).add(glow);
-    const show = (part: typeof set, paint: ShaderMaterial): Mesh => {
-      const geometry = part.build();
+    const view = painterView(raster, map, ID_WIDTH, ID_HEIGHT);
+    for (const part of [...parts, sky]) yield* part.bake(view);
+    const material = createPaintMaterial(scan, ids, ID_WIDTH, ID_HEIGHT, patches, view);
+    // Leaves, bent tubes and the dome, seen from inside, show both faces.
+    const loose = createPaintMaterial(scan, ids, ID_WIDTH, ID_HEIGHT, patches, view, DoubleSide);
+    const glow = loose.clone();
+    materials.add(material).add(loose).add(glow);
+    const show = function* (part: PaintBuilder, paint: ShaderMaterial): Steps<Mesh> {
+      const geometry = yield* part.build();
       geometries.add(geometry);
       const mesh = new Mesh(geometry, paint);
       // Every part spans the street, and the paint needs each at its rest pose.
@@ -359,10 +416,14 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
       mesh.matrixAutoUpdate = false;
       return mesh;
     };
-    root.add(show(sky, material), show(set, material), show(props, material), show(lamp, glow));
+    root.add(yield* show(sky, loose));
+    yield;
+    root.add(yield* show(set, material));
+    yield;
+    root.add(yield* show(props, loose), yield* show(lamp, glow));
     yield;
 
-    const canopy = show(crown, material);
+    const canopy = yield* show(crown, loose);
     const canopyPivot = new Group();
     canopyPivot.position.set(TRUNK[0], CROWN_FORK, TRUNK[2]);
     canopy.position.copy(canopyPivot.position).negate();
@@ -375,7 +436,6 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
       solids,
       ids,
       counts: {
-        surfaces: surfaces.length,
         tables: TABLES.length,
         chairs: CHAIRS.length + PEOPLE.filter(({ pose }) => pose === 'seated').length,
         people: PEOPLE.length,

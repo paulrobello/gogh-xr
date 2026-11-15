@@ -6,23 +6,23 @@
 import type { WalkBounds } from '../../locomotion/walk-bounds';
 import type { Vec3 } from '../../render/strokes/frame';
 import { canvasRay, onFrontal, onLevel, onPlane, STREET_VANISH } from './canvas';
-
-/** A patch of the scan that paints a surface where the projection cannot reach it. */
-export interface Swatch {
-  /** Canvas rectangle: u, v, width, height. */
-  readonly rect: readonly [number, number, number, number];
-  /** The patch's size on the surface, metres. */
-  readonly metres: readonly [number, number];
-}
+import type { Swatch } from './paint';
 
 export const SWATCH = {
   cobbles: { rect: [0.22, 0.86, 0.73, 0.13], metres: [3, 1.6] },
-  wall: { rect: [0.395, 0.165, 0.095, 0.04], metres: [2.4, 1] },
-  dark: { rect: [0.63, 0.33, 0.13, 0.19], metres: [5, 7] },
+  /** Blue plaster in upright strokes. */
+  plaster: { rect: [0.79, 0.19, 0.06, 0.11], metres: [1.2, 2.6] },
+  /** The lit café wall. */
+  wall: { rect: [0.168, 0.326, 0.055, 0.088], metres: [0.9, 1.4] },
+  /** Dark street walls, clear of any lit window. */
+  dark: { rect: [0.6875, 0.257, 0.047, 0.056], metres: [2, 2.4] },
   awning: { rect: [0.3, 0.31, 0.22, 0.13], metres: [3, 3] },
   sky: { rect: [0.52, 0.0, 0.24, 0.22], metres: [1, 1] },
   foliage: { rect: [0.8, 0.14, 0.18, 0.2], metres: [2.4, 2.4] },
-  shop: { rect: [0.77, 0.45, 0.22, 0.14], metres: [7, 5] },
+  deck: { rect: [0.235, 0.745, 0.09, 0.025], metres: [1.6, 0.5] },
+  /** The blue shopfront's painted wood. */
+  wood: { rect: [0.086, 0.45, 0.07, 0.24], metres: [0.5, 1.7] },
+  shutter: { rect: [0.234, 0.116, 0.059, 0.085], metres: [0.6, 0.9] },
 } as const satisfies Record<string, Swatch>;
 
 /** Paint ids: the painter's id map names the nearest surface under each canvas point. */
@@ -42,23 +42,20 @@ export const ID = {
   trunk: 12,
   canopy: 13,
   lamp: 14,
+  deck: 15,
+  shopfront: 16,
+  interior: 17,
+  balcony: 18,
+  upper: 19,
   /** Tables, chairs and people count up from here, one id each. */
   props: 20,
 } as const;
 
-export interface SetSurface {
-  readonly name: string;
-  readonly id: number;
-  /** A convex outline, in order. */
-  readonly corners: readonly Vec3[];
-  readonly swatch: Swatch;
-}
-
 /** The café façade's own vanishing point: it runs about 7° off the terrace's outer edge. */
 const FACADE_VANISH_U = 0.375;
 /** The façade's base at the terrace's front-left corner. */
-const FACADE_ANCHOR = onLevel(0.145, 0.775);
-const FACADE_DIRECTION: Vec3 = (() => {
+export const FACADE_ANCHOR = onLevel(0.145, 0.775);
+export const FACADE_DIRECTION: Vec3 = (() => {
   const [x, , z] = canvasRay(FACADE_VANISH_U, STREET_VANISH[1]);
   const length = Math.hypot(x, z);
   return [x / length, 0, z / length];
@@ -78,66 +75,28 @@ function onFacade(u: number, v: number): Vec3 {
 export const NEAR_Z = 2.5;
 /** The wing that closes the terrace: its lit wall stands on this plane. */
 export const REAR_Z: number = onLevel(0.4, 0.615)[2];
-const FAR_Z = -48;
-const RIGHT_Z = -36;
 const SHOP_Z: number = onLevel(0.76, 0.597)[2];
-const BACK_Z = 9;
-const SIDE_X = 18;
-const CROSS_X = -24;
-const ROOF = 16;
-
-/** One stretch of a skyline on a frontal plane: the top runs from (u0, v0) to (u1, v1). */
-type Skyline = readonly [u0: number, v0: number, u1: number, v1: number];
-
-function frontalBlock(
-  name: string,
-  id: number,
-  z: number,
-  skyline: readonly Skyline[],
-  swatch: Swatch,
-): SetSurface[] {
-  return skyline.map(([u0, v0, u1, v1], i) => {
-    const left = onFrontal(u0, v0, z);
-    const right = onFrontal(u1, v1, z);
-    return {
-      name: `${name} ${i}`,
-      id,
-      corners: [[left[0], 0, z], [right[0], 0, z], right, left],
-      swatch,
-    };
-  });
-}
-
-function wall(
-  name: string,
-  id: number,
-  a: Vec3,
-  b: Vec3,
-  height: number,
-  swatch: Swatch,
-): SetSurface {
-  return {
-    name,
-    id,
-    corners: [
-      [a[0], 0, a[2]],
-      [b[0], 0, b[2]],
-      [b[0], height, b[2]],
-      [a[0], height, a[2]],
-    ],
-    swatch,
-  };
-}
+/** The café building's eaves and the awning's line on its wall, metres. */
+export const ROOF = 11.6;
 
 const AWNING_NEAR_WALL = onFacade(0.165, 0.152);
 const AWNING_NEAR_OUTER = onFrontal(0.55, 0.335, AWNING_NEAR_WALL[2]);
 const AWNING_FAR_OUTER = onFrontal(0.535, 0.505, REAR_Z);
-const REAR_LEFT_X = facadeX(REAR_Z);
-const REAR_RIGHT = onFrontal(0.5, 0.145, REAR_Z);
-const REAR_LEFT_TOP = onFrontal(0.34, 0.085, REAR_Z)[1];
-const RIGHT_SIDE = onFrontal(0.695, 0.235, RIGHT_Z);
-const SHOP_LEFT = onFrontal(0.76, 0.47, SHOP_Z);
-const SHOP_END_X = onFrontal(1.5, 0.435, SHOP_Z)[0];
+export const REAR_LEFT_X: number = facadeX(REAR_Z);
+/** The rear wing's front wall: its right top corner, and its top at the left. */
+export const REAR_RIGHT: Vec3 = onFrontal(0.5, 0.145, REAR_Z);
+export const REAR_LEFT_TOP: number = onFrontal(0.34, 0.085, REAR_Z)[1];
+/** How far the rear wing runs back from its front wall, metres. */
+export const REAR_DEPTH = 9;
+
+/** The terrace's raised deck: front left, front right, far right, far left, and its height. */
+export const DECK_HEIGHT = 0.07;
+export const DECK: readonly [Vec3, Vec3, Vec3, Vec3] = [
+  [facadeX(-6.25), 0, -6.25],
+  [0.38, 0, -6.14],
+  [REAR_RIGHT[0], 0, REAR_Z],
+  [REAR_LEFT_X, 0, REAR_Z],
+];
 
 /** The awning's four corners: near wall, near outer, far outer, far wall. */
 export const AWNING: readonly [Vec3, Vec3, Vec3, Vec3] = [
@@ -146,116 +105,6 @@ export const AWNING: readonly [Vec3, Vec3, Vec3, Vec3] = [
   AWNING_FAR_OUTER,
   [REAR_LEFT_X + 0.02, AWNING_NEAR_WALL[1], REAR_Z + 0.02],
 ];
-
-export function cafeSet(): SetSurface[] {
-  return [
-    {
-      name: 'ground',
-      id: ID.ground,
-      corners: [
-        [CROSS_X, 0, BACK_Z],
-        [SIDE_X + 30, 0, BACK_Z],
-        [SIDE_X + 30, 0, FAR_Z],
-        [CROSS_X, 0, FAR_Z],
-      ],
-      swatch: SWATCH.cobbles,
-    },
-    wall(
-      'facade',
-      ID.facade,
-      [facadeX(NEAR_Z), 0, NEAR_Z],
-      [REAR_LEFT_X, 0, REAR_Z],
-      ROOF,
-      SWATCH.wall,
-    ),
-    {
-      name: 'rear wing',
-      id: ID.rearWing,
-      corners: [
-        [REAR_LEFT_X, 0, REAR_Z],
-        [REAR_RIGHT[0], 0, REAR_Z],
-        REAR_RIGHT,
-        [REAR_LEFT_X, REAR_LEFT_TOP, REAR_Z],
-      ],
-      swatch: SWATCH.wall,
-    },
-    wall(
-      'rear wing side',
-      ID.rearSide,
-      [REAR_RIGHT[0], 0, REAR_Z],
-      [REAR_RIGHT[0], 0, REAR_Z - 9],
-      REAR_RIGHT[1],
-      SWATCH.dark,
-    ),
-    { name: 'awning', id: ID.awning, corners: AWNING, swatch: SWATCH.awning },
-    ...frontalBlock(
-      'far street',
-      ID.farStreet,
-      FAR_Z,
-      [
-        [0.4, 0.37, 0.605, 0.37],
-        [0.605, 0.37, 0.612, 0.3],
-        [0.612, 0.3, 0.62, 0.27],
-        [0.62, 0.27, 0.63, 0.3],
-        [0.63, 0.3, 0.635, 0.315],
-        [0.635, 0.315, 0.695, 0.315],
-      ],
-      SWATCH.dark,
-    ),
-    ...frontalBlock(
-      'right block',
-      ID.rightBlock,
-      RIGHT_Z,
-      [
-        [0.695, 0.235, 0.775, 0.235],
-        [0.775, 0.14, 0.81, 0.14],
-        [0.81, 0.06, 0.845, 0.06],
-        [0.845, -0.12, 1.6, -0.12],
-      ],
-      SWATCH.dark,
-    ),
-    wall(
-      'right block side',
-      ID.rightSide,
-      [RIGHT_SIDE[0], 0, RIGHT_Z],
-      [RIGHT_SIDE[0], 0, FAR_Z],
-      RIGHT_SIDE[1],
-      SWATCH.dark,
-    ),
-    ...frontalBlock(
-      'shop',
-      ID.shop,
-      SHOP_Z,
-      [
-        [0.76, 0.47, 0.84, 0.47],
-        [0.84, 0.435, 1.5, 0.435],
-      ],
-      SWATCH.shop,
-    ),
-    wall(
-      'shop side',
-      ID.shopSide,
-      [SHOP_LEFT[0], 0, SHOP_Z],
-      [SHOP_LEFT[0], 0, RIGHT_Z],
-      SHOP_LEFT[1],
-      SWATCH.dark,
-    ),
-    {
-      name: 'shop roof',
-      id: ID.shopSide,
-      corners: [
-        [SHOP_LEFT[0], SHOP_LEFT[1], SHOP_Z],
-        [SHOP_END_X, SHOP_LEFT[1], SHOP_Z],
-        [SHOP_END_X, SHOP_LEFT[1], RIGHT_Z],
-        [SHOP_LEFT[0], SHOP_LEFT[1], RIGHT_Z],
-      ],
-      swatch: SWATCH.dark,
-    },
-    wall('square side', ID.enclosure, [SIDE_X, 0, BACK_Z], [SIDE_X, 0, RIGHT_Z], ROOF, SWATCH.dark),
-    wall('square back', ID.enclosure, [CROSS_X, 0, BACK_Z], [SIDE_X, 0, BACK_Z], ROOF, SWATCH.dark),
-    wall('cross end', ID.enclosure, [CROSS_X, 0, NEAR_Z], [CROSS_X, 0, BACK_Z], ROOF, SWATCH.dark),
-  ];
-}
 
 /** Table height, metres. The painted tables are squat; this keeps their tops on their paint. */
 export const TABLE_HEIGHT = 0.62;
@@ -374,8 +223,31 @@ export const TRUNK: Vec3 = onLevel(0.985, 0.7);
 /** The lantern under the awning. */
 export const LAMP: Vec3 = onFrontal(0.39, 0.49, -13);
 
+/** The wide doorway into the lit room, as distances along the façade from its near corner. */
+export const DOORWAY: readonly [number, number] = [11.95, 15.9];
+/** The doorway's head, and how far a walker gets into the room before the counter, metres. */
+export const DOORWAY_HEAD = 2.98;
+export const ROOM_REACH = 2.7;
+
+/** World z at `s` metres along the façade from its near corner. */
+function facadeZ(s: number): number {
+  return NEAR_Z + FACADE_DIRECTION[2] * s;
+}
+
+/** The ground's height at (x, z): the deck and the room's floor stand a step above the cobbles. */
+export function groundHeight(x: number, z: number): number {
+  if (x < facadeX(z) && z < facadeZ(DOORWAY[0]) && z > facadeZ(DOORWAY[1])) return DECK_HEIGHT;
+  for (let i = 0; i < 4; i++) {
+    const a = DECK[i];
+    const b = DECK[(i + 1) % 4];
+    if ((b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0]) > 0) return 0;
+  }
+  return DECK_HEIGHT;
+}
+
 export const WALK_BOUNDS: WalkBounds = {
-  minX: REAR_LEFT_X - 0.2,
+  // Into the lit room, as far as its counter.
+  minX: facadeX(facadeZ(DOORWAY[1])) - ROOM_REACH,
   maxX: 6,
   minZ: SHOP_Z + 1.5,
   maxZ: 1.5,
@@ -388,18 +260,40 @@ export interface SolidBox {
   readonly size: Vec3;
 }
 
-/** The buildings a walker or a teleport arc cannot enter, as boxes stepped along the façade. */
+/**
+ * The buildings a walker or a teleport arc cannot enter, as boxes stepped along the façade. The
+ * doorway stays open as far as the room's counter.
+ */
 export function setSolids(): SolidBox[] {
   const solids: SolidBox[] = [];
-  const step = 1.5;
-  for (let z = NEAR_Z; z > REAR_Z; z -= step) {
-    const end = Math.max(REAR_Z, z - step);
-    const face = Math.max(facadeX(z), facadeX(end));
-    const depth = 4;
-    solids.push({
-      center: [face - depth / 2, ROOF / 2, (z + end) / 2],
-      size: [depth, ROOF, z - end],
-    });
+  const depth = 9;
+  const doorNear = facadeZ(DOORWAY[0]);
+  const doorFar = facadeZ(DOORWAY[1]);
+  const cuts = [NEAR_Z, doorNear, doorFar, REAR_Z];
+  for (let k = 0; k + 1 < cuts.length; k++) {
+    const count = Math.ceil((cuts[k] - cuts[k + 1]) / 1.5);
+    for (let i = 0; i < count; i++) {
+      const z = cuts[k] + ((cuts[k + 1] - cuts[k]) * i) / count;
+      const end = cuts[k] + ((cuts[k + 1] - cuts[k]) * (i + 1)) / count;
+      const length = z - end;
+      const middle = (z + end) / 2;
+      if (k !== 1) {
+        const face = Math.max(facadeX(z), facadeX(end));
+        solids.push({ center: [face - depth / 2, ROOF / 2, middle], size: [depth, ROOF, length] });
+        continue;
+      }
+      // The doorway: the wall over its head, and the building from the counter back.
+      const face = Math.min(facadeX(z), facadeX(end));
+      const lintel = ROOF - DOORWAY_HEAD;
+      solids.push({
+        center: [face - 0.2, DOORWAY_HEAD + lintel / 2, middle],
+        size: [0.4, lintel, length],
+      });
+      solids.push({
+        center: [face - ROOM_REACH - (depth - ROOM_REACH) / 2, ROOF / 2, middle],
+        size: [depth - ROOM_REACH, ROOF, length],
+      });
+    }
   }
   const wingWidth = REAR_RIGHT[0] - REAR_LEFT_X + 4;
   solids.push({

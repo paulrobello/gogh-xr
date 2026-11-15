@@ -4,8 +4,11 @@ import { rasterizeIds } from '../src/paintings/cafe-terrace-at-night/id-map';
 import {
   AWNING,
   CHAIRS,
-  cafeSet,
+  DECK_HEIGHT,
+  DOORWAY,
+  FACADE_DIRECTION,
   facadeX,
+  groundHeight,
   ID,
   NEAR_Z,
   PEOPLE,
@@ -17,21 +20,26 @@ import {
   TRUNK,
   WALK_BOUNDS,
 } from '../src/paintings/cafe-terrace-at-night/layout';
+import { paintBuilder } from '../src/paintings/cafe-terrace-at-night/paint';
+import { buildSet } from '../src/paintings/cafe-terrace-at-night/set';
+import { mulberry32 } from '../src/util/prng';
 import { drain } from '../src/util/slicer';
 
 /** The set's triangles and ids as the scene hands them to the id map. */
-function setTriangles(): { positions: number[]; ids: number[] } {
-  const positions: number[] = [];
-  const ids: number[] = [];
-  for (const { corners, id } of cafeSet()) {
-    for (let i = 1; i + 1 < corners.length; i++) {
-      for (const corner of [corners[0], corners[i], corners[i + 1]]) {
-        positions.push(...corner);
-        ids.push(id);
-      }
-    }
-  }
-  return { positions, ids };
+function setTriangles(): { positions: readonly number[]; ids: readonly number[] } {
+  const set = paintBuilder([]);
+  drain(buildSet(set, mulberry32(8)));
+  return { positions: set.positions, ids: set.ids };
+}
+
+/** Whether a point lies inside one of the set's solid boxes. */
+function solid(x: number, y: number, z: number): boolean {
+  return setSolids().some(
+    ({ center, size }) =>
+      Math.abs(x - center[0]) <= size[0] / 2 &&
+      Math.abs(y - center[1]) <= size[1] / 2 &&
+      Math.abs(z - center[2]) <= size[2] / 2,
+  );
 }
 
 describe('café layout', () => {
@@ -103,6 +111,26 @@ describe('café layout', () => {
     }
   });
 
+  test('the doorway is open to the walk as far as the counter, and the wall beside it is not', () => {
+    const along = (DOORWAY[0] + DOORWAY[1]) / 2;
+    const z = NEAR_Z + FACADE_DIRECTION[2] * along;
+    const face = facadeX(z);
+    // On the deck, through the doorway, and a metre into the room.
+    for (const x of [face + 1, face - 0.2, face - 1.5]) {
+      expect(solid(x, 1, z)).toBe(false);
+      expect(x).toBeGreaterThan(WALK_BOUNDS.minX);
+      expect(groundHeight(x, z)).toBe(DECK_HEIGHT);
+    }
+    // The counter's side of the room, the wall over the doorway's head, and the wall beside it.
+    expect(solid(face - 3.2, 1, z)).toBe(true);
+    expect(solid(face - 0.2, 3.5, z)).toBe(true);
+    const beside = NEAR_Z + FACADE_DIRECTION[2] * (DOORWAY[1] + 1.5);
+    expect(solid(facadeX(beside) - 0.5, 1, beside)).toBe(true);
+    // The cobbles off the deck lie at 0.
+    expect(groundHeight(3, -8)).toBe(0);
+    expect(groundHeight(0, 0)).toBe(0);
+  });
+
   test('every swatch lies inside the canvas', () => {
     for (const { rect, metres } of Object.values(SWATCH)) {
       expect(rect[0]).toBeGreaterThanOrEqual(0);
@@ -124,14 +152,16 @@ describe('café id map', () => {
 
   test('names the surface the painter sees at each landmark', () => {
     expect(at(0.6, 0.92)).toBe(ID.ground);
+    expect(at(0.35, 0.7)).toBe(ID.deck);
     expect(at(0.2, 0.6)).toBe(ID.facade);
+    expect(at(0.12, 0.6)).toBe(ID.shopfront);
     expect(at(0.4, 0.38)).toBe(ID.awning);
     expect(at(0.42, 0.15)).toBe(ID.rearWing);
     expect(at(0.42, 0.56)).toBe(ID.rearWing);
     expect(at(0.6, 0.1)).toBe(ID.sky);
     expect(at(0.58, 0.45)).toBe(ID.farStreet);
-    expect(at(0.67, 0.45)).toBe(ID.rightSide);
-    expect(at(0.9, 0.3)).toBe(ID.rightBlock);
+    expect(at(0.695, 0.45)).toBe(ID.rightBlock);
+    expect(at(0.9, 0.3)).toBe(ID.shop);
     expect(at(0.9, 0.52)).toBe(ID.shop);
   });
 
@@ -151,5 +181,15 @@ describe('café id map', () => {
     const flipped = drain(rasterizeIds([...far, ...front], [3, 3, 3, 7, 7, 7], 8, 8, 0));
     expect(both.every((id) => id === 7)).toBe(true);
     expect(flipped.every((id) => id === 7)).toBe(true);
+  });
+
+  test('a set that lies mostly off the canvas still builds in short steps', () => {
+    // Triangles off to the left: none covers a pixel, and each still counts toward a yield.
+    const off: number[] = [];
+    for (let i = 0; i < 4000; i++) off.push(-40, 0, -5 - i * 0.01, -39, 0, -5, -40, 1, -5);
+    const steps = rasterizeIds(off, new Array(off.length / 3).fill(4), WIDTH, HEIGHT, 0);
+    let count = 0;
+    while (!steps.next().done) count++;
+    expect(count).toBeGreaterThanOrEqual(3);
   });
 });

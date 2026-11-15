@@ -20,11 +20,12 @@ export const CAFE_CAPTURE_SIZE: Readonly<{ width: number; height: number }> = Ob
 });
 /**
  * A capture passes with SSIM ≥ and mean ΔE2000 ≤ these. Measured on ANGLE Metal at
- * CAFE_CAPTURE_SIZE on 2026-11-15: 0.9814 and 0.506. The hand-coloured set this replaced scored 0.25
- * and 13.8.
+ * CAFE_CAPTURE_SIZE on 2026-11-15 with the set built in depth: 0.566 and 3.12, each bar a margin
+ * off that. The flat set that wore the scan itself scored 0.98 and 0.51 from here and streaked from
+ * everywhere else; Starry Night's own painter view scores about 0.31 and 5.7.
  */
-export const CAFE_SSIM_THRESHOLD = 0.95;
-export const CAFE_DELTA_E_THRESHOLD = 1.5;
+export const CAFE_SSIM_THRESHOLD = 0.5;
+export const CAFE_DELTA_E_THRESHOLD = 4.5;
 
 async function load(image: Buffer | string): Promise<RgbImage> {
   const { data, info } = await sharp(image)

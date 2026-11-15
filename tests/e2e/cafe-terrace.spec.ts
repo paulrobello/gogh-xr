@@ -6,6 +6,14 @@ import {
   CAFE_SSIM_THRESHOLD,
   cafeFidelity,
 } from '../../scripts/cafe/fidelity-lib.ts';
+import {
+  DECK_HEIGHT,
+  DOORWAY,
+  FACADE_DIRECTION,
+  facadeX,
+  NEAR_Z,
+  ROOM_REACH,
+} from '../../src/paintings/cafe-terrace-at-night/layout';
 import { livePortals, returnPose } from '../../src/portal/portal';
 import { controlHidden, setControlHidden } from '../../src/ui/panel-layout';
 import { expect, glErrors, test, type Xr } from './fixtures';
@@ -136,9 +144,47 @@ test("the painter URL frames the scan, and the paint holds off the painter's spo
   // The same metric from the street is far off the scan: it can tell a view that is not the canvas.
   await page.evaluate(() => window.__goghPose?.(2.6, 1.6, -9, 1.2, 0.1));
   const street = await cafeFidelity(await capture('street-side'));
-  expect(street.ssim).toBeLessThan(0.5);
+  expect(street.ssim).toBeLessThan(CAFE_SSIM_THRESHOLD - 0.15);
   await page.evaluate(() => window.__goghPose?.(-1, 1.6, -10, 0.3, 0.45));
   await capture('under-awning');
+  await page.evaluate(() => window.__goghPose?.(2.6, 1.6, -19, 2.6, 0.1));
+  await capture('street-back');
+  expect(await glErrors(page)).toEqual([]);
+});
+
+test('the set is built in depth, and the doorway leads into the lit room', async ({ page, xr }) => {
+  await xr.boot(`painting=${CAFE}&shot&noanim`);
+  await settled(xr, CAFE);
+  const { counts } = (await xr.diag()).world as { counts: { triangles: number } };
+  expect(counts.triangles).toBeGreaterThan(40_000);
+  // On the deck, facing the doorway.
+  const along = (DOORWAY[0] + DOORWAY[1]) / 2;
+  const z = NEAR_Z + FACADE_DIRECTION[2] * along;
+  const face = facadeX(z);
+  await page.evaluate(
+    ([x, pz]) => window.__goghPose?.(x, 1.67, pz, Math.PI / 2, 0),
+    [face + 1.5, z],
+  );
+  await xr.waitFrames(3);
+  await walk(
+    () => page.keyboard.down('KeyW'),
+    () => page.keyboard.up('KeyW'),
+    async () => (await xr.diag()).camera.position[0] < face - 1,
+  );
+  // Held longer, the walk stops at the counter.
+  await page.keyboard.down('KeyW');
+  await page.waitForTimeout(2500);
+  await page.keyboard.up('KeyW');
+  const [x, y] = (await xr.diag()).camera.position;
+  expect(x).toBeGreaterThan(face - ROOM_REACH - 0.1);
+  expect(x).toBeLessThan(face - 1);
+  // The room's floor stands a step above the cobbles.
+  expect(y).toBeCloseTo(1.6 + DECK_HEIGHT, 1);
+  const shot = await page.evaluate(() => window.__goghShot?.() ?? '');
+  await test.info().attach('bar-room', {
+    body: Buffer.from(shot.split(',')[1], 'base64'),
+    contentType: 'image/png',
+  });
   expect(await glErrors(page)).toEqual([]);
 });
 

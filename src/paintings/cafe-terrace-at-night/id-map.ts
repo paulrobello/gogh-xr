@@ -11,6 +11,8 @@ import { CAMERA_FORWARD, CAMERA_RIGHT, CAMERA_UP, CANVAS_LENS, PAINTER_EYE } fro
 const NEAR = 0.05;
 /** Pixels tested between two yields. */
 const SLICE = 60_000;
+/** What a triangle costs before its first pixel, in pixels: most of a set lies off the canvas. */
+const SETUP = 60;
 
 /**
  * `positions` holds triangles as nine numbers each, and `ids` one id per vertex (a triangle takes
@@ -28,6 +30,9 @@ export function* rasterizeIds(
   // Camera space: x right, y up, z the depth along the optical axis.
   const corner = new Float64Array(9);
   const clipped = new Float64Array(12);
+  const px = new Float64Array(3);
+  const py = new Float64Array(3);
+  const pw = new Float64Array(3);
   let tested = 0;
   for (let t = 0; t < positions.length / 9; t++) {
     for (let k = 0; k < 3; k++) {
@@ -57,15 +62,18 @@ export function* rasterizeIds(
     }
     const id = ids[t * 3];
     // Fan the clipped outline: one triangle, or two where the near plane cut a corner off.
+    tested += SETUP;
+    if (tested >= SLICE) {
+      tested = 0;
+      yield;
+    }
     for (let f = 1; f + 1 < count; f++) {
-      const px: number[] = [];
-      const py: number[] = [];
-      const pw: number[] = [];
-      for (const k of [0, f, f + 1]) {
+      for (let c = 0; c < 3; c++) {
+        const k = c === 0 ? 0 : f + c - 1;
         const depth = clipped[k * 3 + 2];
-        px.push((0.5 + (clipped[k * 3] / depth) * CANVAS_LENS[0]) * width);
-        py.push((0.5 - (clipped[k * 3 + 1] / depth) * CANVAS_LENS[1]) * height);
-        pw.push(1 / depth);
+        px[c] = (0.5 + (clipped[k * 3] / depth) * CANVAS_LENS[0]) * width;
+        py[c] = (0.5 - (clipped[k * 3 + 1] / depth) * CANVAS_LENS[1]) * height;
+        pw[c] = 1 / depth;
       }
       const area = (px[1] - px[0]) * (py[2] - py[0]) - (px[2] - px[0]) * (py[1] - py[0]);
       if (Math.abs(area) < 1e-9) continue;
@@ -73,6 +81,8 @@ export function* rasterizeIds(
       const maxX = Math.min(width - 1, Math.ceil(Math.max(px[0], px[1], px[2])));
       const minY = Math.max(0, Math.floor(Math.min(py[0], py[1], py[2])));
       const maxY = Math.min(height - 1, Math.ceil(Math.max(py[0], py[1], py[2])));
+      // Off to one side of the canvas: nothing to test.
+      if (maxX < minX) continue;
       for (let row = minY; row <= maxY; row++) {
         const y = row + 0.5;
         for (let col = minX; col <= maxX; col++) {

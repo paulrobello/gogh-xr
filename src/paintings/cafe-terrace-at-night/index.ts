@@ -26,7 +26,7 @@ import {
   PAINTER_EYE,
   toCanvas,
 } from './canvas';
-import { facadeX, WALK_BOUNDS } from './layout';
+import { facadeX, groundHeight, WALK_BOUNDS } from './layout';
 import { disposeScanTexture, loadScanTexture, scanSampler } from './scan';
 import { buildCafeScene, type CafeScene } from './scene';
 import { outsideStreet, streetVolumes } from './street';
@@ -122,7 +122,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
     built = { scene, background, cafe: set, scan, batch: paint, diag };
     return {
       batch: paint,
-      ground: { heightAt: () => 0, normalAt: () => UP },
+      ground: { heightAt: groundHeight, normalAt: () => UP },
       boundaryFactor: ([x, , z]) => (outsideStreet(x, z) ? 1 : 0),
       blocked: (x, z) => outsideStreet(x, z) || volumes.at(x, 0, z) >= 0,
       volumes,

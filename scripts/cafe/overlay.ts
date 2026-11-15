@@ -1,5 +1,6 @@
 /**
- * Draws the café set's outlines over the scan, to check the layout against the painting.
+ * Lays the café set over the scan, to check the layout against the painting: each surface the
+ * painter sees as a wash of its id's colour, with the tables, chairs, figures and solids outlined.
  *
  *   bun scripts/cafe/overlay.ts [out.jpg]
  */
@@ -9,9 +10,9 @@ import {
   PAINTER_EYE,
   toCanvas,
 } from '../../src/paintings/cafe-terrace-at-night/canvas.ts';
+import { rasterizeIds } from '../../src/paintings/cafe-terrace-at-night/id-map.ts';
 import {
   CHAIRS,
-  cafeSet,
   LAMP,
   PEOPLE,
   SEAT_HEIGHT,
@@ -20,7 +21,11 @@ import {
   TABLES,
   TRUNK,
 } from '../../src/paintings/cafe-terrace-at-night/layout.ts';
+import { paintBuilder } from '../../src/paintings/cafe-terrace-at-night/paint.ts';
+import { buildSet } from '../../src/paintings/cafe-terrace-at-night/set.ts';
 import type { Vec3 } from '../../src/render/strokes/frame.ts';
+import { mulberry32 } from '../../src/util/prng.ts';
+import { drain } from '../../src/util/slicer.ts';
 
 const WIDTH = 1200;
 const scan = sharp('assets/scans/cafe-terrace-at-night.jpg').resize(WIDTH);
@@ -55,14 +60,17 @@ const px = (p: Vec3): string => {
   const { u, v } = toCanvas(p);
   return `${(u * WIDTH).toFixed(1)},${(v * HEIGHT).toFixed(1)}`;
 };
-const colors = ['#ff3b3b', '#3bff6b', '#3bb4ff', '#ffe23b', '#ff7bf0', '#7bfff0', '#ffffff'];
 const shapes: string[] = [];
-for (const [i, surface] of cafeSet().entries()) {
-  const points = clip(surface.corners);
-  if (points.length < 3) continue;
-  shapes.push(
-    `<polygon points="${points.map(px).join(' ')}" fill="none" stroke="${colors[i % colors.length]}" stroke-width="2"/>`,
-  );
+// The set as the painter's id map names it, one hue per id.
+const set = paintBuilder([]);
+drain(buildSet(set, mulberry32(8)));
+const ids = drain(rasterizeIds(set.positions, set.ids, WIDTH, HEIGHT, 0));
+const wash = Buffer.alloc(WIDTH * HEIGHT * 4);
+for (let i = 0; i < ids.length; i++) {
+  const hue = (ids[i] * 137.5) % 360;
+  const channel = (offset: number): number =>
+    Math.round(255 * (0.5 + 0.5 * Math.cos(((hue + offset) * Math.PI) / 180)));
+  wash.set([channel(0), channel(120), channel(240), ids[i] === 0 ? 0 : 96], i * 4);
 }
 const ring = (center: Vec3, radius: number, color: string): void => {
   const points: Vec3[] = [];
@@ -107,7 +115,10 @@ for (const { center, size } of setSolids()) {
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">${shapes.join('')}</svg>`;
 const out = process.argv[2] ?? 'build/cafe-overlay.jpg';
 await scan
-  .composite([{ input: Buffer.from(svg) }])
+  .composite([
+    { input: wash, raw: { width: WIDTH, height: HEIGHT, channels: 4 } },
+    { input: Buffer.from(svg) },
+  ])
   .jpeg({ quality: 88 })
   .toFile(out);
 console.log(`cafe-overlay: wrote ${out} (${WIDTH}x${HEIGHT})`);

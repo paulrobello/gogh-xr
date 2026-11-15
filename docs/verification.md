@@ -3946,3 +3946,29 @@ The remaining difference is the 2,400 cobble dabs and resampling. Shot: docs/sho
 
 **Not verified.** No headset run of this build: stereo, frame rate and the look in VR are unchecked.
 
+
+## Café Terrace: the set built in depth (2026-11-15, branch claude/cafe-depth, card 01a1dfe5840b)
+
+**Why.** Paul checked the scan-projected set above on the Quest and rejected it: the painter's spot looked right, and everything else was colour smeared on flat panels. The walk-around sheet of that build (docs/shots/cafe-depth-walk-before.jpg, 12 poses) shows it: the façade, the ground and the awning are streaks from any pose off the painter's ray, and the doors, windows, balcony and awning are paint on about 23 flat quads.
+
+**What changed.** CLAUDE.md, Café Terrace at Night, has the rules. In short:
+
+- The set is geometry (`kit.ts`, `set.ts`): walls with openings cut through and built in depth (reveals, panes, frames, glazing bars, sills, shutters), the blue shopfront with its pier and entablature, an open doorway onto a lit room with a counter that the walker can enter, the awning as canvas on a frame with a scalloped valance, a balcony with a railing, a raised deck, the rear wing, the lit shop and the street's houses with windows, a tower, and seven houses round the square. 102,542 triangles with the props, against about 36,800.
+- The paint is baked in world space (`paint.ts`): each point's local colour is the scan averaged over a patch of the surface as wide as it is deep, so nothing streaks, with a swatch of the scan's own marks tiled on top without seams. The scan itself shows only where the painter saw a surface squarely.
+- The upper storey is one consistent building. Van Gogh drew the balcony, its railing and the shutters with a vanishing point far to the right of the ground floor's, so no single building lands on both. The balcony stands where a real one would, over the awning's line on the façade, and from the painter's spot its railing shows only at the awning's near end.
+
+**Walk-around (the first check).** `bun scripts/cafe/walk.ts http://localhost:4295 <dir>` on the dev server, 1280 × 720, ANGLE Metal on the M4 Max. docs/shots/cafe-depth-walk.jpg holds the 15 poses: the painter's spot, the terrace edge, under the awning, among the tables, the façade obliquely, the street looking back, the street side, the shop side, the far street, looking back past the shopfront, low among the tables, inside the bar room, from the bar looking out, the shopfront up close, and flight. No pose shows a streak. Each shows depth: the room through the doorway, the awning's rafters and valance, the balcony railing and shutters, window reveals and glazing bars, the deck's step.
+
+**Painter view (the second check).** docs/shots/cafe-depth-painter.jpg (scan left, capture right, 642 × 800). `bun scripts/cafe/fidelity.ts`: SSIM 0.5732, mean ΔE2000 3.065. The bar is now SSIM ≥ 0.5 and ΔE ≤ 4.5 (`scripts/cafe/fidelity-lib.ts`). The flat set scored 0.9814 and 0.506 from here, because it wore the scan itself; Starry Night's own painter view scores about 0.31 and 5.7. The worst blocks are the top-left, where the painting's upper storey does not match a consistent building, and the foreground cobbles, which are now a tiled swatch over the baked colour.
+
+**Build steps.** `bun scripts/cafe/time-build.ts`, M4 Max, bun 1.4.4, 1-minute load about 50: 504 steps, about 300 ms in all, the longest 12 to 18 ms. A portal entry in headless Chromium at the same load: 2.27 s, longest slicer step 14.2 ms, longest frame 16.8 ms. Before the fixes below the longest step was 74 ms in Chromium. These are not load-guarded figures (the host never fell to a load of 15), so treat them as upper bounds on this machine. No Quest figure is measured.
+
+**Defect found on the way.** `rasterizeIds` (the build that is live at 9f26053 has it too) added `maxX - minX + 1` to its pixel counter for every row of a triangle off to one side of the canvas, which is negative. Once such a triangle came up the counter never reached its slice again, and the rest of the map rasterised in one step: 80 ms of a 82 ms raster in one step for this set. It now skips such a triangle and also counts each triangle's setup. `tests/cafe-layout.test.ts` holds it: 4,000 off-canvas triangles must yield at least three times.
+
+**Bundle.** The café's lazy chunk grew from 10,127 to 17,758 gzip bytes, and the JS total from 375,652 to 383,277, over the 377,000 budget. `TOTAL_BUDGET_BYTES` is now 388,000 (CLAUDE.md, gate rules).
+
+**Tests.** `tests/cafe-set.test.ts` (new): a box and a wall face outward, an opening is cut and built in depth with its reveals facing in, the bake takes the painting where the painter sees a surface and the tint where not, a grid carries its paint on and fades into its tint, a prop's far side takes its painted side, the set is deterministic for a seed and yields between its parts. `tests/cafe-layout.test.ts`: the id map's landmarks on the new set, the open doorway, the room's floor step, and the raster's yields. `tests/e2e/cafe-terrace.spec.ts`: the new fidelity bar with its street-side negative control (SSIM under 0.35), and a walk from the deck through the doorway that stops at the counter with the eye a deck's height up.
+
+**Gates.** `make checkall-ci` passed on MiniMac at 7bad113's tree (booked window, 1-minute load 1.1 before and 8.2 after, node 24.22.2, bun 1.4.4, ffmpeg 9.0.2): 144 test files and 1,873 tests, JS total 383,266 of 388,000 gzip bytes, no leaks, no vulnerabilities, 30 asset files verified, the audio rebuild byte-identical. `tests/e2e/cafe-terrace.spec.ts` passed its six tests on ANGLE Metal on the M4 Max, and the portal timing project its five, at a 1-minute load of 284 falling to 167 (another session's gate on the same host), so that run stands for state and pixels only.
+
+**Not verified.** No headset run of this build: stereo, frame rate and the look up close in VR are unchecked.
