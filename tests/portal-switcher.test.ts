@@ -155,6 +155,8 @@ interface Rig {
   readonly gates: Map<string, Promise<void>>;
   /** Per id, the built world's `ready`. */
   readonly readies: Map<string, Promise<void>>;
+  /** A world's `WorldHandle.textures`, set before its build. */
+  readonly handleTextures: Map<string, Texture[]>;
   /** Per id, a chunk import the build awaits through `boundedImport`, as main.ts does. */
   readonly imports: Map<string, Promise<unknown>>;
   readonly slicer: ReturnType<typeof createSlicer>;
@@ -193,6 +195,7 @@ function setup(
   const chunkCounts = new Map<string, readonly number[]>();
   const gates = new Map<string, Promise<void>>();
   const readies = new Map<string, Promise<void>>();
+  const handleTextures = new Map<string, Texture[]>();
   const imports = new Map<string, Promise<unknown>>();
   const failures: { target: string; reason: string }[] = [];
   const entered: string[] = [];
@@ -247,6 +250,8 @@ function setup(
       const world = fakeWorld(id, scene, log, chunkCounts.get(id), release);
       const ready = readies.get(id);
       if (ready) Object.assign(world.handle, { ready });
+      const textures = handleTextures.get(id);
+      if (textures) Object.assign(world.handle, { textures });
       worlds.set(id, world);
       return world;
     },
@@ -292,6 +297,7 @@ function setup(
     chunkCounts,
     gates,
     readies,
+    handleTextures,
     imports,
     slicer,
     failures,
@@ -380,6 +386,27 @@ describe('createSwitcher', () => {
     r.switcher.frame(FRAME_MS);
     expect(r.switcher.diag().cue).toBe('swirl');
     expect(r.loadRaster).toHaveBeenCalledTimes(2);
+  });
+
+  test("a world's own textures upload after its maps, each once, before it shows", async () => {
+    const r = setup();
+    const scan = new DataTexture(new Uint8Array(4), 1, 1);
+    const ids = new DataTexture(new Uint8Array(4), 1, 1);
+    r.handleTextures.set('starry-night', [scan, ids, scan]);
+    expect(r.switcher.go('starry-night', 'api')).toBe(true);
+    let hiddenUntilUploaded = true;
+    for (let i = 0; i < 600 && r.switcher.busy; i++) {
+      r.switcher.frame(FRAME_MS);
+      r.switcher.endFrame(1, 0.5);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const next = r.worlds.get('starry-night');
+      if (next?.root.visible && r.uploads.length < 3) hiddenUntilUploaded = false;
+    }
+    expect(r.switcher.busy).toBe(false);
+    const world = must(r.worlds.get('starry-night'));
+    const mesh = world.root.children[0] as Mesh<PlaneGeometry, MeshBasicMaterial>;
+    expect(r.uploads).toEqual([mesh.material.map, scan, ids]);
+    expect(hiddenUntilUploaded).toBe(true);
   });
 
   test('fly: builds the new world from the trigger behind the old one, hidden, and moves the rig only once the old one is disposed', async () => {

@@ -841,7 +841,7 @@ function renderFrame(time: number, frame?: XRFrame): void {
   if (flags.slow > 0) busyWait(flags.slow);
   if (pinnedMotionTime === null) motionClock.frame(time);
   strokes.frame(time);
-  world?.update(time / 1000, dt);
+  world?.update(motionClock.uniforms.uTime.value, dt);
   if (!renderer.xr.isPresenting) desktop.update();
   if (runLocomotion) {
     switcher.frame(dtMs);

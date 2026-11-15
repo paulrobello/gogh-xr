@@ -1,16 +1,7 @@
 import { Box3, Ray, Vector3 } from 'three';
 import type { VolumeQuery } from '../../locomotion/teleport';
-import type { WalkBounds } from '../../locomotion/walk-bounds';
 import type { Vec3 } from '../../render/strokes/frame';
-
-export const WALK_BOUNDS: WalkBounds = {
-  minX: -3.1,
-  maxX: 5.6,
-  minZ: -17,
-  maxZ: 5.8,
-  // The walkable slice stays below the awning even with the shared flight controls.
-  maxY: 2.8,
-};
+import { WALK_BOUNDS } from './layout';
 
 export function outsideStreet(x: number, z: number): boolean {
   const { minX, maxX, minZ, maxZ } = WALK_BOUNDS;

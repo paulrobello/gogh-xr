@@ -852,6 +852,9 @@ export function createSwitcher(deps: SwitcherDeps): Switcher {
           if (map && !uploads.includes(map)) uploads.push(map);
         });
       }
+      for (const texture of world.handle.textures ?? []) {
+        if (!uploads.includes(texture)) uploads.push(texture);
+      }
     } catch (error) {
       showHidden();
       uploads = [];

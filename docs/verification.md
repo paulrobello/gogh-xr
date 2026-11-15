@@ -3922,3 +3922,27 @@ The three look-preserving arms each move the frame by under 0.5 ms, which is wit
 **Paul's look ruling (2026-11-12).** All six arms looked the same as `base` in the headset, `domewrite` and `mediump` included. `domewrite` is therefore the one same-look saving found, about 5 ms (11 to 12%) at both views.
 
 **Dome depth write is the default (2026-11-12).** On Paul's ruling the batch's dome chunks write depth while they draw (`DOME_DEPTH_WRITE` in batch.ts), and the `fill` group's `domewrite` arm became `domenowrite`, the old dome, for A/B against the new default.
+
+## Café Terrace: scan-projected set (2026-11-15, branch claude/cafe-fidelity)
+
+**Problem.** The café at 9267fa7 was hand-coloured boxes under procedural canvas textures. Its painter view did not line up with the painting: the awning ran off the top of the frame, the blue doorway filled the left fifth, and no colour came from the scan.
+
+**Calibration.** Measured on the 1280 × 1596 scan, canvas fractions with v down. The terrace's outer edge, the awning's outer edge and the right-hand rooflines converge near (0.51, 0.55). The standing figures' heads sit on v 0.54 to 0.56 at every depth, so the eye is at head height, and a 1.6 m eye over flat ground gives a 0.6 m foreground tabletop, 0.2 m cobbles and a 3.4 m door frame. The café façade's base and its awning line converge at u 0.375, not 0.51, so the façade is a plane about 7° off the street axis. The lens only scales depth: 60° puts the terrace front 6.2 m ahead and its rear wall 21.5 m ahead.
+
+**Method.** `layout.ts` casts each surface's canvas outline through the painter camera onto its plane. `paint-material.ts` projects the scan back through the same camera, gated by a CPU id map, and paints what the painter cannot see from patches of the scan. CLAUDE.md, Café Terrace at Night, has the rules.
+
+**Painter view against the scan** (the Starry Night metric at 256 px wide, ANGLE Metal on the M4 Max, `?painting=cafe-terrace-at-night&painter&diag&shot&noanim&nogov` at 642 × 800, `bun scripts/cafe/fidelity.ts`):
+
+| Build | SSIM | Mean ΔE2000 |
+| --- | --- | --- |
+| 9267fa7 (hand-coloured set, captured at 970 × 1200) | 0.2461 | 13.829 |
+| claude/cafe-fidelity | 0.9814 | 0.506 |
+
+The remaining difference is the 2,400 cobble dabs and resampling. Shot: docs/shots/cafe-painter-scan-before-after.jpg (scan, before, after).
+
+**Off the painter's spot.** docs/shots/cafe-off-axis.jpg: street-side at (2.6, 1.6, -9), the foreground tables from above at (-0.4, 1.6, -3.4), looking back from (1.5, 1.6, -18), and flight at (2.5, 9, -4). The façade, the awning and the far ground were painted edge-on, so their projected texels are long streaks from the side. The material trades them for the scan's local colour under a swatch's marks as the view leaves the painter's ray. They read as painted surfaces, softer than the painter's view, with some streaking left. The enclosure walls behind and right of the painter are a tiled patch of the dark right-hand buildings.
+
+**Gates.** `make checkall-ci` passed (1,862 tests, JS total 375,650 of 377,000 gzip bytes). `tests/e2e/cafe-terrace.spec.ts` passed all five tests on ANGLE Metal (desktop entry and return twice, IWER entry and return by the settings laser, the fidelity bar with its street-side negative control, flight, stars in every direction), and the `timing` project's portal spec passed after it. The 1-minute load was about 75 during the run, so no timing figure is taken from it.
+
+**Not verified.** No headset run of this build: stereo, frame rate and the look in VR are unchecked.
+

@@ -148,13 +148,18 @@ export interface WorldHandle {
    * drives every frame. Omitted: a world whose painting does not ripple.
    */
   readonly ripple?: HandRipple;
+  /**
+   * Textures the first frame needs that no material carries as `map` (a shader's own uniforms). A
+   * portal transition uploads them, one a frame, before the world shows. Omitted: none.
+   */
+  readonly textures?: readonly Texture[];
 }
 
 export interface WorldModule {
   /** Builds the world into `deps.scene`. One world at a time: dispose before building again. */
   build(deps: WorldDeps): Promise<WorldHandle>;
-  /** Per-frame hook, seconds since start and since the last frame. */
-  update(time: number, dt: number): void;
+  /** Per-frame hook with the shared calm-scaled motion clock and elapsed frame seconds. */
+  update(motionTime: number, dt: number): void;
   /** Removes the built world from its scene and releases its GPU resources. */
   dispose(): void;
   /** Where a viewer starts. */

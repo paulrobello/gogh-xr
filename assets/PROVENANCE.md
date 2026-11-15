@@ -43,6 +43,7 @@ Rerunning `scripts/scans/fetch.ts` regenerates the derivatives and rewrites thei
 | `public/paintings/les-alyscamps/frame.webp` | 281c63e4ffe5db7a1ad3715071077c53a90b8abceca66483039f369f28788971 | runtime frame, 1024 px long edge |
 | `assets/scans/cafe-terrace-at-night.jpg` | 735f6ff8a44866c80106f5b0d23d945df491d9137a1c9067beff8fe7feae8e65 | source (never served) |
 | `public/paintings/cafe-terrace-at-night/frame.webp` | a497c0a55afbc34022761a1492bf690edf2a90d95eaf7ef5f3db6d89ae98bf99 | runtime frame, 1024 px long edge |
+| `public/paintings/cafe-terrace-at-night/world.webp` | 590f1257a22fc181f141eb363bb1a2ce1e49f673abf51f47fd850331262abff9 | runtime world paint, source size |
 | `assets/scans/bedroom.jpg` | 4c5b73ea3258b9d27dfbc2cc8191eca9735649655a569d2927d22b21b57c9bd8 | source (never served) |
 | `public/paintings/bedroom/frame.webp` | 5143d5d7c08900dbd0ea65e940006085f27f83b71eb39b84b676d0d8f2f4510a | runtime frame, 1024 px long edge |
 | `assets/scans/wheatfield-with-crows.jpg` | cbe8c426363e3c5e0f8ff0b03d88df0e79e050f91dcd073e3e505909448ee402 | source (never served) |

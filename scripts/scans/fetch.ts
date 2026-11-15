@@ -7,6 +7,8 @@ const root = resolve(import.meta.dirname, '../..');
 const provenancePath = resolve(root, 'assets/PROVENANCE.md');
 const USER_AGENT = 'gogh-xr-asset-fetch/0.1 (https://github.com/paulrobello/gogh-xr)';
 const FRAME_EDGE = 1024;
+/** Paintings whose world paints itself with the scan: they also ship it at its source size. */
+const WORLD_SCANS: ReadonlySet<string> = new Set(['cafe-terrace-at-night']);
 const START = '<!-- scan-hashes:start -->';
 const END = '<!-- scan-hashes:end -->';
 
@@ -74,6 +76,12 @@ for (const scan of scans) {
     sha256: sha256Of(webp),
     role: `runtime frame, ${FRAME_EDGE} px long edge`,
   });
+  if (WORLD_SCANS.has(scan.id)) {
+    const world = `public/paintings/${scan.id}/world.webp`;
+    const paint = await sharp(bytes).rotate().webp({ quality: 86 }).toBuffer();
+    writeFileSync(resolve(root, world), paint);
+    hashes.push({ path: world, sha256: sha256Of(paint), role: 'runtime world paint, source size' });
+  }
 }
 
 const table = [
