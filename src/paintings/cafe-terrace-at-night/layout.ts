@@ -10,12 +10,12 @@ import type { Swatch } from './paint';
 
 export const SWATCH = {
   cobbles: { rect: [0.22, 0.86, 0.73, 0.13], metres: [3, 1.6] },
-  /** Blue plaster in upright strokes. */
-  plaster: { rect: [0.79, 0.19, 0.06, 0.11], metres: [1.2, 2.6] },
-  /** The lit café wall. */
-  wall: { rect: [0.168, 0.326, 0.055, 0.088], metres: [0.9, 1.4] },
-  /** Dark street walls, clear of any lit window. */
-  dark: { rect: [0.6875, 0.257, 0.047, 0.056], metres: [2, 2.4] },
+  /** Pale blue plaster in upright strokes, off the wing's wall. */
+  plaster: { rect: [0.4375, 0.169, 0.0547, 0.0376], metres: [1.4, 1.2] },
+  /** The lit café wall, in its upright strokes. */
+  wall: { rect: [0.0156, 0.094, 0.0703, 0.1253], metres: [0.9, 2] },
+  /** Even brushwork for the street's walls: a plain stretch of the sky, clear of any light. */
+  dark: { rect: [0.547, 0.0376, 0.0703, 0.0439], metres: [2.2, 1.7] },
   awning: { rect: [0.3, 0.31, 0.22, 0.13], metres: [3, 3] },
   sky: { rect: [0.52, 0.0, 0.24, 0.22], metres: [1, 1] },
   foliage: { rect: [0.8, 0.14, 0.18, 0.2], metres: [2.4, 2.4] },
@@ -49,7 +49,24 @@ export const ID = {
   upper: 19,
   /** Tables, chairs and people count up from here, one id each. */
   props: 20,
+  carriage: 200,
 } as const;
+
+/** Whether an id is a prop: something standing in front of the set, with its own paint. */
+export function isProp(id: number): boolean {
+  return id >= ID.props || id === ID.trunk || id === ID.canopy || id === ID.lamp;
+}
+
+/**
+ * Painted things the set builds as geometry, as canvas rectangles (u, v, width, height): the
+ * lantern and scroll bracket before the wing's wall, the bracket by the pier, and the balcony
+ * railing drawn across the wing. The walls behind them carry their own paint on instead.
+ */
+export const BUILT: readonly (readonly [number, number, number, number])[] = [
+  [0.297, 0.454, 0.117, 0.113],
+  [0.16, 0.526, 0.121, 0.041],
+  [0.344, 0.207, 0.215, 0.107],
+];
 
 /** The café façade's own vanishing point: it runs about 7° off the terrace's outer edge. */
 const FACADE_VANISH_U = 0.375;

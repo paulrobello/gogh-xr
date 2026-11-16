@@ -19,13 +19,15 @@ export const CAFE_CAPTURE_SIZE: Readonly<{ width: number; height: number }> = Ob
   height: 800,
 });
 /**
- * A capture passes with SSIM ≥ and mean ΔE2000 ≤ these. Measured on ANGLE Metal at
- * CAFE_CAPTURE_SIZE on 2026-11-15 with the set built in depth: 0.566 and 3.12, each bar a margin
- * off that. The flat set that wore the scan itself scored 0.98 and 0.51 from here and streaked from
- * everywhere else; Starry Night's own painter view scores about 0.31 and 5.7.
+ * A capture passes with SSIM ≥ and mean ΔE2000 ≤ these. They are a loose guard that the painter's
+ * view still composes as the painting, not a target: the walk-through comes first (Paul,
+ * 2026-11-15), so no surface but the sky wears the scan itself. Measured on ANGLE Metal at
+ * CAFE_CAPTURE_SIZE on 2026-11-15: 0.369 and 6.23, and 0.172 and 27.5 from the street side.
+ * Starry Night's own painter view scores about 0.31 and 5.7. Earlier sets that wore the scan scored
+ * 0.57 and 0.98 here and showed painted pictures on their geometry from everywhere else.
  */
-export const CAFE_SSIM_THRESHOLD = 0.5;
-export const CAFE_DELTA_E_THRESHOLD = 4.5;
+export const CAFE_SSIM_THRESHOLD = 0.3;
+export const CAFE_DELTA_E_THRESHOLD = 8;
 
 async function load(image: Buffer | string): Promise<RgbImage> {
   const { data, info } = await sharp(image)

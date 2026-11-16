@@ -7,6 +7,7 @@ import {
   type PaintBuilder,
   type PainterView,
   paintBuilder,
+  painterView,
 } from '../src/paintings/cafe-terrace-at-night/paint';
 import { buildSet } from '../src/paintings/cafe-terrace-at-night/set';
 import type { Vec3 } from '../src/render/strokes/frame';
@@ -52,6 +53,7 @@ function flatView(
 ): PainterView {
   return {
     idAt: (u, v) => (u >= 0 && u < 1 && v >= 0 && v < 1 && inside(u, v) ? id : -1),
+    setIdAt: (u, v) => (u >= 0 && u < 1 && v >= 0 && v < 1 && inside(u, v) ? id : -1),
     colourAt: (_u, _v, out) => {
       out[0] = colour[0];
       out[1] = colour[1];
@@ -186,6 +188,58 @@ describe('café paint', () => {
     expect(redAt(30)).toBeCloseTo(0, 5);
   });
 
+  test('only a paint that asks for it shows the scan itself', () => {
+    const builder = paintBuilder([]);
+    const plain: Paint = { id: 5, swatch: SWATCH.wall, tint: 0xffffff };
+    const corners: [Vec3, Vec3, Vec3, Vec3] = [
+      [-1, 1, -10],
+      [1, 1, -10],
+      [1, 2, -10],
+      [-1, 2, -10],
+    ];
+    builder.quad(...corners, plain);
+    builder.quad(...corners, { ...plain, exact: true });
+    builder.quad(...corners, { ...plain, raw: true });
+    builder.quad(...corners, { ...plain, exact: true, painted: false });
+    drain(builder.bake(flatView(5, RED, () => true)));
+    const seen = drain(builder.build()).getAttribute('aSeen').array as Float32Array;
+    // Six vertices a quad, two numbers each: the id, then 0 marks only, 1 the scan, 2 the swatch.
+    expect([seen[1], seen[13], seen[25], seen[37]]).toEqual([0, 1, 2, 0]);
+  });
+
+  test("the set's walls take no paint from a prop, a margin round it, or a built item", () => {
+    // An 8 × 8 id map: a wall (id 2) with a prop (id 21) on one texel.
+    const ids = new Uint8Array(64).fill(2);
+    ids[3 * 8 + 3] = 21;
+    const raster = { width: 1, height: 1, data: [255, 255, 255, 255] };
+    const view = painterView(raster, ids, 8, 8, {
+      covers: (id) => id >= 20,
+      ignore: [[0.75, 0.75, 0.25, 0.25]],
+      grow: 1,
+    });
+    const at = (x: number, y: number): [number, number] => [(x + 0.5) / 8, (y + 0.5) / 8];
+    expect(view.idAt(...at(3, 3))).toBe(21);
+    expect(view.idAt(...at(4, 3))).toBe(2);
+    // The prop's texel and the ring round it are closed to the wall; two texels off is open.
+    for (const [x, y] of [
+      [3, 3],
+      [4, 3],
+      [2, 3],
+      [3, 4],
+      [4, 4],
+      [2, 2],
+    ]) {
+      expect(view.setIdAt(...at(x, y))).toBe(-1);
+    }
+    expect(view.setIdAt(...at(5, 3))).toBe(2);
+    expect(view.setIdAt(...at(0, 0))).toBe(2);
+    // The built item's rectangle is closed too, and off the canvas is -1 either way.
+    expect(view.setIdAt(...at(7, 7))).toBe(-1);
+    expect(view.setIdAt(...at(6, 6))).toBe(-1);
+    expect(view.idAt(...at(7, 7))).toBe(2);
+    expect(view.setIdAt(1.2, 0.5)).toBe(-1);
+  });
+
   test('a prop wears its painted side on its far side too', () => {
     const builder = paintBuilder([]);
     const prop: Paint = { id: 21, swatch: SWATCH.wall, tint: 0x0000ff, round: true };
@@ -215,6 +269,7 @@ describe('café set', () => {
       ID.interior,
       ID.balcony,
       ID.upper,
+      ID.carriage,
     ]) {
       expect(set.ids.includes(id)).toBe(true);
     }

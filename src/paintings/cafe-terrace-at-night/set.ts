@@ -19,6 +19,7 @@ import {
   roof,
   scale,
   unit,
+  type WallFrame,
   wall,
   wallBox,
   wallFrame,
@@ -67,7 +68,7 @@ const BOTTLES = [0x4f7a3a, 0xd9a53a, 0x8a3a22, 0xc9c27a].map((tint) =>
 );
 const UPPER = paint(ID.upper, SWATCH.plaster, 0x6a84bd);
 const UPPER_TRIM = paint(ID.upper, SWATCH.plaster, 0x8fa3cf);
-const DARK_PANE = paint(ID.upper, SWATCH.dark, 0x141d44);
+const DARK_PANE = paint(ID.upper, SWATCH.dark, 0x141d44, { painted: false });
 const WARM_PANE = paint(ID.upper, SWATCH.wall, 0xe9b545, { painted: false, lit: true });
 const SHUTTER_GREEN = paint(ID.upper, SWATCH.shutter, 0x2f6b4c);
 const SHUTTER_BLUE = paint(ID.upper, SWATCH.shutter, 0x2a3f78);
@@ -79,10 +80,13 @@ const BALCONY = paint(ID.balcony, SWATCH.plaster, 0x7f8fb5, { painted: false });
 const CANVAS = paint(ID.awning, SWATCH.awning, 0xd7a52c);
 const CANVAS_TOP = paint(ID.awning, SWATCH.awning, 0x8f6f28, { painted: false });
 const WING = paint(ID.rearWing, SWATCH.plaster, 0x5673ad);
-const WING_DOOR = paint(ID.rearWing, SWATCH.wall, 0xf0c044, { lit: true });
-const WING_SIDE = paint(ID.rearSide, SWATCH.dark, 0x1f3266);
-const WING_PANE = paint(ID.rearSide, SWATCH.dark, 0x10183a);
-const WING_GLOW = paint(ID.rearSide, SWATCH.wall, 0xeaa838, { lit: true });
+const WING_DOOR = paint(ID.rearWing, SWATCH.wall, 0xf0c044, { painted: false, lit: true });
+const WING_DARK = paint(ID.rearWing, SWATCH.dark, 0x16224a, { painted: false });
+const WING_SIDE = paint(ID.rearSide, SWATCH.plaster, 0x1f3266);
+const WING_PANE = paint(ID.rearSide, SWATCH.dark, 0x10183a, { painted: false });
+const WING_GLOW = paint(ID.rearSide, SWATCH.wall, 0xeaa838, { painted: false, lit: true });
+/** Wrought iron in the lantern's light. */
+const RED_IRON = paint(ID.balcony, SWATCH.wood, 0xb5482a, { painted: false, lit: true });
 
 const UP_FAR: Vec3 = [0, 500, -12];
 
@@ -348,6 +352,9 @@ function* cafe(set: PaintBuilder): Steps<void> {
   const rail = (s: number, proud: number): Vec3 => wallPoint(front, s, line + 0.12, proud);
   railing(set, rail(8.95, 0.9), rail(long - 0.05, 0.9), 0.95, IRON);
   railing(set, rail(8.95, 0.05), rail(8.95, 0.9), 0.95, IRON, 0.16);
+  // The scroll brackets that stand out over the terrace, by the pier and near the wing.
+  bracket(set, front, 9.6, 1.78, 0.75);
+  bracket(set, front, 22.5, 2, 1.4);
 
   yield;
 
@@ -438,6 +445,93 @@ function awning(set: PaintBuilder): void {
   fringe(nearWall, nearOuter, [0, 0, 6]);
 }
 
+/**
+ * A wrought-iron bracket standing out from a wall: an arm `reach` long at height `y`, a scroll
+ * curled under its end and a curved brace back to the wall.
+ */
+function bracket(set: PaintBuilder, frame: WallFrame, s: number, y: number, reach: number): void {
+  const at = (out: number, up: number): Vec3 => wallPoint(frame, s, y + up, out);
+  beam(set, at(0, 0), at(reach, 0), 0.03, 0.03, RED_IRON);
+  wallBox(set, frame, s - 0.05, s + 0.05, y - 0.5, y + 0.12, 0, 0.02, RED_IRON, [4]);
+  const curl = (
+    cx: number,
+    cy: number,
+    r0: number,
+    r1: number,
+    from: number,
+    turns: number,
+  ): void => {
+    let last: Vec3 | null = null;
+    for (let i = 0; i <= 14; i++) {
+      const t = i / 14;
+      const angle = from + turns * 2 * Math.PI * t;
+      const radius = r0 + (r1 - r0) * t;
+      const point = at(cx + radius * Math.cos(angle), cy + radius * Math.sin(angle));
+      if (last) beam(set, last, point, 0.022, 0.022, RED_IRON);
+      last = point;
+    }
+  };
+  curl(reach - 0.15, -0.15, 0.15, 0.03, Math.PI / 2, -1.3);
+  const brace = Math.min(0.45, reach * 0.5);
+  curl(brace, -brace, brace, brace, Math.PI, -0.25);
+  curl(0.09, -brace - 0.09, 0.09, 0.025, Math.PI / 2, 1.2);
+}
+
+/** The carriage and horse standing at the street's far end, its two lamps lit. */
+function carriage(set: PaintBuilder): void {
+  const [cx, cz] = [1.1, -44];
+  const coat = (tint: number, lit = false): Paint =>
+    paint(ID.carriage, SWATCH.dark, tint, { painted: false, lit });
+  const coach = coat(0x1b3440);
+  const dark = coat(0x10161f);
+  const hide = coat(0x6f7a45);
+  const lamp = coat(0xf2c84a, true);
+  const block = (
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+    h: number,
+    d: number,
+    p: Paint,
+  ): void => box(set, [cx + x - w / 2, y, cz + z - d / 2], [w, 0, 0], [0, h, 0], [0, 0, d], p);
+  block(0, 0.75, -1.2, 1.4, 1.25, 2, coach);
+  block(0, 2, -1.2, 1.5, 0.08, 2.1, dark);
+  block(0, 1.3, 0.1, 1.2, 0.45, 0.5, dark);
+  block(0, 1.75, 0.15, 0.45, 0.75, 0.35, dark);
+  for (const side of [-1, 1]) {
+    block(side * 0.8, 1.5, -0.1, 0.16, 0.28, 0.16, lamp);
+    for (const z of [-1.95, -0.35]) {
+      const hub: Vec3 = [cx + side * 0.76, 0.55, cz + z];
+      for (let i = 0; i < 12; i++) {
+        const a = (i * Math.PI) / 6;
+        const b = ((i + 1) * Math.PI) / 6;
+        const rim = (angle: number): Vec3 => [
+          hub[0],
+          hub[1] + 0.55 * Math.sin(angle),
+          hub[2] + 0.55 * Math.cos(angle),
+        ];
+        beam(set, rim(a), rim(b), 0.06, 0.05, dark);
+        if (i % 3 === 0) beam(set, hub, rim(a), 0.04, 0.04, dark);
+      }
+    }
+    // The shafts and the horse's legs.
+    beam(
+      set,
+      [cx + side * 0.34, 1, cz + 0.2],
+      [cx + side * 0.34, 1.05, cz + 2.9],
+      0.05,
+      0.05,
+      dark,
+    );
+    block(side * 0.17, 0, 1.6, 0.13, 1, 0.13, hide);
+    block(side * 0.17, 0, 2.75, 0.13, 1, 0.13, hide);
+  }
+  block(0, 0.95, 2.15, 0.52, 0.62, 1.5, hide);
+  block(0, 1.4, 2.95, 0.3, 0.75, 0.36, hide);
+  block(0, 1.95, 3.25, 0.24, 0.3, 0.58, hide);
+}
+
 function rearWing(set: PaintBuilder): void {
   const left: Vec3 = [REAR_LEFT_X, 0, REAR_Z];
   const right: Vec3 = [REAR_RIGHT[0], 0, REAR_Z];
@@ -469,11 +563,11 @@ function rearWing(set: PaintBuilder): void {
         bars: { paint: DOOR_FRAME, across: 1, up: 3 },
         frame: { paint: DOOR_FRAME, width: 0.1, proud: 0.05 },
       },
-      window(1.08, 2.28, 10.45, top - 0.1, WING),
-      window(0.5, 1.5, 5.1, 6.7, WING),
-      window(2.3, 3.3, 5.1, 6.7, WING),
-      window(0.5, 1.5, 7.9, 9.5, WING),
-      window(2.3, 3.3, 7.9, 9.5, WING),
+      window(1.08, 2.28, 10.45, top - 0.1, WING_DARK),
+      window(0.5, 1.5, 5.1, 6.7, WING_DARK),
+      window(2.3, 3.3, 5.1, 6.7, WING_DARK),
+      window(0.5, 1.5, 7.9, 9.5, WING_DARK),
+      window(2.3, 3.3, 7.9, 9.5, WING_DARK),
     ],
     WING,
     0.4,
@@ -537,12 +631,14 @@ function rearWing(set: PaintBuilder): void {
 
 function streetPaints(id: number, tint: number, painted: boolean, green = false): BuildingPaints {
   return {
-    wall: paint(id, SWATCH.dark, tint, { painted }),
+    wall: paint(id, SWATCH.plaster, tint, { painted }),
     roof: paint(id, SWATCH.dark, 0x141c3c, { painted }),
-    lit: paint(id, SWATCH.wall, 0xf0b63c, { painted, lit: true }),
-    dark: paint(id, SWATCH.dark, 0x0e1430, { painted }),
-    trim: paint(id, SWATCH.plaster, 0x4a5f98, { painted }),
-    shutter: paint(id, SWATCH.shutter, green ? 0x2c5f48 : 0x27406e, { painted }),
+    // What stands in or on a wall is built, so it keeps its own colour: only the walls and roofs
+    // take the painting's.
+    lit: paint(id, SWATCH.wall, 0xf0b63c, { painted: false, lit: true }),
+    dark: paint(id, SWATCH.dark, 0x0e1430, { painted: false }),
+    trim: paint(id, SWATCH.plaster, 0x4a5f98, { painted: false }),
+    shutter: paint(id, SWATCH.shutter, green ? 0x2c5f48 : 0x27406e, { painted: false }),
   };
 }
 
@@ -555,15 +651,17 @@ function* street(set: PaintBuilder, random: () => number): Steps<void> {
   const end = add(corner, scale(along, 11.6));
   const plan = (points: Vec3[]): [number, number][] => points.map(([x, , z]) => [x, z]);
   const shop = streetPaints(ID.shop, 0x35508f, true, true);
-  const black = paint(ID.shop, SWATCH.dark, 0x10131f);
-  const glass = paint(ID.shop, SWATCH.wall, 0xd9c24a, { lit: true });
+  const black = paint(ID.shop, SWATCH.dark, 0x10131f, { painted: false });
+  const glass = paint(ID.shop, SWATCH.wall, 0xd9c24a, { painted: false, lit: true });
+  const door = paint(ID.shop, SWATCH.shutter, 0x2f6b4c, { painted: false });
   const lit = (s0: number, s1: number, y0: number, y1: number): Opening => ({
     s0,
     s1,
     y0,
     y1,
     depth: 0.25,
-    pane: glass,
+    // The shop's doors are green, between its lit windows.
+    pane: y0 < 1 ? door : glass,
     reveal: black,
     bars: { paint: black, across: 1, up: 2 },
     frame: { paint: black, width: 0.12, proud: 0.08 },
@@ -637,11 +735,12 @@ function* street(set: PaintBuilder, random: () => number): Steps<void> {
   building(
     set,
     {
+      // An alley is left open at its left, where the street carries on.
       plan: [
-        [-1, -47],
+        [1.1, -47],
         [4.7, -47],
         [4.7, -55],
-        [-1, -55],
+        [1.1, -55],
       ],
       height: 11.4,
       rise: 1.5,
@@ -651,7 +750,6 @@ function* street(set: PaintBuilder, random: () => number): Steps<void> {
       chimneys: 1,
       cell: 1.5,
       lit: 0.3,
-      detail: false,
     },
     random,
   );
@@ -672,6 +770,27 @@ function* street(set: PaintBuilder, random: () => number): Steps<void> {
       blind: [1, 2],
       chimneys: 1,
       cell: 1.5,
+      lit: 0.3,
+    },
+    random,
+  );
+  yield;
+  // The house the alley runs up to.
+  building(
+    set,
+    {
+      plan: [
+        [-8, -59],
+        [3, -59],
+        [3, -65],
+        [-8, -65],
+      ],
+      height: 12,
+      rise: 1.4,
+      paints: streetPaints(ID.farStreet, 0x121c46, false),
+      floors: [2.4, 5.2, 8],
+      blind: [1, 2, 3],
+      cell: 2,
       lit: 0.3,
       detail: false,
     },
@@ -823,6 +942,7 @@ export function* buildSet(set: PaintBuilder, random: () => number): Steps<void> 
   awning(set);
   yield;
   rearWing(set);
+  carriage(set);
   yield;
   yield* street(set, random);
   yield* square(set, random);

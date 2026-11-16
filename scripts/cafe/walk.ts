@@ -28,6 +28,12 @@ export const WALK_POSES: Record<string, readonly [number, number, number, number
   'from-bar': [-4.6, 1.67, -11.3, -1.6, 0],
   shopfront: [0.6, 1.6, -3.4, 1.35, 0.05],
   flight: [3.5, 9, -4, 0.75, -0.55],
+  // The poses of the Quest screenshots that found painted-on textures.
+  seating: [0.6, 1.6, -3.6, 0.2, -0.05],
+  'tree-trunk': [2.6, 1.6, -7.6, -1.0, 0.3],
+  alley: [2.6, 1.6, -24, 0.05, 0.05],
+  'wing-door': [1.3, 1.3, -23, 0.95, -0.15],
+  'tree-above': [1.4, 1.6, -11.5, -1.25, 0.85],
 };
 
 if (import.meta.main) {

@@ -3972,3 +3972,27 @@ The remaining difference is the 2,400 cobble dabs and resampling. Shot: docs/sho
 **Gates.** `make checkall-ci` passed on MiniMac at 7bad113's tree (booked window, 1-minute load 1.1 before and 8.2 after, node 24.22.2, bun 1.4.4, ffmpeg 9.0.2): 144 test files and 1,873 tests, JS total 383,266 of 388,000 gzip bytes, no leaks, no vulnerabilities, 30 asset files verified, the audio rebuild byte-identical. `tests/e2e/cafe-terrace.spec.ts` passed its six tests on ANGLE Metal on the M4 Max, and the portal timing project its five, at a 1-minute load of 284 falling to 167 (another session's gate on the same host), so that run stands for state and pixels only.
 
 **Not verified.** No headset run of this build: stereo, frame rate and the look up close in VR are unchecked.
+
+## Café Terrace: painted-on textures removed (2026-11-15, branch claude/cafe-walk)
+
+**Why.** Paul walked fe67c09 on the Quest and sent five screenshots (left column of docs/shots/cafe-quest-before-after.jpg): the tree trunk wearing the shop's and the pavement's paint, the alley ending in a flat wall with the carriage and figures painted on it, the shop as a painted billboard, lit paint on the jambs of the wing's door, stray leaves in the air over the tree, a ghost of a figure on the café wall, and the lantern and scroll brackets painted flat where they should stand out from the wall. His ruling: the painter's view may match the painting, and the walk-through must not suffer for it.
+
+**Cause.** One rule: any surface the painter saw within about 50° of straight on wore the scan itself. On geometry that shows whatever the painting has along that ray, which is usually something else. The local colour bake also took paint from under props whose outline did not match their painted one.
+
+**What changed.**
+
+- `exact` is now opt-in and only the sky asks for it. Every other surface is its baked local colour under a swatch's marks.
+- The set's surfaces take no local colour from under a prop, from 7 id-map texels round it, or from the rectangles in `BUILT` (`PainterView.setIdAt`). Panes, frames, shutters and glazing bars keep their own colour.
+- Built as geometry: two wrought-iron scroll brackets standing out over the terrace, a larger lantern, a carriage and horse at the street's end, and an alley left open beside the houses that close the street, with a house behind it.
+- The tree is a bark trunk, a bough to each of five lobes, and 2,800 pointed leaves inside the lobes, so none can sit outside the crown.
+- The street walls' swatch is a plain stretch of plaster. The old one held a lit window and a pale dab, which tiled into rows of blobs.
+
+**Walk-around.** docs/shots/cafe-depth-walk.jpg, 20 poses on the dev server (1280 × 720, ANGLE Metal, M4 Max). The right column of docs/shots/cafe-quest-before-after.jpg is the five Quest poses on this build (desktop captures at about the same pose, not headset captures).
+
+**Painter view.** docs/shots/cafe-depth-painter.jpg. SSIM 0.3693, mean ΔE2000 6.225 (0.5732 and 3.065 before). The bar is now a loose guard at SSIM ≥ 0.3 and ΔE ≤ 8; the street-side control scores 0.172 and 27.5. Starry Night's painter view scores about 0.31 and 5.7.
+
+**Build.** 107,780 triangles. `bun scripts/cafe/time-build.ts` at a 1-minute load of about 100: 512 steps, 304 ms, the longest 15.4 ms.
+
+**Gates.** `make checkall-ci` passed on MiniMac at 0903e27's tree (booked window, 1-minute load 1.4 before and 8.1 after, node 24.22.2, bun 1.4.4, ffmpeg 9.0.2): 144 test files and 1,875 tests, JS total 384,421 of 388,000 gzip bytes, no leaks, no vulnerabilities, 30 asset files verified, the audio rebuild byte-identical. `tests/e2e/cafe-terrace.spec.ts` passed its six tests on ANGLE Metal on the M4 Max, and the portal timing project its five, at a 1-minute load of about 120, so that run stands for state and pixels only.
+
+**Not verified.** The fixes were shown to Paul on the Quest through a USB preview of the dev server; no verdict on them is recorded yet, and no frame rate is measured.

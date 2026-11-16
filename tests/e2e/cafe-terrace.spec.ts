@@ -144,11 +144,17 @@ test("the painter URL frames the scan, and the paint holds off the painter's spo
   // The same metric from the street is far off the scan: it can tell a view that is not the canvas.
   await page.evaluate(() => window.__goghPose?.(2.6, 1.6, -9, 1.2, 0.1));
   const street = await cafeFidelity(await capture('street-side'));
-  expect(street.ssim).toBeLessThan(CAFE_SSIM_THRESHOLD - 0.15);
+  expect(street.ssim).toBeLessThan(CAFE_SSIM_THRESHOLD - 0.05);
+  expect(street.meanDeltaE).toBeGreaterThan(2 * CAFE_DELTA_E_THRESHOLD);
   await page.evaluate(() => window.__goghPose?.(-1, 1.6, -10, 0.3, 0.45));
   await capture('under-awning');
   await page.evaluate(() => window.__goghPose?.(2.6, 1.6, -19, 2.6, 0.1));
   await capture('street-back');
+  // The poses of the Quest screenshots that found painted-on textures.
+  await page.evaluate(() => window.__goghPose?.(2.6, 1.6, -7.6, -1, 0.3));
+  await capture('tree-trunk');
+  await page.evaluate(() => window.__goghPose?.(2.6, 1.6, -24, 0.05, 0.05));
+  await capture('alley');
   expect(await glErrors(page)).toEqual([]);
 });
 

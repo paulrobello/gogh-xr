@@ -46,7 +46,10 @@ export interface Paint {
   readonly tint: number;
   /** False keeps the tint everywhere, for what the painter never painted. Default true. */
   readonly painted?: boolean;
-  /** False never shows the scan itself, only its local colour. Default true. */
+  /**
+   * True shows the scan itself where the painter saw the surface squarely. Only for what has no
+   * depth to betray it, the sky: on anything else the scan carries pictures of other things.
+   */
   readonly exact?: boolean;
   /** A prop: its far side takes the colour of its painted side. */
   readonly round?: boolean;
@@ -259,6 +262,12 @@ export function createPaintMaterial(
 export interface PainterView {
   /** The id at canvas (u, v), or -1 off the canvas. */
   idAt(u: number, v: number): number;
+  /**
+   * The same for the set's own surfaces: -1 too wherever a prop stands, a little past its outline,
+   * and wherever the painting shows something the set builds as geometry instead. A wall then
+   * never takes the paint of the figure, lantern or bracket in front of it.
+   */
+  setIdAt(u: number, v: number): number;
   /** The scan's colour at canvas (u, v) in linear light, into `out`. */
   colourAt(u: number, v: number, out: [number, number, number]): void;
 }
@@ -268,17 +277,69 @@ const LINEAR = new Float32Array(256).map((_, i) => {
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 });
 
+/** What the set's surfaces must not take their paint from. */
+export interface PaintMask {
+  /** Ids of props: tables, chairs, figures, the tree, the lantern. */
+  covers(id: number): boolean;
+  /** Canvas rectangles (u, v, width, height) of painted things the set builds as geometry. */
+  readonly ignore: readonly (readonly [number, number, number, number])[];
+  /** Id-map texels the props' outlines grow by. */
+  readonly grow: number;
+}
+
 export function painterView(
   raster: Raster,
   ids: Uint8Array,
   idWidth: number,
   idHeight: number,
+  mask?: PaintMask,
 ): PainterView {
   const { width, height, data } = raster;
+  const masked = new Uint8Array(idWidth * idHeight);
+  if (mask) {
+    // The props' texels, grown along rows and then columns.
+    const rows = new Uint8Array(idWidth * idHeight);
+    for (let y = 0; y < idHeight; y++) {
+      let reach = -1;
+      for (let x = 0; x < idWidth; x++) {
+        if (mask.covers(ids[y * idWidth + x])) reach = x + mask.grow;
+        if (x <= reach) rows[y * idWidth + x] = 1;
+      }
+      reach = idWidth;
+      for (let x = idWidth - 1; x >= 0; x--) {
+        if (mask.covers(ids[y * idWidth + x])) reach = x - mask.grow;
+        if (x >= reach) rows[y * idWidth + x] = 1;
+      }
+    }
+    for (let x = 0; x < idWidth; x++) {
+      let reach = -1;
+      for (let y = 0; y < idHeight; y++) {
+        if (rows[y * idWidth + x]) reach = y + mask.grow;
+        if (y <= reach) masked[y * idWidth + x] = 1;
+      }
+      reach = idHeight;
+      for (let y = idHeight - 1; y >= 0; y--) {
+        if (rows[y * idWidth + x]) reach = y - mask.grow;
+        if (y >= reach) masked[y * idWidth + x] = 1;
+      }
+    }
+    for (const [u, v, w, h] of mask.ignore) {
+      const x1 = Math.min(idWidth, Math.ceil((u + w) * idWidth));
+      const y1 = Math.min(idHeight, Math.ceil((v + h) * idHeight));
+      for (let y = Math.max(0, Math.floor(v * idHeight)); y < y1; y++) {
+        masked.fill(1, y * idWidth + Math.max(0, Math.floor(u * idWidth)), y * idWidth + x1);
+      }
+    }
+  }
   return {
     idAt(u, v) {
       if (!(u >= 0 && u < 1 && v >= 0 && v < 1)) return -1;
       return ids[Math.floor(v * idHeight) * idWidth + Math.floor(u * idWidth)];
+    },
+    setIdAt(u, v) {
+      if (!(u >= 0 && u < 1 && v >= 0 && v < 1)) return -1;
+      const index = Math.floor(v * idHeight) * idWidth + Math.floor(u * idWidth);
+      return masked[index] ? -1 : ids[index];
     },
     colourAt(u, v, out) {
       const x = Math.min(width - 1, Math.max(0, Math.floor(u * width)));
@@ -405,7 +466,7 @@ export function paintBuilder(patches: Swatch[]): PaintBuilder {
     positions.push(at.x, at.y, at.z);
     normals.push(n.x, n.y, n.z);
     ids.push(paint.id);
-    seen.push(paint.id, paint.raw ? 2 : paint.exact === false || paint.painted === false ? 0 : 1);
+    seen.push(paint.id, paint.raw ? 2 : paint.exact === true && paint.painted !== false ? 1 : 0);
     patch.push(index, u, v);
     owner.push(owning);
   }
@@ -584,7 +645,9 @@ export function paintBuilder(patches: Swatch[]): PaintBuilder {
             y + radius * (s * tangent.y + t * bitangent.y),
             z + radius * (s * tangent.z + t * bitangent.z),
           ]);
-          if (!(at.depth > 0.05) || view.idAt(at.u, at.v) !== paint.id) continue;
+          if (!(at.depth > 0.05)) continue;
+          const named = paint.round ? view.idAt(at.u, at.v) : view.setIdAt(at.u, at.v);
+          if (named !== paint.id) continue;
           view.colourAt(at.u, at.v, out);
           r += out[0];
           g += out[1];

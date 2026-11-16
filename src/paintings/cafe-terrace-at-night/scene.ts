@@ -1,16 +1,16 @@
 import {
   type Box3,
-  type BufferGeometry,
+  BufferGeometry,
   CatmullRomCurve3,
   CylinderGeometry,
   DataTexture,
   DoubleSide,
+  Float32BufferAttribute,
   Group,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
   NearestFilter,
-  PlaneGeometry,
   Quaternion,
   RedFormat,
   type ShaderMaterial,
@@ -25,12 +25,14 @@ import type { Raster } from '../../demo/canvas/field';
 import type { Vec3 } from '../../render/strokes/frame';
 import { mulberry32 } from '../../util/prng';
 import type { Steps } from '../../util/slicer';
-import { CANVAS_ASPECT, onFrontal, PAINTER_EYE } from './canvas';
+import { CANVAS_ASPECT, PAINTER_EYE } from './canvas';
 import { rasterizeIds } from './id-map';
 import {
   AWNING,
+  BUILT,
   CHAIRS,
   ID,
+  isProp,
   LAMP,
   PEOPLE,
   SEAT_HEIGHT,
@@ -57,17 +59,39 @@ import { solidBox } from './street';
 const ID_HEIGHT = 1024;
 const ID_WIDTH = Math.round(ID_HEIGHT * CANVAS_ASPECT);
 const SKY_RADIUS = 120;
-/** Leaves tried through the crown; those that land on painted foliage stay. */
-const LEAF_TRIES = 9000;
+const LEAVES = 2800;
 const CROWN_FORK = 3.2;
-/** The crown's middle and half extents, metres: leaves stay inside it. */
-const CROWN: Vec3 = [4.6, 5.9, -9.4];
-const CROWN_REACH: Vec3 = [3.8, 3.1, 3.3];
+/**
+ * The crown's lobes, each a middle and half extents in metres, over where the scan paints the
+ * foliage. Every leaf lies in one, so the tree is whole from every side.
+ */
+const CROWN: readonly (readonly [Vec3, Vec3])[] = [
+  [
+    [4.6, 6, -9.4],
+    [2.6, 2, 2.4],
+  ],
+  [
+    [2.9, 5.4, -9],
+    [1.7, 1.4, 1.7],
+  ],
+  [
+    [6.3, 5.5, -9.9],
+    [1.8, 1.5, 1.8],
+  ],
+  [
+    [4.4, 7.3, -9.6],
+    [1.7, 1.2, 1.6],
+  ],
+  [
+    [4.9, 4.6, -8.3],
+    [1.6, 1, 1.5],
+  ],
+];
 
 const TABLETOP = 0xb7be97;
 const IRON = 0x313c37;
 const CANE = 0xa9743a;
-const BARK = 0x1c2a36;
+const BARK = 0x2a3838;
 const LANTERN = 0xf5cd60;
 
 /** A prop's paint: its own id, and its far side in its near side's colours. */
@@ -201,7 +225,8 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     yield;
     const cylinder = new CylinderGeometry(1, 1, 1, 14);
     const bark = new CylinderGeometry(0.68, 1, 1, 9);
-    const trunk = prop(ID.trunk, BARK);
+    // The scan shows almost nothing of the trunk, so it is bark all round.
+    const trunk: Paint = { id: ID.trunk, swatch: SWATCH.wood, tint: BARK, painted: false };
     set.mesh(bark, placed([TRUNK[0], CROWN_FORK / 2, TRUNK[2]], [0.2, CROWN_FORK, 0.2]), trunk);
     yield;
 
@@ -266,65 +291,75 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
       stock.dispose();
     }
 
-    // A leaf stays only where the scan shows foliage, so the crown takes the painted outline, and
-    // only inside the crown's own round, so it is a tree from every side.
+    // The crown: leaves through each lobe, thicker toward its skin, each one dab of the scan's own
+    // foliage, lighter on top and darker inside.
     const crown = paintBuilder(patches);
     const random = mulberry32(seed + 31);
     const sample = scanSampler(raster);
-    const leaf = new PlaneGeometry(0.36, 0.13);
+    const leaf = new BufferGeometry();
+    leaf.setAttribute(
+      'position',
+      new Float32BufferAttribute([-0.2, 0, 0, 0, -0.075, 0, 0.2, 0, 0, 0, 0.075, 0], 3),
+    );
+    leaf.setIndex([0, 1, 2, 0, 2, 3]);
     const lean = new Quaternion();
-    const tilt = new Vector3();
-    let leaves = 0;
-    for (let i = 0; i < LEAF_TRIES; i++) {
-      const u = 0.7 + random() * 0.6;
-      const v = -0.02 + random() * 0.46;
-      const z = CROWN[2] + (random() - 0.5) * 2 * CROWN_REACH[2];
-      const turnZ = (random() - 0.3) * 1.5;
-      tilt.set((random() - 0.5) * 0.8, (random() - 0.5) * 2.4, turnZ);
-      const [r, g, b] = sample(u, v);
-      // Foliage only: the scan's blue-green walls and sky pass a looser test and leave stray leaves.
-      if (!(g > 38 && g > b * 1.12 && g > r * 1.02 && g - Math.max(r, b) > 10)) continue;
-      const at = onFrontal(u, v, z);
-      const round =
-        ((at[0] - CROWN[0]) / CROWN_REACH[0]) ** 2 +
-        ((at[1] - CROWN[1]) / CROWN_REACH[1]) ** 2 +
-        ((at[2] - CROWN[2]) / CROWN_REACH[2]) ** 2;
-      if (round > 1) continue;
-      lean
-        .setFromAxisAngle(UP, tilt.y)
-        .multiply(turn.setFromAxisAngle(new Vector3(1, 0, 0), tilt.x));
-      lean.multiply(turn.setFromAxisAngle(new Vector3(0, 0, 1), tilt.z));
-      // Each leaf is one dab of the scan's green, darker toward the back of the crown.
-      const depth =
-        0.78 + 0.22 * Math.min(1, Math.max(0, (at[2] - CROWN[2]) / CROWN_REACH[2] + 0.5));
+    const out = new Vector3();
+    const FLAT = new Vector3(0, 0, 1);
+    const sizes = CROWN.map(([, reach]) => reach[0] * reach[1] * reach[2]);
+    const whole = sizes.reduce((sum, size) => sum + size, 0);
+    for (let i = 0; i < LEAVES; i++) {
+      let pick = random() * whole;
+      let lobe = 0;
+      while (lobe < CROWN.length - 1 && pick > sizes[lobe]) pick -= sizes[lobe++];
+      const [middle, reach] = CROWN[lobe];
+      const turnY = random() * 2 * Math.PI;
+      const rise = 2 * random() - 1;
+      const level = Math.sqrt(1 - rise * rise);
+      out.set(level * Math.cos(turnY), rise, level * Math.sin(turnY));
+      const deep = 0.5 + 0.5 * Math.sqrt(random());
+      const at = new Vector3(
+        middle[0] + reach[0] * out.x * deep,
+        middle[1] + reach[1] * out.y * deep,
+        middle[2] + reach[2] * out.z * deep,
+      );
+      // A dab of foliage off the scan, tried a few times.
+      let [r, g, b] = [47, 106, 58];
+      for (let tries = 0; tries < 6; tries++) {
+        const dab = sample(0.76 + random() * 0.23, 0.1 + random() * 0.28);
+        if (dab[1] > 38 && dab[1] > dab[2] * 1.12 && dab[1] > dab[0] * 1.02) {
+          [r, g, b] = dab;
+          break;
+        }
+      }
+      const shade = (0.62 + 0.38 * deep) * (0.82 + 0.18 * out.y);
       const tint =
-        (Math.round(Math.min(255, r * depth)) << 16) |
-        (Math.round(Math.min(255, g * depth)) << 8) |
-        Math.round(Math.min(255, b * depth));
-      crown.mesh(leaf, transform.compose(new Vector3(...at), lean, scale.set(1, 1, 1)), {
+        (Math.round(Math.min(255, r * shade)) << 16) |
+        (Math.round(Math.min(255, g * shade)) << 8) |
+        Math.round(Math.min(255, b * shade));
+      out.x += (random() - 0.5) * 1.1;
+      out.y += (random() - 0.5) * 1.1;
+      out.z += (random() - 0.5) * 1.1;
+      lean
+        .setFromUnitVectors(FLAT, out.normalize())
+        .multiply(turn.setFromAxisAngle(FLAT, random() * Math.PI));
+      const size = 0.8 + random() * 0.7;
+      crown.mesh(leaf, transform.compose(at, lean, scale.set(size, size, size)), {
         id: ID.canopy,
         swatch: SWATCH.foliage,
         tint,
         painted: false,
         lit: true,
       });
-      leaves++;
-      if (i % 800 === 799) yield;
+      if (i % 400 === 399) yield;
     }
-    // Three boughs carry the crown out over the street.
-    for (const [dx, dy, dz] of [
-      [-1.5, 1.6, 0.2],
-      [-0.5, 2.3, -0.6],
-      [0.5, 1.5, 0.5],
-      [1.6, 2, -1.2],
-      [0.9, 2.4, 1.4],
-    ]) {
-      const reach = new Vector3(dx, dy, dz);
+    // A bough to each lobe.
+    for (const [middle] of CROWN) {
+      const reach = new Vector3(middle[0] - TRUNK[0], middle[1] - CROWN_FORK, middle[2] - TRUNK[2]);
       const length = reach.length();
       crown.mesh(
         bark,
         transform.compose(
-          new Vector3(TRUNK[0] + dx / 2, CROWN_FORK + dy / 2, TRUNK[2] + dz / 2),
+          new Vector3(TRUNK[0], CROWN_FORK, TRUNK[2]).addScaledVector(reach, 0.5),
           lean.setFromUnitVectors(UP, reach.normalize()),
           scale.set(0.09, length, 0.09),
         ),
@@ -337,18 +372,24 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     const lamp = paintBuilder(patches);
     const glass = new CylinderGeometry(0.2, 0.15, 0.42, 6);
     const cap = new CylinderGeometry(0.04, 0.25, 0.16, 6);
-    const lit = prop(ID.lamp, LANTERN, { lit: true });
+    const lit = prop(ID.lamp, LANTERN, { painted: false, lit: true });
     const cage = prop(ID.lamp, IRON);
-    lamp.mesh(glass, placed(LAMP, [1, 1, 1]), lit);
-    lamp.mesh(cap, placed([LAMP[0], LAMP[1] + 0.29, LAMP[2]], [1, 1, 1]), cage);
-    lamp.mesh(cap, placed([LAMP[0], LAMP[1] - 0.25, LAMP[2]], [0.7, -0.5, 0.7]), cage);
+    // As big as the scan paints it: about 0.7 m of glass.
+    const big = 1.6;
+    lamp.mesh(glass, placed(LAMP, [big, big, big]), lit);
+    lamp.mesh(cap, placed([LAMP[0], LAMP[1] + 0.29 * big, LAMP[2]], [big, big, big]), cage);
+    lamp.mesh(
+      cap,
+      placed([LAMP[0], LAMP[1] - 0.25 * big, LAMP[2]], [0.7 * big, -0.5 * big, 0.7 * big]),
+      cage,
+    );
     for (let i = 0; i < 6; i++) {
       const a = (i * Math.PI) / 3 + Math.PI / 6;
       lamp.mesh(
         cylinder,
         placed(
-          [LAMP[0] + 0.185 * Math.cos(a), LAMP[1], LAMP[2] + 0.185 * Math.sin(a)],
-          [0.012, 0.44, 0.012],
+          [LAMP[0] + 0.185 * big * Math.cos(a), LAMP[1], LAMP[2] + 0.185 * big * Math.sin(a)],
+          [0.016, 0.44 * big, 0.016],
         ),
         cage,
       );
@@ -358,9 +399,13 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     const fall = (LAMP[0] - nearWall[0]) / (nearOuter[0] - nearWall[0]);
     const rod =
       nearWall[1] + (nearOuter[1] - nearWall[1]) * Math.min(1, Math.max(0, fall)) - LAMP[1];
+    const hook = 0.3 * big;
     lamp.mesh(
       cylinder,
-      placed([LAMP[0], LAMP[1] + 0.3 + rod / 2, LAMP[2]], [0.012, Math.max(0.1, rod - 0.3), 0.012]),
+      placed(
+        [LAMP[0], LAMP[1] + hook + rod / 2, LAMP[2]],
+        [0.014, Math.max(0.1, rod - hook), 0.014],
+      ),
       cage,
     );
 
@@ -400,7 +445,11 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     ids.needsUpdate = true;
     textures.add(ids);
 
-    const view = painterView(raster, map, ID_WIDTH, ID_HEIGHT);
+    const view = painterView(raster, map, ID_WIDTH, ID_HEIGHT, {
+      covers: isProp,
+      ignore: BUILT,
+      grow: 7,
+    });
     for (const part of [...parts, sky]) yield* part.bake(view);
     const material = createPaintMaterial(scan, ids, ID_WIDTH, ID_HEIGHT, patches, view);
     // Leaves, bent tubes and the dome, seen from inside, show both faces.
@@ -439,7 +488,7 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
         tables: TABLES.length,
         chairs: CHAIRS.length + PEOPLE.filter(({ pose }) => pose === 'seated').length,
         people: PEOPLE.length,
-        leaves,
+        leaves: LEAVES,
         triangles: (total + sky.positions.length) / 9,
       },
       dispose,
