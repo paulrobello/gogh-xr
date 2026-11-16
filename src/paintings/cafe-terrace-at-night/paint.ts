@@ -2,8 +2,9 @@
  * The café's paint. Every surface carries a local colour baked from the scan in world space: the
  * paint the painter saw there, averaged over a patch of the surface that is as wide as it is deep,
  * so a wall or a pavement seen at a grazing angle never streaks. A swatch of the scan tiled over
- * the surface puts Van Gogh's marks back on top at a steady size. The scan itself shows only where
- * the painter saw a surface squarely, where its marks keep their shape from any side.
+ * the surface puts Van Gogh's marks back on top at a steady size. The scan's own picture shows on
+ * nothing: laid on a surface, it carries what the painter drew in front of that surface or beside
+ * it, a carriage on a wall or a roof in the sky.
  */
 import {
   BufferGeometry,
@@ -21,14 +22,7 @@ import {
 import type { Raster } from '../../demo/canvas/field';
 import type { Vec3 } from '../../render/strokes/frame';
 import type { Steps } from '../../util/slicer';
-import {
-  CAMERA_FORWARD,
-  CAMERA_RIGHT,
-  CAMERA_UP,
-  CANVAS_LENS,
-  PAINTER_EYE,
-  toCanvas,
-} from './canvas';
+import { CANVAS_LENS, PAINTER_EYE, toCanvas } from './canvas';
 
 /** A patch of the scan whose marks are tiled over a surface. */
 export interface Swatch {
@@ -46,17 +40,10 @@ export interface Paint {
   readonly tint: number;
   /** False keeps the tint everywhere, for what the painter never painted. Default true. */
   readonly painted?: boolean;
-  /**
-   * True shows the scan itself where the painter saw the surface squarely. Only for what has no
-   * depth to betray it, the sky: on anything else the scan carries pictures of other things.
-   */
-  readonly exact?: boolean;
   /** A prop: its far side takes the colour of its painted side. */
   readonly round?: boolean;
   /** A lit pane or a lamp: the tint is not shaded by its facing. */
   readonly lit?: boolean;
-  /** The swatch itself is the paint off the canvas, not marks over a colour: the starry sky. */
-  readonly raw?: boolean;
 }
 
 /** Swatches a material can tile, the shader's array size. */
@@ -82,20 +69,12 @@ const CARRY = 7;
 
 const VERTEX = /* glsl */ `
 attribute vec3 aLocal;
-attribute vec2 aSeen;
 attribute vec3 aPatch;
-varying vec3 vRest;
-varying vec3 vFlat;
 varying vec3 vLocal;
-varying vec2 vSeen;
 varying vec3 vPatch;
 
 void main() {
-  // The rest position carries the paint, so a swaying branch keeps its own.
-  vRest = position;
-  vFlat = normal;
   vLocal = aLocal;
-  vSeen = aSeen;
   vPatch = aPatch;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
@@ -103,34 +82,14 @@ void main() {
 
 const FRAGMENT = /* glsl */ `
 uniform sampler2D uScan;
-uniform sampler2D uIds;
 uniform vec2 uScanSize;
-uniform vec2 uIdTexel;
-uniform vec3 uEye;
-uniform vec3 uRight;
-uniform vec3 uUp;
-uniform vec3 uForward;
-uniform vec2 uLens;
 uniform float uGain;
 uniform vec4 uPatchRect[${PATCHES}];
 uniform vec3 uPatchMean[${PATCHES}];
-varying vec3 vRest;
-varying vec3 vFlat;
 varying vec3 vLocal;
-varying vec2 vSeen;
 varying vec3 vPatch;
 
-// How far past a canvas edge the scan carries on, mirrored.
-const float REACH = 0.06;
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
-
-float mirrored(float x) {
-  return 1.0 - abs(1.0 - mod(x, 2.0));
-}
-
-float named(vec2 uv) {
-  return step(abs(texture2D(uIds, uv).r * 255.0 - vSeen.x), 0.5);
-}
 
 // One copy of the patch, repeated. Its weight falls to nothing at its own seams, so a blend of
 // copies at different scales never shows one.
@@ -168,30 +127,7 @@ void main() {
   // Too far for the marks to resolve: the local colour alone.
   float blur = log2(max(min(fx, fy), major / 8.0) + 1e-6);
   detail = mix(vec3(1.0), detail, 0.8 * (1.0 - smoothstep(deepest - 1.0, deepest + 1.0, blur)));
-  vec3 color = vSeen.y > 1.5 ? marks : vLocal * detail;
-
-  vec3 q = vRest - uEye;
-  float depth = dot(q, uForward);
-  vec2 at = vec2(0.5 + dot(q, uRight) / depth * uLens.x, 0.5 - dot(q, uUp) / depth * uLens.y);
-  vec2 over = max(max(-at, at - 1.0), 0.0);
-  at = vec2(mirrored(at.x), mirrored(at.y));
-  vec3 scan = texture2D(uScan, at).rgb;
-  if (vSeen.y > 0.5 && depth > 0.05) {
-    vec3 n = normalize(gl_FrontFacing ? vFlat : -vFlat);
-    // 1 where the painter looked straight at the surface. Past about 50 degrees off, a mark of the
-    // scan is a streak on it, so the scan gives way to the local colour.
-    float square = -dot(n, normalize(q));
-    float exact = (1.0 - smoothstep(0.5 * REACH, REACH, max(over.x, over.y)))
-      * smoothstep(0.42, 0.62, square);
-    if (exact > 0.0) {
-      // A texel either side counts, so a silhouette's rim keeps its paint.
-      exact *= max(
-        max(named(at), named(at + vec2(uIdTexel.x, 0.0))),
-        max(max(named(at - vec2(uIdTexel.x, 0.0)), named(at + vec2(0.0, uIdTexel.y))),
-          named(at - vec2(0.0, uIdTexel.y))));
-      color = mix(color, scan, exact);
-    }
-  }
+  vec3 color = vLocal * detail;
   gl_FragColor = vec4(color * uGain, 1.0);
   #include <colorspace_fragment>
 }
@@ -215,14 +151,11 @@ function swatchMean(swatch: Swatch, view: PainterView): Vec3 {
 }
 
 /**
- * `scan` is sRGB with its top row first; `ids` is the painter's id map, one byte a texel. Every
- * part of one set shares `patches`, the list its builders filled.
+ * `scan` is sRGB with its top row first. Every part of one set shares `patches`, the list its
+ * builders filled.
  */
 export function createPaintMaterial(
   scan: Texture,
-  ids: Texture,
-  idWidth: number,
-  idHeight: number,
   patches: readonly Swatch[],
   view: PainterView,
   side: Side = FrontSide,
@@ -243,14 +176,7 @@ export function createPaintMaterial(
     toneMapped: false,
     uniforms: {
       uScan: { value: scan },
-      uIds: { value: ids },
       uScanSize: { value: new Vector2(image.width, image.height) },
-      uIdTexel: { value: new Vector2(1 / idWidth, 1 / idHeight) },
-      uEye: { value: new Vector3(...PAINTER_EYE) },
-      uRight: { value: new Vector3(...CAMERA_RIGHT) },
-      uUp: { value: new Vector3(...CAMERA_UP) },
-      uForward: { value: new Vector3(...CAMERA_FORWARD) },
-      uLens: { value: new Vector2(...CANVAS_LENS) },
       uGain: { value: 1 },
       uPatchRect: { value: rects },
       uPatchMean: { value: means },
@@ -401,7 +327,6 @@ export function paintBuilder(patches: Swatch[]): PaintBuilder {
   const positions: number[] = [];
   const normals: number[] = [];
   const ids: number[] = [];
-  const seen: number[] = [];
   const patch: number[] = [];
   /** Each vertex's node: the point whose local colour it takes. */
   const owner: number[] = [];
@@ -466,7 +391,6 @@ export function paintBuilder(patches: Swatch[]): PaintBuilder {
     positions.push(at.x, at.y, at.z);
     normals.push(n.x, n.y, n.z);
     ids.push(paint.id);
-    seen.push(paint.id, paint.raw ? 2 : paint.exact === true && paint.painted !== false ? 1 : 0);
     patch.push(index, u, v);
     owner.push(owning);
   }
@@ -750,7 +674,6 @@ export function paintBuilder(patches: Swatch[]): PaintBuilder {
       geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3));
       yield;
       geometry.setAttribute('aLocal', new Float32BufferAttribute(colours, 3));
-      geometry.setAttribute('aSeen', new Float32BufferAttribute(seen, 2));
       yield;
       geometry.setAttribute('aPatch', new Float32BufferAttribute(patch, 3));
       geometry.computeBoundingSphere();

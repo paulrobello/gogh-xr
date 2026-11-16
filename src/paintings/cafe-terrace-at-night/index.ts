@@ -127,7 +127,7 @@ export async function build(deps: WorldDeps): Promise<WorldHandle> {
       blocked: (x, z) => outsideStreet(x, z) || volumes.at(x, 0, z) >= 0,
       volumes,
       walkBounds: WALK_BOUNDS,
-      textures: [scan, set.ids],
+      textures: [scan],
     };
   } catch (error) {
     batch?.dispose();

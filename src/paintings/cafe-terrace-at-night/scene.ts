@@ -3,21 +3,16 @@ import {
   BufferGeometry,
   CatmullRomCurve3,
   CylinderGeometry,
-  DataTexture,
   DoubleSide,
   Float32BufferAttribute,
   Group,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
-  NearestFilter,
   Quaternion,
-  RedFormat,
   type ShaderMaterial,
-  SphereGeometry,
   type Texture,
   TubeGeometry,
-  UnsignedByteType,
   Vector3,
 } from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -25,7 +20,7 @@ import type { Raster } from '../../demo/canvas/field';
 import type { Vec3 } from '../../render/strokes/frame';
 import { mulberry32 } from '../../util/prng';
 import type { Steps } from '../../util/slicer';
-import { CANVAS_ASPECT, PAINTER_EYE } from './canvas';
+import { CANVAS_ASPECT } from './canvas';
 import { rasterizeIds } from './id-map';
 import {
   AWNING,
@@ -53,12 +48,12 @@ import {
 import { createPeople } from './people';
 import { scanSampler } from './scan';
 import { buildSet } from './set';
+import { buildSky } from './sky';
 import { solidBox } from './street';
 
 /** The painter's id map, texels. The scan's aspect, tall enough to keep a chair leg. */
 const ID_HEIGHT = 1024;
 const ID_WIDTH = Math.round(ID_HEIGHT * CANVAS_ASPECT);
-const SKY_RADIUS = 120;
 const LEAVES = 2800;
 const CROWN_FORK = 3.2;
 /**
@@ -116,6 +111,7 @@ export interface CafeCounts {
   readonly chairs: number;
   readonly people: number;
   readonly leaves: number;
+  readonly stars: number;
   readonly triangles: number;
 }
 
@@ -123,8 +119,6 @@ export interface CafeScene {
   readonly root: Group;
   readonly solids: readonly Box3[];
   readonly counts: CafeCounts;
-  /** The painter's id map, which the paint material reads. */
-  readonly ids: Texture;
   animate(time: number): void;
   dispose(): void;
 }
@@ -201,12 +195,10 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
   root.name = 'Café Terrace at Night';
   const geometries = new Set<BufferGeometry>();
   const materials = new Set<ShaderMaterial>();
-  const textures = new Set<Texture>();
   const dispose = (): void => {
     root.removeFromParent();
     for (const geometry of geometries) geometry.dispose();
     for (const material of materials) material.dispose();
-    for (const texture of textures) texture.dispose();
     root.clear();
   };
 
@@ -409,16 +401,10 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
       cage,
     );
 
+    for (const geometry of [cylinder, bark, table, chair, leaf, glass, cap]) geometry.dispose();
+    yield;
     const sky = paintBuilder(patches);
-    const dome = new SphereGeometry(SKY_RADIUS, 48, 24);
-    sky.mesh(
-      dome,
-      placed(PAINTER_EYE, [1, 1, 1]),
-      { id: ID.sky, swatch: SWATCH.sky, tint: 0x173a7c, raw: true },
-      { uvScale: [24, 12] },
-    );
-    for (const geometry of [cylinder, bark, table, chair, leaf, dome, glass, cap])
-      geometry.dispose();
+    const stars = yield* buildSky(sky, raster, mulberry32(seed + 53));
     yield;
 
     const parts = [set, props, crown, lamp];
@@ -438,22 +424,15 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
       yield;
     }
     const map = yield* rasterizeIds(positions, owners, ID_WIDTH, ID_HEIGHT, ID.sky);
-    const ids = new DataTexture(map, ID_WIDTH, ID_HEIGHT, RedFormat, UnsignedByteType);
-    ids.minFilter = NearestFilter;
-    ids.magFilter = NearestFilter;
-    ids.unpackAlignment = 1;
-    ids.needsUpdate = true;
-    textures.add(ids);
-
     const view = painterView(raster, map, ID_WIDTH, ID_HEIGHT, {
       covers: isProp,
       ignore: BUILT,
       grow: 7,
     });
     for (const part of [...parts, sky]) yield* part.bake(view);
-    const material = createPaintMaterial(scan, ids, ID_WIDTH, ID_HEIGHT, patches, view);
+    const material = createPaintMaterial(scan, patches, view);
     // Leaves, bent tubes and the dome, seen from inside, show both faces.
-    const loose = createPaintMaterial(scan, ids, ID_WIDTH, ID_HEIGHT, patches, view, DoubleSide);
+    const loose = createPaintMaterial(scan, patches, view, DoubleSide);
     const glow = loose.clone();
     materials.add(material).add(loose).add(glow);
     const show = function* (part: PaintBuilder, paint: ShaderMaterial): Steps<Mesh> {
@@ -483,12 +462,12 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     return {
       root,
       solids,
-      ids,
       counts: {
         tables: TABLES.length,
         chairs: CHAIRS.length + PEOPLE.filter(({ pose }) => pose === 'seated').length,
         people: PEOPLE.length,
         leaves: LEAVES,
+        stars,
         triangles: (total + sky.positions.length) / 9,
       },
       dispose,

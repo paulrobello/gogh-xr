@@ -1,8 +1,11 @@
+import sharp from 'sharp';
+import type { Texture } from 'three';
 import { describe, expect, test } from 'vitest';
-import { toCanvas } from '../src/paintings/cafe-terrace-at-night/canvas';
+import { PAINTER_EYE, toCanvas } from '../src/paintings/cafe-terrace-at-night/canvas';
 import { box, wall, wallFrame, wallPoint } from '../src/paintings/cafe-terrace-at-night/kit';
-import { ID, SWATCH } from '../src/paintings/cafe-terrace-at-night/layout';
+import { ID, inPaintedSky, STARS, SWATCH } from '../src/paintings/cafe-terrace-at-night/layout';
 import {
+  createPaintMaterial,
   type Paint,
   type PaintBuilder,
   type PainterView,
@@ -10,6 +13,7 @@ import {
   painterView,
 } from '../src/paintings/cafe-terrace-at-night/paint';
 import { buildSet } from '../src/paintings/cafe-terrace-at-night/set';
+import { buildSky, SKY_RADIUS, STREWN_STARS } from '../src/paintings/cafe-terrace-at-night/sky';
 import type { Vec3 } from '../src/render/strokes/frame';
 import { mulberry32 } from '../src/util/prng';
 import { drain } from '../src/util/slicer';
@@ -43,6 +47,115 @@ function triangles(builder: PaintBuilder): { corners: Vec3[]; centre: Vec3; norm
     });
   }
   return out;
+}
+
+/** A builder that also notes each triangle's paint. */
+function recording(builder: PaintBuilder): { builder: PaintBuilder; paints: Paint[] } {
+  const paints: Paint[] = [];
+  const note = (paint: Paint): void => {
+    while (paints.length < builder.positions.length / 9) paints.push(paint);
+  };
+  return {
+    paints,
+    builder: {
+      ...builder,
+      get positions() {
+        return builder.positions;
+      },
+      get ids() {
+        return builder.ids;
+      },
+      quad(a, b, c, d, paint, options) {
+        builder.quad(a, b, c, d, paint, options);
+        note(paint);
+      },
+      triangle(a, b, c, paint, options) {
+        builder.triangle(a, b, c, paint, options);
+        note(paint);
+      },
+      mesh(source, matrix, paint, options) {
+        builder.mesh(source, matrix, paint, options);
+        note(paint);
+      },
+    },
+  };
+}
+
+/**
+ * Pairs of a builder's triangles in two different paints that share a plane and a facing and
+ * overlap by more than `slack` metres: each pair's middle and tints, one per metre of the set.
+ */
+function coplanarOverlaps(
+  builder: PaintBuilder,
+  paints: readonly Paint[],
+  slack = 0.004,
+): { at: Vec3; tints: [number, number] }[] {
+  const faces = triangles(builder);
+  const groups = new Map<string, number[]>();
+  for (const [i, { normal, corners }] of faces.entries()) {
+    const offset =
+      normal[0] * corners[0][0] + normal[1] * corners[0][1] + normal[2] * corners[0][2];
+    const key = `${normal.map((n) => Math.round(n * 200)).join()}|${Math.round(offset * 500)}`;
+    const group = groups.get(key);
+    if (group) group.push(i);
+    else groups.set(key, [i]);
+  }
+  const found = new Map<string, { at: Vec3; tints: [number, number] }>();
+  for (const group of groups.values()) {
+    if (new Set(group.map((i) => paints[i])).size < 2) continue;
+    const { normal } = faces[group[0]];
+    // The plane's own two axes.
+    const drop = normal.map(Math.abs).indexOf(Math.max(...normal.map(Math.abs)));
+    const [p, q] = [0, 1, 2].filter((axis) => axis !== drop);
+    const flat = group.map((i) => faces[i].corners.map((c) => [c[p], c[q]] as const));
+    const cells = new Map<string, number[]>();
+    for (const [k, corners] of flat.entries()) {
+      const low = [0, 1].map((axis) => Math.floor(Math.min(...corners.map((c) => c[axis]))));
+      const high = [0, 1].map((axis) => Math.floor(Math.max(...corners.map((c) => c[axis]))));
+      for (let x = low[0]; x <= high[0]; x++) {
+        for (let y = low[1]; y <= high[1]; y++) {
+          const cell = cells.get(`${x},${y}`);
+          if (!cell) {
+            cells.set(`${x},${y}`, [k]);
+            continue;
+          }
+          for (const other of cell) {
+            const [mine, theirs] = [paints[group[k]], paints[group[other]]];
+            if (mine === theirs || !overlap(flat[k], flat[other], slack)) continue;
+            const at = faces[group[k]].centre;
+            found.set(at.map(Math.round).join(), { at, tints: [mine.tint, theirs.tint] });
+          }
+          cell.push(k);
+        }
+      }
+    }
+  }
+  return [...found.values()];
+}
+
+/** Whether two triangles in a plane overlap by more than `slack` along every separating axis. */
+function overlap(
+  a: readonly (readonly [number, number])[],
+  b: readonly (readonly [number, number])[],
+  slack: number,
+): boolean {
+  for (const shape of [a, b]) {
+    for (let i = 0; i < 3; i++) {
+      const [x0, y0] = shape[i];
+      const [x1, y1] = shape[(i + 1) % 3];
+      const length = Math.hypot(x1 - x0, y1 - y0);
+      if (length < 1e-9) return false;
+      const axis = [(y1 - y0) / length, (x0 - x1) / length];
+      const span = (points: typeof a): [number, number] => {
+        const along = points.map(([x, y]) => x * axis[0] + y * axis[1]);
+        return [Math.min(...along), Math.max(...along)];
+      };
+      const [a0, a1] = span(a);
+      const [b0, b1] = span(b);
+      if (Math.min(a1, b1) - Math.max(a0, b0) <= slack) return false;
+    }
+  }
+  return true;
 }
 
 /** A view whose every canvas point is one colour and one id. */
@@ -188,23 +301,22 @@ describe('café paint', () => {
     expect(redAt(30)).toBeCloseTo(0, 5);
   });
 
-  test('only a paint that asks for it shows the scan itself', () => {
-    const builder = paintBuilder([]);
-    const plain: Paint = { id: 5, swatch: SWATCH.wall, tint: 0xffffff };
-    const corners: [Vec3, Vec3, Vec3, Vec3] = [
-      [-1, 1, -10],
-      [1, 1, -10],
-      [1, 2, -10],
-      [-1, 2, -10],
-    ];
-    builder.quad(...corners, plain);
-    builder.quad(...corners, { ...plain, exact: true });
-    builder.quad(...corners, { ...plain, raw: true });
-    builder.quad(...corners, { ...plain, exact: true, painted: false });
-    drain(builder.bake(flatView(5, RED, () => true)));
-    const seen = drain(builder.build()).getAttribute('aSeen').array as Float32Array;
-    // Six vertices a quad, two numbers each: the id, then 0 marks only, 1 the scan, 2 the swatch.
-    expect([seen[1], seen[13], seen[25], seen[37]]).toEqual([0, 1, 2, 0]);
+  test('the material lays the scan on nothing: it reads it only as swatch marks', () => {
+    const scan = { image: { width: 8, height: 8 } } as unknown as Texture;
+    const material = createPaintMaterial(
+      scan,
+      [SWATCH.wall],
+      flatView(5, RED, () => true),
+    );
+    // No id map and no painter's camera: nothing to project the scan through.
+    expect(Object.keys(material.uniforms).sort()).toEqual([
+      'uGain',
+      'uPatchMean',
+      'uPatchRect',
+      'uScan',
+      'uScanSize',
+    ]);
+    material.dispose();
   });
 
   test("the set's walls take no paint from a prop, a margin round it, or a built item", () => {
@@ -254,7 +366,7 @@ describe('café paint', () => {
 });
 
 describe('café set', () => {
-  const set = paintBuilder([]);
+  const { builder: set, paints } = recording(paintBuilder([]));
   drain(buildSet(set, mulberry32(8)));
 
   test('is built in depth: far more than a handful of flat panels, within a budget', () => {
@@ -275,6 +387,15 @@ describe('café set', () => {
     }
   });
 
+  test('no two faces that face the same way lie over each other in one plane', () => {
+    // Two such faces fight for the depth buffer and flicker, as a door's foot did on the ground.
+    const fights = coplanarOverlaps(set, paints).map(
+      ({ at, tints }) =>
+        `${at.map((x) => x.toFixed(2)).join(' ')}: ${tints.map((t) => t.toString(16)).join(' on ')}`,
+    );
+    expect(fights).toEqual([]);
+  });
+
   test('builds the same set for the same seed', () => {
     const again = paintBuilder([]);
     drain(buildSet(again, mulberry32(8)));
@@ -286,5 +407,70 @@ describe('café set', () => {
     let count = 0;
     while (!steps.next().done) count++;
     expect(count).toBeGreaterThanOrEqual(15);
+  });
+});
+
+describe('café sky', async () => {
+  const { data, info } = await sharp('public/paintings/cafe-terrace-at-night/frame.webp')
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { builder: sky, paints } = recording(paintBuilder([]));
+  const count = drain(
+    buildSky(sky, { width: info.width, height: info.height, data }, mulberry32(3)),
+  );
+  const faces = triangles(sky);
+  // The dome is the first mesh: everything after it is a star's dab.
+  const dome = paints.indexOf(paints.find((paint) => paint !== paints[0]) as Paint);
+  const dabs = faces.slice(dome).map(({ centre }) => toCanvas(centre));
+
+  test('takes nothing from what the painter saw: no roof or chimney can be painted into it', () => {
+    const local = localColours(
+      sky,
+      flatView(ID.sky, [0.8, 0.1, 0.05], () => true),
+    );
+    // Every point keeps its own colour, whatever the scan shows there: the dome its blues.
+    for (let i = 0; i < local.length; i += 3) expect(local[i]).not.toBeCloseTo(0.8, 2);
+    for (let i = 0; i < dome * 9; i += 3) expect(local[i + 2]).toBeGreaterThan(local[i] * 2);
+  });
+
+  test('builds every star the painting shows where it shows it', () => {
+    expect(count).toBe(STARS.length / 3 + STREWN_STARS);
+    for (let i = 0; i < STARS.length; i += 3) {
+      const [u, v, radius] = [STARS[i], STARS[i + 1], STARS[i + 2]];
+      expect(inPaintedSky(u, v)).toBe(true);
+      const near = dabs.filter(
+        (dab) => dab.depth > 0 && Math.hypot((dab.u - u) * (1280 / 1596), dab.v - v) < radius,
+      );
+      expect(near.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  test('strews the rest of the sky with stars, and none over the painted ones', () => {
+    const strewn = dabs.filter((dab) => !(dab.depth > 0 && inPaintedSky(dab.u, dab.v)));
+    expect(strewn.length).toBeGreaterThan(STREWN_STARS * 2);
+    // Inside the painted sky every dab belongs to a painted star.
+    for (const dab of dabs) {
+      if (!(dab.depth > 0 && inPaintedSky(dab.u, dab.v))) continue;
+      let owned = false;
+      for (let i = 0; i < STARS.length && !owned; i += 3) {
+        owned =
+          Math.hypot((dab.u - STARS[i]) * (1280 / 1596), dab.v - STARS[i + 1]) < 1.4 * STARS[i + 2];
+      }
+      expect(owned).toBe(true);
+    }
+  });
+
+  test('stands every star inside the dome, above the level, with no two faces in one plane', () => {
+    for (const { corners } of faces.slice(dome)) {
+      for (const [x, y, z] of corners) {
+        const reach = Math.hypot(x - PAINTER_EYE[0], y - PAINTER_EYE[1], z - PAINTER_EYE[2]);
+        // The dome's flat faces dip half a metre inside its radius.
+        expect(reach).toBeLessThan(SKY_RADIUS - 0.6);
+        expect(reach).toBeGreaterThan(SKY_RADIUS - 3);
+        expect(y).toBeGreaterThan(PAINTER_EYE[1]);
+      }
+    }
+    expect(coplanarOverlaps(sky, paints)).toEqual([]);
   });
 });

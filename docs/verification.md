@@ -3996,3 +3996,32 @@ The remaining difference is the 2,400 cobble dabs and resampling. Shot: docs/sho
 **Gates.** `make checkall-ci` passed on MiniMac at 0903e27's tree (booked window, 1-minute load 1.4 before and 8.1 after, node 24.22.2, bun 1.4.4, ffmpeg 9.0.2): 144 test files and 1,875 tests, JS total 384,421 of 388,000 gzip bytes, no leaks, no vulnerabilities, 30 asset files verified, the audio rebuild byte-identical. `tests/e2e/cafe-terrace.spec.ts` passed its six tests on ANGLE Metal on the M4 Max, and the portal timing project its five, at a 1-minute load of about 120, so that run stands for state and pixels only.
 
 **Not verified.** The fixes were shown to Paul on the Quest through a USB preview of the dev server; no verdict on them is recorded yet, and no frame rate is measured.
+
+## Café Terrace: the sky without the scan, and a door's foot (2026-11-15, branch claude/cafe-sky-door)
+
+**Why.** Paul walked eb3df9e on the Quest and sent two screenshots (left column of docs/shots/cafe-quest-sky-door.jpg): flicker at the foot of the door in the wing's side wall, and parts of buildings painted into the sky above the houses that close the street.
+
+**Cause.**
+
+- The door: an opening whose foot is the wall's foot got a threshold reveal at y = 0, in the plane of the ground that runs on under the building. The two faces fought for the depth buffer.
+- The sky: it was the one surface still wearing the scan itself, wherever the id map named the sky. The painted skyline does not match the built one, so the painted roofs and chimneys that rise above the built houses showed on the dome, and so did the dark edge of the café's roof.
+
+**What changed.**
+
+- `recess` in `kit.ts` leaves the threshold reveal out for a door on its wall's foot. The floor is the threshold.
+- A new test finds every pair of the set's faces in different paints that share a plane and a facing and overlap. It found four: this door, the door in the café's end wall, and two window sills level with the cornice of the lower house beside them. All four are fixed, and a probe at about a centimetre of separation finds none.
+- The paint shader has no projection path left: `exact` and `raw` are gone, with the id-map texture and the painter's camera uniforms. The scan reaches the screen only as swatch marks.
+- The sky is `sky.ts`: a dome in two of the scan's blues under a star-free swatch's marks, the 62 painted stars built as dabs of their own colours where the painting shows them, and 2,400 more strewn over the rest of the sky.
+- The `dark` swatch held a star, which tiled into red blobs on door panes. It is now a stretch of the sky with no star in it.
+- The wing's side wall had the front wall's painted trim, so a sill there took the lit terrace's orange on its underside. It has its own trim now.
+
+**Walk-around.** docs/shots/cafe-depth-walk.jpg, 22 poses on the dev server (1280 × 720, ANGLE Metal, M4 Max). The right column of docs/shots/cafe-quest-sky-door.jpg is the two Quest poses on this build, `street-sky` and `side-door` (desktop captures at about the same pose, not headset captures). Before the fix the same two desktop poses showed both faults, so the desktop reproduces them.
+
+**Painter view.** SSIM 0.3481, mean ΔE2000 6.395 (0.3693 and 6.225 with the scan on the sky), against the guard of SSIM ≥ 0.3 and ΔE ≤ 8.
+
+**Build.** 118,562 triangles (107,780 before), 2,462 stars. `bun scripts/cafe/time-build.ts` at a 1-minute load of about 40: 530 steps, 322 ms, the longest 16.0 ms. JS total 385,382 of 388,000 gzip bytes, the café chunk 19,861.
+
+**Gates.** `make checkall-ci` passed on MiniMac at d44c319's tree, rebased onto the icons commit 78a9b29 (booked window, 1-minute load 7.5 before and 8.5 after, node 24.22.2, bun 1.4.4): 145 test files, JS total 385,380 of 388,000 gzip bytes, no leaks, no vulnerabilities, 30 asset files verified, the audio rebuild byte-identical. `tests/e2e/cafe-terrace.spec.ts` passed its six tests on ANGLE Metal on the M4 Max, and the portal timing project its five, at a 1-minute load of about 40, so that run stands for state and pixels only.
+
+**Not verified.** Nothing on the headset yet: the look in stereo, the star dabs up close in the sky, and the frame rate with 10,800 more triangles.
+

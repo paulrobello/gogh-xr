@@ -14,10 +14,13 @@ export const SWATCH = {
   plaster: { rect: [0.4375, 0.169, 0.0547, 0.0376], metres: [1.4, 1.2] },
   /** The lit café wall, in its upright strokes. */
   wall: { rect: [0.0156, 0.094, 0.0703, 0.1253], metres: [0.9, 2] },
-  /** Even brushwork for the street's walls: a plain stretch of the sky, clear of any light. */
-  dark: { rect: [0.547, 0.0376, 0.0703, 0.0439], metres: [2.2, 1.7] },
+  /**
+   * Even brushwork for the street's walls and for the sky: a stretch of the sky with no star in
+   * it. One star in a swatch would show as a blob on every surface that tiles it.
+   */
+  dark: { rect: [0.5055, 0.0351, 0.05, 0.04], metres: [2, 2] },
   awning: { rect: [0.3, 0.31, 0.22, 0.13], metres: [3, 3] },
-  sky: { rect: [0.52, 0.0, 0.24, 0.22], metres: [1, 1] },
+  sky: { rect: [0.5055, 0.0351, 0.05, 0.04], metres: [7, 7] },
   foliage: { rect: [0.8, 0.14, 0.18, 0.2], metres: [2.4, 2.4] },
   deck: { rect: [0.235, 0.745, 0.09, 0.025], metres: [1.6, 0.5] },
   /** The blue shopfront's painted wood. */
@@ -66,6 +69,63 @@ export const BUILT: readonly (readonly [number, number, number, number])[] = [
   [0.297, 0.454, 0.117, 0.113],
   [0.16, 0.526, 0.121, 0.041],
   [0.344, 0.207, 0.215, 0.107],
+];
+
+/**
+ * The sky the painting shows, as a canvas outline: between the café's roof on the left, the dark
+ * house on the right and the roofs that close the street.
+ */
+export const SKY_OUTLINE: readonly (readonly [number, number])[] = [
+  [0.338, 0],
+  [0.8, 0],
+  [0.8, 0.125],
+  [0.778, 0.14],
+  [0.757, 0.19],
+  [0.757, 0.213],
+  [0.715, 0.222],
+  [0.7, 0.25],
+  [0.668, 0.255],
+  [0.668, 0.27],
+  [0.62, 0.298],
+  [0.612, 0.335],
+  [0.517, 0.335],
+  [0.517, 0.165],
+  [0.338, 0.09],
+];
+
+/** Whether canvas (u, v) lies in the painted sky. */
+export function inPaintedSky(u: number, v: number): boolean {
+  let inside = false;
+  for (let i = 0, j = SKY_OUTLINE.length - 1; i < SKY_OUTLINE.length; j = i++) {
+    const [ui, vi] = SKY_OUTLINE[i];
+    const [uj, vj] = SKY_OUTLINE[j];
+    if (vi > v !== vj > v && u < ((uj - ui) * (v - vi)) / (vj - vi) + ui) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * The 62 stars the painting shows, largest first: canvas u, v and radius in canvas heights, three
+ * numbers a star. Measured off the scan as its pixels in the sky that are not blue.
+ */
+// biome-ignore format: one star a group
+export const STARS: readonly number[] = [
+  0.716, 0.0385, 0.016,  0.368, 0.0138, 0.015,  0.6285, 0.2002, 0.0147,  0.5043, 0.0868, 0.0097,
+  0.7926, 0.0912, 0.0091,  0.6848, 0.1237, 0.0091,  0.5426, 0.2497, 0.0072,  0.3922, 0.0558, 0.0069,
+  0.4445, 0.0533, 0.0063,  0.5664, 0.1404, 0.0063,  0.5902, 0.2757, 0.0063,  0.5961, 0.0291, 0.006,
+  0.748, 0.172, 0.006,  0.6801, 0.2331, 0.006,  0.7094, 0.1761, 0.0056,  0.4207, 0.0197, 0.0047,
+  0.7438, 0.1451, 0.0047,  0.6461, 0.0846, 0.0044,  0.5949, 0.3252, 0.0044,  0.5496, 0.0238, 0.0038,
+  0.648, 0.0276, 0.0038,  0.5969, 0.1131, 0.0038,  0.4341, 0.0799, 0.0034,  0.5734, 0.1021, 0.0031,
+  0.6352, 0.1657, 0.0031,  0.7484, 0.0034, 0.0028,  0.7934, 0.0185, 0.0028,  0.5094, 0.0273, 0.0028,
+  0.6465, 0.0498, 0.0028,  0.6746, 0.0655, 0.0028,  0.7496, 0.1112, 0.0028,  0.584, 0.0056, 0.0025,
+  0.7699, 0.0345, 0.0025,  0.4684, 0.0677, 0.0025,  0.6645, 0.1529, 0.0025,  0.4543, 0.0081, 0.0022,
+  0.6844, 0.0166, 0.0022,  0.4863, 0.0423, 0.0022,  0.618, 0.0598, 0.0022,  0.4207, 0.0793, 0.0022,
+  0.7395, 0.083, 0.0022,  0.732, 0.1388, 0.0022,  0.4688, 0.0213, 0.0019,  0.7469, 0.0514, 0.0019,
+  0.45, 0.0783, 0.0019,  0.7094, 0.0883, 0.0019,  0.5266, 0.1288, 0.0019,  0.5773, 0.1667, 0.0019,
+  0.5563, 0.1861, 0.0019,  0.6957, 0.2011, 0.0019,  0.559, 0.2118, 0.0019,  0.593, 0.2199, 0.0019,
+  0.6977, 0.2328, 0.0019,  0.6438, 0.2375, 0.0019,  0.5578, 0.2713, 0.0019,  0.5109, 0.0066, 0.0016,
+  0.7785, 0.0573, 0.0016,  0.5621, 0.0623, 0.0016,  0.6352, 0.0993, 0.0016,  0.5129, 0.1194, 0.0016,
+  0.7617, 0.1664, 0.0016,  0.6434, 0.2791, 0.0016,
 ];
 
 /** The café façade's own vanishing point: it runs about 7° off the terrace's outer edge. */

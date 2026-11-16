@@ -34,6 +34,9 @@ export const WALK_POSES: Record<string, readonly [number, number, number, number
   alley: [2.6, 1.6, -24, 0.05, 0.05],
   'wing-door': [1.3, 1.3, -23, 0.95, -0.15],
   'tree-above': [1.4, 1.6, -11.5, -1.25, 0.85],
+  // The second Quest round: a door's foot fighting the ground, and painted roofs in the sky.
+  'side-door': [1.5, 1.5, -25.3, 1.25, -0.22],
+  'street-sky': [1.4, 1.6, -5, 0.02, 0.33],
 };
 
 if (import.meta.main) {

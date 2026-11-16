@@ -84,6 +84,8 @@ const WING_DOOR = paint(ID.rearWing, SWATCH.wall, 0xf0c044, { painted: false, li
 const WING_DARK = paint(ID.rearWing, SWATCH.dark, 0x16224a, { painted: false });
 const WING_SIDE = paint(ID.rearSide, SWATCH.plaster, 0x1f3266);
 const WING_PANE = paint(ID.rearSide, SWATCH.dark, 0x10183a, { painted: false });
+/** The side wall's sills and glazing bars, in its own blue. */
+const WING_SIDE_TRIM = paint(ID.rearSide, SWATCH.plaster, 0x2b4078, { painted: false });
 const WING_GLOW = paint(ID.rearSide, SWATCH.wall, 0xeaa838, { painted: false, lit: true });
 /** Wrought iron in the lantern's light. */
 const RED_IRON = paint(ID.balcony, SWATCH.wood, 0xb5482a, { painted: false, lit: true });
@@ -537,15 +539,22 @@ function rearWing(set: PaintBuilder): void {
   const right: Vec3 = [REAR_RIGHT[0], 0, REAR_Z];
   const front = wallFrame(left, right);
   const top = REAR_RIGHT[1];
-  const window = (s0: number, s1: number, y0: number, y1: number, pane: Paint): Opening => ({
+  const window = (
+    s0: number,
+    s1: number,
+    y0: number,
+    y1: number,
+    pane: Paint,
+    trim: Paint = WING,
+  ): Opening => ({
     s0,
     s1,
     y0,
     y1,
     depth: 0.2,
     pane,
-    bars: { paint: WING, across: 1, up: 2 },
-    sill: WING,
+    bars: { paint: trim, across: 1, up: 2 },
+    sill: trim,
   });
   wall(
     set,
@@ -594,11 +603,11 @@ function rearWing(set: PaintBuilder): void {
         pane: WING_PANE,
         frame: { paint: WING_SIDE, width: 0.1, proud: 0.05 },
       },
-      window(1.7, 2.7, 2.4, 3.9, WING_GLOW),
-      window(6.4, 7.4, 2.4, 3.9, WING_PANE),
+      window(1.7, 2.7, 2.4, 3.9, WING_GLOW, WING_SIDE_TRIM),
+      window(6.4, 7.4, 2.4, 3.9, WING_PANE, WING_SIDE_TRIM),
       ...[1.7, 4, 6.4].flatMap((s) => [
-        window(s, s + 1, 5.6, 7.2, WING_PANE),
-        window(s, s + 1, 8.6, 10.2, WING_PANE),
+        window(s, s + 1, 5.6, 7.2, WING_PANE, WING_SIDE_TRIM),
+        window(s, s + 1, 8.6, 10.2, WING_PANE, WING_SIDE_TRIM),
       ]),
     ],
     WING_SIDE,
@@ -766,7 +775,8 @@ function* street(set: PaintBuilder, random: () => number): Steps<void> {
       height: 14.3,
       rise: 1.2,
       paints: closing,
-      floors: [2.6, 5.6, 8.6, 11.4],
+      // The top sills stand clear of the lower house's eaves, which meet this wall at 11.4 m.
+      floors: [2.6, 5.6, 8.6, 11.7],
       blind: [1, 2],
       chimneys: 1,
       cell: 1.5,

@@ -181,10 +181,16 @@ export function wall(
       );
     }
   }
-  for (const opening of openings) recess(builder, frame, opening, paint);
+  for (const opening of openings) recess(builder, frame, opening, paint, y0);
 }
 
-function recess(builder: PaintBuilder, frame: WallFrame, opening: Opening, wallPaint: Paint): void {
+function recess(
+  builder: PaintBuilder,
+  frame: WallFrame,
+  opening: Opening,
+  wallPaint: Paint,
+  foot: number,
+): void {
   const { s0, s1, y0, y1, depth, pane } = opening;
   const reveal = opening.reveal ?? wallPaint;
   const centre = wallPoint(frame, (s0 + s1) / 2, (y0 + y1) / 2, -depth / 2);
@@ -195,7 +201,11 @@ function recess(builder: PaintBuilder, frame: WallFrame, opening: Opening, wallP
   side(at(s0, y0, false), at(s0, y0, true), at(s0, y1, true), at(s0, y1, false));
   side(at(s1, y0, false), at(s1, y0, true), at(s1, y1, true), at(s1, y1, false));
   side(at(s0, y1, false), at(s1, y1, false), at(s1, y1, true), at(s0, y1, true));
-  side(at(s0, y0, false), at(s1, y0, false), at(s1, y0, true), at(s0, y0, true));
+  // A door standing on the wall's foot has the floor for its threshold: a reveal there would lie
+  // in the floor's own plane and fight it.
+  if (y0 > foot + 1e-6) {
+    side(at(s0, y0, false), at(s1, y0, false), at(s1, y0, true), at(s0, y0, true));
+  }
   if (pane) {
     builder.quad(at(s0, y0, true), at(s1, y0, true), at(s1, y1, true), at(s0, y1, true), pane, {
       cell: 0.6,
