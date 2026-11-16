@@ -1,4 +1,4 @@
-.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check audio audio-audition bake site-icons e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit
+.PHONY: install build test lint fmt typecheck checkall checkall-ci secret-scan audit bundle-check asset-check audio audio-audition bake site-icons e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit
 
 install:
 	bun install --frozen-lockfile
@@ -13,11 +13,14 @@ fmt:
 typecheck:
 	bun run typecheck
 checkall: lint typecheck test build bundle-check
-checkall-ci: checkall
+checkall-ci: checkall secret-scan audit
+	$(MAKE) asset-check
+# CI's security job runs these two targets, so the local gate and CI cannot drift.
+secret-scan:
 	gitleaks dir . --redact --no-banner
 	gitleaks git --redact --no-banner
+audit:
 	bun audit --audit-level high
-	$(MAKE) asset-check
 # XRDevice and metaQuest3 survive only in sourcemaps; the other markers survive minification.
 BUNDLE_DIR ?= dist
 BUNDLE_GREP_FLAGS ?=

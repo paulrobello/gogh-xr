@@ -6,7 +6,7 @@ When planning or building a painting, start with the [painting world guide](docs
 
 ## Make targets
 
-`install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check audio audio-audition bake site-icons e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit`
+`install build test lint fmt typecheck checkall checkall-ci secret-scan audit bundle-check asset-check audio audio-audition bake site-icons e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit`
 
 ## Ports
 
@@ -19,18 +19,22 @@ Both ports live in `scripts/ports.ts`, which `vite.config.ts`, `scripts/dev-stop
 
 - `make checkall` is the fast gate while iterating (lint, typecheck, test, build, bundle-check).
 - `make bundle-check` also enforces a gzip size budget on the production JS (`scripts/bundle-budget.ts`, gzip from `node:zlib` at the default level, measured 2026-11-09 on debc2bd). Each budget is the measured size plus a margin of 14.6% to 19% after rounding up to a clean number, except tie-key, whose margin is now 3.9%. Chunks are keyed by name with the content hash stripped: index 160,000 bytes (measured 136,527), three.core 56,000 (48,715), troika-config 50,000 (43,634), tie-key 37,000 (35,609, measured 2026-11-11 at 6b5a3b2 with the `?ab=fill` arms; 35,262 at 9e1b2e5 with the coverage mip cap; 34,987 measured 2026-11-10 after the sky river's fix round 1; 34,858 after its stage 2 (the `iRiver` attribute and `skyRiverMotion`); 34,402 after the wheelflow travel of 1873afc and its fix round 1; 31,586 when the budget was set, after the wheel and stream wraps and the hand-orb quad distance, since it holds the stroke shader source), and 30,000 for every other chunk, new ones included. The JS total budget is 388,000 (measured 385,382 on 2026-11-15 with the café's sky built as a dome and star dabs, its lazy chunk at 19,861; 384,413 earlier that day with the café set built in depth, whose lazy chunk grew from 10,127 to 18,900; the budget was 377,000 until then, against 375,652; 353,343 on 2026-11-11 at 6b5a3b2; 352,168 at 9e1b2e5; 342,435 on 2026-11-10 at e85bb8f; 323,714 when the budget was set). A failure prints each chunk over budget with its size and budget. To raise a budget after a deliberate size increase, edit `CHUNK_BUDGETS`, `DEFAULT_CHUNK_BUDGET_BYTES` or `TOTAL_BUDGET_BYTES` in that file, re-measure with `make build && make bundle-check`, and update the numbers here.
-- `make checkall-ci` must pass before any push. It adds gitleaks, `bun audit` and `asset-check`.
+- `make checkall-ci` must pass before any push. It adds `make secret-scan` (gitleaks over the tree and the history), `make audit` (`bun audit --audit-level high`) and `asset-check`.
+- CI (`.github/workflows/ci.yml`) runs five jobs: lint, typecheck, test, build with bundle-check, and security, which runs `make audit` and `make secret-scan` with gitleaks 8.30.1 installed from its release tarball and checked against a pinned SHA-256. It is `checkall-ci` without `asset-check`, left out on purpose because it needs the pinned ffmpeg. To move the gitleaks version, change `GITLEAKS_VERSION` and `GITLEAKS_SHA256` together (the hash is the `linux_x64` row of the release's checksums file).
 - `make checkall-ci` and `make asset-check` need ffmpeg on PATH, and ffmpeg 9.0.2 for the full check. On another build only the `master.ts --check` byte-identity rebuild is skipped, with a `SKIP` line. The validator and its self-test still run, after a `WARN` line. With no ffmpeg on PATH the audio leg fails.
 - `make e2e` is local-only and never runs in CI.
 - `make update-ab` runs the served A-to-B update check (`scripts/update-ab.ts`, see Updates). It is local-only and not part of `checkall`.
 - `tests/e2e/portal.spec.ts` holds a frame-time bar, so it runs in the one-worker `timing` project, the `e2e` project's teardown, after every other spec has finished (`playwright.config.ts`). Naming only it on the command line still runs only it.
 - `make bake` regenerates the Starry Night bake outputs (palette, flow field, region ids, and `lights.webp`, the full-resolution scan around the moon and stars) from the 3840 px scan and rewrites their PROVENANCE.md rows. It is not part of `checkall`, and `asset-check` verifies the committed outputs.
 - Never pipe a gate. Redirect to a file, capture the exit code, then tail the log.
-- Paul grants standing approval to push to the gogh-xr remote and deploy through GitHub Pages whenever needed. Run the verification gates, watch CI and Pages, and verify the live result.
+- Paul grants standing approval to push to the gogh-xr remote and deploy through GitHub Pages whenever needed. Run the verification gates, watch the Pages run (it holds the CI jobs on `main`, see Deploy), and verify the live result.
 
 ## Deploy
 
-- A push to `main` deploys GitHub Pages (`.github/workflows/pages.yml`) to `https://gogh-xr.pardev.net`.
+- A push to `main` deploys GitHub Pages (`.github/workflows/pages.yml`) to `https://gogh-xr.pardev.net`, but only after CI passes. The Pages workflow calls `ci.yml` as a reusable workflow (job `ci`, shown as `ci / lint`, `ci / test` and so on) and its `deploy` job has `needs: ci`, so a push that fails lint, typecheck, a test, the build, bundle-check, the audit or the secret scan is skipped at `deploy` and the live site keeps the last good build. A failed gate leaves no deployment for that SHA, so "re-run failed jobs" works after a flake.
+- On `main` there is no separate CI run: `ci.yml` triggers on pushes to every other branch, on pull requests and on `workflow_call`. `gh run list` shows one `Pages` run per push to `main`, which takes about as long as the slowest CI job plus the deploy.
+- `pages.yml` sets `cancel-in-progress: false` on the `github-pages` concurrency group, over the whole workflow. A run in progress is never cancelled (see the sticky cancelled state below), and a newer push waits for it, so deploys land in push order. A run still waiting when a third push arrives is dropped before it starts, which is harmless: it made no deployment, and the newest push deploys.
+- The `github-pages` environment only accepts `main`. `gh workflow run Pages --ref <branch>` therefore runs that branch's CI jobs through the Pages workflow and can never deploy, which is how the gate was proven with a failing test (docs/verification.md, Pages deploy gate).
 - Every push that deploys, docs-only pushes included, is a new build id: the commit SHA is built into a chunk, so `version.json` changes. Open desktop tabs reload by themselves within about 30 s, and XR sessions show the update notice with its Reload (see Updates).
 - A Pages deployment is keyed by the commit SHA. Once a deploy for a SHA is cancelled or times out, every later attempt for that same SHA ends at once with "Deployment cancelled". This includes "re-run failed jobs", which also trips on the duplicate `github-pages` artifact, and `workflow_dispatch`. Push a new commit to deploy again.
 

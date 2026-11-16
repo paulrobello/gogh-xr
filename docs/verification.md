@@ -4025,3 +4025,15 @@ The remaining difference is the 2,400 cobble dabs and resampling. Shot: docs/sho
 
 **Not verified.** Nothing on the headset yet: the look in stereo, the star dabs up close in the sky, and the frame rate with 10,800 more triangles.
 
+
+## Pages deploy gate (2026-11-15, branch claude/pages-gate, card 01a1dfe57345)
+
+**What changed.** `pages.yml` calls `ci.yml` as a reusable workflow and its `deploy` job has `needs: ci`. `ci.yml` no longer triggers on pushes to `main`, and gained a `security` job (`make audit`, `make secret-scan`). The `github-pages` concurrency group has `cancel-in-progress: false`.
+
+**A failing push does not deploy.** Proven on a throwaway branch, `ci/pages-gate-proof` (commit f6bad10: this change plus one test that asserts `true` is `false`), with `gh workflow run Pages --ref ci/pages-gate-proof`, which runs the branch's own workflow files. Pages run 43795437925: `ci / lint`, `ci / typecheck`, `ci / build` and `ci / security` succeeded, `ci / test` failed, `deploy` was skipped, and the run concluded `failure`. The deployments API lists none for that SHA. The `github-pages` environment accepts only `main`, so the branch could not have deployed even with a broken gate. The branch was deleted afterwards.
+
+**The security job runs on the CI runner.** In the same run `ci / security` installed gitleaks 8.30.1 from the release tarball, verified its SHA-256, and passed `make audit` and both `make secret-scan` scans on ubuntu-latest.
+
+**Gates.** `make checkall-ci` passed on MiniMac at b3bbb63 (booked window, 1-minute load 1.6 before and 6.2 after, node 24.22.2, bun 1.4.4): 145 test files, 1889 tests, no leaks, no vulnerabilities, asset-check 46 files, audio rebuilt byte-identical. `actionlint` reports nothing on both workflows.
+
+**Not verified.** The queueing of two pushes in quick succession under `cancel-in-progress: false` was not exercised. It follows GitHub's documented concurrency behaviour.

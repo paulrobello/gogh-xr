@@ -7,16 +7,29 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
+# One run at a time, and a run in progress is never cancelled: a Pages deployment is keyed by the
+# commit SHA, and one cancelled mid-deploy can never be retried for that SHA. A newer push waits
+# for the run in progress, so deploys land in push order. A run still waiting when a newer one
+# arrives is dropped before it starts, which leaves no deployment behind.
 concurrency:
   group: github-pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  # lint, typecheck, test, build with bundle-check, and the audit and secret scan.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    # Skipped unless every ci job passed, so a push that fails a gate never ships.
+    needs: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
