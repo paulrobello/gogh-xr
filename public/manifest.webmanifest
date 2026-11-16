@@ -1,0 +1,27 @@
+{
+  "name": "Gogh XR",
+  "short_name": "Gogh XR",
+  "description": "Step inside Van Gogh's paintings in VR. Walk through The Starry Night and Café Terrace at Night as painted worlds, from a gallery built for Meta Quest headsets and WebXR.",
+  "lang": "en",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#18225c",
+  "background_color": "#0e1438",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    {
+      "src": "icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

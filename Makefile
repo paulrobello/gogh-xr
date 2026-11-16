@@ -1,4 +1,4 @@
-.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check audio audio-audition bake e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit
+.PHONY: install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check audio audio-audition bake site-icons e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit
 
 install:
 	bun install --frozen-lockfile
@@ -46,6 +46,9 @@ audio-audition:
 # Rewrites public/paintings/starry-night/{palette.json,flow.png,regions.png} and their PROVENANCE.md rows.
 bake:
 	bun scripts/bake/analyze-scan.ts
+# Renders the favicons, PWA icons and share image from assets/site/ and rewrites their PROVENANCE.md rows.
+site-icons:
+	bun scripts/site/generate.ts
 e2e:
 	bunx playwright test
 # The served A-to-B update check (P7-A1). Local only, not part of checkall.

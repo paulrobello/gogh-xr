@@ -107,3 +107,28 @@ Copied unchanged from the mux-xr repo (`public/fonts/`), which vendored them fro
 | --- | --- | --- | --- | --- |
 | `public/fonts/NotoSans-Regular.ttf` | b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5 | https://github.com/notofonts/noto-fonts/blob/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf | SIL OFL 1.1 | 569208 |
 | `public/fonts/OFL.txt` | 0dab92d0544f7b233403f14b84a663bdbfa746982eda629e7f4f9ffe1b036feb | the license text distributed with NotoSans-Regular.ttf, same Noto source | SIL OFL 1.1 | 4377 |
+
+## Site icons and share image
+
+The icon is original art for this project: a gold swirl on night blue, hand-authored as SVG in `assets/site/` (`icon.svg`, the simplified `icon-small.svg` for 48 px and below, and the full-bleed `icon-maskable.svg` with the mark inside the maskable safe zone). No painting scan is used in it. The two `share-*.jpg` files are 2400 x 1260 captures of this app's own Starry Night and Café Terrace worlds, taken from a served production build by `scripts/site/capture-share.ts`. `make site-icons` (`scripts/site/generate.ts`) renders everything under `public/` listed here from those sources and rewrites this table. `asset-check` recomputes every hash. The share image's text is set in `public/fonts/NotoSans-Regular.ttf`.
+
+<!-- site-hashes:start -->
+| file | SHA-256 | role |
+| --- | --- | --- |
+| `assets/site/icon.svg` | 1df2ff6ca10dcd1e7b65924f5e8906cbb2a93e9a2c4a930d53ab0bef1a3f2d1a | source art, hand-authored |
+| `assets/site/icon-small.svg` | f43bfe5e50749a458c8c15aafeb175f17a62d3334eddaa1b5fc94332e2987acb | source art, hand-authored |
+| `assets/site/icon-maskable.svg` | 8aca2676c6f44275f9f74ea84f12101eb0a460a6dbb2be4bf45452d550a41ad2 | source art, hand-authored |
+| `assets/site/share-starry-night.jpg` | deadb583f6168030706482cd7e646e412ffbba51fe97b4b4846591504283a6f9 | source capture (capture-share.ts) |
+| `assets/site/share-cafe-terrace.jpg` | b776790ad5099e878a38704c0a7cfe18b9626a590cb81d144a55ad4ee459a84f | source capture (capture-share.ts) |
+| `public/favicon-16x16.png` | 96093f4f14aee28c917c02b2dc8b87ac56934bbfcb3f773a85218c4bec4112ff | 16 px from icon-small.svg |
+| `public/favicon-32x32.png` | 7a76ac86a344a7f8e4084439d7fcc4cd568e6ae3775d0f8fe11b1fc99c5833b6 | 32 px from icon-small.svg |
+| `public/favicon-48x48.png` | 0ac06b512315e19bc7e8ccf4b13175993fdaaae02d5fe7e23d5f62b3efa65ffd | 48 px from icon-small.svg |
+| `public/apple-touch-icon.png` | 18fe4d753224ae9a74a5f34ca587131e66d40d1a4e4f7a1d93443dd7b836b83f | 180 px from icon-maskable.svg |
+| `public/icons/icon-192.png` | 42ee8921fe2e6ac084bea71b92ac759cdc8c61668818348239d82841f725cea1 | 192 px from icon.svg |
+| `public/icons/icon-512.png` | 0775213186e1c69c77ca25386377b25854f4626f863602b8dd59a00872f2ef9a | 512 px from icon.svg |
+| `public/icons/icon-maskable-192.png` | 947e7965537477a882ca1b79c18dd9a685dd2b1ddd3a68935e6c6879e566d86a | 192 px from icon-maskable.svg |
+| `public/icons/icon-maskable-512.png` | 1f43d53a11bb1d63e714e646a53be6e56c1df8e6e585fce1585f17f78990cab2 | 512 px from icon-maskable.svg |
+| `public/favicon.ico` | 240357eefa5586ec45e8df70b84b2d850421da4f3e909e9e33717072328a25cc | 16, 32, 48 px from icon-small.svg |
+| `public/favicon.svg` | f43bfe5e50749a458c8c15aafeb175f17a62d3334eddaa1b5fc94332e2987acb | copy of icon-small.svg |
+| `public/og-image.jpg` | 4a4119b8b546693be0da7e4f1d9092ebd4028ffcbb90835178aa0e62345e851d | 1200 x 630 share image from the two captures and icon.svg |
+<!-- site-hashes:end -->

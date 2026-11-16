@@ -6,7 +6,7 @@ When planning or building a painting, start with the [painting world guide](docs
 
 ## Make targets
 
-`install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check audio audio-audition bake e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit`
+`install build test lint fmt typecheck checkall checkall-ci bundle-check asset-check audio audio-audition bake site-icons e2e update-ab dev dev-start dev-stop dev-restart preview pre-commit`
 
 ## Ports
 
@@ -380,6 +380,15 @@ interface Manifest {
 - Suspension: the context suspends while the page is hidden outside XR, or while the XR session's `visibilityState` is `hidden` (for example the headset taken off), and resumes after. The page's own visibility is ignored while presenting. Each request waits for the previous suspend or resume (each wait capped at 500 ms, `STATE_CHANGE_WAIT_MS`, because a resume without activation can stay pending) and then re-checks what is wanted, so a hide and show quicker than one suspend still ends running.
 - Dispose, on `pagehide` unless the page goes into the back-forward cache: stops every voice, disconnects every node (sources, voice gains, panners, buses, master), drops every buffer and closes the context.
 - With `?diag` outside `?bench`, `__goghDiag().audio` is `{ state, unlocked, muted, manifest, buses: { music, sfx }, voices: { music, sfx, max, dropped }, score: { target, playing, crossfading }, cues, buffers, rustle: { played, limited }, bell: { rung, nextS } }`. Before the unlock, `state` is `'none'`, `manifest` is `'pending'` and `score.target` is the score the bound world asks for. `cues` maps each cue id to `pending`, `loaded`, `missing` or `error`. A score reads `loaded` once its bytes are fetched, and decodes on demand. `buffers` counts decoded buffers, and `nextS` is the next bell's `currentTime`, or null.
+
+## Site icons and share image
+
+- Sources live in `assets/site/`: `icon.svg` (the mark, a gold swirl on night blue), `icon-small.svg` (the simplified mark for 48 px and below), `icon-maskable.svg` (full bleed, the mark scaled to 0.78 so it stays inside the maskable safe zone, a circle of 80% of the edge) and two 2400 x 1260 world captures, `share-starry-night.jpg` and `share-cafe-terrace.jpg`.
+- `make site-icons` (`scripts/site/generate.ts`, sizes and paths in `scripts/site/site-lib.ts`) renders them with sharp into `public/`: `favicon.svg` (a copy of `icon-small.svg`), `favicon.ico` (16, 32 and 48 px PNG entries), `favicon-16x16.png`, `favicon-32x32.png`, `favicon-48x48.png`, `apple-touch-icon.png` (180 px, full bleed), `icons/icon-{192,512}.png`, `icons/icon-maskable-{192,512}.png` and `og-image.jpg` (1200 x 630, text set in the local Noto Sans). It rewrites the `site-hashes` block in `assets/PROVENANCE.md`, which `asset-check` verifies. Two runs give the same bytes on one machine. Never edit those outputs by hand.
+- `bun scripts/site/capture-share.ts <base-url>` retakes the two captures from a served production build (`?diag&shot&noanim`, eye placed with `__goghPose`, poses in its `SHOTS`). Run `make site-icons` after it.
+- `public/manifest.webmanifest` is hand-written: `start_url` and `scope` are `./`, `display` is `standalone`, and its `theme_color` must equal the `theme-color` meta in `index.html`. There is no service worker, so the app is installable but not offline.
+- `index.html` carries the icon links, the manifest link, `theme-color`, the description, and the Open Graph and Twitter tags. `og:image`, `twitter:image` and `og:url` are absolute URLs on `https://gogh-xr.pardev.net` (`SITE_ORIGIN`), which the test checks against `public/CNAME`. Both cards use the one `og-image.jpg`. Keep the phrase "Meta Quest 3" out of `index.html` and the manifest: it is one of `bundle-check`'s IWER markers, so text carrying it fails the gate.
+- `tests/site-meta.test.ts` checks every icon's pixel size, the ICO entries, the maskable safe zone, the manifest and the head tags.
 
 ## Model routing
 
