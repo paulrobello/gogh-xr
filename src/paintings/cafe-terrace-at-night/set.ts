@@ -27,13 +27,16 @@ import {
 } from './kit';
 import {
   AWNING,
+  awningOver,
   DECK,
   DECK_HEIGHT,
   DOORWAY,
   DOORWAY_HEAD,
   facadeX,
   ID,
+  LAMP,
   NEAR_Z,
+  RAFTER_DROP,
   REAR_DEPTH,
   REAR_LEFT_TOP,
   REAR_LEFT_X,
@@ -425,9 +428,11 @@ function awning(set: PaintBuilder): void {
   // Its frame: a bar along each edge and a rafter every few metres.
   beam(set, lift(nearOuter, -0.03), lift(farOuter, -0.03), 0.045, 0.045, RAFTER);
   beam(set, lift(nearWall, -0.03), lift(farWall, -0.03), 0.045, 0.045, RAFTER);
-  for (let i = 0; i <= 6; i++) {
-    const high = lift(mix(nearWall, farWall, i / 6), -0.035);
-    const low = lift(mix(nearOuter, farOuter, i / 6), -0.035);
+  // The last is the one the lantern hangs from.
+  const rafters = [0, 1, 2, 3, 4, 5, 6].map((i) => i / 6);
+  for (const along of [...rafters, awningOver(LAMP[0], LAMP[2]).along]) {
+    const high = lift(mix(nearWall, farWall, along), -RAFTER_DROP);
+    const low = lift(mix(nearOuter, farOuter, along), -RAFTER_DROP);
     beam(set, high, low, 0.03, 0.035, RAFTER);
   }
   // The valance: a strip along the outer edge and the near end, scalloped along its foot.

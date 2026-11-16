@@ -4037,3 +4037,30 @@ The remaining difference is the 2,400 cobble dabs and resampling. Shot: docs/sho
 **Gates.** `make checkall-ci` passed on MiniMac at b3bbb63 (booked window, 1-minute load 1.6 before and 6.2 after, node 24.22.2, bun 1.4.4): 145 test files, 1889 tests, no leaks, no vulnerabilities, asset-check 46 files, audio rebuilt byte-identical. `actionlint` reports nothing on both workflows.
 
 **Not verified.** The queueing of two pushes in quick succession under `cancel-in-progress: false` was not exercised. It follows GitHub's documented concurrency behaviour.
+
+## Café Terrace: the lantern's rod (2026-11-15, branch claude/cafe-lamp)
+
+**Why.** Paul walked becd193 on the Quest and sent a screenshot (left of docs/shots/cafe-quest-lantern.jpg): the lantern over the terrace hung loose under its rod, and the rod came out through the top of the awning.
+
+**Cause.** Two faults in the rod's own arithmetic in `scene.ts`.
+
+- Its centre was set at the hook plus half the whole drop, with a length of the drop less the hook, so both ends sat half a hook (0.24 m) too high. The hook was also taken 0.11 m under the cap's top. The rod's foot was 0.128 m above the cap.
+- The awning's height over the lantern was read along the near end's fall by x alone. The awning also falls along its length and its wall is not at one x, so that read 4.23 m where the canvas is at 3.89 m. With the first fault the rod's head was 0.58 m above the canvas.
+
+**What changed.**
+
+- `awningOver(x, z)` in `layout.ts` gives the canvas height over a point from the awning's four corners, and how far along the wall that is.
+- `awning()` in `set.ts` lays one more rafter, over the lantern.
+- The lantern is `lantern.ts` (`buildLantern`), out of `scene.ts`. Its rod runs from inside the cap to the middle of that rafter, 0.035 m under the canvas.
+- Three tests in `tests/cafe-set.test.ts`, which failed before the fix: the lantern is one piece from foot to head, the rod's head lies inside the first thing over it (the rafter, under 0.06 m deep) and never above it, and `awningOver` agrees with the canvas the set builds and with the awning's corners.
+
+**Walk-around.** docs/shots/cafe-depth-walk.jpg, 23 poses on a production build (1280 × 720, ANGLE Metal, M4 Max), with the new `lantern` pose. The right of docs/shots/cafe-quest-lantern.jpg is that pose (a desktop capture, not a headset one). The `flight` pose shows nothing through the awning's top.
+
+**Painter view.** SSIM 0.3473, mean ΔE2000 6.397 (0.3481 and 6.395 before: the rod and the new rafter show in the view), against the guard of SSIM ≥ 0.3 and ΔE ≤ 8.
+
+**Build.** 118,574 triangles (118,562 before). `bun scripts/cafe/time-build.ts`: 532 steps, the longest 5.7 ms.
+
+**Gates.** `make checkall-ci` passed on MiniMac at eddec85's tree (booked load-tolerant window, 1-minute load 1.4 before and 2.9 after). `tests/e2e/cafe-terrace.spec.ts` passed there too, 11 tests with the `timing` project's teardown.
+
+**Not verified.** Nothing on the headset yet for this fix.
+

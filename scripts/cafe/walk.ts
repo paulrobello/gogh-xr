@@ -37,6 +37,8 @@ export const WALK_POSES: Record<string, readonly [number, number, number, number
   // The second Quest round: a door's foot fighting the ground, and painted roofs in the sky.
   'side-door': [1.5, 1.5, -25.3, 1.25, -0.22],
   'street-sky': [1.4, 1.6, -5, 0.02, 0.33],
+  // The third: the lantern's rod, loose from its cap and out through the awning.
+  lantern: [0.6, 1.6, -10.5, 0.69, 0.51],
 };
 
 if (import.meta.main) {

@@ -22,13 +22,12 @@ import { mulberry32 } from '../../util/prng';
 import type { Steps } from '../../util/slicer';
 import { CANVAS_ASPECT } from './canvas';
 import { rasterizeIds } from './id-map';
+import { buildLantern } from './lantern';
 import {
-  AWNING,
   BUILT,
   CHAIRS,
   ID,
   isProp,
-  LAMP,
   PEOPLE,
   SEAT_HEIGHT,
   SWATCH,
@@ -87,7 +86,6 @@ const TABLETOP = 0xb7be97;
 const IRON = 0x313c37;
 const CANE = 0xa9743a;
 const BARK = 0x2a3838;
-const LANTERN = 0xf5cd60;
 
 /** A prop's paint: its own id, and its far side in its near side's colours. */
 function prop(id: number, tint: number, more: Partial<Paint> = {}): Paint {
@@ -360,48 +358,10 @@ export function* buildCafeScene(seed: number, scan: Texture, raster: Raster): St
     }
     yield;
 
-    // The lantern: six lit panes in an iron cage, hung from the awning's frame.
     const lamp = paintBuilder(patches);
-    const glass = new CylinderGeometry(0.2, 0.15, 0.42, 6);
-    const cap = new CylinderGeometry(0.04, 0.25, 0.16, 6);
-    const lit = prop(ID.lamp, LANTERN, { painted: false, lit: true });
-    const cage = prop(ID.lamp, IRON);
-    // As big as the scan paints it: about 0.7 m of glass.
-    const big = 1.6;
-    lamp.mesh(glass, placed(LAMP, [big, big, big]), lit);
-    lamp.mesh(cap, placed([LAMP[0], LAMP[1] + 0.29 * big, LAMP[2]], [big, big, big]), cage);
-    lamp.mesh(
-      cap,
-      placed([LAMP[0], LAMP[1] - 0.25 * big, LAMP[2]], [0.7 * big, -0.5 * big, 0.7 * big]),
-      cage,
-    );
-    for (let i = 0; i < 6; i++) {
-      const a = (i * Math.PI) / 3 + Math.PI / 6;
-      lamp.mesh(
-        cylinder,
-        placed(
-          [LAMP[0] + 0.185 * big * Math.cos(a), LAMP[1], LAMP[2] + 0.185 * big * Math.sin(a)],
-          [0.016, 0.44 * big, 0.016],
-        ),
-        cage,
-      );
-    }
-    // The rod reaches the awning, which falls from the wall to its outer edge.
-    const [nearWall, nearOuter] = AWNING;
-    const fall = (LAMP[0] - nearWall[0]) / (nearOuter[0] - nearWall[0]);
-    const rod =
-      nearWall[1] + (nearOuter[1] - nearWall[1]) * Math.min(1, Math.max(0, fall)) - LAMP[1];
-    const hook = 0.3 * big;
-    lamp.mesh(
-      cylinder,
-      placed(
-        [LAMP[0], LAMP[1] + hook + rod / 2, LAMP[2]],
-        [0.014, Math.max(0.1, rod - hook), 0.014],
-      ),
-      cage,
-    );
+    buildLantern(lamp);
 
-    for (const geometry of [cylinder, bark, table, chair, leaf, glass, cap]) geometry.dispose();
+    for (const geometry of [cylinder, bark, table, chair, leaf]) geometry.dispose();
     yield;
     const sky = paintBuilder(patches);
     const stars = yield* buildSky(sky, raster, mulberry32(seed + 53));

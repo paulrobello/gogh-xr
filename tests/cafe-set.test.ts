@@ -3,7 +3,16 @@ import type { Texture } from 'three';
 import { describe, expect, test } from 'vitest';
 import { PAINTER_EYE, toCanvas } from '../src/paintings/cafe-terrace-at-night/canvas';
 import { box, wall, wallFrame, wallPoint } from '../src/paintings/cafe-terrace-at-night/kit';
-import { ID, inPaintedSky, STARS, SWATCH } from '../src/paintings/cafe-terrace-at-night/layout';
+import { buildLantern } from '../src/paintings/cafe-terrace-at-night/lantern';
+import {
+  AWNING,
+  awningOver,
+  ID,
+  inPaintedSky,
+  LAMP,
+  STARS,
+  SWATCH,
+} from '../src/paintings/cafe-terrace-at-night/layout';
 import {
   createPaintMaterial,
   type Paint,
@@ -407,6 +416,62 @@ describe('café set', () => {
     let count = 0;
     while (!steps.next().done) count++;
     expect(count).toBeGreaterThanOrEqual(15);
+  });
+});
+
+describe('café lantern', () => {
+  const set = paintBuilder([]);
+  drain(buildSet(set, mulberry32(8)));
+  const lamp = paintBuilder([]);
+  buildLantern(lamp);
+  const parts = triangles(lamp).map(({ corners }) => corners.map((c) => c[1]));
+  const top = Math.max(...parts.flat());
+
+  /** Heights at which the plumb line through the lantern meets the set, lowest first. */
+  const overhead = triangles(set)
+    .flatMap(({ corners: [a, b, c] }) => {
+      const area = (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
+      if (Math.abs(area) < 1e-9) return [];
+      const u = ((LAMP[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (LAMP[2] - a[2])) / area;
+      const v = ((b[0] - a[0]) * (LAMP[2] - a[2]) - (LAMP[0] - a[0]) * (b[2] - a[2])) / area;
+      if (u < 0 || v < 0 || u + v > 1) return [];
+      return [a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1])];
+    })
+    .filter((y) => y > LAMP[1])
+    .sort((p, q) => p - q);
+
+  test('hangs in one piece: its rod meets its cap', () => {
+    const spans = parts.map((ys) => [Math.min(...ys), Math.max(...ys)]).sort((p, q) => p[0] - q[0]);
+    let reached = spans[0][1];
+    for (const [low, high] of spans) {
+      expect(low).toBeLessThanOrEqual(reached + 1e-4);
+      reached = Math.max(reached, high);
+    }
+  });
+
+  test("its rod ends inside a rafter of the awning's frame, and never comes out above it", () => {
+    // The first thing over the lantern is the rafter it hangs from, and the rod stops inside it.
+    expect(overhead.length).toBeGreaterThan(3);
+    expect(top).toBeGreaterThan(overhead[0]);
+    expect(top).toBeLessThan(overhead[1]);
+    expect(overhead[1] - overhead[0]).toBeLessThan(0.06);
+  });
+
+  test("the awning's height over a point is the canvas the set builds there", () => {
+    const { y, along } = awningOver(LAMP[0], LAMP[2]);
+    expect(Math.min(...overhead.map((hit) => Math.abs(hit - y)))).toBeLessThan(0.005);
+    expect(along).toBeGreaterThan(0);
+    expect(along).toBeLessThan(1);
+    for (const [corner, far] of [
+      [AWNING[0], 0],
+      [AWNING[1], 0],
+      [AWNING[2], 1],
+      [AWNING[3], 1],
+    ] as const) {
+      const at = awningOver(corner[0], corner[2]);
+      expect(at.y).toBeCloseTo(corner[1], 6);
+      expect(at.along).toBeCloseTo(far, 6);
+    }
   });
 });
 

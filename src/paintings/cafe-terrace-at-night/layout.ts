@@ -183,6 +183,30 @@ export const AWNING: readonly [Vec3, Vec3, Vec3, Vec3] = [
   [REAR_LEFT_X + 0.02, AWNING_NEAR_WALL[1], REAR_Z + 0.02],
 ];
 
+/** How far under its canvas the awning's rafters run, metres. */
+export const RAFTER_DROP = 0.035;
+
+/**
+ * Where the plumb line through (x, z) meets the awning's canvas: its height there, and how far
+ * along the wall that is, 0 at the near end and 1 at the far.
+ */
+export function awningOver(x: number, z: number): { y: number; along: number } {
+  const [nearWall, nearOuter, farOuter, farWall] = AWNING;
+  const at = (a: Vec3, b: Vec3, t: number, axis: number): number =>
+    a[axis] + (b[axis] - a[axis]) * t;
+  let out = 0.5;
+  let along = 0.5;
+  // The awning is close to a rectangle in plan, so each pass all but settles both.
+  for (let i = 0; i < 12; i++) {
+    const near = at(nearWall, nearOuter, out, 2);
+    along = (z - near) / (at(farWall, farOuter, out, 2) - near);
+    const wall = at(nearWall, farWall, along, 0);
+    out = (x - wall) / (at(nearOuter, farOuter, along, 0) - wall);
+  }
+  const high = at(nearWall, farWall, along, 1);
+  return { y: high + (at(nearOuter, farOuter, along, 1) - high) * out, along };
+}
+
 /** Table height, metres. The painted tables are squat; this keeps their tops on their paint. */
 export const TABLE_HEIGHT = 0.62;
 export const SEAT_HEIGHT = 0.44;
