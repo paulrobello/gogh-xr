@@ -52,6 +52,30 @@
       }
     },
     {
+      "id": "score-cafe",
+      "kind": "music",
+      "loop": true,
+      "channels": 2,
+      "duration": 115.22,
+      "frames": 5530560,
+      "loudness": {
+        "target": -18,
+        "tolerance": 1
+      },
+      "files": {
+        "ogg": "score-cafe.ogg",
+        "mp3": "score-cafe.mp3"
+      },
+      "bytes": {
+        "ogg": 1627598,
+        "mp3": 1613852
+      },
+      "sha256": {
+        "ogg": "acd78613bf02571eab09a5999f408d0a819097f5bdde695650c7eb0d38118fe6",
+        "mp3": "2a90dd9e499e64523fd9c8ea94aa081b8e23b6041d031d503751d5b4e2447afa"
+      }
+    },
+    {
       "id": "wind-hill",
       "kind": "sfx",
       "loop": true,

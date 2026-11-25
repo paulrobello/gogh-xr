@@ -41,6 +41,7 @@ const BASE = '/';
 const DURATIONS: Record<CueId, number> = {
   'score-gallery': 150,
   'score-night': 160,
+  'score-cafe': 115.22,
   'wind-hill': 30,
   crickets: 20,
   'church-bell': 6,

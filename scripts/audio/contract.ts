@@ -103,6 +103,19 @@ export const CUES: readonly CueSpec[] = [
     serial: 1002,
   },
   {
+    ...MUSIC,
+    id: 'score-cafe',
+    source: {
+      path: 'assets/audio/source/suno/score-cafe.wav',
+      sha256: 'bf6514b3993aa54076d83e57db901925bd758e367b3b2d4d28104815f013bb46',
+    },
+    trim: { start: 0.1, end: 117.45 },
+    crossfade: 2.13,
+    // The supplied two-minute take yields a shorter loop after the approved edit.
+    duration: [115, 180],
+    serial: 1008,
+  },
+  {
     ...SFX,
     id: 'wind-hill',
     loop: true,

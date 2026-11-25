@@ -22,12 +22,19 @@ The Suno-guide handoff fields for each score track are below. File hashes are al
 
 These four statuses are tracked separately, per the Suno guide.
 
-| Status | score-night | score-gallery |
-| --- | --- | --- |
-| Source selection | Done. Paul generated and delivered the take | Done. Paul generated and delivered the take |
-| Technical preparation (seamless loop, runtime encode) | P6.4: 141.000 s loop in Opus and MP3. Asset checks pass, and the browser integration test plays the score after portal entry (P6.6). See [derivatives.md](derivatives.md). | P6.4: 120.080 s loop in Opus and MP3. Asset checks pass, and the browser integration test plays the score after the first gesture (P6.6). See [derivatives.md](derivatives.md). |
-| Creative acceptance in the headset mix | Paul approved on Quest 3, 2026-11-12 (P6-A3) | Paul approved on Quest 3, 2026-11-12 (P6-A3) |
-| Release rights | Paid-plan output. Check the current Suno terms before release (P7) | Paid-plan output. Check the current Suno terms before release (P7) |
+| Status | score-night | score-gallery | score-cafe |
+| --- | --- | --- | --- |
+| Source selection | Done. Paul generated and delivered the take | Done. Paul generated and delivered the take | Done. Paul supplied *Lanternlight in Arles* |
+| Technical preparation (seamless loop, runtime encode) | P6.4: 141.000 s loop in Opus and MP3. Asset checks pass, and the browser integration test plays the score after portal entry (P6.6). See [derivatives.md](derivatives.md). | P6.4: 120.080 s loop in Opus and MP3. Asset checks pass, and the browser integration test plays the score after the first gesture (P6.6). See [derivatives.md](derivatives.md). | 115.220 s loop in Opus and MP3. Paul approved the shorter duration. See [derivatives.md](derivatives.md). |
+| Creative acceptance in the headset mix | Paul approved on Quest 3, 2026-11-12 (P6-A3) | Paul approved on Quest 3, 2026-11-12 (P6-A3) | Pending physical Quest audition. |
+| Release rights | Paid-plan output. Check the current Suno terms before release (P7) | Paid-plan output. Check the current Suno terms before release (P7) | Paul confirmed Suno Premier at generation. See [Suno terms](https://suno.com/terms). |
+
+## Lanternlight in Arles
+
+- Café Terrace at Night uses `score-cafe`. Paul supplied the original `Lanternlight in Arles.wav`. It is archived byte-for-byte as `assets/audio/source/suno/score-cafe.wav` (23,053,818 bytes, 120.000 s, stereo 48 kHz PCM s16le).
+- Suno song ID `6ea7701e-91bb-4808-af85-931857a03636`, created on November 24, 2026 at 4:32:45 PM PST according to the WAV metadata. SHA-256 is `bf6514b3993aa54076d83e57db901925bd758e367b3b2d4d28104815f013bb46`.
+- Paul confirmed that this take was generated on Suno Premier. [Suno's paid-plan terms](https://suno.com/terms) cover use of eligible paid-plan output in the project. The generation model and applied settings are unconfirmed. The [draft prompt](suno-prompts.md#score-cafe) records what was supplied.
+- Paul approved the shorter loop and requested deployment for headset audition. The 115.220 s master and both encodes are documented in [derivatives.md](derivatives.md). Creative acceptance on a physical Quest remains pending.
 
 ## ElevenLabs SFX
 

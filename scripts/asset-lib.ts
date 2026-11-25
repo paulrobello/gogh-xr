@@ -13,6 +13,7 @@ const PAINTING_ROW = /^\| ([a-z][a-z0-9-]*) \|.*thumb\.wikimedia\.org/;
 export const AUDIO_FILES = [
   'assets/audio/source/suno/score-night.wav',
   'assets/audio/source/suno/score-gallery.wav',
+  'assets/audio/source/suno/score-cafe.wav',
 ];
 /** `make bake` input and outputs, recorded in the PROVENANCE.md bake block. */
 export const BAKE_FILES = [

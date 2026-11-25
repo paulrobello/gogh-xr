@@ -51,11 +51,26 @@ Personalize / My Taste: Off
 Model: v6 (Paul, 2026-11-05)
 ```
 
+## score-cafe
+
+Draft supplied for *Lanternlight in Arles*. The final generation settings are unconfirmed.
+
+```text
+Style:
+Original instrumental acoustic waltz for a lamplit café terrace in Arles after dark. Warm, intimate, and gently wistful. A soft accordion plays a short four-bar melody over fingerpicked nylon-string guitar and sparse upright bass. Keep a relaxed 3/4 pulse at about 84 BPM, with light phrasing and a little space between lines. Introduce the motif in the first few bars, then vary it gently over two minutes. Bring the closing bars back to the opening chord voicing, pulse, and texture for an easy loop edit. Keep the arrangement quiet and airy so footsteps and terrace ambience can sit clearly over it.
+
+Exclude styles:
+vocals, humming, spoken word, crowd recordings, sound effects, drum kit, electronic beats, heavy oom-pah bass, virtuosic solos, orchestral swells, dramatic finale, long fade-out
+
+Proposed settings:
+Custom, Instrumental on, v6, 2:00, Max Mode off, Weirdness 25%, Style Influence 80%, Variety off, Personalize off
+```
+
 ## What to send back
 
 For each take you select:
 - the full-song **WAV** download (web interface, Pro/Premier)
-- the cue role it fills (`score-night` or `score-gallery`)
+- the cue role it fills (`score-night`, `score-gallery` or `score-cafe`)
 - the Suno song link or ID
 - the model actually selected
 - your account plan when you generated it

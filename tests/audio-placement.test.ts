@@ -98,6 +98,7 @@ describe('cues', () => {
   test('each world plays its score', () => {
     expect(scoreFor('gallery')).toBe('score-gallery');
     expect(scoreFor('starry-night')).toBe('score-night');
+    expect(scoreFor('cafe-terrace-at-night')).toBe('score-cafe');
     expect(scoreFor(null)).toBeNull();
     expect(scoreFor('cafe-terrace')).toBeNull();
   });
@@ -116,7 +117,7 @@ describe('cues', () => {
     expect(cueUrl(c, 'mp3', '/')).toBe('/audio/c.mp3');
   });
 
-  test("P6.4's manifest, verbatim, parses to all seven cues the mixer plays", () => {
+  test("P6.4's manifest, verbatim, parses to all cues the mixer plays", () => {
     const raw: unknown = JSON.parse(
       readFileSync(resolve(import.meta.dirname, 'fixtures/audio-manifest.json'), 'utf8'),
     );

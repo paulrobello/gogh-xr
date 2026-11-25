@@ -89,7 +89,7 @@ describe('audio deviations versus provenance', () => {
     expect(deviationDisagreements(CUES, provenance)).toEqual([]);
   });
 
-  it('reads a status for each of the seven cues', () => {
+  it('reads a status for each cue', () => {
     expect([...technicalPreparation(provenance).keys()].sort()).toEqual(
       CUES.map((c) => c.id).sort(),
     );

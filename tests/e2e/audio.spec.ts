@@ -2,7 +2,7 @@
  * The audio unlock (P6.5): no AudioContext before a gesture, a running one after the first click
  * or the Enter VR button, a silent, error-free boot with no audio files present, none at all in
  * the bench, and the desktop panel's volume sliders driving the buses live and across a reload.
- * P6.6 also exercises both shipped scores and checks cue loading and decoding.
+ * P6.6 also exercises the shipped scores and checks cue loading and decoding.
  */
 import type { Page } from '@playwright/test';
 import { CUE_IDS } from '../../src/audio/cues';
@@ -92,6 +92,37 @@ test('the first gesture plays the shipped gallery score and portal entry plays t
       score: { target: 'score-night', playing: 'score-night' },
     });
   expect(decodeErrors).toEqual([]);
+});
+
+test('Enter VR starts the café score and the return portal restores the gallery score', async ({
+  page,
+  xr,
+}) => {
+  await xr.boot('painting=cafe-terrace-at-night&noanim');
+  await expect.poll(async () => (await xr.diag()).painting).toBe('cafe-terrace-at-night');
+  expect(await audio(xr)).toMatchObject({
+    unlocked: false,
+    score: { target: 'score-cafe', playing: null },
+  });
+
+  await xr.enterXR();
+  await expect
+    .poll(() => audio(xr), { timeout: 15_000 })
+    .toMatchObject({ state: 'running', score: { target: 'score-cafe', playing: 'score-cafe' } });
+
+  expect(await page.evaluate(() => window.__goghPortal?.('gallery'))).toBe(true);
+  await expect
+    .poll(() => audio(xr), { timeout: 30_000 })
+    .toMatchObject({ score: { target: 'score-gallery', playing: 'score-gallery' } });
+  await expect.poll(async () => (await audio(xr)).voices.music, { timeout: 10_000 }).toBe(1);
+  await expect.poll(async () => (await xr.diag()).painting).toBe('gallery');
+  await expect
+    .poll(() => page.evaluate(() => window.__goghPortal?.('cafe-terrace-at-night')))
+    .toBe(true);
+  await expect.poll(async () => (await xr.diag()).painting).toBe('cafe-terrace-at-night');
+  await expect
+    .poll(() => audio(xr), { timeout: 15_000 })
+    .toMatchObject({ score: { target: 'score-cafe', playing: 'score-cafe' } });
 });
 
 test('Enter VR unlocks the context', async ({ xr }) => {

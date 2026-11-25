@@ -113,7 +113,7 @@ export function renderDerivatives(
     `${commandLine(['-v', 'error', '-i', 'FILE', '-map', '0:a:0', '-af', METER_CHAIN, '-f', 'null', '-'])}`,
     '```',
     '',
-    'Targets (plans/phase-6-audio.md): music -18 LUFS ±1, stereo, 120-180 s loop, at most 3 MiB per file. SFX beds -24 LUFS ±2, mono, at most 512 KiB per file. True peak at most -1 dBTP after encoding. The plan sets the -24 LUFS target for SFX beds only. The one-shots (church-bell, portal-whoosh, stroke-rustle) use the same target as a newly proposed value, so the mixer can set their relative levels by gain.',
+    'Targets (plans/phase-6-audio.md): music -18 LUFS ±1, stereo, 120-180 s loop (115-180 s for the café cue), at most 3 MiB per file. SFX beds -24 LUFS ±2, mono, at most 512 KiB per file. True peak at most -1 dBTP after encoding. The plan sets the -24 LUFS target for SFX beds only. The one-shots (church-bell, portal-whoosh, stroke-rustle) use the same target as a newly proposed value, so the mixer can set their relative levels by gain.',
     '',
     '## Deviations pending the owner',
     '',

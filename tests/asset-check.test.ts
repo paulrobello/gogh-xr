@@ -15,6 +15,7 @@ import {
 const HELLO = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824';
 const FRAME = 'public/paintings/a/frame.webp';
 const SOURCE = 'assets/scans/a.jpg';
+const FIXTURE_FILE_COUNT = 2 + AUDIO_FILES.length + BAKE_FILES.length;
 const PAINTING_ROW =
   '| a | A painting | https://thumb.wikimedia.org/x/1280px-a.jpg (1280 px) | ok |';
 
@@ -59,7 +60,10 @@ describe('asset hash checks', () => {
   });
 
   it('passes when every hash matches and every required file has a row', () => {
-    expect(checkAssets(root, fullManifest())).toEqual({ failures: [], checked: 9 });
+    expect(checkAssets(root, fullManifest())).toEqual({
+      failures: [],
+      checked: FIXTURE_FILE_COUNT,
+    });
   });
 
   it('accepts uppercase hex', () => {
@@ -99,7 +103,7 @@ describe('asset hash checks', () => {
     write('public/fonts/A.ttf', 'hello');
     write('public/fonts/.DS_Store', 'x');
     const md = `${fullManifest()}\n${row('public/fonts/A.ttf', HELLO)}`;
-    expect(checkAssets(root, md)).toEqual({ failures: [], checked: 10 });
+    expect(checkAssets(root, md)).toEqual({ failures: [], checked: FIXTURE_FILE_COUNT + 1 });
     write('public/fonts/A.ttf', 'hellp');
     expect(checkAssets(root, md).failures[0]).toContain('public/fonts/A.ttf: hash drift');
   });

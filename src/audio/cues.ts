@@ -4,9 +4,11 @@
  * silent.
  */
 
+export const SCORE_IDS = ['score-gallery', 'score-night', 'score-cafe'] as const;
+export type ScoreId = (typeof SCORE_IDS)[number];
+
 export const CUE_IDS = [
-  'score-gallery',
-  'score-night',
+  ...SCORE_IDS,
   'wind-hill',
   'crickets',
   'church-bell',
@@ -14,9 +16,6 @@ export const CUE_IDS = [
   'stroke-rustle',
 ] as const;
 export type CueId = (typeof CUE_IDS)[number];
-export type ScoreId = Extract<CueId, 'score-gallery' | 'score-night'>;
-
-export const SCORE_IDS: readonly ScoreId[] = ['score-gallery', 'score-night'];
 
 export type AudioFormat = 'ogg' | 'mp3';
 export type CueKind = 'music' | 'sfx';
@@ -110,9 +109,10 @@ export function cueUrl(cue: ManifestCue, format: AudioFormat, base: string): str
   return file ? `${base}${AUDIO_DIR}${file}` : null;
 }
 
-/** The score a world plays: the gallery's, the night score in Starry Night, none elsewhere. */
+/** The score for a live world. Bare and test scenes have no score. */
 export function scoreFor(worldId: string | null): ScoreId | null {
   if (worldId === 'gallery') return 'score-gallery';
   if (worldId === 'starry-night') return 'score-night';
+  if (worldId === 'cafe-terrace-at-night') return 'score-cafe';
   return null;
 }
