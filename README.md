@@ -4,7 +4,7 @@ A Meta Quest 3 WebXR experience. You start in a small gallery of seven Van Gogh 
 
 Live: <https://gogh-xr.pardev.net>. Open it in Quest Browser and press Enter VR. It also runs on a desktop browser with keyboard and mouse.
 
-[Watch the Quest 3 walkthrough on YouTube](https://youtu.be/vWfmvlowiRQ). *The Starry Night* is the only completed world. *Café Terrace at Night* is a work in progress.
+[Watch the Quest 3 walkthrough on YouTube](https://youtu.be/qBdw0WxM9bk). *The Starry Night* is the only completed world. *Café Terrace at Night* is a work in progress.
 
 ![The Starry Night from the painter’s spot in Gogh XR](https://raw.githubusercontent.com/paulrobello/gogh-xr/main/docs/shots/starry-night-painter-thumbnail.jpg)
 
