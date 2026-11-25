@@ -6,6 +6,8 @@ Live: <https://gogh-xr.pardev.net>. Open it in Quest Browser and press Enter VR.
 
 [Watch the Quest 3 walkthrough on YouTube](https://youtu.be/vWfmvlowiRQ). *The Starry Night* is the only completed world. *Café Terrace at Night* is a work in progress.
 
+![The Starry Night from the painter’s spot in Gogh XR](https://raw.githubusercontent.com/paulrobello/gogh-xr/main/docs/shots/starry-night-painter-thumbnail.jpg)
+
 Built with three.js, raw GLSL, Vite and bun. Requirements are in [PRD.md](PRD.md), the per-phase plans in [plans/](plans/), and the full flag and system reference in [CLAUDE.md](CLAUDE.md).
 
 ## Controls
